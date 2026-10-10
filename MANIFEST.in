@@ -1,0 +1,14 @@
+include README.md LICENSE THIRD_PARTY_NOTICES.md plan.md CHANGELOG.md pytest.ini
+recursive-include docs *.md
+recursive-include korean_openwakeword *.py *.json *.html *.js *.css *.md *.txt *.onnx *.wav
+prune data
+prune logs
+prune models
+prune runs
+prune reports
+prune .venv
+prune wakeword_lab
+prune scripts
+include scripts/Use-ProjectStorage.ps1
+recursive-include validation *.json
+recursive-include examples/library_demo_site *.html *.js *.css *.json *.wav

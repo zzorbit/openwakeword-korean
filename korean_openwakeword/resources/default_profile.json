@@ -1,0 +1,156 @@
+{
+  "schema_version": 1,
+  "project_id": "new_wakeword",
+  "wakeword": "춘식아",
+  "language": "Korean",
+  "positive_text_policy": "standalone_only",
+  "human_reference_used": false,
+  "targets": {
+    "positive_originals": 100000,
+    "validation_originals": 5000,
+    "final_originals": 5000,
+    "generic_hours": 2000,
+    "korean_hours": 200,
+    "noise_hours_phase1": [
+      30,
+      50
+    ],
+    "noise_hours_phase2": [
+      100,
+      200
+    ],
+    "development_negative_hours": [
+      20,
+      30
+    ],
+    "final_negative_hours": 100
+  },
+  "batch": {
+    "generic_negative": 768,
+    "korean_negative": 256,
+    "positive": 50
+  },
+  "hard_negative_samples": 0,
+  "augmentation_rounds": 5,
+  "training": {
+    "architecture": "cnn128",
+    "optimizer": "AdamW",
+    "learning_rate": 0.0001,
+    "weight_decay": 0.01,
+    "positive_loss_weight": 1,
+    "dropout": 0.1,
+    "schedule": "cosine_with_2percent_warmup",
+    "updates": 50000,
+    "schedule_horizon": 50000,
+    "seeds": [
+      20260928,
+      20260929,
+      20260930
+    ],
+    "device": "auto",
+    "delivery": "auto",
+    "gpu_cache_budget_mb": 0,
+    "cpu_threads": 4,
+    "checkpoints": [
+      10000,
+      20000,
+      50000
+    ],
+    "log_every": 100,
+    "backend": {
+      "cudnn_deterministic": true,
+      "cudnn_benchmark": false,
+      "CUDA_matmul_TF32": false,
+      "cudnn_TF32": true,
+      "MHA_fastpath": false
+    }
+  },
+  "runtime": {
+    "sample_rate": 16000,
+    "frame_samples": 1280,
+    "threshold": 0.9862500429153442,
+    "consecutive_frames": 2,
+    "warmup_s": 2.0,
+    "cooldown_s": 1.0,
+    "call_postroll_s": 0.5,
+    "tail_policy": "drop_partial_frame",
+    "vad_enabled": false,
+    "noise_suppression_enabled": false
+  },
+  "augmentation": {
+    "seed": 20260928,
+    "clean_probability": 0.25,
+    "moderate_probability": 0.55,
+    "moderate_snr_db": [
+      5,
+      20
+    ],
+    "hard_snr_db": [
+      0,
+      5
+    ],
+    "gain_db": [
+      -6,
+      3
+    ],
+    "rir_probability": 0.3,
+    "peak_limit": 0.98,
+    "category_weights": {
+      "environment": 1,
+      "music": 1,
+      "competing_speech": 1
+    },
+    "korean_speech_weight": 2
+  },
+  "tts": {
+    "design_model": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+    "clone_model": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+    "device": "auto",
+    "attention": "sdpa",
+    "batch_size": 1,
+    "generation": {
+      "do_sample": true,
+      "temperature": 0.9,
+      "top_p": 0.95,
+      "max_new_tokens": 256
+    },
+    "seed": 20260928,
+    "model_revisions": {
+      "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign": "5ecdb67327fd37bb2e042aab12ff7391903235d3",
+      "Qwen/Qwen3-TTS-12Hz-1.7B-Base": "fd4b254389122332181a7c3db7f27e918eec64e3"
+    }
+  },
+  "manifests": {
+    "positive_train": "data/positive/train.jsonl",
+    "positive_validation": "data/positive/validation.jsonl",
+    "positive_final": "data/positive/final.jsonl",
+    "generic_negative": "data/negative/generic.jsonl",
+    "korean_negative": "data/negative/korean.jsonl",
+    "noise": "data/materials/noise.jsonl",
+    "rir": "data/materials/rir.jsonl",
+    "noise_validation": "data/materials/validation_noise.jsonl",
+    "noise_final": "data/materials/final_noise.jsonl",
+    "development": "data/eval/development.jsonl",
+    "final": "data/eval/final.jsonl"
+  },
+  "frontend_dir": "models/frontend",
+  "pool_features": {
+    "generic_negative": "features/generic_negative",
+    "korean_negative": "features/korean_negative",
+    "positive": "features/positive_R5"
+  },
+  "evaluation_targets": {
+    "clean_recall": 0.98,
+    "snr10_recall": 0.95,
+    "snr5_recall": 0.9,
+    "fa_per_hour": 0.1,
+    "latency_p95_s": 0.5
+  },
+  "limitations": [
+    "CNN128 and learning settings are recommended starting values selected on Chunsik fixed Development, not a universal Korean optimum; new words need evaluation.",
+    "100k originals, R5 and 50k updates per model are reference workload suggestions, selectable at initialization according to resources; smaller budgets are not automatically performance-validated.",
+    "Requested synthetic voice IDs do not prove perceptual diversity.",
+    "R5 is a selected default, not proof of monotonic R improvement.",
+    "GPU training and CPU ONNX inference are distinct reference paths."
+  ]
+}

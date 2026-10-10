@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "library_version": "0.3.0",
+  "environment": {
+    "system": "Windows",
+    "python": "3.12.7",
+    "dependencies": {
+      "torch": "2.8.0+cu128",
+      "numpy": "2.5.3",
+      "onnx": "1.23.0",
+      "onnxruntime": "1.30.0",
+      "openwakeword": "0.6.0"
+    }
+  },
+  "local_tests": {
+    "tests": "57",
+    "failures": "0",
+    "errors": "0",
+    "skipped": "0",
+    "time": "102.585",
+    "timestamp": "2026-10-11T07:34:11.096101+09:00"
+  },
+  "installed_wheel_tests": {
+    "tests": "54",
+    "failures": "0",
+    "errors": "0",
+    "skipped": "0",
+    "time": "45.285",
+    "timestamp": "2026-10-11T07:32:54.736412+09:00"
+  },
+  "historical_parity_tests_excluded_from_portable_suite": 3,
+  "installed_wheel_imports": {
+    "installed_module_count": 23,
+    "all_library_imports_from_installed_wheel": true,
+    "historical_code_imports_blocked": true,
+    "dependency_scope": "Installed wheel with existing pinned dependencies; fresh OS installation is covered separately by CI"
+  },
+  "download_integration": {
+    "source_url": "https://media.githubusercontent.com/media/microsoft/DNS-Challenge/70f19285c36cca4df2338f9248775ddc50980c6b/datasets/noise/fan_Freesound_validated_100355_0.wav",
+    "bytes": 320044,
+    "sha256": "a3d2ede479606cae392b5332973ed1a1a6e9f0d4176e030bb22920379e3cd5ba",
+    "completed_at": "2026-10-10T22:29:42.087132+00:00",
+    "content_approved": false
+  },
+  "data_catalog_pinned_assets": 34,
+  "publication_invariants": {
+    "raw_training_pools_included": false,
+    "private_path_and_token_scan_passed": true,
+    "sample_model_and_frontend_hashes_preserved": true,
+    "site_scored_WAV_hashes_verified": 20,
+    "broken_local_markdown_links": []
+  },
+  "browser_check": {
+    "results_page_loaded": true,
+    "SNR_dB": 10,
+    "automatic_sequence_observed": [
+      "environment",
+      "music",
+      "competing_speech"
+    ],
+    "pause_control_verified": true,
+    "scope": "Browser playback state and matching scored WAVs; no fabricated human listening judgement"
+  },
+  "fresh_windows_linux_installation": "Check the repository Actions run; local wheel checks reused existing dependencies",
+  "scope_limits": [
+    "No new 100k Qwen generation or formal performance training in this publication audit",
+    "No independent 100h Final or population human-performance claim"
+  ]
+}

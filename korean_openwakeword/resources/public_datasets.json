@@ -1,0 +1,326 @@
+{
+  "schema_version": 1,
+  "origin": "Actual Chunsik download verification receipts; local paths excluded",
+  "assets": {
+    "generic": {
+      "source_url": "https://huggingface.co/datasets/davidscripka/openwakeword_features/resolve/985bf1b47e7f19c07741af82bfe32d5a9dc56096/openwakeword_features_ACAV100M_2000_hrs_16bit.npy",
+      "upstream_revision": "985bf1b47e7f19c07741af82bfe32d5a9dc56096",
+      "size_bytes": 17280000128,
+      "license": "CC-BY-NC-SA-4.0",
+      "sha256": "721a66d0682c65a1b5c1da0aa109409cede1d20e28b15235c344b000cbb7654f",
+      "role": "generic_features",
+      "filename": "openwakeword_features_ACAV100M_2000_hrs_16bit.npy"
+    },
+    "zeroth": {
+      "source_url": "https://www.openslr.org/resources/40/zeroth_korean.tar.gz",
+      "upstream_revision": "OpenSLR40 archive last-modified 2018-03-20T01:13:28Z",
+      "size_bytes": 10339720618,
+      "license": "CC-BY-4.0",
+      "sha256": "6e109897f4d866eb1a3d31cbb2220c0b5e3dc74704208189ecc3bec787740e5f",
+      "role": "korean_negative",
+      "filename": "zeroth_korean.tar.gz"
+    },
+    "musan": {
+      "source_url": "https://www.openslr.org/resources/17/musan.tar.gz",
+      "upstream_revision": "OpenSLR17 archive last-modified 2017-10-03T22:57:48Z",
+      "size_bytes": 11086114085,
+      "license": "CC-BY-4.0; retain archive source attribution and per-file provenance",
+      "sha256": "86d1061c7e15b5c9e906777685c519701df51bfde3001e1070dcc9ffac955ee1",
+      "role": "noise_music_speech",
+      "filename": "musan.tar.gz"
+    },
+    "rir": {
+      "source_url": "https://www.openslr.org/resources/28/rirs_noises.zip",
+      "upstream_revision": "OpenSLR28 archive last-modified 2017-10-03T23:34:32Z",
+      "size_bytes": 1311166223,
+      "license": "Apache-2.0 (OpenSLR28 catalog); preserve included source notices",
+      "sha256": "3b50cfde915b3984738169b4beb341e9f6b8062ae4c2076146c5db71c2c05dc7",
+      "role": "room_impulse_response",
+      "filename": "rirs_noises.zip"
+    },
+    "yodas_00000000": {
+      "source_url": "https://huggingface.co/datasets/espnet/yodas/resolve/52c5a1b9730a136bfd7c4513d4962c70d4e50530/data/ko000/audio/00000000.tar.gz",
+      "upstream_revision": "52c5a1b9730a136bfd7c4513d4962c70d4e50530",
+      "size_bytes": 1015535974,
+      "license": "CC-BY-3.0",
+      "sha256": "50a72f7f5e62d7f0b5ed9328160a31ee88011c9ed816c027614840435c88fed7",
+      "role": "korean_negative",
+      "filename": "ko000_00000000.tar.gz"
+    },
+    "yodas_00000002": {
+      "source_url": "https://huggingface.co/datasets/espnet/yodas/resolve/52c5a1b9730a136bfd7c4513d4962c70d4e50530/data/ko000/audio/00000002.tar.gz",
+      "upstream_revision": "52c5a1b9730a136bfd7c4513d4962c70d4e50530",
+      "size_bytes": 1107326045,
+      "license": "CC-BY-3.0",
+      "sha256": "82b25a1d880ef1838b401e818040b722935486bac2deae2a6ee6c463968edd85",
+      "role": "korean_negative",
+      "filename": "ko000_00000002.tar.gz"
+    },
+    "yodas_00000012": {
+      "source_url": "https://huggingface.co/datasets/espnet/yodas/resolve/52c5a1b9730a136bfd7c4513d4962c70d4e50530/data/ko000/audio/00000012.tar.gz",
+      "upstream_revision": "52c5a1b9730a136bfd7c4513d4962c70d4e50530",
+      "size_bytes": 996161104,
+      "license": "CC-BY-3.0",
+      "sha256": "eadc4b82fa82735466801cc2ae28da80bfed90219c04d57c9091cd32fd1811e3",
+      "role": "korean_negative",
+      "filename": "ko000_00000012.tar.gz"
+    },
+    "yodas_00000020": {
+      "source_url": "https://huggingface.co/datasets/espnet/yodas/resolve/52c5a1b9730a136bfd7c4513d4962c70d4e50530/data/ko000/audio/00000020.tar.gz",
+      "upstream_revision": "52c5a1b9730a136bfd7c4513d4962c70d4e50530",
+      "size_bytes": 1003391804,
+      "license": "CC-BY-3.0",
+      "sha256": "b5ad87ffa7e8aadca5832db11b5adb2fcde2dc88a4f2624294c4b07979dbd74a",
+      "role": "korean_negative",
+      "filename": "ko000_00000020.tar.gz"
+    },
+    "yodas_00000026": {
+      "source_url": "https://huggingface.co/datasets/espnet/yodas/resolve/52c5a1b9730a136bfd7c4513d4962c70d4e50530/data/ko000/audio/00000026.tar.gz",
+      "upstream_revision": "52c5a1b9730a136bfd7c4513d4962c70d4e50530",
+      "size_bytes": 1004184319,
+      "license": "CC-BY-3.0",
+      "sha256": "d8b4001884d9ca3f173dd5c0c1e56a6e1f1f9e215a0a7f4af52fa39dba791815",
+      "role": "korean_negative",
+      "filename": "ko000_00000026.tar.gz"
+    },
+    "yodas_00000034": {
+      "source_url": "https://huggingface.co/datasets/espnet/yodas/resolve/52c5a1b9730a136bfd7c4513d4962c70d4e50530/data/ko000/audio/00000034.tar.gz",
+      "upstream_revision": "52c5a1b9730a136bfd7c4513d4962c70d4e50530",
+      "size_bytes": 249901744,
+      "license": "CC-BY-3.0",
+      "sha256": "b0c11ec4ea6c120d20b0a3345dfdc6405147b06071dbb3b1b353786d2c4016ef",
+      "role": "korean_negative",
+      "filename": "ko000_00000034.tar.gz"
+    },
+    "yodas_00000043": {
+      "source_url": "https://huggingface.co/datasets/espnet/yodas/resolve/52c5a1b9730a136bfd7c4513d4962c70d4e50530/data/ko000/audio/00000043.tar.gz",
+      "upstream_revision": "52c5a1b9730a136bfd7c4513d4962c70d4e50530",
+      "size_bytes": 999549950,
+      "license": "CC-BY-3.0",
+      "sha256": "4592445089b2e75acc33309b5bb0f2a1891d14a6b1295935f49a3fb998f7cece",
+      "role": "korean_negative",
+      "filename": "ko000_00000043.tar.gz"
+    },
+    "yodas_00000049": {
+      "source_url": "https://huggingface.co/datasets/espnet/yodas/resolve/52c5a1b9730a136bfd7c4513d4962c70d4e50530/data/ko000/audio/00000049.tar.gz",
+      "upstream_revision": "52c5a1b9730a136bfd7c4513d4962c70d4e50530",
+      "size_bytes": 997629235,
+      "license": "CC-BY-3.0",
+      "sha256": "e88829175a2bd90fae5c79f835e8e0d7f2b2d6a1a79ed082135e3dd5837bc4c3",
+      "role": "korean_negative",
+      "filename": "ko000_00000049.tar.gz"
+    },
+    "yodas_00000055": {
+      "source_url": "https://huggingface.co/datasets/espnet/yodas/resolve/52c5a1b9730a136bfd7c4513d4962c70d4e50530/data/ko000/audio/00000055.tar.gz",
+      "upstream_revision": "52c5a1b9730a136bfd7c4513d4962c70d4e50530",
+      "size_bytes": 976119607,
+      "license": "CC-BY-3.0",
+      "sha256": "3c72248813b0f8c61e89e2d2bb32ba5c1735cd263733e8806c1412acce5732fd",
+      "role": "korean_negative",
+      "filename": "ko000_00000055.tar.gz"
+    },
+    "yodas_00000064": {
+      "source_url": "https://huggingface.co/datasets/espnet/yodas/resolve/52c5a1b9730a136bfd7c4513d4962c70d4e50530/data/ko000/audio/00000064.tar.gz",
+      "upstream_revision": "52c5a1b9730a136bfd7c4513d4962c70d4e50530",
+      "size_bytes": 996470566,
+      "license": "CC-BY-3.0",
+      "sha256": "75adce9350e24a6792a7ac3b499cfa13fd60fdd2480312f9f46220427b9e9d69",
+      "role": "korean_negative",
+      "filename": "ko000_00000064.tar.gz"
+    },
+    "yodas_00000072": {
+      "source_url": "https://huggingface.co/datasets/espnet/yodas/resolve/52c5a1b9730a136bfd7c4513d4962c70d4e50530/data/ko000/audio/00000072.tar.gz",
+      "upstream_revision": "52c5a1b9730a136bfd7c4513d4962c70d4e50530",
+      "size_bytes": 1021693788,
+      "license": "CC-BY-3.0",
+      "sha256": "b6734fba44709d98075d43741a1feacdef087204fc756e75830f131e8339b3f8",
+      "role": "korean_negative",
+      "filename": "ko000_00000072.tar.gz"
+    },
+    "yodas_00000078": {
+      "source_url": "https://huggingface.co/datasets/espnet/yodas/resolve/52c5a1b9730a136bfd7c4513d4962c70d4e50530/data/ko000/audio/00000078.tar.gz",
+      "upstream_revision": "52c5a1b9730a136bfd7c4513d4962c70d4e50530",
+      "size_bytes": 987903184,
+      "license": "CC-BY-3.0",
+      "sha256": "d384ff5c5feb20ac7bcaac888f1695427f3dbb2c09d9d6f4411ddf10727524b9",
+      "role": "korean_negative",
+      "filename": "ko000_00000078.tar.gz"
+    },
+    "yodas_00000085": {
+      "source_url": "https://huggingface.co/datasets/espnet/yodas/resolve/52c5a1b9730a136bfd7c4513d4962c70d4e50530/data/ko000/audio/00000085.tar.gz",
+      "upstream_revision": "52c5a1b9730a136bfd7c4513d4962c70d4e50530",
+      "size_bytes": 1015459474,
+      "license": "CC-BY-3.0",
+      "sha256": "8951b0e2635cea367e42c180798ca3db543ff100c797edddfccd4f913ca19998",
+      "role": "korean_negative",
+      "filename": "ko000_00000085.tar.gz"
+    },
+    "yodas_00000098": {
+      "source_url": "https://huggingface.co/datasets/espnet/yodas/resolve/52c5a1b9730a136bfd7c4513d4962c70d4e50530/data/ko000/audio/00000098.tar.gz",
+      "upstream_revision": "52c5a1b9730a136bfd7c4513d4962c70d4e50530",
+      "size_bytes": 997520157,
+      "license": "CC-BY-3.0",
+      "sha256": "52d42c65830dde90b125a17cf9a359f4926928fd0673dddfe025be85b4c8ef25",
+      "role": "korean_negative",
+      "filename": "ko000_00000098.tar.gz"
+    },
+    "yodas_00000107": {
+      "source_url": "https://huggingface.co/datasets/espnet/yodas/resolve/52c5a1b9730a136bfd7c4513d4962c70d4e50530/data/ko000/audio/00000107.tar.gz",
+      "upstream_revision": "52c5a1b9730a136bfd7c4513d4962c70d4e50530",
+      "size_bytes": 977914684,
+      "license": "CC-BY-3.0",
+      "sha256": "96f604665bbf8c311e89a4da480d3e0deee3c8006bc1912c5053e59178fa5bc8",
+      "role": "korean_negative",
+      "filename": "ko000_00000107.tar.gz"
+    },
+    "yodas_00000114": {
+      "source_url": "https://huggingface.co/datasets/espnet/yodas/resolve/52c5a1b9730a136bfd7c4513d4962c70d4e50530/data/ko000/audio/00000114.tar.gz",
+      "upstream_revision": "52c5a1b9730a136bfd7c4513d4962c70d4e50530",
+      "size_bytes": 984285128,
+      "license": "CC-BY-3.0",
+      "sha256": "7413c5a9c67dda180bde284edd83e280d25cca1ab10202e7e081f1925751f7ec",
+      "role": "korean_negative",
+      "filename": "ko000_00000114.tar.gz"
+    },
+    "yodas_00000120": {
+      "source_url": "https://huggingface.co/datasets/espnet/yodas/resolve/52c5a1b9730a136bfd7c4513d4962c70d4e50530/data/ko000/audio/00000120.tar.gz",
+      "upstream_revision": "52c5a1b9730a136bfd7c4513d4962c70d4e50530",
+      "size_bytes": 994792430,
+      "license": "CC-BY-3.0",
+      "sha256": "0952d4e2fd257961c32219efb96d9fd7a8ea1b77443e0abb29ca64c5c1850d64",
+      "role": "korean_negative",
+      "filename": "ko000_00000120.tar.gz"
+    },
+    "yodas_00000124": {
+      "source_url": "https://huggingface.co/datasets/espnet/yodas/resolve/52c5a1b9730a136bfd7c4513d4962c70d4e50530/data/ko000/audio/00000124.tar.gz",
+      "upstream_revision": "52c5a1b9730a136bfd7c4513d4962c70d4e50530",
+      "size_bytes": 1022500623,
+      "license": "CC-BY-3.0",
+      "sha256": "7126db3d47fe63092561c7eba02daa5b90a25404b6a305812b9ea3652fbc1ecf",
+      "role": "korean_negative",
+      "filename": "ko000_00000124.tar.gz"
+    },
+    "yodas_00000133": {
+      "source_url": "https://huggingface.co/datasets/espnet/yodas/resolve/52c5a1b9730a136bfd7c4513d4962c70d4e50530/data/ko000/audio/00000133.tar.gz",
+      "upstream_revision": "52c5a1b9730a136bfd7c4513d4962c70d4e50530",
+      "size_bytes": 991013785,
+      "license": "CC-BY-3.0",
+      "sha256": "e2e1957eecc926a449854be4aff1cb0c4c8cdf0b0962b526db939398993b8123",
+      "role": "korean_negative",
+      "filename": "ko000_00000133.tar.gz"
+    },
+    "yodas_00000145": {
+      "source_url": "https://huggingface.co/datasets/espnet/yodas/resolve/52c5a1b9730a136bfd7c4513d4962c70d4e50530/data/ko000/audio/00000145.tar.gz",
+      "upstream_revision": "52c5a1b9730a136bfd7c4513d4962c70d4e50530",
+      "size_bytes": 989697952,
+      "license": "CC-BY-3.0",
+      "sha256": "5346c408c311389c3d23246fc097bf6370b3c5d39b34974618b87448d306707e",
+      "role": "korean_negative",
+      "filename": "ko000_00000145.tar.gz"
+    },
+    "yodas_00000146": {
+      "source_url": "https://huggingface.co/datasets/espnet/yodas/resolve/52c5a1b9730a136bfd7c4513d4962c70d4e50530/data/ko000/audio/00000146.tar.gz",
+      "upstream_revision": "52c5a1b9730a136bfd7c4513d4962c70d4e50530",
+      "size_bytes": 1004560944,
+      "license": "CC-BY-3.0",
+      "sha256": "501a0e3b2606a836bec746d7d4ae02a0774e19ff83a638888dd88faa5e12f08d",
+      "role": "korean_negative",
+      "filename": "ko000_00000146.tar.gz"
+    },
+    "yodas_00000154": {
+      "source_url": "https://huggingface.co/datasets/espnet/yodas/resolve/52c5a1b9730a136bfd7c4513d4962c70d4e50530/data/ko000/audio/00000154.tar.gz",
+      "upstream_revision": "52c5a1b9730a136bfd7c4513d4962c70d4e50530",
+      "size_bytes": 1006021251,
+      "license": "CC-BY-3.0",
+      "sha256": "a812e058344d71f9e30e0376ebdf689c61874f9f7a371b3fcd0f17f745115e0c",
+      "role": "korean_negative",
+      "filename": "ko000_00000154.tar.gz"
+    },
+    "yodas_00000163": {
+      "source_url": "https://huggingface.co/datasets/espnet/yodas/resolve/52c5a1b9730a136bfd7c4513d4962c70d4e50530/data/ko000/audio/00000163.tar.gz",
+      "upstream_revision": "52c5a1b9730a136bfd7c4513d4962c70d4e50530",
+      "size_bytes": 1007000408,
+      "license": "CC-BY-3.0",
+      "sha256": "8acff1584a94bf5fa9046b06fff771f83ae525ef51ea3f012b245b12a0dc8693",
+      "role": "korean_negative",
+      "filename": "ko000_00000163.tar.gz"
+    },
+    "yodas_00000171": {
+      "source_url": "https://huggingface.co/datasets/espnet/yodas/resolve/52c5a1b9730a136bfd7c4513d4962c70d4e50530/data/ko000/audio/00000171.tar.gz",
+      "upstream_revision": "52c5a1b9730a136bfd7c4513d4962c70d4e50530",
+      "size_bytes": 1001440918,
+      "license": "CC-BY-3.0",
+      "sha256": "1c0c2b0383b9eacb7788fa91d2d40edeced4e9d435fe794a13e4173c0dc28fb6",
+      "role": "korean_negative",
+      "filename": "ko000_00000171.tar.gz"
+    },
+    "yodas_00000182": {
+      "source_url": "https://huggingface.co/datasets/espnet/yodas/resolve/52c5a1b9730a136bfd7c4513d4962c70d4e50530/data/ko000/audio/00000182.tar.gz",
+      "upstream_revision": "52c5a1b9730a136bfd7c4513d4962c70d4e50530",
+      "size_bytes": 1024237850,
+      "license": "CC-BY-3.0",
+      "sha256": "41acc5aa61c017e0775a731df1ce2902ac16ab68b10e3b719802882e22e4395c",
+      "role": "korean_negative",
+      "filename": "ko000_00000182.tar.gz"
+    },
+    "yodas_00000187": {
+      "source_url": "https://huggingface.co/datasets/espnet/yodas/resolve/52c5a1b9730a136bfd7c4513d4962c70d4e50530/data/ko000/audio/00000187.tar.gz",
+      "upstream_revision": "52c5a1b9730a136bfd7c4513d4962c70d4e50530",
+      "size_bytes": 1065810284,
+      "license": "CC-BY-3.0",
+      "sha256": "69b552dd69918ceb4ed4b3b974c95a874117ff3a0ef6fb7396bacab8fa8c3fd1",
+      "role": "korean_negative",
+      "filename": "ko000_00000187.tar.gz"
+    },
+    "yodas_00000196": {
+      "source_url": "https://huggingface.co/datasets/espnet/yodas/resolve/52c5a1b9730a136bfd7c4513d4962c70d4e50530/data/ko000/audio/00000196.tar.gz",
+      "upstream_revision": "52c5a1b9730a136bfd7c4513d4962c70d4e50530",
+      "size_bytes": 998881323,
+      "license": "CC-BY-3.0",
+      "sha256": "fe2606d98c7026148a1ade2510c1fb0d903ca5889dd1ce46e1dfff1c8b3db548",
+      "role": "korean_negative",
+      "filename": "ko000_00000196.tar.gz"
+    },
+    "yodas_00000202": {
+      "source_url": "https://huggingface.co/datasets/espnet/yodas/resolve/52c5a1b9730a136bfd7c4513d4962c70d4e50530/data/ko000/audio/00000202.tar.gz",
+      "upstream_revision": "52c5a1b9730a136bfd7c4513d4962c70d4e50530",
+      "size_bytes": 984897219,
+      "license": "CC-BY-3.0",
+      "sha256": "ba3d66455f27c2e17edb8c502dcf55352458e56545a5dc32f3afbfcb4909f5ad",
+      "role": "korean_negative",
+      "filename": "ko000_00000202.tar.gz"
+    },
+    "yodas_00000209": {
+      "source_url": "https://huggingface.co/datasets/espnet/yodas/resolve/52c5a1b9730a136bfd7c4513d4962c70d4e50530/data/ko000/audio/00000209.tar.gz",
+      "upstream_revision": "52c5a1b9730a136bfd7c4513d4962c70d4e50530",
+      "size_bytes": 1007300318,
+      "license": "CC-BY-3.0",
+      "sha256": "8a704abc2a174b60722e2ac1c509bf4a088e2b70668883754e6d68c0850b189c",
+      "role": "korean_negative",
+      "filename": "ko000_00000209.tar.gz"
+    },
+    "yodas_00000219": {
+      "source_url": "https://huggingface.co/datasets/espnet/yodas/resolve/52c5a1b9730a136bfd7c4513d4962c70d4e50530/data/ko000/audio/00000219.tar.gz",
+      "upstream_revision": "52c5a1b9730a136bfd7c4513d4962c70d4e50530",
+      "size_bytes": 1004192108,
+      "license": "CC-BY-3.0",
+      "sha256": "737858bcb616093bc4248a9df373237760fa415b75aef1db6a30cabcdf6d84ac",
+      "role": "korean_negative",
+      "filename": "ko000_00000219.tar.gz"
+    }
+  },
+  "additional_sources": {
+    "dns": {
+      "source_url": "https://github.com/microsoft/DNS-Challenge",
+      "revision": "70f19285c36cca4df2338f9248775ddc50980c6b",
+      "role": "environment_noise",
+      "license": "Per-file DNS/Freesound/AudioSet notices; preserve source attribution"
+    },
+    "seoul": {
+      "source_url": "https://www.openslr.org/113/",
+      "role": "held_out_korean_conversation",
+      "license": "CC-BY-NC-2.0"
+    }
+  },
+  "note": "No data is bundled or automatically admitted. Names/nominal hours are not verified unique duration. See docs/DATASETS.md."
+}

@@ -1,0 +1,16 @@
+.venv*/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+shared/
+projects/
+storage/
+.test-cache/
+.test-tmp/
+*.part
+.env
+.env.*
+test-results.xml

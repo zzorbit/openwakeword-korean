@@ -1,0 +1,56 @@
+{
+  "freesound:323547": {
+    "source_id": "freesound:323547",
+    "url": null,
+    "source_url": "https://media.githubusercontent.com/media/microsoft/DNS-Challenge/70f19285c36cca4df2338f9248775ddc50980c6b/datasets/noise/door_Freesound_validated_323547_0.wav",
+    "license": "CC0-1.0 original Freesound selection per DNS README",
+    "notice_paths": [],
+    "canonical_speaker_id": null
+  },
+  "musan:music-jamendo-0047": {
+    "source_id": "musan:music-jamendo-0047",
+    "url": null,
+    "source_url": null,
+    "license": "CC-BY-4.0 corpus; original per-source notices retained",
+    "notice_paths": [
+      "sources/musan/music/jamendo/ANNOTATIONS",
+      "sources/musan/music/jamendo/LICENSE"
+    ],
+    "canonical_speaker_id": null
+  },
+  "openslr113:recording:s15m22m2": {
+    "source_id": "openslr113:recording:s15m22m2",
+    "url": "https://openslr.org/resources/113/sound.tgz",
+    "source_url": null,
+    "license": "CC-BY-NC-2.0 per OpenSLR113",
+    "notice_paths": null,
+    "canonical_speaker_id": "openslr113:speaker:s15"
+  },
+  "freesound:264156": {
+    "source_id": "freesound:264156",
+    "url": null,
+    "source_url": "https://media.githubusercontent.com/media/microsoft/DNS-Challenge/70f19285c36cca4df2338f9248775ddc50980c6b/datasets/noise/squeak_squeakyChair_Freesound_validated_264156_0.wav",
+    "license": "CC0-1.0 original Freesound selection per DNS README",
+    "notice_paths": [],
+    "canonical_speaker_id": null
+  },
+  "musan:music-fma-0113": {
+    "source_id": "musan:music-fma-0113",
+    "url": null,
+    "source_url": null,
+    "license": "CC-BY-4.0 corpus; original per-source notices retained",
+    "notice_paths": [
+      "sources/musan/music/fma/ANNOTATIONS",
+      "sources/musan/music/fma/LICENSE"
+    ],
+    "canonical_speaker_id": null
+  },
+  "openslr113:recording:s09f17f1": {
+    "source_id": "openslr113:recording:s09f17f1",
+    "url": "https://openslr.org/resources/113/sound.tgz",
+    "source_url": null,
+    "license": "CC-BY-NC-2.0 per OpenSLR113",
+    "notice_paths": null,
+    "canonical_speaker_id": "openslr113:speaker:s09"
+  }
+}

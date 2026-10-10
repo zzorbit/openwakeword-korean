@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "wakeword": "춘식아",
+  "id": "chunsik_cnn128_R5_mean_20261009",
+  "members": [
+    {
+      "path": "models/member1_seed20260928.onnx",
+      "sha256": "88a86dfdde56ed13970a48369e1ac98c68c03c23d59292c017787cbbbf0b5cfd",
+      "seed": 20260928
+    },
+    {
+      "path": "models/member2_seed20260929.onnx",
+      "sha256": "81e12dc1a06f79d7e216ff2f14f037d27aa7662cae4f762ca026e409214ba135",
+      "seed": 20260929
+    },
+    {
+      "path": "models/member3_seed20260930.onnx",
+      "sha256": "80c82608217629cda5c0f52007e4e5337a92af1b64fca9b2ded414358b7aafc5",
+      "seed": 20260930
+    }
+  ],
+  "frontend": [
+    {
+      "path": "frontend/melspectrogram.onnx",
+      "sha256": "ba2b0e0f8b7b875369a2c89cb13360ff53bac436f2895cced9f479fa65eb176f"
+    },
+    {
+      "path": "frontend/embedding_model.onnx",
+      "sha256": "70d164290c1d095d1d4ee149bc5e00543250a7316b59f31d056cff7bd3075c1f"
+    }
+  ],
+  "aggregation": "ordered_float64_mean_to_float32",
+  "runtime": {
+    "sample_rate": 16000,
+    "frame_samples": 1280,
+    "consecutive_frames": 2,
+    "warmup_s": 2.0,
+    "cooldown_s": 1.0,
+    "call_postroll_s": 0.5,
+    "tail_policy": "drop_partial_frame",
+    "vad_enabled": false,
+    "noise_suppression_enabled": false,
+    "threshold": 0.9862500429153442
+  },
+  "training": {
+    "architecture": "cnn128",
+    "rounds": 5,
+    "originals": 100000,
+    "updates_per_member": 50000,
+    "batch": {
+      "generic_negative": 768,
+      "korean_negative": 256,
+      "positive": 50
+    },
+    "optimizer": "AdamW",
+    "lr": 0.0001,
+    "weight_decay": 0.01,
+    "dropout": 0.1,
+    "positive_loss_weight": 1,
+    "schedule": "cosine_with_2percent_warmup"
+  },
+  "evidence": {
+    "original_manifest_sha256": "14522fa14510495c424cf9efd211393280381a4c95fc33047378dff3dc991703",
+    "source_package": "artifacts/selected_fixed_data_ensemble_20261009_v1",
+    "CPU_ONNX_reference": true,
+    "actual_same_seed_reproduction_verified": true,
+    "independent_final_or_population_verified": false
+  },
+  "redistribution_license": "See MODEL_CARD.md; no blanket commercial permission is asserted."
+}

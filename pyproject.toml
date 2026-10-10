@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=78", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "korean-openwakeword"
+version = "0.3.0"
+description = "Reproducible Korean wakeword training, evaluation and ONNX inference"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+requires-python = ">=3.10,<3.14"
+dependencies = ["numpy>=1.26,<3", "scipy>=1.12", "soundfile>=0.12", "onnxruntime>=1.18", "requests>=2.32", "tqdm>=4.66", "scikit-learn>=1.4"]
+
+[project.optional-dependencies]
+train = ["torch>=2.8,<2.9", "onnx>=1.16"]
+tts = ["qwen-tts==0.1.1"]
+dev = ["pytest>=8", "build>=1.2"]
+
+[project.scripts]
+koww = "korean_openwakeword.cli:main"
+
+[project.urls]
+Repository = "https://github.com/zzorbit/openwakeword-korean"
+Issues = "https://github.com/zzorbit/openwakeword-korean/issues"
+
+[tool.setuptools]
+packages = ["korean_openwakeword"]
+include-package-data = false
+
+[tool.setuptools.package-data]
+korean_openwakeword = ["resources/*.json", "resources/*.html", "resources/*.js", "resources/*.css", "resources/*.txt", "resources/sample_chunsik/*.json", "resources/sample_chunsik/*.md", "resources/sample_chunsik/licenses/*.txt", "resources/sample_chunsik/models/*.onnx", "resources/sample_chunsik/frontend/*.onnx", "resources/sample_chunsik/audio/*.wav"]
