@@ -1,6 +1,15 @@
 # 코드·모델·음원 출처와 이용조건
 
-새 라이브러리 소스는 [Apache-2.0](LICENSE)으로 제공한다. **이 코드 라이선스가 동봉 모델·음원·학습 데이터 전체의 이용조건을 대체하지 않는다.** 대규모 원시 데이터는 배포하지 않고 외부 계정 정보·개인 음성도 동봉하지 않는다. 배포 대상은 GitHub 비공개 저장소이며 PyPI에는 게시하지 않는다.
+이 라이브러리의 소스 코드는 [Apache-2.0](LICENSE)으로 제공합니다. **모델·음원·학습 데이터는 각각의 출처 조건을 확인해야 합니다.**
+
+| 사용할 대상 | 확인할 문서 |
+| --- | --- |
+| 라이브러리 소스 코드 | [LICENSE](LICENSE) |
+| 제공하는 ‘춘식아’ 모델 | [모델 설명서](korean_openwakeword/resources/sample_chunsik/MODEL_CARD.md)와 아래 학습 자료 출처 |
+| 동봉 평가 오디오 | 아래 음원별 출처와 예시 모델 폴더의 원문 라이선스 |
+| 직접 내려받을 학습 자료 | [데이터 준비 안내](docs/DATASETS.md)와 제공자의 이용조건 |
+
+일부 동봉 음원에는 비상업 조건이 있습니다. 코드 라이선스를 근거로 모델·음원 전체가 상업 이용 가능하다고 판단하지 않습니다. 대규모 원시 데이터와 생성용 Qwen 가중치는 함께 배포하지 않습니다.
 
 ## openWakeWord와 공유 모델
 
@@ -11,8 +20,8 @@
 ## Qwen·학습 입력·예시 모델
 
 - [Qwen3-TTS VoiceDesign](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign), [Base](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base): 모델 카드와 상위 라이선스를 따른다. 생성용 가중치는 wheel에 넣지 않는다. 참조는 합성 음성만 사용한다.
-- Generic feature: [davidscripka/openwakeword_features](https://huggingface.co/datasets/davidscripka/openwakeword_features), 고정 revision과 전체 파일 해시로 재사용한다. ACAV 기반 제공자 데이터의 명목 시간·행별 출처 한계를 metadata에 남긴다. 전체 파일은 동봉하지 않는다.
-- 한국어 학습 Negative: [ESPnet YODAS](https://huggingface.co/datasets/espnet/yodas)의 ko000 분할(제공자 CC BY 3.0)과 [Zeroth Korean / OpenSLR40](https://www.openslr.org/40/)(CC BY 4.0). 원시 음성은 동봉하지 않으며 제공자의 원본 attribution을 보존한다. 실제 다운로드 pin과 구체적인 재사용 절차는 [DATASETS.md](docs/DATASETS.md)와 `resources/public_datasets.json`에 있다.
+- Generic feature: [davidscripka/openwakeword_features](https://huggingface.co/datasets/davidscripka/openwakeword_features), 고정 revision과 전체 파일 해시로 재사용한다. 제공자에 기록된 이용조건은 CC BY-NC-SA 4.0이다. ACAV 기반 제공자 데이터의 명목 시간·행별 출처 한계를 metadata에 남긴다. 전체 파일은 동봉하지 않는다.
+- 한국어 학습 Negative: [ESPnet YODAS](https://huggingface.co/datasets/espnet/yodas)의 ko000 분할(제공자 CC BY 3.0)과 [Zeroth Korean / OpenSLR40](https://www.openslr.org/40/)(CC BY 4.0). 원시 음성은 동봉하지 않으며 제공자의 원본 attribution을 보존한다. 실제 다운로드 pin과 구체적인 재사용 절차는 [DATASETS.md](docs/DATASETS.md)와 [공개 자료 목록](korean_openwakeword/resources/public_datasets.json)에 있다.
 - 증강 입력: [MUSAN](https://www.openslr.org/17/), [DNS-Challenge](https://github.com/microsoft/DNS-Challenge), [RIRS_NOISES](https://www.openslr.org/28/). corpus 설명과 각 원출처 notice를 함께 보존하며 모두 한 가지 라이선스로 간주하지 않는다.
 - 춘식아의 세 CNN 판별기는 이 프로젝트에서 학습한 모델이다. 코드 Apache 조건만으로 원시 공개 데이터와 학습 모델의 모든 상업 이용 조건이 해결되었다고 주장하지 않는다. 출처별 조건을 유지하며 공개 배포/상업 적용 시 별도 모델 조건을 확인한다. [모델 카드](korean_openwakeword/resources/sample_chunsik/MODEL_CARD.md)에 성능 범위와 재현을 명시한다.
 

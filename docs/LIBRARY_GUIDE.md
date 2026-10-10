@@ -1,122 +1,133 @@
-# 다른 한국어 호출어를 학습하는 방법
+# 한국어 호출어 학습 가이드
 
-전체 기준은 [plan.md](../plan.md), 시작값은 [default_profile.json](../korean_openwakeword/resources/default_profile.json)이다. 아래 예시는 `보라야`다. 명령은 저장소 루트에서 실행한다. `.venv`를 활성화하지 않았으면 `koww` 대신 `.venv\Scripts\python.exe -m korean_openwakeword`를 사용한다.
+이 가이드는 **새 호출어를 생성하고 모델을 학습한 뒤, 평가 결과를 사이트로 확인하는 과정**을 안내합니다. 예시는 ‘보라야’이며, 명령은 저장소 폴더에서 실행합니다.
 
-## 프로젝트·자원
+먼저 [README의 설치 절차](../README.md#설치)에 따라 생성·학습 기능까지 설치하세요. 아래 명령은 Windows PowerShell 기준입니다. 창을 다시 열었다면 다음을 실행합니다.
 
-HDD 작업 폴더에서 `. .\scripts\Use-ProjectStorage.ps1`을 먼저 실행하면 pip·모델 다운로드·임시 파일도 그 폴더에 저장한다. 새 `koww` API의 기본 캐시는 각 프로젝트의 `cache`이며 명시적 공유 HDD 캐시도 지원한다. `koww storage --project projects/bora/project.json`으로 위치를 확인한다. [저장 정책](STORAGE_POLICY.md)을 따른다. `.codex`에 대용량 자료를 저장하지 않는다.
+```powershell
+. .\scripts\Use-ProjectStorage.ps1
+.venv\Scripts\Activate.ps1
+```
+
+## 시작 전에 알아둘 용어
+
+| 용어 | 의미 |
+| --- | --- |
+| Positive | 인식해야 할 호출어 음성 |
+| Negative | 호출어가 아닌 대화·음악·환경음 |
+| 참조 음성 | Qwen TTS가 음색을 따라 생성할 때 사용하는 합성 음성 |
+| Feature(특징) | 음성을 모델이 학습할 수 있는 숫자 배열로 바꾼 자료 |
+| 개발용 평가(Development) | 모델과 감지 설정을 고를 때 사용하는 평가 |
+| 최종 평가(Final) | 모델과 설정을 확정한 뒤 별도 자료로 확인하는 평가 |
+
+**호출어는 단독으로 생성**합니다. 뒤에 명령을 붙이지 않으며, 개인의 실제 호출 녹음은 학습·설정 조정·TTS 참조에 사용하지 않습니다.
+
+## 1. 프로젝트 만들기
 
 ```powershell
 koww init --wakeword 보라야 --id bora --output projects/bora --interactive
 koww doctor
 koww prepare-frontend --project projects/bora/project.json
-koww benchmark --output projects/bora/reports/resources.json
+koww storage --project projects/bora/project.json
 ```
 
-**처음 선택할 것은 작업량 세 가지**다. 증강 전 TTS 원본 수 N, 원본당 증강 횟수 R1/R3/R5, 모델당 optimizer update 수 U를 선택한다. 기존 제안은 100,000 / R5 / 50,000이며 강제값이 아니다. Enter로 유지하거나 원본·update를 직접 입력한다. CNN128·AdamW·학습률·배분은 그대로 유지하고 세부 설정을 열 때만 바꾼다. 실제 N×R 수, Positive feature payload 용량, 모델 수와 U×모델 수 총량을 `reports/setup_summary.json`에 저장한다. 시간은 그 컴퓨터에서 측정하기 전 확정하지 않는다.
+첫 명령에서 **TTS 원본 수 / 원본당 증강 횟수 / 모델당 학습량**을 선택합니다. 권장 시작값은 100,000개 / R5 / 50,000회이며 직접 변경할 수 있습니다. 기본 모델은 3개이므로 총 학습량은 모델당 학습량의 3배입니다.
+
+설정은 `project.json`, 예상 특징 수·용량·학습량은 `reports/setup_summary.json`에 저장됩니다. 예상 용량에는 호출어 특징 배열만 포함되므로 원본 음원·비호출 자료·평가 오디오 공간도 확보하세요. `init`은 설정만 만들고 학습을 시작하지 않습니다.
+
+컴퓨터의 CPU·GPU 학습 속도를 간단히 비교하려면 다음을 실행합니다.
 
 ```powershell
-koww init --wakeword 보라야 --id bora --output projects/bora_small --non-interactive --originals 20000 --rounds 3 --updates 20000
-koww init --wakeword 다솜아 --id dasom --output projects/dasom --interactive --advanced
-koww settings --project projects/bora_small/project.json
-koww settings --project projects/bora_small/project.json --advanced
+koww benchmark --output projects/bora/reports/cpu_gpu.json
 ```
 
-터미널의 기본 `init`은 선택 화면을 연다. 파이프/비대화형 입력은 질문 없이 값과 기본값을 저장한다. 선택 화면을 강제로 열려면 `--interactive`, 자동화는 `--non-interactive`다. `--advanced`는 대화형 세부 화면이며 자동화의 세부 변경은 `--architecture cnn64 --models 1 --optimizer AdamW --learning-rate 0.0001`처럼 명시한다. 지원 CNN 폭·MLP 구조, optimizer·dropout·WD·Positive weight·schedule·device 등을 변경할 수 있다. 상세 seed·backend·배분은 `project.json`에 있으며 지원 밖 배분/VAD/NS/층 구조는 별도 구현과 검증이 필요하다.
+이 결과는 짧은 학습 연산의 비교입니다. 다운로드나 전체 음성 생성 시간까지 나타내지는 않습니다. 큰 작업은 대표 자료의 실제 처리 속도와 메모리 사용량도 확인하세요.
 
-U를 바꾸면 기본 horizon=U / warmup=2% U / checkpoint=약20%·40%·100% U가 된다. 같은 horizon에서 학습량만 비교하려면 `--schedule-horizon 50000` 등을 명시한다. U는 epoch나 feature 수가 아니라 **모델 한 개의 optimizer 갱신 수**다. 기본 세 모델은 같은 횟수로 각각 독립 학습한다. 예를 들어 N20k/R3/U20k는 60k Positive feature, 세 모델 합계60k update이고 feature payload 약0.343GiB다. WAV·Negative·journal·checkpoint 비용은 별도다. 배치당 Positive50·Negative1024 복원 추출이므로 원본/feature가 모두 똑같이 노출되는 것은 아니다.
+## 2. 합성 음색 준비·검수
 
-기존 설정 변경은 원본 옆의 **새 JSON snapshot**에 저장한다:
+처음에는 Qwen TTS로 참조 음성을 만듭니다. 기본 음색 후보는 학습용 100개, 개발용 10개, 최종 평가용 10개로 분리되어 있습니다. 후보 개수만으로 실제 음색 다양성이 보장되지는 않으므로 자연스러운 한국어인지, 지나치게 비슷한 음색이 반복되는지 들어봅니다.
 
-```powershell
-koww configure --project projects/bora/project.json --output projects/bora/project_R1.json --non-interactive --rounds 1
-koww configure --project projects/bora/project.json --output projects/bora/project_20k_updates.json --non-interactive --updates 20000 --schedule-horizon 50000
-koww configure --project projects/bora/project.json --output projects/bora/project_custom.json --interactive --advanced
-```
-
-같은 이름을 덮어쓰거나 다른 폴더로 상대 경로를 바꾸는 것은 거부한다. N/R 변경은 별도의 Positive cache 경로로 연결하고 U/모델 수가 달라진 기본 run 경로도 구분한다. 추가 세부 변경은 명시적 `--output` run을 쓴다. 이미 실행 중인 작업·기존 모델·receipt를 고치지 않는다. Final 동결 후 변경은 새 프로젝트에서 한다. 작은 작업량도 검수·출처·split·Negative 요구를 통과하면 정식 실험할 수 있으나 성능 통과·Final 완료로 자동 간주하지 않는다.
-
-모든 기본 데이터 경로는 `project.json` 기준 상대 경로다. 재사용하는 대규모 불변 자료의 외부 절대 경로도 허용하되 모델 묶음·결과 사이트에는 상대 경로로 복사한다. 예시 모델을 새 단어의 모델로 바꾸어 쓰지 않는다. 학습 중 config를 수정하지 않는다.
-
-`benchmark`는 고정 CNN128 batch의 CPU/GPU 처리량과 초기 logits 차이를 측정한다. 전체 디스크 IO·전송·학습 결과 동등성을 증명하는 시험은 아니다. 큰 작업은 대표 실제 입력의 feature qualification·cache 적재 시간·VRAM/RAM·초기 실제 update throughput도 확인한다. CUDA 학습과 CPU 추론은 별도 기준 경로다.
-
-## 합성 참조 → 새 호출어 파일럿 → 원본 생성
-
-`voices.json`에 Train100 / Validation10 / Final10개의 **후보** 계열을 미리 분리한다. 서로 다른 ID만으로 음향 다양성이 입증되지는 않는다. 생성 스타일·속도·억양의 실제 결과를 확인한다. Qwen 모델 revision은 초기 프로파일에 고정되어 있다. 모델을 바꾸면 별도 정책을 검증한다.
-
-이미 이 라이브러리로 승인한 합성 뱅크가 있으면 같은 split의 참조만 재사용한다. 이전 프로젝트의 해시와 청취 evidence가 필요하고 사람 참조는 거부한다.
-
-```powershell
-koww import-references --project projects/bora/project.json --source-project projects/previous/project.json --split train
-koww import-references --project projects/bora/project.json --source-project projects/previous/project.json --split validation
-```
-
-새 뱅크가 필요하면:
+학습용 참조를 생성하고 검수 화면을 엽니다.
 
 ```powershell
 koww references --project projects/bora/project.json --split train
 koww review --project projects/bora/project.json --queue projects/bora/data/references/train/references.jsonl --kind references --port 8790
 ```
 
-검수 서버는 현재 프로세스에서 실행한다. 브라우저에서 `http://127.0.0.1:8790/`를 연다. 생성된 전체 큐를 연속으로 듣고 문제 번호만 폐기/재검수한다. 끝까지 재생된 항목만 자동 보존되며 **검수 완료·저장**이 서버 파일에 직접 반영된다. 큐를 합쳐 제공하려면 JSONL들을 연결한 별도 큐를 만들 수 있고 각 WAV path는 프로젝트 기준을 유지한다. 이미 만든 큐를 임의 세션으로 잘게 나누지 않는다. 서버 종료 후 같은 명령으로 다시 열 수 있다.
+브라우저에서 [http://127.0.0.1:8790/](http://127.0.0.1:8790/)을 열고 연속 듣기를 시작하세요. 끝까지 들은 항목은 자동 보존됩니다. 문제가 있는 번호만 폐기·재검수로 바꾸고 **검수 완료·저장**을 누릅니다. 결과는 서버에 바로 저장되므로 채팅에 복사할 필요가 없습니다.
 
-Validation 참조도 같은 방식으로 별도 split에서 생성·승인한다. Final 참조는 후보 metadata만 남기고 동결 전 생성·청취하지 않는다. 새 호출어 파일럿:
+저장 후 터미널에서 **Ctrl+C로 검수 서버를 종료**하고 다음 단계로 진행하세요. 서버를 다시 열 때는 같은 `review` 명령을 실행합니다.
+
+개발용 참조도 별도로 생성·검수합니다.
+
+```powershell
+koww references --project projects/bora/project.json --split validation
+koww review --project projects/bora/project.json --queue projects/bora/data/references/validation/references.jsonl --kind references --port 8790
+```
+
+**최종 평가용 참조는 8단계의 모델·설정 확정 후에 생성**합니다. 이미 승인한 합성 참조를 다른 프로젝트에서 가져오는 방법은 아래의 추가 설정을 참고하세요.
+
+## 3. 호출어를 소량 생성해 발음 확인하기
 
 ```powershell
 koww generate --project projects/bora/project.json --pilot --limit 24
 koww review --project projects/bora/project.json --queue projects/bora/data/pilot/train/candidates.jsonl --kind pilot --port 8790
 ```
 
-clone의 발성은 승인한 참조를 따른다. `--method design`은 지원되는 다른 생성 방식이며 pilot과 production에서 같은 방법을 써야 한다. 파일럿 예외가 있으면 자동으로 기존 정책을 승인하지 않는다. 생성 방식/참조/Qwen 설정을 수정할 경우 새 프로젝트 또는 버전 output을 만들고 해당 변경만 다시 확인한다.
+파일럿에서는 **호출어가 명확히 들리고, 다른 말이 붙지 않는지** 확인합니다. 문제가 있으면 대량 생성 전에 참조 음색이나 생성 방식을 수정하고 변경한 부분을 다시 확인하세요. 폐기·재검수 항목이 남은 생성 방식을 자동 승인하지 않습니다.
 
-승인 후:
+이미 생성한 검수 목록은 한 번에 제공합니다. 새 음색이나 생성 방식이 바뀌었을 때 필요한 대표 검수만 추가합니다.
+
+## 4. 선택한 수량의 호출어 생성하기
+
+파일럿 승인 후 실행합니다.
 
 ```powershell
 koww generate --project projects/bora/project.json --split train
 koww generate --project projects/bora/project.json --split validation
+koww status --project projects/bora/project.json
 ```
 
-`--limit`는 추가 수량이 아니라 해당 실행의 총 slot 목표다. 같은 명령 재실행은 계약이 같을 때 성공 slot을 재사용한다. 슬롯당 최대 3회 기술 QC 재시도 후 문제를 남긴다. `summary.json`의 `full_target_reached`, 시도·기술 통과·정책 승인 수량을 확인한다. 무음/깨짐/길이/중복/전체 호출 창 적합성을 검사하며 독립 STT는 실행하지 않는다. 생성 정책 승인은 개별 100k의 사람 청취 완료가 아니다. 생성 prompt와 reference는 호출어 뒤 명령을 붙이지 않는다.
+학습용은 처음 선택한 수량, 개발용은 기본 약 5,000개를 생성합니다. 무음·깨짐·길이·중복 등을 자동 검사하며 **음원마다 별도로 음성 인식(STT)을 실행하지 않습니다.** 생성 방식에 대한 대표 청취와 대량 생성 결과의 기술 검사는 구분합니다.
 
-## 공개 오디오 manifest와 내용 승인
+각 생성 폴더의 `summary.json`에서 `target`(목표 수), `technical_pass`(자동 검사 통과 수), `full_target_reached`(목표 달성 여부)를 확인하세요. 실패한 항목은 정해진 재시도 후 기록에 남습니다.
 
-먼저 [데이터 다운로드 안내](DATASETS.md)의 공개 자료를 내려받고 출처·라이선스·분할을 기록한다. 공개 한국어 대화·방송/보컬 자료는 한국어 Negative에 우선 넣고, 환경음은 noise 재료로 관리한다. 프로젝트가 원시 데이터 전체를 함께 배포하지 않는다. 이미 보유한 공개 자료는 복사하지 않아도 된다.
+중단된 생성은 같은 명령을 다시 실행하면 검증된 완료 항목을 재사용합니다. `--limit`는 추가 생성 수가 아니라 그 실행의 총 목표 수입니다.
 
-JSONL은 **한 줄에 하나의 JSON object**다. Negative 예시:
+## 5. 비호출·소음·잔향 자료 연결하기
 
-```json
-{"sample_id":"ko_0001","source_id":"corpus:recording_0001","canonical_source_id":"corpus:recording_0001","canonical_speaker_id":"corpus:speaker_001","split":"train","path":"data/negative/source_0001.wav","sha256":"실제_파일_SHA256","provenance":"public_dataset","source_url":"https://원본_출처","license":"원본_이용조건","category":"competing_speech","language":"Korean","speech":true,"admission":{"path":"review/evidence/content_admission_실제ID.json","sha256":"실제_승인파일_SHA256"}}
+[데이터 준비 안내](DATASETS.md)에 따라 공개 자료를 내려받습니다. 다운로드만으로 학습용 자료 목록이 만들어지지는 않습니다. 사용할 원본을 선택하고 출처·이용조건·학습/평가 구분·검수 결과를 기록해야 합니다.
+
+[자료 목록 작성법](DATA_FORMAT.md)의 예시를 따라 다음 파일을 준비합니다.
+
+| 프로젝트 파일 | 넣을 자료 |
+| --- | --- |
+| `data/negative/korean.jsonl` | 학습용 한국어 중심 비호출 음성 |
+| `data/materials/noise.jsonl` | 학습용 환경음·음악·겹치는 대화 |
+| `data/materials/rir.jsonl` | 학습용 잔향 자료 |
+| `data/materials/validation_noise.jsonl` | 개발용 평가의 세 종류 배경음 |
+| `data/materials/final_noise.jsonl` | 최종 평가용으로 따로 분리한 배경음 |
+
+공개 일반 비호출 특징 파일(Generic)을 쓴다면 다운로드한 파일을 연결합니다.
+
+```powershell
+koww import-generic --project projects/bora/project.json --features shared/openwakeword_features_ACAV100M_2000_hrs_16bit.npy --output projects/bora/features/generic_negative
 ```
 
-noise에도 같은 출처 필드를 쓰고 category는 `environment`, `music`, `competing_speech`다. RIR은 `rir`, 필요하면 `canonical_room_id`를 추가한다. noise/RIR은 훈련 split만 train material manifest에 넣는다. 별도의 `noise_validation` / `noise_final` manifest에는 각 held-out split을 사용한다. 한 원본을 잘라 다른 split에 넣거나 SHA만 다르다고 별개 원본으로 취급하지 않는다.
+이 파일은 약 17.28GB이며 처음 연결할 때 전체 파일을 검사합니다. 원본 WAV가 없으므로 이 자료에 소음을 추가했다고 기록하지 않습니다.
 
-대표 내용 검수·공개 metadata를 바탕으로 다음 형태의 승인 근거가 필요하다:
-
-```json
-{"state":"accepted","content_review":"accepted","accepted_source_sha256":["검증된_원본_SHA256"],"evidence":"검수/출처_근거","scope":"공개 metadata와 대표 내용 검사; 전수 전사 아님"}
-```
-
-실제 승인 전에 이 예시를 accepted 결과로 복사하지 않는다. `koww review --kind content --queue ...`도 지원한다. 대표 preview WAV를 검수하면 queue row의 `reviewed_source:{path,sha256}`로 원본을 묶는다. 원본 전체를 다시 STT하거나 모든 window를 사람이 듣지 않는다. 서버가 반환하는 `admission`의 **불변 evidence 경로와 해시**를 해당 원본 manifest에 넣는다. `review/content_admission.json`은 최신 화면 요약이며 다음 검수에서 바뀔 수 있으므로 새 manifest는 여기에 묶지 않는다. 폐기한 원본은 학습 manifest에서 제거한다. Positive 생성 정책도 불변 snapshot을 사용하므로 Validation/Final 참조 승인으로 이전 학습 자료가 무효화되지 않는다.
+한국어 원본은 학습할 2초 구간 목록으로 바꿉니다. 음원 자체를 구간마다 복사하지 않습니다.
 
 ```powershell
 koww audit --project projects/bora/project.json
 koww windows --project projects/bora/project.json --pool korean_negative --output projects/bora/data/negative/korean_windows.jsonl
 ```
 
-생성된 window manifest로 `project.json`의 `manifests.korean_negative`를 바꾼다. 파일은 그대로 두고 구간만 지정한다. Generic 파형을 쓰면 동일 방법으로 고정 window를 만든다. 순수 환경음 Negative는 speech=false로 기록하고 발화 SNR을 계산하지 않는다.
+완료 후 `project.json`의 `manifests` 안에 있는 `korean_negative` 값을 **`data/negative/korean_windows.jsonl`**로 바꾸세요. 학습을 시작한 뒤에는 이 설정을 변경하지 않습니다.
 
-공개 precomputed Generic을 사용할 때:
+기본 정식 학습은 Generic 약 2,000시간, 한국어 중심 비호출 약 200시간 이상 등의 준비 조건을 확인합니다. 환경소음은 고다양성 30~50시간부터 시작하고 평가 결과에 따라 확대합니다. 원본 수를 적게 선택했다고 이 조건들이 함께 줄어들지는 않습니다.
 
-```powershell
-koww download-generic --output shared/openwakeword_features_ACAV100M_2000_hrs_16bit.npy
-koww import-generic --project projects/bora/project.json --features shared/openwakeword_features_ACAV100M_2000_hrs_16bit.npy --output projects/bora/features/generic_negative
-```
-
-약 17.28GB 다운로드와 전체 hash/유한값 검사는 시간이 든다. 기존 검증 파일을 재사용할 수 있다. 명목 2,000h·5,625,000행이고 원본 ID가 없어 모든 중복·분할을 입증하지 못한다. 이 한계는 metadata에 남긴다. 파형 Generic을 직접 준비하면 제공자 bridge 없이 동일 frontend feature를 사용한다.
-
-## 선택 작업량의 Feature·학습
-
-선택한 N·R·U 그대로 진행하는 명령이다. cache 경로와 수량은 초기 설정에서 가져오므로 파일 이름을 직접 맞출 필요가 없다.
+## 6. 특징 만들기·모델 학습하기
 
 ```powershell
 koww features --project projects/bora/project.json --role korean_negative
@@ -125,22 +136,95 @@ koww train --project projects/bora/project.json --output projects/bora/runs/sele
 koww package --project projects/bora/project.json --run projects/bora/runs/selected_budget --output projects/bora/models/candidate_selected
 ```
 
-### R 효과를 따로 비교할 때
+`features`는 소음·잔향·음량 변형을 적용하고 학습용 숫자 배열을 만듭니다. 호출어 원본 수 × 증강 횟수와 실제 생성 행 수가 일치해야 합니다. 같은 계열의 증강을 호출어와 원본 파형이 있는 비호출 음성에 적용합니다.
 
-이전 참조 100k의 cache 경로를 직접 지정하는 예시는 다음과 같다. 모든 R은 같은 N에서 생성한다. 선택 R만 실행하는 것과 R 효과를 통제 비교한 것은 구분한다.
+`train`은 선택한 학습량으로 모델을 만들고, `package`는 모델·공통 음성 처리 모델·실행 설정을 한 폴더에 모읍니다. 기본 구성은 독립적으로 학습한 3개 모델의 점수를 평균하는 앙상블입니다.
+
+특징 생성이나 학습이 중단되면 **같은 설정·코드·입력**에서 원래 명령에 `--resume`을 붙여 이어갑니다. 완료한 결과를 덮어쓰려 하지 말고 다른 실험은 새 출력 폴더를 사용하세요.
+
+## 7. 개발용 평가·감지 기준 선택하기
+
+개발용 호출어와 배경음이 준비되면 같은 호출에 같은 소음 구간을 섞어 평가 오디오를 만듭니다.
 
 ```powershell
-koww features --project projects/bora/project.json --role korean_negative
-koww features --project projects/bora/project.json --role positive --rounds 1 --output projects/bora/features/positive_R1
-koww features --project projects/bora/project.json --role positive --rounds 3 --output projects/bora/features/positive_R3
-koww compare-rounds projects/bora/features/positive_R1 projects/bora/features/positive_R3
-koww features --project projects/bora/project.json --role positive --rounds 5 --output projects/bora/features/positive_R5
-koww verify-cache projects/bora/features/positive_R5
+koww prepare-eval --project projects/bora/project.json --output projects/bora/data/eval/paired_v1 --split validation --originals 5000 --noise-sections 5
 ```
 
-파형 Generic이면 `features --role generic_negative`도 실행한다. Positive와 speech Negative는 공통 noise/RIR/gain 분포를 사용한다. SNR은 호출 활성 구간을 기준으로 하고, 같은 원본의 round별 RNG를 달리한다. 실제 생성 수·PCM·행 수를 검증하며 R별 독립 cache를 사용한다. 환경소음은 추가 batch class가 아니다.
+Clean(소음 없음)과 SNR 20·15·10·5·0dB를 만듭니다. SNR이 낮을수록 호출어에 비해 소음이 큽니다. 환경소음·음악·겹치는 한국어 대화 결과를 따로 비교합니다. 처음 흐름을 확인할 때는 `--originals 100`으로 줄일 수 있으나 최종 모델 선택은 계획한 평가 규모로 확인합니다. 여러 조건의 WAV가 생성되므로 [저장 공간](STORAGE_POLICY.md)도 확인하세요.
 
-위 비교 명령의 Positive output은 직접 지정한 cache 경로다. `--output`을 생략하면 선택한 `pool_features.positive`를 사용하고, 선언한 R과 다른 `--rounds`는 `features/positive_N{N}_R{R}`에 따로 만든다. `configure --rounds ...`의 snapshot이 가리키는 cache와 실제 생성 경로를 일치시킨다. 직접 지정한 경로를 쓰면 학습 시작 전 snapshot의 `pool_features.positive`를 그 경로로 지정한다. R1/R3 각각 config의 snapshot을 별도 파일로 남기고 **같은 선택 N·Negative·배분·update·schedule·seed·noise 분포를 고정**한다. 공통 cache를 읽는 것은 허용하지만 원본을 수정하지 않는다. 직접 수정 없이 snapshot으로 비교 cache를 만들려면:
+출력의 `manifest.jsonl`에 **학습에 쓰지 않은 연속 비호출 20~30시간**의 평가 목록을 합쳐 `data/eval/development.jsonl`을 만듭니다. [평가 목록 작성법](DATA_FORMAT.md#평가-자료-목록)에 형식과 합치는 예시가 있습니다.
+
+```powershell
+koww evaluate --project projects/bora/project.json --bundle projects/bora/models/candidate_selected --manifest projects/bora/data/eval/development.jsonl --output projects/bora/reports/dev_selected
+koww tune --project projects/bora/project.json --bundle projects/bora/models/candidate_selected --evaluation projects/bora/reports/dev_selected --output projects/bora/reports/gates_selected --thresholds 0.5 0.7 0.85 0.9 0.95 0.98 0.9862500429153442 0.995 --consecutive 1 2 3
+koww select-runtime --project projects/bora/project.json --bundle projects/bora/reports/gates_selected/bundle
+```
+
+`evaluate`는 모델별 호출 성공률·오호출·지연을 계산합니다. `tune`은 저장된 점수를 재사용해 감지 기준을 비교하므로 같은 오디오를 신경망으로 다시 계산하지 않습니다. `threshold`는 감지로 인정할 최소 점수, `consecutive`는 그 점수를 연속으로 넘어야 하는 프레임 수입니다.
+
+평가 보고서의 `adoption.passed`가 목표 통과 여부입니다. 목표 미달이면 이유를 확인하고 필요한 부분을 보완하세요. 표본 모델의 임계값을 새 호출어에 그대로 확정하지 않습니다. 기준은 [학습 계획](../plan.md#5-평가-목표)에서 확인합니다.
+
+## 8. 모델·설정 확정 후 최종 평가하기
+
+개발용 평가를 통과한 모델과 실행 설정을 고정합니다.
+
+```powershell
+koww freeze --project projects/bora/project.json --bundle projects/bora/reports/gates_selected/bundle --development-report projects/bora/reports/gates_selected/evaluation/report.json
+```
+
+이후 최종 평가용 음색을 생성·검수합니다. 검수 저장 후 서버를 종료하세요.
+
+```powershell
+koww references --project projects/bora/project.json --split final
+koww review --project projects/bora/project.json --queue projects/bora/data/references/final/references.jsonl --kind references --port 8790
+```
+
+```powershell
+koww generate --project projects/bora/project.json --split final
+koww prepare-eval --project projects/bora/project.json --output projects/bora/data/eval/final_paired_v1 --split final --originals 5000 --noise-sections 5
+```
+
+이 단계에서 만든 호출어 목록과 **별도 연속 비호출 100시간 이상**을 합쳐 `data/eval/final.jsonl`을 준비합니다. 학습·개발용 자료와 음색·원본을 공유하지 않습니다.
+
+```powershell
+koww evaluate --project projects/bora/project.json --bundle projects/bora/reports/gates_selected/bundle --stage final --manifest projects/bora/data/eval/final.jsonl --output projects/bora/reports/final_v1
+```
+
+최종 평가 자료는 모델 선택이나 설정 조정에 사용하지 않습니다. 최종 결과를 보고 개선하려면 새 실험과 새로운 독립 최종 평가 자료를 사용하세요.
+
+실제 사람의 호출 성능을 확인할 때는 해당 음성을 최종 평가에만 사용하고 합성 결과와 따로 집계합니다. 화자·거리·방향·마이크 조건과 표본 수를 기록합니다. 자료를 확보하지 않았다면 실제 사람 평가를 미검증으로 남깁니다.
+
+## 9. 결과 사이트에서 확인하기
+
+```powershell
+koww site --evaluation projects/bora/reports/final_v1 --output projects/bora/reports/final_v1/site
+koww serve --directory projects/bora/reports/final_v1/site --port 8791
+```
+
+[http://127.0.0.1:8791/](http://127.0.0.1:8791/)에서 모델 순위와 실제 시험 오디오를 확인하세요. 재생·통계 읽는 방법은 [결과 사이트 안내](TRAINING_RESULTS_SITE.md)에 있습니다.
+
+## 추가 설정과 재사용
+
+### 승인한 합성 음색 가져오기
+
+이미 이 라이브러리로 검수한 이전 프로젝트가 있을 때만 사용합니다. 예시의 `projects/previous/project.json`을 실제 프로젝트 경로로 바꾸세요.
+
+```powershell
+koww import-references --project projects/bora/project.json --source-project projects/previous/project.json --split train
+koww import-references --project projects/bora/project.json --source-project projects/previous/project.json --split validation
+```
+
+참조는 원래의 학습/개발/최종 구분을 유지하며, 검수 기록과 파일 해시가 확인되어야 합니다. 실제 사람 참조는 허용하지 않습니다. 최종 평가용 참조 재사용도 모델·설정 확정 후에만 가능합니다.
+
+### 세부 설정·증강 횟수 비교
+
+처음 프로젝트를 만들 때 `--advanced`를 붙이면 모델 구조·학습률 등을 선택할 수 있습니다. 현재 설정 확인은 다음과 같습니다.
+
+```powershell
+koww settings --project projects/bora/project.json --advanced
+```
+
+R1과 R3을 비교하려면 원본 수와 다른 조건을 고정하고 설정을 별도 파일에 저장합니다.
 
 ```powershell
 koww configure --project projects/bora/project.json --output projects/bora/project_R1.json --non-interactive --rounds 1
@@ -149,59 +233,20 @@ koww features --project projects/bora/project_R1.json --role positive
 koww features --project projects/bora/project_R3.json --role positive
 ```
 
-정식 학습은 승인된 cache·선택 N과 실제 N×R 일치·Generic 2,000h·한국어 200h 등의 선행 규모를 확인한다. 100k는 이전 참조 작업량이며 작은 N의 R3/R5를 일괄 금지하지 않는다. 작은 예산의 정식 실험과 미승인 fixture의 기능 시험은 다르다. 기능 시험에는 `features --smoke`와 `train --smoke`를 쓰며 성능 또는 Final 근거로 승격하지 않는다. 학습 중 checkpoint의 optimizer/sampler/RNG와 실제 누적 draw를 저장한다. receipt는 선택 작업량과 실제 노출량을 함께 기록한다. 이미 완료된 output은 덮어쓰지 않는다. 중단 후 같은 config/코드/입력으로 `--resume`을 사용한다. `.writer.lock`이 남았으면 PID·생성 시각·실제 명령을 확인한 후 죽은 작업의 lock만 정리한다.
+각 설정의 `pool_features.positive`에 생성된 경로를 사용해 `compare-rounds`로 확인하고, 같은 학습량·Negative·배치·seed로 별도 학습합니다. 필요하면 같은 방식으로 R5를 추가합니다. R 비교와 원본 수 비교는 다른 실험입니다.
 
-## Development·임계값·Final
+학습량을 바꾸면 기본 학습률 변화 기간과 저장 시점도 연동됩니다. 같은 기간에서 학습량만 비교하려면 `--schedule-horizon`을 지정합니다. 자세한 통제 기준과 지원 설정은 [학습 계획](../plan.md)에 있습니다.
 
-```powershell
-koww prepare-eval --project projects/bora/project.json --output projects/bora/data/eval/paired_v1 --split validation --originals 100 --noise-sections 5
-```
-
-같은 원본·동일 소음 구간으로 Clean와 SNR20/15/10/5/0의 실제 WAV를 만든다. 레벨·peak headroom·SNR을 기록하고 말소리가 너무 작아지면 오류로 남긴다. score와 청취에 같은 WAV를 사용한다. 이 결과 manifest의 Positive와 **source-separated intact 연속 Negative 20~30h**를 하나의 Development JSONL로 합친다. 100원본은 파일럿 크기이며 최종 비교에는 계획의 Validation 규모를 적용한다.
-
-평가 row는 `kind`, `category`, `split`, 실제 path/SHA, provenance가 필요하다. Positive의 `calls`는 호출별 `start_s`,`end_s`,`original_utterance_id`를 포함한다. 첫 호출은 2초 warmup 뒤에 와야 한다. Negative에는 `calls:[]`. 임의 반복·이어붙인 파일을 독립 시간으로 세지 않는다.
-
-```powershell
-koww evaluate --project projects/bora/project.json --bundle projects/bora/models/candidate_selected --manifest projects/bora/data/eval/development.jsonl --output projects/bora/reports/dev_selected
-koww tune --project projects/bora/project.json --bundle projects/bora/models/candidate_selected --evaluation projects/bora/reports/dev_selected --output projects/bora/reports/gates_selected --thresholds 0.5 0.7 0.85 0.9 0.95 0.98 0.9862500429153442 0.995 --consecutive 1 2 3
-koww select-runtime --project projects/bora/project.json --bundle projects/bora/reports/gates_selected/bundle
-koww site --evaluation projects/bora/reports/gates_selected/evaluation --output projects/bora/reports/gates_selected/site
-```
-
-`tune`는 동일 hash-bound scores를 재생하며 신경망을 다시 계산하지 않는다. 선언한 grid 안에서 목표 통과 → Clean → balanced noise → FA 순으로 후보를 고른다. 미달이면 `adoption.passed=false`와 이유를 남기며 Final 동결을 허용하지 않는다. 기존 예시의 임계값을 새 호출어에 그대로 확정하지 않는다.
-
-```powershell
-koww freeze --project projects/bora/project.json --bundle projects/bora/reports/gates_selected/bundle --development-report projects/bora/reports/gates_selected/evaluation/report.json
-koww references --project projects/bora/project.json --split final
-koww generate --project projects/bora/project.json --split final
-```
-
-Final 참조의 승인 또는 승인 뱅크 재사용은 동결 후 같은 참조 provenance 규칙을 따른다. Final을 Train/Validation에 다시 넣지 않는다. Final Positive·noise·100h 이상 연속 Negative manifest를 준비한 뒤:
-
-```powershell
-koww evaluate --project projects/bora/project.json --bundle projects/bora/reports/gates_selected/bundle --stage final --manifest projects/bora/data/eval/final.jsonl --output projects/bora/reports/final_v1
-koww site --evaluation projects/bora/reports/final_v1 --output projects/bora/reports/final_v1/site
-koww serve --directory projects/bora/reports/final_v1/site --port 8791
-```
-
-실제 다수 화자 Final은 별도 provenance `human` 및 화자·거리·방향·마이크 metadata로 집계한다. 개인 마이크 시험을 중단한 현재 프로젝트에서는 이를 합성 결과로 대체해 완료라고 표시하지 않는다. 공개 사람 음성도 학습·튜닝·TTS 참조로 자동 전환하지 않는다.
-
-## 출력과 Python API
-
-`features`는 feature 배열·증강 journal·계약·metadata, `train`은 checkpoint·로그·완료 receipt·ONNX, `package`는 상대 경로 모델 묶음, `evaluate`는 report·clips·score cache·receipt를 남긴다. 결과 사이트는 단일 모델 성능순·앙상블 별도·고정 SNR 연속 청취·동일 WAV 다운로드를 제공한다.
+### Python에서 직접 학습한 모델 사용하기
 
 ```python
-from korean_openwakeword import create_project, WakeWordDetector
-from korean_openwakeword.features import build_features
-from korean_openwakeword.train import train
-from korean_openwakeword.evaluate import evaluate
-from korean_openwakeword.site import export_site
+from korean_openwakeword import WakeWordDetector
 
-project = create_project("projects/newword", "다솜아", "dasom",
-                         positive_originals=20000, augmentation_rounds=3, updates=20000)
-# 출처·파일럿·원본·재료 승인 이후 build_features(project, ...), train(project, ...)
-detector = WakeWordDetector("path/to/completed/bundle")
-result = detector.predict_file("mono_16k_pcm16.wav")
+detector = WakeWordDetector("projects/bora/reports/gates_selected/bundle")
+result = detector.predict_file("test.wav")
+print(result["events"])
 ```
 
-함수와 CLI는 같은 구현을 사용한다. baseline의 batch 변경, VAD/NS, 지원 외 구조는 명시적 별도 실험으로 구현·검증해야 한다. 모델/음원 이용조건은 [THIRD_PARTY_NOTICES](../THIRD_PARTY_NOTICES.md)를 따른다.
+입력은 16kHz·모노·16비트 PCM WAV입니다. 기본 설정에서는 시작 후 2초의 준비 구간이 필요합니다. 실시간 입력은 같은 형식의 80ms 음성 배열(1,280개 샘플)을 `process`에 전달하고 새 세션에서는 `reset`합니다.
+
+모델 구조·배치·VAD(음성 구간 감지)·노이즈 제거의 지원 범위와 [이용조건](../THIRD_PARTY_NOTICES.md)을 확인하세요.

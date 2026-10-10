@@ -1,32 +1,49 @@
-# 춘식아 · 라이브러리 예시 모델
+# ‘춘식아’ 표본 모델 설명서
 
-최종 선택·동일 seed 재학습·CPU ONNX 재현을 완료한 **CNN128 × 3 / R5 / 점수 평균** 묶음이다. 세 ONNX는 기존 선택 모델과 바이트가 동일하며 공통 frontend는 한 번 실행한다. 다른 호출어를 학습할 때 이 가중치를 결과로 복사하지 않고 새로운 판별기를 학습한다.
+제공 모델은 **CNN128 모델 3개의 호출 점수를 평균하는 앙상블**입니다. 음성을 처리하는 공통 모델은 한 번 실행하고, 그 결과를 세 판별기에 전달합니다. R5는 원본 음성마다 5개의 증강 결과를 만드는 학습 설정이며 앙상블 모델 수와는 별개입니다.
 
-## 학습과 실행
+새 호출어에는 새 호출어 음성을 생성해 별도의 판별기를 학습합니다.
 
-- Qwen 호출어 단독 원본 100,000개, Positive R5 500,000 feature 행.
-- Batch Generic 768 / 한국어 Negative 256 / Positive 50 / Hard 0.
-- AdamW, LR 0.0001, decay 0.01, Positive loss weight 1, dropout 0.1, cosine 2% warmup.
-- 각 seed 50,000 update. seed 20260928 / 20260929 / 20260930.
-- 공유 openWakeWord 0.6.0 ONNX frontend, mono 16kHz PCM16, 80ms 입력.
-- 정해진 순서로 float64 합산 → 평균 → float32. Threshold 0.9862500429153442, 연속 2프레임, warmup 2초, cooldown 1초, VAD/NS off.
+## 확인된 성능
 
-## 확인된 성능의 범위
-
-고정 **Development** 자료의 독립 seed 묶음 3회 결과다. 같은 시험 자료를 반복 사용했으므로 평가 시간을 합산하지 않는다.
+평균 앙상블 3묶음을 **같은 개발용 평가(Development) 자료**로 비교한 결과입니다. 같은 자료를 반복 평가했으므로 평가 시간을 합산하지 않습니다.
 
 | 지표 | 관측 결과 |
-|---|---|
-| Clean | 각 묶음 5,000/5,000, 100% |
-| 소음 평균 | 세 범주 × SNR20/15/10/5 균등 평균 99.1111% |
+| --- | --- |
+| 소음 없는 환경(Clean) | 각 묶음 5,000/5,000회 감지, 100% |
+| 소음 평균 성공률 | 환경음·음악·겹치는 대화 × SNR20/15/10/5의 균등 평균 99.1111% |
 | 묶음별 소음 평균 | 99.1833% / 98.9833% / 99.1667% |
-| 오호출 | 동일 24.0329h에서 2 / 2 / 1회, 최악 0.0832/h |
-| 한국어 competing speech SNR5 | 평균 91.1333%, 최저 90.2% |
+| 오호출 | 동일 24.0329시간에서 2 / 2 / 1회. 가장 높은 관측 빈도 0.0832회/시간 |
+| 한국어 대화가 겹치는 SNR5 | 평균 91.1333%, 최저 90.2% |
 
-이 모델은 **독립 Final 100시간과 실제 다수 화자 검증을 완료한 배포 보증 모델이 아니다.** 다른 호출어·마이크·장치에서 이 성능을 보장하지 않는다. 동봉 오디오는 위 Development의 소규모 재현 예제이며 전체 통계의 분모와 구분한다.
+이 표는 모델과 설정을 고를 때 사용한 개발용 자료의 결과입니다. **별도 100시간 최종 평가와 실제 다수 화자 평가는 완료하지 않았습니다.** 동봉 결과 사이트는 위 자료의 일부로 만든 재현 예시이며 전체 평가 규모와 다릅니다.
 
-## 파일과 출처
+<details>
+<summary>학습·실행 설정 자세히 보기</summary>
 
-`manifest.json`의 모든 경로는 이 폴더 기준 상대 경로이고, 각 ONNX SHA256을 검증한다. `audio_manifest.json`은 동봉 Development WAV의 원본 ID·호출 경계·해시를 기록한다. 과거 전체 실험 기록은 개발 작업 폴더에 보존한다. 이 저장소는 표본 모델과 재현용 입력을 제공한다.
+| 항목 | 설정 |
+| --- | --- |
+| 호출어 원본 | Qwen TTS 단독 호출 100,000개 |
+| 증강 | R5, Positive 특징 500,000행 |
+| 배치 | Generic Negative 768 / 한국어 Negative 256 / Positive 50 / Hard Negative 0 |
+| 학습 방법 | AdamW, 학습률 0.0001, weight decay 0.01, Positive 손실 가중치 1, dropout 0.1 |
+| 학습률 변화 | cosine, 최초 2% warmup |
+| 학습량 | 모델당 50,000 update |
+| seed | 20260928 / 20260929 / 20260930 |
+| 입력 | 16kHz·모노·16비트 PCM, 80ms 단위 |
+| 감지 기준 | threshold 0.9862500429153442, 연속 2프레임 |
+| 준비·재감지 대기 | 준비 2초, 감지 후 대기 1초 |
+| 추가 처리 | VAD·노이즈 제거 사용 안 함 |
 
-openWakeWord 코드와 공유 embedding backbone의 상위 출처는 [공식 저장소](https://github.com/dscripka/openWakeWord)다. upstream 코드는 Apache-2.0이며 공식 배포 pretrained 모델에는 별도 모델 이용조건이 있다. Qwen·Generic feature·공개 한국어/소음 자료도 각각의 출처 조건을 따른다. 이 예시 묶음에 일괄적인 상업 이용 허가를 부여하지 않는다. `THIRD_PARTY_NOTICES.md`를 확인한다. GitHub 비공개 저장소에 제공하며 PyPI에 게시하지 않는다.
+실행은 openWakeWord 0.6.0의 ONNX 방식입니다. 평균은 정해진 모델 순서로 float64 합산 후 평균을 구하고 float32로 변환합니다. 제공 가중치는 선택 모델의 동일 seed 재학습과 CPU ONNX 재현을 확인한 파일입니다.
+
+</details>
+
+## 파일과 이용조건
+
+- [manifest.json](manifest.json): 모델·공통 음성 처리 파일, 실행 설정, 파일 해시
+- [audio_manifest.json](audio_manifest.json): 동봉 오디오의 원본·호출 경계·해시
+- [AUDIO_SOURCES.json](AUDIO_SOURCES.json): 동봉 배경음의 출처
+- [이용조건·출처](THIRD_PARTY_NOTICES.md): 모델·음원의 조건과 원문 안내
+
+모델과 음원의 이용조건은 코드 라이선스와 구분합니다. 상위 openWakeWord 출처는 [공식 저장소](https://github.com/dscripka/openWakeWord)이며, Qwen·공개 데이터셋의 조건도 유지합니다.
