@@ -1,8 +1,8 @@
 # Korean openWakeWord
 
-**한국어 호출어를 Qwen TTS로 생성하고, 소음에 강한 openWakeWord 판별기를 학습·평가하는 Python 라이브러리입니다.** ‘춘식아’ 개발에서 검증한 설정과 재사용 절차를 기본값으로 제공합니다. 다른 한국어 호출어는 별도 프로젝트에서 학습합니다.
+**영어 호출어에 특화된 openWakeWord를 한국어 호출어 전용으로 수정한 라이브러리입니다.** ‘춘식아’ 개발에서 검증한 설정과 재사용 절차를 기본값으로 제공합니다. 다른 한국어 호출어는 별도 프로젝트에서 학습합니다.
 
-표본 모델은 **춘식아 CNN128 세 모델의 평균 / R5**입니다. 가중치·공유 frontend·실행 설정·모델 카드·실제 평가 WAV를 동봉했습니다. 기존 선택 모델과 가중치는 동일합니다. 합성 Development 결과이며 실제 다수 화자 성능 보증과 구분합니다.
+표본 모델은 **‘춘식아’ CNN128 앙상블 모델**입니다. 독립적으로 학습한 CNN128 모델 3개의 호출 점수를 평균해 감지 여부를 판단합니다. 각 원본 음성에 5회 증강을 적용하는 R5 설정으로 학습했으며, 가중치·공유 frontend·실행 설정·모델 카드·평가 오디오를 함께 제공합니다.
 
 ## 설치
 
@@ -26,7 +26,7 @@ koww doctor
 
 openWakeWord는 Windows의 TFLite 의존성 설치 문제를 피하도록 별도 설치합니다. 이 라이브러리는 ONNX 경로를 사용하고 필요한 ONNX 실행 의존성을 직접 선언합니다. Linux에서도 동일 ONNX 경로를 사용할 수 있으나 검증 장치 외에서 동일 성능을 보장하지 않습니다. 추론만 할 때 Torch/Qwen은 필요 없습니다.
 
-HDD 작업 폴더에서 시작하세요. 위 스크립트는 pip·모델 다운로드·임시 파일을 현재 프로젝트의 `storage/runtime_cache`에 저장하며 현재 PowerShell에만 적용됩니다. `koww`의 기본 캐시는 각 프로젝트 옆의 `cache`이고 공유 캐시는 `KOWW_CACHE_ROOT`로 명시합니다. `koww storage --project projects/bora/project.json`으로 확인합니다. `.codex`에 학습 자료를 쌓지 않습니다. [저장 정책](docs/STORAGE_POLICY.md)을 참고하세요.
+위 스크립트는 설치·모델 다운로드에 필요한 캐시와 임시 파일을 프로젝트 폴더 안에 저장하도록 설정합니다. 저장 위치를 변경하거나 여러 학습 프로젝트에서 자료를 공유하는 방법은 [저장 위치 안내](docs/STORAGE_POLICY.md)를 참고하세요.
 
 학습·생성 기능을 사용할 경우:
 
@@ -59,7 +59,7 @@ frame_result = detector.process(np.zeros(1280, dtype=np.int16))
 detector.reset()  # 새 세션의 상태 초기화
 ```
 
-## 다른 호출어 시작
+## 호출어 학습 시작
 
 ```powershell
 koww init --wakeword 보라야 --id bora --output projects/bora --interactive
@@ -80,13 +80,13 @@ koww settings --project projects/bora_small/project.json --advanced
 koww configure --project projects/bora_small/project.json --output projects/bora_small/project_R1.json --non-interactive --rounds 1
 ```
 
-CNN128·AdamW 등은 춘식아 실험에서 선정한 **권장 시작값**입니다. 모든 한국어 호출어의 최적값을 보증하지는 않습니다. 작업량을 줄이면 시간·용량을 줄일 수 있지만 성능도 달라질 수 있으므로 같은 평가로 확인합니다. 학습량을 바꾸면 기본 schedule·checkpoint도 연동되며, 비교 실험의 공통 horizon은 별도 지정할 수 있습니다.
+CNN128·AdamW 등은 초기 표본 모델 학습 결과에서 선정한 **권장 시작값**입니다. 모든 한국어 호출어의 최적값을 보증하지는 않습니다. 작업량을 줄이면 시간·용량을 줄일 수 있지만 성능도 달라질 수 있으므로 같은 평가로 확인합니다. 학습량을 바꾸면 기본 schedule·checkpoint도 연동되며, 비교 실험의 공통 horizon은 별도 지정할 수 있습니다.
 
 [라이브러리 가이드](docs/LIBRARY_GUIDE.md)에 작업량 선택·합성 참조 재사용·파일럿·선택한 수량 생성·공개 Negative 계약·R1/R3/R5·학습·임계값 선택·Final 동결·사이트 제작의 전체 명령을 정리했습니다. 한글 호출어, 데이터 경로, 프로젝트 ID를 바꾸면 날짜별 코드를 고칠 필요가 없습니다. 기본 프로파일은 시작값이며 새 호출어의 Development에서 임계값을 확인합니다.
 
 ## 학습 데이터 준비
 
-**새 호출어 음성은 사용자가 Qwen TTS로 생성**합니다. 비호출·소음·잔향은 공개 데이터셋에서 내려받아 여러 호출어에 재사용합니다. 원시 대용량 학습 자료는 저장소에 넣지 않습니다.
+**새 호출어 음성은 사용자가 Qwen TTS로 생성**합니다. 비호출·소음·잔향은 공개 데이터셋에서 내려받아 여러 호출어에 재사용합니다.
 
 ```powershell
 koww datasets
