@@ -27,10 +27,11 @@ def validate_training_scale(config, metadata):
     target, rounds = config["targets"]["positive_originals"], config["augmentation_rounds"]
     if positive["original_count"] != target or positive["rounds"] != rounds or positive["feature_rows"] != target * rounds:
         raise ValueError("Positive cache must match the selected TTS original count and N×rounds; use a separate matching configuration")
-    for role, target_hours in (("generic_negative", 2000), ("korean_negative", 200)):
+    for role, target_hours in (("generic_negative", config["targets"]["generic_hours"]),
+                               ("korean_negative", config["targets"]["korean_hours"])):
         m = metadata[role]
         hours = m.get("publisher_declared_hours") if m.get("legacy_generic_bridge") else m.get("unique_source_hours")
-        if hours is None or hours < target_hours:
+        if hours is None or not math.isfinite(hours) or hours < target_hours:
             raise ValueError(f"{role} scale is below {target_hours}h (publisher nominal must remain distinct)")
 
 

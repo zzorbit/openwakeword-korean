@@ -21,7 +21,8 @@ def default_profile():
 
 
 def configure_budget(config, *, positive_originals=None, augmentation_rounds=None,
-                     updates=None, training_overrides=None):
+                     updates=None, generic_hours=None, korean_hours=None,
+                     noise_hours=None, training_overrides=None):
     """Return a new configuration; never edit a running/historical experiment.
 
     Workload choices and stable learning settings are separate. Changing the
@@ -36,6 +37,10 @@ def configure_budget(config, *, positive_originals=None, augmentation_rounds=Non
         result["targets"]["positive_originals"] = positive_originals
     if augmentation_rounds is not None:
         result["augmentation_rounds"] = augmentation_rounds
+    for key, value in (("generic_hours", generic_hours), ("korean_hours", korean_hours),
+                       ("noise_hours", noise_hours)):
+        if value is not None:
+            result["targets"][key] = value
     t = result["training"]
     if updates is not None:
         if type(updates) is not int or updates < 1:
@@ -73,12 +78,19 @@ def workload_summary(config):
         "warmup_updates": max(1, int(t["schedule_horizon"] * .02)) if t["schedule"] == "cosine_with_2percent_warmup" else 0,
         "checkpoints": list(t["checkpoints"]), "architecture": t["architecture"],
         "device": t["device"],
+        "data_targets": {
+            "generic_negative_hours": config["targets"]["generic_hours"],
+            "korean_negative_hours": config["targets"]["korean_hours"],
+            "environment_noise_hours": config["targets"].get("noise_hours", config["targets"]["noise_hours_phase1"][0]),
+            "scope": "Preparation targets, not downloaded or approved hours. Negative targets are checked before formal training; noise hours are a planning target, with diversity reviewed separately.",
+        },
         "workload_kind": "reference_100k_R5_50k" if (n, r, t["updates"]) == (100000, 5, 50000) else "user_selected_budget",
         "performance_status": "requires_this_word_development_and_independent_final",
         "notes": [
             "Storage is only the positive float32 feature payload, excluding WAVs, journals, Negative caches and checkpoints.",
             "Draws use replacement sampling; a mean draw count does not guarantee every feature was seen.",
-            "Validation/Final targets and Negative quality requirements are unchanged by a smaller training budget.",
+            "Validation/Final targets, source quality and split requirements remain unchanged; Negative hours use the selected preparation targets.",
+            "Selecting hours does not download, truncate or duplicate audio; prepare or reuse admitted sources separately.",
             "Architecture defaults are evidence from Chunsik, not a universal Korean optimum. Workload changes can change performance.",
             "ETA requires measured throughput on this computer; init does not run generation or training.",
         ],
@@ -100,6 +112,10 @@ def validate_project(config):
     for key in ("positive_originals", "validation_originals", "final_originals"):
         if type(config["targets"][key]) is not int or config["targets"][key] < 1:
             raise ValueError("TTS original counts must be positive integers")
+    for key in ("generic_hours", "korean_hours", "noise_hours"):
+        value = config["targets"].get(key, config["targets"]["noise_hours_phase1"][0])
+        if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+            raise ValueError("Data preparation hours must be positive finite numbers")
     if config.get("human_reference_used") is not False or config.get("positive_text_policy") != "standalone_only":
         raise ValueError("No human references or appended commands in Positive generation")
     t = config["training"]
@@ -165,14 +181,16 @@ def validate_project(config):
 
 
 def create_project(output, wakeword, project_id, *, positive_originals=None,
-                   augmentation_rounds=None, updates=None, training_overrides=None):
+                   augmentation_rounds=None, updates=None, generic_hours=None,
+                   korean_hours=None, noise_hours=None, training_overrides=None):
     output = Path(output).resolve()
     if output.exists() and any(output.iterdir()):
         raise ValueError("Use a new empty project directory; existing experiments are immutable")
     config = default_profile()
     config.update(wakeword=wakeword, project_id=project_id)
     config = configure_budget(config, positive_originals=positive_originals,
-        augmentation_rounds=augmentation_rounds, updates=updates, training_overrides=training_overrides)
+        augmentation_rounds=augmentation_rounds, updates=updates, generic_hours=generic_hours,
+        korean_hours=korean_hours, noise_hours=noise_hours, training_overrides=training_overrides)
     output.mkdir(parents=True, exist_ok=True)
     for directory in ("data/positive", "data/negative", "data/materials", "data/eval", "features", "runs", "reports", "models", "review"):
         (output / directory).mkdir(parents=True, exist_ok=True)

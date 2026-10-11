@@ -9,10 +9,13 @@ from .project import create_project, load_project, status, default_profile, work
 
 
 def setup_arguments(a):
-    basic = a.add_argument_group("초기 선택: 작업량")
+    basic = a.add_argument_group("초기 선택: 작업량·자료 규모")
     basic.add_argument("--originals", type=int, help="증강 전 Positive TTS 원본 수; 시작값 100000")
     basic.add_argument("--rounds", type=int, choices=(1, 3, 5), help="원본당 증강 횟수; 시작값 5")
     basic.add_argument("--updates", type=int, help="모델 한 개의 optimizer update 수; 시작값 50000")
+    basic.add_argument("--generic-hours", type=float, help="일반 비호출 자료 목표 시간; 시작값 2000")
+    basic.add_argument("--korean-hours", type=float, help="한국어 비호출 자료 목표 시간; 시작값 200")
+    basic.add_argument("--noise-hours", type=float, help="환경소음 증강 재료 목표 시간; 시작값 30, 다양성도 별도 확인")
     mode = basic.add_mutually_exclusive_group()
     mode.add_argument("--interactive", dest="interactive", action="store_true", help="작업량 선택 화면 열기")
     mode.add_argument("--non-interactive", dest="interactive", action="store_false", help="질문 없이 명시한 값과 기본값 저장")
@@ -44,7 +47,8 @@ def selected_choices(a, config):
         overrides["seeds"] = seeds
     return setup_choices(config, interactive=a.interactive, advanced=a.advanced,
         positive_originals=a.originals, augmentation_rounds=a.rounds,
-        updates=a.updates, training_overrides=overrides)
+        updates=a.updates, generic_hours=a.generic_hours, korean_hours=a.korean_hours,
+        noise_hours=a.noise_hours, training_overrides=overrides)
 
 
 def parser():
@@ -60,7 +64,7 @@ def parser():
     setup_arguments(a)
     a = sub.add_parser("settings", help="현재 작업량 또는 세부 학습 설정 확인")
     a.add_argument("--project", type=Path, required=True); a.add_argument("--advanced", action="store_true")
-    sub.add_parser("doctor", help="설치·CPU/GPU 상태")
+    sub.add_parser("check", aliases=["doctor"], help="설치·GPU 상태 확인")
     a = sub.add_parser("sample", help="춘식아 예시 모델 검증 또는 복사")
     a.add_argument("--output", type=Path)
     a = sub.add_parser("demo", help="동봉 예시 WAV 재채점·결과 사이트 생성")
@@ -155,7 +159,7 @@ def dispatch(a):
             result.update(training=config["training"], batch=config["batch"], augmentation=config["augmentation"],
                           runtime=config["runtime"], evaluation_targets=config["evaluation_targets"])
         return result
-    if a.command == "doctor":
+    if a.command in ("check", "doctor"):
         from .benchmark import doctor
         return doctor()
     if a.command == "benchmark":
@@ -265,3 +269,4 @@ def main(argv=None):
             print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
     except (ValueError, FileNotFoundError, RuntimeError) as error:
         p.exit(1, "koww: " + str(error) + "\n")
+

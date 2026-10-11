@@ -73,7 +73,7 @@ def test_invalid_choices_fail_before_creating_a_project(tmp_path):
 
 
 def test_terminal_wizard_basic_only_and_invalid_entry():
-    answers = iter(["0", "20000", "3", "20000", "n"])
+    answers = iter(["0", "20000", "3", "20000", "", "", "", "n"])
     output = []
     choices = setup_choices(default_profile(), interactive=True,
         input_fn=lambda prompt: next(answers), output_fn=output.append)
@@ -86,7 +86,7 @@ def test_terminal_wizard_basic_only_and_invalid_entry():
 
 
 def test_advanced_wizard_and_cancelled_setup():
-    answers = iter(["50000", "3", "20000", "mlp128", "Adam", "0.0002", "0", "0.2", "2", "constant", "1", "cpu"])
+    answers = iter(["50000", "3", "20000", "", "", "", "mlp128", "Adam", "0.0002", "0", "0.2", "2", "constant", "1", "cpu"])
     choices = setup_choices(default_profile(), interactive=True, advanced=True,
         input_fn=lambda prompt: next(answers), output_fn=lambda s: None)
     config = configure_budget(default_profile(), **choices)
@@ -107,6 +107,75 @@ def test_script_mode_never_prompts_and_preserves_default():
     assert configure_budget(default_profile(), **choices) == default_profile()
     with pytest.raises(ValueError, match="interactive"):
         setup_choices(default_profile(), interactive=False, advanced=True, input_fn=never_ask)
+
+
+def test_data_hours_selection_reaches_setup_summary_without_changing_learning(tmp_path):
+    baseline = default_profile()
+    answers = iter(["", "", "", "1000", "50", "nan", "40", "n"])
+    choices = setup_choices(baseline, interactive=True,
+        input_fn=lambda prompt: next(answers), output_fn=lambda s: None)
+    project = create_project(tmp_path / "word", "보라야", "bora", **choices)
+    root, config = load_project(project)
+    assert config["targets"]["generic_hours"] == 1000
+    assert config["targets"]["korean_hours"] == 50
+    assert config["targets"]["noise_hours"] == 40
+    assert config["training"] == baseline["training"] and config["batch"] == BATCH
+    assert config["augmentation"] == baseline["augmentation"]
+    summary = read_json(root / "reports/setup_summary.json")["data_targets"]
+    assert summary["environment_noise_hours"] == 40
+    assert summary["generic_negative_hours"] == 1000
+    assert all((root / path).read_text() == "" for path in config["manifests"].values())
+    assert baseline == default_profile()
+
+
+def test_formal_training_checks_selected_negative_hours_and_publisher_nominal():
+    config = configure_budget(default_profile(), generic_hours=1000, korean_hours=50)
+    meta = {"positive": {"original_count": 100000, "rounds": 5, "feature_rows": 500000},
+            "generic_negative": {"legacy_generic_bridge": True, "publisher_declared_hours": 2000},
+            "korean_negative": {"unique_source_hours": 50}}
+    validate_training_scale(config, meta)
+    bad = deepcopy(meta); bad["korean_negative"]["unique_source_hours"] = 49.9
+    with pytest.raises(ValueError, match="50h"):
+        validate_training_scale(config, bad)
+    with pytest.raises(ValueError, match="3000h"):
+        validate_training_scale(configure_budget(config, generic_hours=3000), meta)
+    bad = deepcopy(meta); bad["korean_negative"]["unique_source_hours"] = float("nan")
+    with pytest.raises(ValueError):
+        validate_training_scale(config, bad)
+
+
+def test_invalid_data_hours_never_create_a_project(tmp_path):
+    for key in ("generic_hours", "korean_hours", "noise_hours"):
+        for value in (0, -1, True, float("nan"), float("inf")):
+            with pytest.raises(ValueError, match="hours"):
+                create_project(tmp_path / "invalid", "보라야", "bora", **{key: value})
+            assert not (tmp_path / "invalid").exists()
+
+
+def test_check_command_and_legacy_doctor_share_environment_diagnostic(monkeypatch):
+    from korean_openwakeword import benchmark
+    from korean_openwakeword.cli import parser, dispatch
+    report = {"versions": {"openwakeword": "0.6.0"}, "cuda_available": False}
+    monkeypatch.setattr(benchmark, "doctor", lambda: report)
+    assert dispatch(parser().parse_args(["check"])) == report
+    assert dispatch(parser().parse_args(["doctor"])) == report
+
+
+def test_cli_data_hours_and_snapshot_preserve_original(tmp_path, capsys):
+    from korean_openwakeword.cli import main
+    root = tmp_path / "word"
+    main(["init", "--wakeword", "보라야", "--id", "bora", "--output", str(root),
+          "--non-interactive", "--generic-hours", "2000", "--korean-hours", "250", "--noise-hours", "40"])
+    result = json.loads(capsys.readouterr().out)
+    assert result["workload"]["data_targets"]["korean_negative_hours"] == 250
+    original = digest(root / "project.json")
+    snapshot = root / "project_more_data.json"
+    main(["configure", "--project", str(root / "project.json"), "--output", str(snapshot),
+          "--non-interactive", "--korean-hours", "300"])
+    capsys.readouterr()
+    assert digest(root / "project.json") == original
+    assert load_project(snapshot)[1]["targets"]["korean_hours"] == 300
+    assert load_project(snapshot)[1]["targets"]["noise_hours"] == 40
 
 
 def test_configuration_snapshot_preserves_original_and_final_lock(tmp_path):
