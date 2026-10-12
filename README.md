@@ -33,14 +33,18 @@ koww check
 
 `Use-ProjectStorage.ps1`은 다운로드 캐시와 임시 파일을 저장소 폴더 안에 모아 저장하도록 설정합니다. 저장 위치를 바꾸려면 [저장 위치 안내](docs/STORAGE_POLICY.md)를 참고하세요.
 
-**새 호출어를 생성·학습하려면** 다음을 추가로 설치하세요. GPU를 사용할 경우 먼저 [공식 설치 안내](https://pytorch.org/get-started/previous-versions/)의 **PyTorch 2.8.0** 항목에서 자신의 환경에 맞는 GPU용 PyTorch를 설치합니다.
+## 학습 데이터 준비
+
+### 음성 생성·학습 도구 설치
+
+호출어 음성을 만드는 **Qwen TTS**와 **모델 학습 도구**를 설치합니다. GPU를 사용할 경우 먼저 [공식 설치 안내](https://pytorch.org/get-started/previous-versions/)의 **PyTorch 2.8.0** 항목에서 자신의 환경에 맞는 GPU용 PyTorch를 설치합니다.
 
 ```powershell
 python -m pip install ".[train,tts]"
 koww check
 ```
 
-## 학습 데이터 준비
+### 필요한 학습 자료
 
 학습에는 다음 자료가 필요합니다. **새 호출어 음성은 Qwen TTS(음성 합성 모델)로 호출어만 단독으로 생성**하며, 나머지 공개 자료는 여러 호출어 학습에 재사용할 수 있습니다.
 
@@ -52,6 +56,8 @@ koww check
 | 유사어 자료(Hard Negative) | 호출어와 발음이 비슷한 다른 표현으로 오인식을 줄이는 별도 비호출 학습 자료 |
 | 소음 증강 재료 | 호출어와 일반 음성에 섞는 환경음·음악·말소리. 비호출 원본 오디오도 재사용 가능 |
 | 잔향 자료(RIR) | 방이나 공간에 따른 울림을 재현하는 재료 |
+
+### 공개 자료 다운로드
 
 사용 가능한 공개 자료 목록과 다운로드 예시입니다.
 
@@ -89,7 +95,7 @@ koww status --project projects/bora/project.json
 
 표의 시간은 학습 전에 준비할 자료의 양입니다. **시험용·최종 모델용의 일반 비호출과 한국어 비호출 시간은 75:25로 구성합니다.** 시험용은 일반 2,000시간 + 한국어 약 667시간(정확히는 666⅔시간), 최종 모델용은 **일반 7,500시간 + 한국어 2,500시간 = 총 10,000시간**입니다. 자료 시간과 별개로 세 단계의 배치 구성은 동일합니다. 한국어 비중과 자료 시간은 이 라이브러리에서 선택한 구성으로, 공식에서 제시한 최적값은 아닙니다.
 
-동작 확인용·시험용의 일반 비호출은 [openWakeWord 공개 특징 자료](https://huggingface.co/datasets/davidscripka/openwakeword_features)의 약 2,000시간짜리 파일을 사용합니다. **원본 오디오가 아니라, 학습에 바로 넣을 수 있도록 미리 숫자로 변환한 자료**이며 아래의 `koww download-generic` 명령으로 받습니다.
+동작 확인용·시험용의 일반 비호출은 [openWakeWord 공개 특징 자료](https://huggingface.co/datasets/davidscripka/openwakeword_features)의 약 2,000시간짜리 파일을 사용합니다. **원본 오디오가 아니라, 학습에 바로 넣을 수 있도록 미리 숫자로 변환한 자료**이며 앞서 안내한 `koww download-generic` 명령으로 받습니다.
 
 동작 확인용·시험용의 소음 재료는 공식 예제와 같은 **AudioSet의 `bal_train09.tar` 1개와 FMA 음악 1시간**입니다. 잔향 재료는 **세 단계 모두 MIT RIR의 `train` 전체**를 사용합니다. AudioSet은 말소리·음악·생활 소리 등 다양한 실제 소리를 담고, MIT RIR은 호출 음성에 공간의 울림을 적용합니다. 정확한 출처와 준비 범위는 [공식 예제의 증강 재료 안내](docs/DATASETS.md#공식-자동-학습-예제의-증강-재료)를 참고하세요.
 
