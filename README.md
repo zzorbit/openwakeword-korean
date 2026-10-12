@@ -53,7 +53,7 @@ koww check
 | 소음 증강 재료 | 호출어와 일반 음성에 섞는 환경음·음악·말소리. 비호출 원본 오디오도 재사용 가능 |
 | 잔향 자료(RIR) | 방이나 공간에 따른 울림을 재현하는 재료 |
 
-사용 가능한 공개 자료 목록과 다운로드 예시입니다. 내려받은 자료를 학습에 연결하는 절차는 [데이터 준비 안내](docs/DATASETS.md)와 [라이브러리 가이드](docs/LIBRARY_GUIDE.md)를 따르세요.
+사용 가능한 공개 자료 목록과 다운로드 예시입니다.
 
 ```powershell
 koww datasets
@@ -63,7 +63,7 @@ koww download-data --dataset zeroth --output shared/zeroth_korean.tar.gz
 koww download-generic --output shared/openwakeword_features_ACAV100M_2000_hrs_16bit.npy
 ```
 
-검수한 합성 음색은 재사용하고, 대량 생성 음성에는 무음·깨짐 등의 자동 품질 검사를 적용합니다. 모든 오디오를 음성 인식 모델로 전사하거나 하나씩 청취하는 방식은 기본 절차가 아닙니다. 개인의 호출 녹음은 학습·설정 조정·음성 복제 참조로 사용하지 않습니다.
+내려받은 자료를 학습에 연결하는 절차는 [데이터 준비 안내](docs/DATASETS.md)와 [라이브러리 가이드](docs/LIBRARY_GUIDE.md)를 따르세요.
 
 ## 호출어 학습 시작
 
