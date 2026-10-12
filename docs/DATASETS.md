@@ -24,7 +24,7 @@
 
 ## 공식 자동 학습 예제의 증강 재료
 
-README의 **동작 확인용**은 [openWakeWord 공식 자동 학습 예제](https://github.com/dscripka/openWakeWord/blob/main/notebooks/automatic_model_training.ipynb)와 같은 증강 재료를 준비합니다.
+README의 **동작 확인용·시험용**은 모두 [openWakeWord 공식 자동 학습 예제](https://github.com/dscripka/openWakeWord/blob/main/notebooks/automatic_model_training.ipynb)와 같은 증강 재료를 준비합니다. 두 단계의 AudioSet 일부·음악 1시간·MIT RIR은 아래의 동일한 자료와 준비 범위를 뜻합니다.
 
 | 재료 | 공식 예제의 준비 범위 | 사용하는 이유 |
 | --- | --- | --- |
@@ -35,6 +35,8 @@ README의 **동작 확인용**은 [openWakeWord 공식 자동 학습 예제](htt
 **AudioSet 일부**는 임의의 시간 목표가 아니라 위 압축파일 하나를 뜻합니다. 공식 예제는 이 파일의 총 오디오 시간을 따로 명시하지 않으므로, 압축을 푼 뒤 실제 시간을 기록합니다. AudioSet은 [Google이 공개한 다양한 실제 소리 자료](https://research.google.com/audioset/)입니다.
 
 **MIT RIR**은 소음 녹음이 아니라 소리가 공간을 거치면서 어떻게 울리는지 측정한 자료입니다. 음성에 적용하면 해당 공간의 울림을 재현할 수 있습니다. [MIT 원출처](https://mcdermottlab.mit.edu/Reverb/IR_Survey.html)와 Hugging Face의 실제 파일 목록을 함께 기록하며, 파일 개수는 내려받은 버전에서 확인합니다.
+
+MIT RIR은 **최종 모델용 학습에도 사용**할 수 있습니다. 호출어 원본이 많아져도 같은 공간의 RIR을 여러 호출 음성에 적용할 수 있으므로 자료 수를 비례해서 늘릴 필요는 없습니다. 개발용 평가에서 부족한 공간 조건이 확인되면 다른 공개 RIR을 추가하며, 평가용 RIR의 분리는 유지합니다.
 
 일반 비호출 2,000시간은 위 증강 재료와 별도로 [openWakeWord 사전 계산 특징](https://huggingface.co/datasets/davidscripka/openwakeword_features)의 `openwakeword_features_ACAV100M_2000_hrs_16bit.npy`를 사용합니다. 이 파일에는 원본 음성이 없어 소음 혼합 재료로 사용할 수 없습니다.
 

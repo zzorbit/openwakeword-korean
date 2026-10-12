@@ -59,8 +59,8 @@ koww status --project projects/bora/project.json
 | 모델당 학습량 | 10,000회 | 50,000회 | 100,000회 |
 | 일반 비호출 자료 목표 | 2,000시간 | 2,000시간 | 7,500시간 |
 | 한국어 비호출 자료 목표 | 1시간 | 약 667시간 | 2,500시간 |
-| 소음 증강 재료 | AudioSet 일부 + 음악 1시간 | | |
-| 잔향 증강 재료 | MIT RIR | | |
+| 소음 증강 재료 | AudioSet 일부 + 음악 1시간 | AudioSet 일부 + 음악 1시간 | |
+| 잔향 증강 재료 | MIT RIR | MIT RIR | |
 
 - **동작 확인용:** 음성 생성 → 증강 → 학습 → 감지까지 실제로 진행되는지 확인합니다. [공식 자동 학습 예제](https://github.com/dscripka/openWakeWord/blob/main/notebooks/automatic_model_training.ipynb)의 호출어 1,000개·R1·10,000단계·일반 비호출 2,000시간과 같은 증강 재료를 기준으로 잡았습니다. 한국어 음성 생성과 모델 구조·학습 방법은 이 라이브러리의 설정을 사용하며, 공식이 정한 절대 최소값이나 실사용 성능을 보장하는 구성은 아닙니다.
 - **시험용:** 새 호출어의 초기 성능을 평가합니다. [공식 학습 설정](https://github.com/dscripka/openWakeWord/blob/main/examples/custom_model.yml)의 호출어 최소 20,000개 권장·50,000회와 일반 비호출 2,000시간 예제를 참고하고, 이 라이브러리에서는 증강을 R3로 선택했습니다.
@@ -69,7 +69,7 @@ koww status --project projects/bora/project.json
 
 동작 확인용·시험용의 일반 비호출은 [openWakeWord 공개 특징 자료](https://huggingface.co/datasets/davidscripka/openwakeword_features)의 약 2,000시간짜리 파일을 사용합니다. **원본 오디오가 아니라, 학습에 바로 넣을 수 있도록 미리 숫자로 변환한 자료**이며 아래의 `koww download-generic` 명령으로 받습니다.
 
-동작 확인용의 소음 재료는 **AudioSet의 `bal_train09.tar` 1개와 FMA 음악 1시간**, 잔향 재료는 **MIT의 공간 울림 측정 자료**입니다. AudioSet은 말소리·음악·생활 소리 등 다양한 실제 소리를 담고, MIT RIR은 호출 음성에 공간의 울림을 적용합니다. 정확한 출처와 준비 범위는 [공식 예제의 증강 재료 안내](docs/DATASETS.md#공식-자동-학습-예제의-증강-재료)를 참고하세요.
+동작 확인용·시험용의 증강 재료는 공식 예제와 같습니다. 소음 재료는 **AudioSet의 `bal_train09.tar` 1개와 FMA 음악 1시간**, 잔향 재료는 **MIT RIR의 `train` 전체**입니다. AudioSet은 말소리·음악·생활 소리 등 다양한 실제 소리를 담고, MIT RIR은 호출 음성에 공간의 울림을 적용합니다. MIT RIR은 최종 모델용 학습에도 사용할 수 있습니다. 정확한 출처와 준비 범위는 [공식 예제의 증강 재료 안내](docs/DATASETS.md#공식-자동-학습-예제의-증강-재료)를 참고하세요.
 
 **모델 구조·학습 방법의 설정 비교와 데이터량의 최적화는 구분합니다.** 위의 호출어 수와 비호출 시간은 최적량이 입증된 값이 아닙니다. 새 호출어의 데이터량은 공식 안내와 공개 학습 사례를 참고해 선택합니다. 근거와 비교 방법은 [데이터량 선정 기준](plan.md#데이터량의-근거와-선택-원칙)에 있습니다.
 
