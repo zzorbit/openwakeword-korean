@@ -40,6 +40,30 @@ python -m pip install ".[train,tts]"
 koww check
 ```
 
+## 학습 데이터 준비
+
+학습에는 다음 자료가 필요합니다. **새 호출어 음성은 Qwen TTS(음성 합성 모델)로 호출어만 단독으로 생성**하며, 나머지 공개 자료는 여러 호출어 학습에 재사용할 수 있습니다.
+
+| 자료 | 역할 |
+| --- | --- |
+| 호출어 음성(Positive) | 모델이 인식해야 할 한국어 호출어 |
+| 비호출 자료(Negative) | 호출어가 아닌 대화·음악·환경음으로 오호출을 줄이는 학습 자료 |
+| 유사어 자료(Hard Negative) | 호출어와 발음이 비슷한 다른 표현으로 오인식을 줄이는 별도 비호출 학습 자료 |
+| 소음 증강 재료 | 호출어와 일반 음성에 섞는 환경음·음악·말소리. 비호출 원본 오디오도 재사용 가능 |
+| 잔향 자료(RIR) | 방이나 공간에 따른 울림을 재현하는 재료 |
+
+사용 가능한 공개 자료 목록과 다운로드 예시입니다. 내려받은 자료를 학습에 연결하는 절차는 [데이터 준비 안내](docs/DATASETS.md)와 [라이브러리 가이드](docs/LIBRARY_GUIDE.md)를 따르세요.
+
+```powershell
+koww datasets
+koww download-data --dataset musan --output shared/musan.tar.gz
+koww download-data --dataset rir --output shared/rirs_noises.zip
+koww download-data --dataset zeroth --output shared/zeroth_korean.tar.gz
+koww download-generic --output shared/openwakeword_features_ACAV100M_2000_hrs_16bit.npy
+```
+
+검수한 합성 음색은 재사용하고, 대량 생성 음성에는 무음·깨짐 등의 자동 품질 검사를 적용합니다. 모든 오디오를 음성 인식 모델로 전사하거나 하나씩 청취하는 방식은 기본 절차가 아닙니다. 개인의 호출 녹음은 학습·설정 조정·음성 복제 참조로 사용하지 않습니다.
+
 ## 호출어 학습 시작
 
 아래는 호출어 **‘보라야’**를 학습할 프로젝트를 만드는 예시입니다. `보라야`는 호출어, `bora`는 영문 프로젝트 이름입니다. 원하는 호출어와 프로젝트 이름으로 바꿔 사용하세요. 생성된 파일은 `projects/bora`에 저장됩니다.
@@ -103,30 +127,6 @@ koww init --wakeword 보라야 --id bora --output projects/bora --non-interactiv
 CNN128·AdamW 등은 초기 표본 모델 학습 결과에서 선정한 **권장 시작값**입니다. 모델 구조와 학습 방법은 기본값으로 시작하고, 직접 변경하려면 `init` 명령에 `--advanced`를 추가하세요. 새 호출어와 선택한 작업량의 성능은 학습 후 평가로 확인합니다.
 
 [라이브러리 가이드](docs/LIBRARY_GUIDE.md)의 명령을 따라 **대표 음성 생성·검수 → 전체 음성 생성 → 데이터 준비·증강 → 모델 학습 → 평가·감지 기준 선택 → 최종 평가·결과 사이트 생성** 순서로 진행합니다. 큰 작업 전에 `koww benchmark --output projects/bora/reports/cpu_gpu.json`으로 CPU와 GPU의 학습 속도를 비교할 수 있습니다.
-
-## 학습 데이터 준비
-
-학습에는 다음 자료가 필요합니다. **새 호출어 음성은 Qwen TTS(음성 합성 모델)로 호출어만 단독으로 생성**하며, 나머지 공개 자료는 여러 호출어 학습에 재사용할 수 있습니다.
-
-| 자료 | 역할 |
-| --- | --- |
-| 호출어 음성(Positive) | 모델이 인식해야 할 한국어 호출어 |
-| 비호출 자료(Negative) | 호출어가 아닌 대화·음악·환경음으로 오호출을 줄이는 학습 자료 |
-| 유사어 자료(Hard Negative) | 호출어와 발음이 비슷한 다른 표현으로 오인식을 줄이는 별도 비호출 학습 자료 |
-| 소음 증강 재료 | 호출어와 일반 음성에 섞는 환경음·음악·말소리. 비호출 원본 오디오도 재사용 가능 |
-| 잔향 자료(RIR) | 방이나 공간에 따른 울림을 재현하는 재료 |
-
-사용 가능한 공개 자료 목록과 다운로드 예시입니다. 내려받은 자료를 학습에 연결하는 절차는 [데이터 준비 안내](docs/DATASETS.md)와 [라이브러리 가이드](docs/LIBRARY_GUIDE.md)를 따르세요.
-
-```powershell
-koww datasets
-koww download-data --dataset musan --output shared/musan.tar.gz
-koww download-data --dataset rir --output shared/rirs_noises.zip
-koww download-data --dataset zeroth --output shared/zeroth_korean.tar.gz
-koww download-generic --output shared/openwakeword_features_ACAV100M_2000_hrs_16bit.npy
-```
-
-검수한 합성 음색은 재사용하고, 대량 생성 음성에는 무음·깨짐 등의 자동 품질 검사를 적용합니다. 모든 오디오를 음성 인식 모델로 전사하거나 하나씩 청취하는 방식은 기본 절차가 아닙니다. 개인의 호출 녹음은 학습·설정 조정·음성 복제 참조로 사용하지 않습니다.
 
 ## Python에서 모델 사용
 
