@@ -20,6 +20,24 @@
 
 공개되어 있어도 자료마다 이용조건이 다릅니다. 출처와 제공자의 라이선스·원문 안내를 보존하세요. 코드의 Apache-2.0 라이선스를 음원 전체에 적용하지 않습니다. Generic은 제공자 CC BY-NC-SA 4.0, YODAS는 CC BY 3.0, Zeroth는 CC BY 4.0, Seoul은 CC BY-NC 2.0으로 기록되어 있습니다. MUSAN·DNS·RIRS는 개별 원출처 조건도 확인합니다. 자세한 조건은 [이용조건·출처](../THIRD_PARTY_NOTICES.md)에 있습니다.
 
+## 공식 자동 학습 예제의 증강 재료
+
+README의 **동작 확인용**은 [openWakeWord 공식 자동 학습 예제](https://github.com/dscripka/openWakeWord/blob/main/notebooks/automatic_model_training.ipynb)와 같은 증강 재료를 준비합니다.
+
+| 재료 | 공식 예제의 준비 범위 | 사용하는 이유 |
+| --- | --- | --- |
+| AudioSet | [agkphysics/AudioSet](https://huggingface.co/datasets/agkphysics/AudioSet)의 `data/bal_train09.tar` 압축파일 1개 | 말소리·음악·생활 소리 등 실제 배경음을 호출어에 섞음 |
+| FMA 음악 | [rudraml/fma](https://huggingface.co/datasets/rudraml/fma)의 `small` 구성에서 30초 음원 120개, 총 1시간 | 음악이 들리는 상황을 학습 |
+| MIT 잔향(RIR) | [MIT_environmental_impulse_responses](https://huggingface.co/datasets/davidscripka/MIT_environmental_impulse_responses)의 `train` 전체 | 실제 공간에서 측정한 울림을 호출 음성에 적용 |
+
+**AudioSet 일부**는 임의의 시간 목표가 아니라 위 압축파일 하나를 뜻합니다. 공식 예제는 이 파일의 총 오디오 시간을 따로 명시하지 않으므로, 압축을 푼 뒤 실제 시간을 기록합니다. AudioSet은 [Google이 공개한 다양한 실제 소리 자료](https://research.google.com/audioset/)입니다.
+
+**MIT RIR**은 소음 녹음이 아니라 소리가 공간을 거치면서 어떻게 울리는지 측정한 자료입니다. 음성에 적용하면 해당 공간의 울림을 재현할 수 있습니다. [MIT 원출처](https://mcdermottlab.mit.edu/Reverb/IR_Survey.html)와 Hugging Face의 실제 파일 목록을 함께 기록하며, 파일 개수는 내려받은 버전에서 확인합니다.
+
+일반 비호출 2,000시간은 위 증강 재료와 별도로 [openWakeWord 사전 계산 특징](https://huggingface.co/datasets/davidscripka/openwakeword_features)의 `openwakeword_features_ACAV100M_2000_hrs_16bit.npy`를 사용합니다. 이 파일에는 원본 음성이 없어 소음 혼합 재료로 사용할 수 없습니다.
+
+공식 예제의 자료 수집·16kHz WAV 변환 코드를 참고해 위 원본 음원을 준비한 뒤 [자료 목록 작성법](DATA_FORMAT.md)으로 연결합니다. 아래 기본 다운로드 명령의 MUSAN·RIRS_NOISES는 대체하거나 추가할 수 있는 자료이며, FMA·MIT 자료와 서로 다른 데이터셋입니다. `koww download-data --dataset rir`는 RIRS_NOISES를 받으므로 MIT 자료를 받는 명령으로 사용하지 않습니다.
+
 ## 기본 자료 다운로드
 
 저장소 폴더에서 명령을 실행합니다. `shared/`는 여러 호출어에서 공유할 자료를 두는 예시이며, 원하는 데이터 폴더로 바꿀 수 있습니다. SSD나 HDD 중 특정 장치를 사용할 필요는 없습니다.
