@@ -63,8 +63,13 @@ def apply_review(project, queue, decisions, kind):
             return {"state": "content_exceptions_pending", "kept": len(kept)}
         hashes = []
         for row in kept:
-            if row.get("provenance") != "public_dataset" or not row.get("source_url") or not row.get("license"):
-                raise ValueError("Content review requires public provenance and license")
+            if row.get("provenance") == "qwen_tts":
+                from .data import validate_hard_negative
+                validate_hard_negative(row, config)
+                if row.get("split") != "train":
+                    raise ValueError("Synthetic Hard Negative review requires train split")
+            elif row.get("provenance") != "public_dataset" or not row.get("source_url") or not row.get("license"):
+                raise ValueError("Content review requires public provenance or a synthetic-only Hard Negative phrase")
             binding = row.get("reviewed_source", {"path": row["path"], "sha256": row["sha256"]})
             if digest(resolved(root, binding["path"])) != binding["sha256"]:
                 raise ValueError("Content preview's underlying source changed")

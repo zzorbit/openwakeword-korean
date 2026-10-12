@@ -103,6 +103,18 @@ koww review --project projects/bora/project.json --queue projects/bora/review/pu
 koww audit --project projects/bora/project.json
 ```
 
+## 유사어 학습 자료
+
+유사어(Hard Negative)는 호출어와 발음이 비슷한 **다른 표현**입니다. 공개 음원의 해당 구간을 고르거나 Qwen TTS로 별도 생성한 음성을 `data/negative/hard.jsonl`에 연결합니다. 호출어 전체가 포함된 표현은 비호출 정답으로 넣지 않습니다. 개인의 호출 녹음이나 실제 사람 음성을 TTS 참조로 사용하지 않습니다.
+
+공개 자료는 위 비호출 예시와 같은 출처·승인 필드를 사용하고, **`text`에 실제 유사 표현**, **`speech: true`**, **`split: "train"`**을 추가합니다. 합성 자료는 `provenance: "qwen_tts"`, `human_reference_used: false`, 학습용 `voice_family_id`를 기록하고, 출처·생성 근거와 내용 검수 결과를 보존합니다. 합성 음색도 개발용·최종 평가용 계열과 분리합니다.
+
+공개 또는 합성 유사어의 대표 검수 목록을 `koww review --kind content`로 확인한 뒤, 반환된 승인 기록을 해당 원본의 `admission`에 연결합니다. 새 유사어 생성 방식은 대표 발음을 먼저 검수하고 전체 음원을 다시 STT하지 않습니다. `init`은 빈 목록만 만들며 유사어를 자동 수집·생성·승인하지 않습니다.
+
+긴 원본은 `koww windows --pool hard_negative`로 고정 2초 목록을 준비하고, `manifests.hard_negative`를 그 목록으로 바꿉니다. 이어서 `koww features --role hard_negative`로 다른 비호출과 같은 계열의 증강을 적용합니다. 준비된 음성이 비어 있으면 학습을 시작할 수 없습니다.
+
+배치의 유사어 **100개는 매회 추출량**이며 전체 원본 수가 아닙니다. 원본 수·표현별 분포·누적 추출량을 따로 기록하고, 일반·한국어 비호출과 중복되는 원본 시간은 다시 더하지 않습니다.
+
 ## 평가 자료 목록
 
 `prepare-eval`이 만드는 `manifest.jsonl`은 소음 조건별 호출어 평가 목록입니다. 여기에 연속 비호출 평가 목록을 합칩니다.

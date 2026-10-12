@@ -15,6 +15,7 @@
 | --- | --- |
 | Positive | 인식해야 할 호출어 음성 |
 | Negative | 호출어가 아닌 대화·음악·환경음 |
+| Hard Negative(유사어) | 호출어와 발음이 비슷하지만 다른 표현. 학습 정답은 비호출 |
 | 참조 음성 | Qwen TTS가 음색을 따라 생성할 때 사용하는 합성 음성 |
 | Feature(특징) | 음성을 모델이 학습할 수 있는 숫자 배열로 바꾼 자료 |
 | 개발용 평가(Development) | 모델과 감지 설정을 고를 때 사용하는 평가 |
@@ -31,19 +32,21 @@ koww prepare-frontend --project projects/bora/project.json
 koww storage --project projects/bora/project.json
 ```
 
-첫 명령에서 **TTS 원본 수 / 원본당 증강 횟수 / 모델당 학습량 / 일반 비호출 시간 / 한국어 비호출 시간 / 환경소음 시간**을 선택합니다. [README의 세 단계](../README.md#호출어-학습-시작) 중 처음에는 **동작 확인용**을 권장합니다. 값 없이 Enter를 누르면 전체 규모가 적용됩니다.
+첫 명령에서 **TTS 원본 수 / 원본당 증강 횟수 / 모델당 학습량 / 일반 비호출 시간 / 한국어 비호출 시간 / 환경소음 시간**을 선택합니다. [README의 세 단계](../README.md#호출어-학습-시작) 중 처음에는 **동작 확인용**을 권장합니다. 값 없이 Enter를 누르면 최종 모델용 설정이 적용됩니다.
 
-| 단계 | 호출어 원본 / 증강 / 모델당 학습량 | 일반 비호출 / 한국어 비호출 / 환경소음 목표 |
+| 단계 | 호출어 원본 / 증강 / 모델당 학습량 | 일반 비호출 / 한국어 비호출 목표 |
 | --- | --- | --- |
-| 동작 확인용 | 1,000개 / R1 / 1,000회 | 10 / 1 / 1시간 |
-| 중간 규모 | 20,000개 / R3 / 20,000회 | 500 / 50 / 10시간 |
-| 전체 규모 | 100,000개 / R5 / 50,000회 | 2,000 / 200 / 30시간 |
+| 동작 확인용 | 1,000개 / R1 / 10,000회 | 2,000 / 약 667시간 |
+| 시험용 | 20,000개 / R3 / 50,000회 | 2,000 / 약 667시간 |
+| 최종 모델용 | 100,000개 / R5 / 100,000회 | 7,500 / 2,500시간 |
 
 세 단계 모두 CNN128 모델 3개와 같은 학습 방법을 사용합니다. 총 학습량은 모델당 학습량의 3배입니다. 작은 두 단계의 수치는 작업량을 줄인 시작 예시이며 성능 검증을 마친 설정은 아닙니다. 동작 확인용의 완료 기준은 **새 호출어를 실제 생성·증강·학습하고, 만든 모델로 감지·평가 결과를 얻는 것**입니다. 설치 확인이나 동봉 모델 실행만으로 이 과정을 대신하지 않습니다.
 
 학습 설정을 비교·선정했어도 **위 데이터량의 최적값을 확인한 것은 아닙니다.** 새 호출어의 자료 규모는 [공식 자료·공개 사례와 데이터량 선정 기준](../plan.md#데이터량의-근거와-선택-원칙)을 검토해 선택합니다.
 
-자료 시간은 준비 목표입니다. 기존 자료를 재사용할 수 있고, 이 단계에서 다운로드하거나 사용 구간을 자동으로 자르지는 않습니다. 정식 학습 전에는 선택한 비호출 시간과 실제 준비한 시간이 맞는지 확인합니다. 환경소음은 규모와 관계없이 다양한 종류를 확보하고 별도 배치 항목으로 세지 않습니다. 전체 규모는 30~50시간부터 시작합니다. 잔향은 서로 다른 공간의 자료를 데이터 준비 단계에서 연결합니다.
+자료 시간은 준비 목표입니다. 일반·한국어 비호출은 **75:25**로 구성하며, 일반 2,000시간의 정확한 한국어 목표는 666⅔시간입니다. 시간 선택만으로 자료를 다운로드하거나 자르지는 않습니다. 동작 확인용 증강 재료는 [공식 예제 안내](DATASETS.md#공식-자동-학습-예제의-증강-재료)를 참고하고, 다른 규모는 다양한 환경음·음악·대화를 확보합니다. 원본 비호출 오디오를 증강에 재사용할 수 있으며 소음·잔향 재료는 별도 배치 항목으로 세지 않습니다.
+
+세 단계의 배치는 **일반 768 / 한국어 256 / 호출어 100 / 유사어 100 = 1,224개**입니다. 유사어는 별도 자료로 준비하며, 자료가 없으면 임의의 일반 비호출로 대체하거나 해당 배치를 생략하지 않습니다.
 
 설정은 `project.json`, 예상 특징 수·용량·학습량은 `reports/setup_summary.json`에 저장됩니다. 예상 용량에는 호출어 특징 배열만 포함되므로 원본 음원·비호출 자료·평가 오디오 공간도 확보하세요. `init`은 설정만 만들고 학습을 시작하지 않습니다.
 
@@ -125,6 +128,7 @@ koww generate --project projects/bora/project.json --split validation --limit 10
 | 프로젝트 파일 | 넣을 자료 |
 | --- | --- |
 | `data/negative/korean.jsonl` | 학습용 한국어 중심 비호출 음성 |
+| `data/negative/hard.jsonl` | 호출어와 발음이 비슷한 다른 표현의 학습용 음성 |
 | `data/materials/noise.jsonl` | 학습용 환경음·음악·겹치는 대화 |
 | `data/materials/rir.jsonl` | 학습용 잔향 자료 |
 | `data/materials/validation_noise.jsonl` | 개발용 평가의 세 종류 배경음 |
@@ -147,12 +151,19 @@ koww windows --project projects/bora/project.json --pool korean_negative --outpu
 
 완료 후 `project.json`의 `manifests` 안에 있는 `korean_negative` 값을 **`data/negative/korean_windows.jsonl`**로 바꾸세요. 학습을 시작한 뒤에는 이 설정을 변경하지 않습니다.
 
-학습 전에는 **처음 선택한 일반 비호출·한국어 비호출 목표 시간**을 확인합니다. 전체 규모는 각각 2,000시간 / 200시간이며 작은 단계는 1단계 표의 시간을 명시적으로 선택합니다. 호출어 원본 수만 줄여도 자료 목표 시간이 자동으로 줄어들지는 않습니다. 공개 Generic 사전 계산 자료는 작은 단계에서도 같은 전체 파일을 연결하므로 다운로드·첫 검증 비용은 같습니다. 환경소음은 시간보다 종류의 다양성을 함께 확인합니다.
+학습 전에는 **처음 선택한 일반 비호출·한국어 비호출 목표 시간**을 확인합니다. 최종 모델용은 각각 7,500시간 / 2,500시간이며 작은 단계는 1단계 표의 시간을 명시적으로 선택합니다. 공개 Generic 파일은 약 2,000시간만 포함하므로 최종 모델용에는 더 큰 자료가 필요합니다. 원본 일반 비호출 목록을 준비했다면 `windows --pool generic_negative`와 `features --role generic_negative`로 특징을 만들 수 있습니다. 공개 파일을 복제해 7,500시간으로 계산하거나 여러 특징 배열이 자동 통합된다고 가정하지 않습니다. 호출어 원본 수만 줄여도 자료 목표 시간이 자동으로 줄어들지는 않습니다.
+
+유사어는 [유사어 자료 안내](DATA_FORMAT.md#유사어-학습-자료)에 따라 내용·출처·검수 기록을 준비합니다. 긴 원본은 다음으로 고정 2초 목록을 만들고, `project.json`의 `manifests.hard_negative`를 `data/negative/hard_windows.jsonl`로 바꿉니다.
+
+```powershell
+koww windows --project projects/bora/project.json --pool hard_negative --output projects/bora/data/negative/hard_windows.jsonl
+```
 
 ## 6. 특징 만들기·모델 학습하기
 
 ```powershell
 koww features --project projects/bora/project.json --role korean_negative
+koww features --project projects/bora/project.json --role hard_negative
 koww features --project projects/bora/project.json --role positive
 koww train --project projects/bora/project.json --output projects/bora/runs/selected_budget
 koww package --project projects/bora/project.json --run projects/bora/runs/selected_budget --output projects/bora/models/candidate_selected

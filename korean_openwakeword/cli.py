@@ -12,9 +12,9 @@ def setup_arguments(a):
     basic = a.add_argument_group("초기 선택: 작업량·자료 규모")
     basic.add_argument("--originals", type=int, help="증강 전 Positive TTS 원본 수; 시작값 100000")
     basic.add_argument("--rounds", type=int, choices=(1, 3, 5), help="원본당 증강 횟수; 시작값 5")
-    basic.add_argument("--updates", type=int, help="모델 한 개의 optimizer update 수; 시작값 50000")
-    basic.add_argument("--generic-hours", type=float, help="일반 비호출 자료 목표 시간; 시작값 2000")
-    basic.add_argument("--korean-hours", type=float, help="한국어 비호출 자료 목표 시간; 시작값 200")
+    basic.add_argument("--updates", type=int, help="모델 한 개의 optimizer update 수; 시작값 100000")
+    basic.add_argument("--generic-hours", type=float, help="일반 비호출 자료 목표 시간; 시작값 7500")
+    basic.add_argument("--korean-hours", type=float, help="한국어 비호출 자료 목표 시간; 시작값 2500")
     basic.add_argument("--noise-hours", type=float, help="환경소음 증강 재료 목표 시간; 시작값 30, 다양성도 별도 확인")
     mode = basic.add_mutually_exclusive_group()
     mode.add_argument("--interactive", dest="interactive", action="store_true", help="작업량 선택 화면 열기")
@@ -84,7 +84,7 @@ def parser():
     for name in ("status", "audit", "prepare-frontend", "storage"):
         a = sub.add_parser(name); a.add_argument("--project", type=Path, required=True)
     a = sub.add_parser("windows", help="공개 Negative 원본의 고정 2초 구간 manifest")
-    a.add_argument("--project", type=Path, required=True); a.add_argument("--pool", choices=("generic_negative", "korean_negative"), required=True)
+    a.add_argument("--project", type=Path, required=True); a.add_argument("--pool", choices=("generic_negative", "korean_negative", "hard_negative"), required=True)
     a.add_argument("--output", type=Path, required=True)
     for name in ("references", "generate"):
         a = sub.add_parser(name); a.add_argument("--project", type=Path, required=True)
@@ -95,7 +95,7 @@ def parser():
     a.add_argument("--project", type=Path, required=True); a.add_argument("--queue", type=Path, required=True)
     a.add_argument("--kind", choices=("references", "pilot", "content"), default="pilot"); a.add_argument("--port", type=int, default=8790)
     a = sub.add_parser("features", help="실제 N×rounds 증강 feature")
-    a.add_argument("--project", type=Path, required=True); a.add_argument("--role", choices=("positive", "generic_negative", "korean_negative"), required=True)
+    a.add_argument("--project", type=Path, required=True); a.add_argument("--role", choices=("positive", "generic_negative", "korean_negative", "hard_negative"), required=True)
     a.add_argument("--output", type=Path); a.add_argument("--rounds", type=int, choices=(1, 3, 5)); a.add_argument("--batch-size", type=int, default=32)
     a.add_argument("--smoke", action="store_true"); a.add_argument("--resume", action="store_true")
     a = sub.add_parser("verify-cache"); a.add_argument("directory", type=Path)
@@ -269,4 +269,3 @@ def main(argv=None):
             print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
     except (ValueError, FileNotFoundError, RuntimeError) as error:
         p.exit(1, "koww: " + str(error) + "\n")
-

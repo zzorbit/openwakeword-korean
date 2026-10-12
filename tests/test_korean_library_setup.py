@@ -21,7 +21,7 @@ def test_selected_budget_keeps_learning_defaults_and_syncs_paths_schedule(tmp_pa
     assert config["training"]["schedule_horizon"] == 20000
     assert config["training"]["checkpoints"] == [4000, 8000, 20000]
     assert config["pool_features"]["positive"] == "features/positive_N20000_R3"
-    assert config["batch"] == BATCH and config["hard_negative_samples"] == 0
+    assert config["batch"] == BATCH and config["hard_negative_samples"] == 100
     for key in ("architecture", "optimizer", "learning_rate", "dropout", "seeds", "backend"):
         assert config["training"][key] == baseline["training"][key]
     for key in ("validation_originals", "final_originals", "generic_hours", "korean_hours"):
@@ -34,7 +34,8 @@ def test_selected_budget_keeps_learning_defaults_and_syncs_paths_schedule(tmp_pa
 
 
 def test_formal_selected_budget_accepts_matching_counts_only():
-    config = configure_budget(default_profile(), positive_originals=20000, augmentation_rounds=3, updates=20000)
+    config = configure_budget(default_profile(), positive_originals=20000, augmentation_rounds=3, updates=20000,
+                              generic_hours=2000, korean_hours=200)
     # Unit metadata fixture, not an audio approval or trained model.
     meta = {"positive": {"original_count": 20000, "rounds": 3, "feature_rows": 60000},
             "generic_negative": {"unique_source_hours": 2000}, "korean_negative": {"unique_source_hours": 200}}

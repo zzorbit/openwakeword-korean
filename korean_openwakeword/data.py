@@ -1,6 +1,7 @@
 """Source/family separation and reusable public-audio manifests; no STT sweep."""
 from collections import defaultdict
 import math
+import re
 from pathlib import Path
 import numpy as np
 import soundfile as sf
@@ -9,6 +10,23 @@ from .common import bound_file, digest, identity, read_json, read_rows, resolved
 from .project import load_project
 
 CATEGORIES = ("environment", "music", "competing_speech")
+
+
+def validate_hard_negative(row, config):
+    """A reviewed non-call phrase, never an unlabeled substitute Negative."""
+    text = row.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("Hard Negative needs its declared non-call phrase in text")
+    normalized = "".join(re.findall(r"[가-힣]", text))
+    if not normalized or config["wakeword"] in normalized:
+        raise ValueError("Hard Negative text cannot contain the configured wakeword")
+    if row.get("speech") is not True:
+        raise ValueError("Hard Negative must be a speech phrase")
+    if row.get("provenance") == "qwen_tts":
+        if row.get("human_reference_used") is not False or not row.get("voice_family_id"):
+            raise ValueError("Synthetic Hard Negative needs a Qwen-only voice family without human reference")
+    elif row.get("provenance") != "public_dataset" or not row.get("source_url") or not row.get("license"):
+        raise ValueError("Hard Negative needs public source provenance or Qwen-only synthesis")
 
 
 def rows_for(root, config, pool):
@@ -48,7 +66,7 @@ def audit_project(project, check_files=True, include_final_files=False, extra_ro
             ids.add(sid)
             if split not in ("train", "validation", "final") or not source_key(row):
                 errors.append(f"{pool}/{sid}: canonical source/split required")
-            if pool in ("generic_negative", "korean_negative", "noise", "rir", "positive_train") and split != "train":
+            if pool in ("generic_negative", "korean_negative", "hard_negative", "noise", "rir", "positive_train") and split != "train":
                 errors.append(f"{pool}/{sid}: training input cannot use held-out audio")
             if pool == "positive_validation" and split != "validation" or pool == "positive_final" and split != "final":
                 errors.append(f"{pool}/{sid}: wrong voice-family partition")
@@ -70,6 +88,11 @@ def audit_project(project, check_files=True, include_final_files=False, extra_ro
                     errors.append(f"{pool}/{sid}: standalone Qwen/no-human provenance required")
                 if not row.get("voice_family_id"):
                     errors.append(f"{pool}/{sid}: synthetic family ID required")
+            elif pool == "hard_negative":
+                try:
+                    validate_hard_negative(row, config)
+                except ValueError as e:
+                    errors.append(f"{pool}/{sid}: {e}")
             elif pool not in ("development", "final", "external_evaluation"):
                 if row.get("provenance") != "public_dataset" or not row.get("license") or not row.get("source_url"):
                     errors.append(f"{pool}/{sid}: public source URL/license/provenance required")
@@ -126,6 +149,8 @@ def validate_admission(root, rows, config, role, smoke=False):
         if role == "positive":
             if row.get("provenance") != "qwen_tts" or row.get("human_reference_used") is not False or row.get("text") != config["wakeword"]:
                 raise ValueError("Positive must be the standalone configured Qwen word without human reference")
+        if role == "hard_negative":
+            validate_hard_negative(row, config)
         if not smoke:
             admission = row.get("admission")
             if not isinstance(admission, dict):
@@ -148,7 +173,7 @@ def validate_admission(root, rows, config, role, smoke=False):
 def prepare_windows(project, pool, output):
     """Expand admitted public recordings into fixed 2s windows without copying WAVs."""
     root, config = load_project(project)
-    if pool not in ("generic_negative", "korean_negative"):
+    if pool not in ("generic_negative", "korean_negative", "hard_negative"):
         raise ValueError("Only training Negative pools use fixed windows")
     _, sources = rows_for(root, config, pool)
     validate_admission(root, sources, config, pool)

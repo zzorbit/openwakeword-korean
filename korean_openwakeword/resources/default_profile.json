@@ -9,8 +9,8 @@
     "positive_originals": 100000,
     "validation_originals": 5000,
     "final_originals": 5000,
-    "generic_hours": 2000,
-    "korean_hours": 200,
+    "generic_hours": 7500,
+    "korean_hours": 2500,
     "noise_hours_phase1": [
       30,
       50
@@ -28,9 +28,10 @@
   "batch": {
     "generic_negative": 768,
     "korean_negative": 256,
-    "positive": 50
+    "positive": 100,
+    "hard_negative": 100
   },
-  "hard_negative_samples": 0,
+  "hard_negative_samples": 100,
   "augmentation_rounds": 5,
   "training": {
     "architecture": "cnn128",
@@ -40,8 +41,8 @@
     "positive_loss_weight": 1,
     "dropout": 0.1,
     "schedule": "cosine_with_2percent_warmup",
-    "updates": 50000,
-    "schedule_horizon": 50000,
+    "updates": 100000,
+    "schedule_horizon": 100000,
     "seeds": [
       20260928,
       20260929,
@@ -52,9 +53,9 @@
     "gpu_cache_budget_mb": 0,
     "cpu_threads": 4,
     "checkpoints": [
-      10000,
       20000,
-      50000
+      40000,
+      100000
     ],
     "log_every": 100,
     "backend": {
@@ -126,6 +127,7 @@
     "positive_final": "data/positive/final.jsonl",
     "generic_negative": "data/negative/generic.jsonl",
     "korean_negative": "data/negative/korean.jsonl",
+    "hard_negative": "data/negative/hard.jsonl",
     "noise": "data/materials/noise.jsonl",
     "rir": "data/materials/rir.jsonl",
     "noise_validation": "data/materials/validation_noise.jsonl",
@@ -137,6 +139,7 @@
   "pool_features": {
     "generic_negative": "features/generic_negative",
     "korean_negative": "features/korean_negative",
+    "hard_negative": "features/hard_negative",
     "positive": "features/positive_R5"
   },
   "evaluation_targets": {
@@ -148,7 +151,8 @@
   },
   "limitations": [
     "CNN128 and learning settings are recommended starting values selected on Chunsik fixed Development, not a universal Korean optimum; new words need evaluation.",
-    "100k originals, R5 and 50k updates per model are reference workload suggestions, selectable at initialization according to resources; smaller budgets are not automatically performance-validated.",
+    "100k originals, R5, 100k updates per model and 7500/2500h Negative targets are selected new-project budgets, not the historical sample model workload or proven optimal data quantities.",
+    "The new 768/256/100/100 batch requires a reviewed nonempty Hard Negative pool; never substitute ordinary Negative silently.",
     "Requested synthetic voice IDs do not prove perceptual diversity.",
     "R5 is a selected default, not proof of monotonic R improvement.",
     "GPU training and CPU ONNX inference are distinct reference paths."

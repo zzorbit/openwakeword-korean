@@ -7,7 +7,8 @@ import math
 
 from .common import read_json, write_json, resolved
 
-BATCH = {"generic_negative": 768, "korean_negative": 256, "positive": 50}
+BATCH = {"generic_negative": 768, "korean_negative": 256, "positive": 100, "hard_negative": 100}
+LEGACY_BATCH = {"generic_negative": 768, "korean_negative": 256, "positive": 50}
 SPLITS = ("train", "validation", "final")
 ADVANCED_TRAINING_KEYS = frozenset({
     "architecture", "optimizer", "learning_rate", "weight_decay", "dropout",
@@ -18,6 +19,11 @@ ADVANCED_TRAINING_KEYS = frozenset({
 
 def default_profile():
     return read_json(files("korean_openwakeword") / "resources" / "default_profile.json")
+
+
+def training_batch(config):
+    """Keep the historical three-pool order; new projects add the fourth pool."""
+    return {role: config["batch"][role] for role in BATCH if role in config["batch"]}
 
 
 def configure_budget(config, *, positive_originals=None, augmentation_rounds=None,
@@ -72,8 +78,10 @@ def workload_summary(config):
         "positive_feature_payload_gib": round(feature_bytes / 1024**3, 3),
         "updates_per_model": t["updates"], "model_count": members,
         "total_optimizer_updates": t["updates"] * members,
-        "positive_draws_per_model": t["updates"] * BATCH["positive"],
-        "mean_positive_draws_per_feature_per_model": round(t["updates"] * BATCH["positive"] / rows, 3),
+        "batch": training_batch(config), "batch_size": sum(config["batch"].values()),
+        "draws_per_pool_per_model": {role: t["updates"] * count for role, count in training_batch(config).items()},
+        "positive_draws_per_model": t["updates"] * config["batch"]["positive"],
+        "mean_positive_draws_per_feature_per_model": round(t["updates"] * config["batch"]["positive"] / rows, 3),
         "schedule_horizon": t["schedule_horizon"],
         "warmup_updates": max(1, int(t["schedule_horizon"] * .02)) if t["schedule"] == "cosine_with_2percent_warmup" else 0,
         "checkpoints": list(t["checkpoints"]), "architecture": t["architecture"],
@@ -84,7 +92,7 @@ def workload_summary(config):
             "environment_noise_hours": config["targets"].get("noise_hours", config["targets"]["noise_hours_phase1"][0]),
             "scope": "Preparation targets, not downloaded or approved hours. Negative targets are checked before formal training; noise hours are a planning target, with diversity reviewed separately.",
         },
-        "workload_kind": "reference_100k_R5_50k" if (n, r, t["updates"]) == (100000, 5, 50000) else "user_selected_budget",
+        "workload_kind": "reference_100k_R5_50k" if (n, r, t["updates"]) == (100000, 5, 50000) and config["batch"] == LEGACY_BATCH else "user_selected_budget",
         "performance_status": "requires_this_word_development_and_independent_final",
         "notes": [
             "Storage is only the positive float32 feature payload, excluding WAVs, journals, Negative caches and checkpoints.",
@@ -105,8 +113,12 @@ def validate_project(config):
         raise ValueError("Unsupported project schema or language")
     if not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", config.get("project_id", "")):
         raise ValueError("project_id needs a safe ASCII name, e.g. bora")
-    if config.get("batch") != BATCH or config.get("hard_negative_samples") != 0:
-        raise ValueError("Baseline batch is 768/256/50/0; sampling changes require a separately declared experiment")
+    if config.get("batch") not in (BATCH, LEGACY_BATCH):
+        raise ValueError("New baseline batch is 768/256/100/100; historical 768/256/50/0 remains readable")
+    if config.get("hard_negative_samples") != config["batch"].get("hard_negative", 0):
+        raise ValueError("hard_negative_samples must match the Hard Negative batch count")
+    if config["batch"].get("hard_negative") and any(not config.get(key, {}).get("hard_negative") for key in ("manifests", "pool_features")):
+        raise ValueError("Hard Negative needs its own manifest and feature cache")
     if type(config.get("augmentation_rounds")) is not int or config["augmentation_rounds"] not in (1, 3, 5):
         raise ValueError("Only R1/R3/R5 are supported")
     for key in ("positive_originals", "validation_originals", "final_originals"):

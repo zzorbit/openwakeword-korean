@@ -7,7 +7,7 @@ import pytest
 import soundfile as sf
 
 from korean_openwakeword.common import digest, identity, read_json, write_json
-from korean_openwakeword.project import create_project, load_project, BATCH
+from korean_openwakeword.project import create_project, load_project, BATCH, LEGACY_BATCH
 from korean_openwakeword.runtime import WakeWordDetector, sample_bundle, verify_bundle
 from korean_openwakeword.features import build_features, compare_rounds, verify_cache
 from korean_openwakeword.train import PoolSampler, train, build_classifier
@@ -39,7 +39,7 @@ def project(tmp_path):
     config["pool_features"]["positive"] = "features/positive_R1"
     config["training"].update(device="cpu", updates=4, schedule_horizon=4, checkpoints=[2, 4], log_every=2)
     write_json(path, config)
-    for role, manifest in (("positive", "positive_train"), ("generic_negative", "generic_negative"), ("korean_negative", "korean_negative")):
+    for role, manifest in (("positive", "positive_train"), ("generic_negative", "generic_negative"), ("korean_negative", "korean_negative"), ("hard_negative", "hard_negative")):
         rows = []
         for i in range(3):
             audio = root / "data" / (role + str(i) + ".wav")
@@ -48,6 +48,8 @@ def project(tmp_path):
                 "path": str(audio.relative_to(root)), "sha256": digest(audio), "speech": role != "generic_negative"}
             if role == "positive":
                 row.update(provenance="qwen_tts", human_reference_used=False, text="보라야", voice_family_id=f"train_voice_{i}", call_start_s=0, call_end_s=1)
+            elif role == "hard_negative":
+                row.update(provenance="qwen_tts", human_reference_used=False, text="보람아", voice_family_id=f"hard_voice_{i}", category="competing_speech")
             else:
                 row.update(provenance="public_dataset", source_url="https://example.org/fixture", license="test-only", category="competing_speech" if role == "korean_negative" else "environment")
             rows.append(row)
@@ -75,10 +77,10 @@ def test_sampler_matches_original_and_replays():
     new, old = PoolSampler(sizes, 42), Original(sizes, 42)
     for _ in range(5):
         a, b = new.next_indices(), old.next_indices()
-        assert all(np.array_equal(a[r], b[r]) for r in BATCH)
+        assert all(np.array_equal(a[r], b[r]) for r in LEGACY_BATCH)
     state = new.state(); expected = new.next_indices(); new.restore(state)
     new.restore(state); actual = new.next_indices()
-    assert all(np.array_equal(expected[r], actual[r]) for r in BATCH)
+    assert all(np.array_equal(expected[r], actual[r]) for r in LEGACY_BATCH)
 
 
 @pytest.mark.legacy_parity
@@ -114,7 +116,8 @@ def test_actual_small_three_model_training_and_resume(project, monkeypatch):
     assert len(complete["members"]) == 3
     assert complete["selected_workload"]["positive_tts_originals"] == 3
     assert complete["selected_workload"]["total_optimizer_updates"] == 12
-    assert all(r["exposure"]["positive"]["drawn"] == 200 for r in complete["members"])
+    assert all(r["exposure"]["positive"]["drawn"] == 400 for r in complete["members"])
+    assert all(r["exposure"]["hard_negative"]["drawn"] == 400 for r in complete["members"])
     again = train(project, root / "runs" / "complete", smoke=True, resume=True)
     assert [r["model_sha256"] for r in again["members"]] == [r["model_sha256"] for r in complete["members"]]
     from korean_openwakeword.bundle import package_run

@@ -99,8 +99,8 @@ def augment(root, row, role, round_id, settings, noises, rirs, noise_index=None)
 def build_features(project, role, output=None, rounds=None, batch_size=32, smoke=False, resume=False, frontend=None):
     root, config = load_project(project)
     pool = "positive_train" if role == "positive" else role
-    if pool not in ("positive_train", "generic_negative", "korean_negative"):
-        raise ValueError("Only the three training pools are supported")
+    if pool not in ("positive_train", "generic_negative", "korean_negative", "hard_negative"):
+        raise ValueError("Only declared training pools are supported")
     rounds = rounds or (config["augmentation_rounds"] if role == "positive" else 1)
     if rounds not in (1, 3, 5) or role != "positive" and rounds != 1:
         raise ValueError("Positive R1/R3/R5; fixed Negative R1 only")
@@ -199,7 +199,8 @@ def build_features(project, role, output=None, rounds=None, batch_size=32, smoke
             intervals.setdefault(original, []).append(interval)
         metadata = {"schema_version": 1, "role": role, "split": "train", "feature_rows": expected,
             "original_count": len(sources), "rounds": rounds, "frontend_id": identity(frontend.identity),
-            "frontend": frontend.identity, "provenance": "qwen_tts" if role == "positive" else "public_dataset",
+            "frontend": frontend.identity, "provenance": "qwen_tts" if role == "positive" else
+                next(iter({r["provenance"] for r in sources})) if len({r["provenance"] for r in sources}) == 1 else "mixed_reviewed_sources",
             "human_reference_used": False, "feature_sha256": digest(path), "journal_sha256": digest(journal),
             "contract_sha256": digest(contract_path), "split_audit_passed": True,
             "unique_source_hours": union_hours(intervals), "smoke_test_only": smoke,

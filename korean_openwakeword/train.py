@@ -12,7 +12,7 @@ import numpy as np
 
 from .common import digest, identity, now, read_json, resolved, write_json, append_row, writer_lock
 from .features import verify_cache
-from .project import BATCH, load_project, workload_summary
+from .project import BATCH, LEGACY_BATCH, training_batch, load_project, workload_summary
 from .storage import project_storage
 
 
@@ -36,17 +36,18 @@ def validate_training_scale(config, metadata):
 
 
 class PoolSampler:
-    def __init__(self, sizes, seed):
-        if set(sizes) != set(BATCH) or min(sizes.values()) < 1:
-            raise ValueError("Three nonempty feature pools required")
+    def __init__(self, sizes, seed, batch=None):
+        self.batch = dict(batch if batch is not None else LEGACY_BATCH if set(sizes) == set(LEGACY_BATCH) else BATCH)
+        if set(sizes) != set(self.batch) or not sizes or min(sizes.values()) < 1:
+            raise ValueError("Every declared batch role needs a nonempty feature pool")
         self.sizes = dict(sizes)
-        self.rngs = {r: np.random.default_rng(np.random.SeedSequence([seed, i])) for i, r in enumerate(BATCH)}
-        self.draws = dict.fromkeys(BATCH, 0)
+        self.rngs = {r: np.random.default_rng(np.random.SeedSequence([seed, i])) for i, r in enumerate(self.batch)}
+        self.draws = dict.fromkeys(self.batch, 0)
         self.seen = {r: np.zeros(n, bool) for r, n in sizes.items()}
 
     def next_indices(self):
         result = {}
-        for r, count in BATCH.items():
+        for r, count in self.batch.items():
             idx = self.rngs[r].integers(self.sizes[r], size=count)
             self.draws[r] += count
             self.seen[r][idx] = True
@@ -59,7 +60,7 @@ class PoolSampler:
 
     def restore(self, state):
         self.draws = dict(state["draws"])
-        for r in BATCH:
+        for r in self.batch:
             self.rngs[r].bit_generator.state = state["rng"][r]
             self.seen[r][:] = state["seen"][r]
 
@@ -114,8 +115,9 @@ class InputDelivery:
     Large pools are copied in bounded sequential chunks only if they fit the
     measured budget. Uncached mmap pools use the original CPU gather path.
     """
-    def __init__(self, pools, device, budget_mb=0, mode="auto"):
+    def __init__(self, pools, device, budget_mb=0, mode="auto", batch=None):
         import torch
+        self.batch_counts = dict(batch if batch is not None else LEGACY_BATCH if set(pools) == set(LEGACY_BATCH) else BATCH)
         self.pools, self.device, self.cached = pools, device, {}
         budget = 0
         if device.startswith("cuda") and mode != "mmap":
@@ -136,7 +138,7 @@ class InputDelivery:
     def batch(self, indices):
         import torch
         xs, ys = [], []
-        for role, count in BATCH.items():
+        for role, count in self.batch_counts.items():
             if role in self.cached:
                 x = self.cached[role][torch.as_tensor(indices[role], device=self.device)].float()
             else:
@@ -162,7 +164,8 @@ def _train_member(config, root, metadata, pools, seed, output, smoke, resume, se
     model = build_classifier(settings["architecture"], settings["dropout"]).to(device)
     optimizer = {"Adam": torch.optim.Adam, "AdamW": torch.optim.AdamW}[settings["optimizer"]](model.parameters(),
         lr=settings["learning_rate"], weight_decay=settings["weight_decay"])
-    sampler = PoolSampler({r: len(a) for r, a in pools.items()}, seed)
+    batch = training_batch(config)
+    sampler = PoolSampler({r: len(a) for r, a in pools.items()}, seed, batch)
     versions = {"torch": torch.__version__, "numpy": np.__version__}
     contract = {"schema_version": 1, "config": config, "seed": seed, "smoke_test_only": smoke,
         "metadata": metadata, "device": device, "versions": versions, "implementation_sha256": digest(__file__)}
@@ -179,7 +182,7 @@ def _train_member(config, root, metadata, pools, seed, output, smoke, resume, se
                 return receipt
         else:
             write_json(prior, contract)
-        delivery = InputDelivery(pools, device, settings.get("gpu_cache_budget_mb", 0), settings.get("delivery", "auto"))
+        delivery = InputDelivery(pools, device, settings.get("gpu_cache_budget_mb", 0), settings.get("delivery", "auto"), batch)
         step = 0
         if resume and (output / "last_checkpoint.json").exists():
             record = read_json(output / "last_checkpoint.json")
@@ -239,7 +242,7 @@ def _train_member(config, root, metadata, pools, seed, output, smoke, resume, se
             raise ValueError("ONNX export mismatch")
         exposure = {r: {"drawn": sampler.draws[r], "distinct_feature_rows": int(sampler.seen[r].sum()),
             "distinct_originals": len(np.unique(np.flatnonzero(sampler.seen[r]) // metadata[r].get("rounds", 1))),
-            "pool_rows": len(pools[r]), "unique_source_hours": metadata[r].get("unique_source_hours")} for r in BATCH}
+            "pool_rows": len(pools[r]), "unique_source_hours": metadata[r].get("unique_source_hours")} for r in batch}
         receipt = {"state": "smoke_trained_not_performance_validated" if smoke else "trained_not_final_evaluated",
             "model_sha256": digest(output / "model.onnx"), "contract_id": contract_id,
             "seed": seed, "updates": step, "exposure": exposure, "delivery": delivery.report,
@@ -261,7 +264,7 @@ def train(project, output=None, smoke=False, resume=False):
         name += f"_N{workload['positive_tts_originals']}_U{workload['updates_per_model']}_M{workload['model_count']}"
     directory = Path(output).resolve() if output else root / "runs" / name
     metadata, pools = {}, {}
-    for role in BATCH:
+    for role in training_batch(config):
         cache = resolved(root, config["pool_features"][role])
         meta = verify_cache(cache)
         if meta.get("role") != role or meta.get("split") != "train" or not meta.get("split_audit_passed"):
@@ -292,13 +295,13 @@ def train(project, output=None, smoke=False, resume=False):
         resource = doctor()
         if "GPU" in resource:
             resource["GPU"].pop("free_bytes", None)
-        probe_key = identity([resource, config["training"]["architecture"], digest(__file__)])[:16]
+        probe_key = identity([resource, config["training"]["architecture"], training_batch(config), digest(__file__)])[:16]
         probe_path = root / "reports" / f"resource_probe_{probe_key}.json"
         prior = directory / f"member1_seed{config['training']['seeds'][0]}" / "contract.json"
         if resume and prior.exists():
             selected_device = read_json(prior)["device"]
         else:
-            probe = read_json(probe_path) if probe_path.exists() else benchmark_training(probe_path, steps=10, architecture=config["training"]["architecture"])
+            probe = read_json(probe_path) if probe_path.exists() else benchmark_training(probe_path, steps=10, architecture=config["training"]["architecture"], batch=training_batch(config))
             selected_device = probe["fastest_measured"]
     for index, seed in enumerate(config["training"]["seeds"], 1):
         receipts.append(_train_member(config, root, metadata, pools, seed, directory / f"member{index}_seed{seed}", smoke, resume, selected_device))

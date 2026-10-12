@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 from .common import now, write_json
 from .train import build_classifier, apply_backend
-from .project import default_profile
+from .project import default_profile, training_batch
 
 
 def doctor():
@@ -27,15 +27,17 @@ def doctor():
     return report
 
 
-def benchmark_training(output, steps=20, architecture="cnn128"):
+def benchmark_training(output, steps=20, architecture="cnn128", batch=None):
     import torch
     if steps < 2:
         raise ValueError("Use at least two measured steps")
     settings = default_profile()["training"]
+    batch = training_batch(default_profile()) if batch is None else dict(batch)
+    batch_size = sum(batch.values())
     apply_backend(settings["backend"])
     torch.set_num_threads(settings["cpu_threads"])
     rng = np.random.default_rng(20260928)
-    input_array = rng.normal(size=(1074, 16, 96)).astype(np.float32)
+    input_array = rng.normal(size=(batch_size, 16, 96)).astype(np.float32)
     torch.manual_seed(20260928)
     model = build_classifier(architecture).eval()
     with torch.no_grad():
@@ -50,7 +52,8 @@ def benchmark_training(output, steps=20, architecture="cnn128"):
             probe = model(x).cpu().numpy()
         model.train()
         optimizer = torch.optim.AdamW(model.parameters(), lr=.0001, weight_decay=.01)
-        y = torch.zeros((1074, 1), device=device); y[-50:] = 1
+        y = torch.cat([torch.full((count, 1), float(role == "positive"), device=device)
+                       for role, count in batch.items()])
         timings = []
         for step in range(steps + 3):
             if device.startswith("cuda"):
@@ -69,7 +72,7 @@ def benchmark_training(output, steps=20, architecture="cnn128"):
             "initial_logits_bitwise_equal_to_CPU": bool(np.array_equal(probe.view("u4"), reference.view("u4"))),
             "scope": "CNN128 representative resident batch; excludes full pool transfer/disk IO; not recall/FA equivalence"}
     report = {"kind": "CPU_GPU_training_resource_probe", "created_at": now(), "steps": steps, "architecture": architecture,
-        "resources": doctor(), "results": results,
+        "resources": doctor(), "results": results, "batch": batch, "batch_size": batch_size,
         "fastest_measured": min(results, key=lambda k: results[k]["warm_train_update_median_ms"]),
         "GPU_neural_inference_automatically_adopted": False,
         "note": "Benchmark is a functional resource probe, not another formal wakeword model."}
