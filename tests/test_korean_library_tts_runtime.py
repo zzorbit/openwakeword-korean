@@ -195,6 +195,10 @@ def test_another_reference_gets_its_own_same_seed_warm_qualification(tmp_path, m
 
 def test_cpu_model_retains_original_path_without_cuda_rng_access(tmp_path, monkeypatch):
     from korean_openwakeword import tts
+    import sys
+    # The model loader is a fixture, so its optional Transformers dependency
+    # must also be a fixture on the CPU-only [train,dev] installation.
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(__version__="test-fixture"))
     eager = object()
     model = SimpleNamespace(
         model=SimpleNamespace(parameters=lambda: iter([torch.nn.Parameter(torch.zeros(1))]),
