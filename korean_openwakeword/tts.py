@@ -4,8 +4,6 @@ No STT model is imported. Pronunciation approval is a pilot/policy decision;
 production technical acceptance never masquerades as individual human listening.
 """
 from collections import Counter
-import importlib.metadata
-from pathlib import Path
 import math
 import random
 import time
@@ -134,8 +132,9 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
     if split == "final":
         require_final_lock(project)
     approval = read_json(root / "approval.json")
+    tts_settings_id = identity(config["tts"])
     if not pilot and (approval.get("state") != "accepted" or approval.get("generation_policy_approved") is not True or
-                      approval.get("wakeword") != config["wakeword"] or approval.get("tts_settings_id") != identity(config["tts"]) or approval.get("generation_method") != method):
+                      approval.get("wakeword") != config["wakeword"] or approval.get("tts_settings_id") != tts_settings_id or approval.get("generation_method") != method):
         raise ValueError("Approve the new-word standalone pilot before bulk generation")
     admission = snapshot_json(root, approval, "generation_policy") if not pilot else None
     references = read_rows(root / "data" / "references" / split / "references.jsonl")
@@ -164,6 +163,7 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
         write_json(run_path, settings)
         rows = read_rows(output / "candidates.jsonl")
         by_slot = {r["slot"]: r for r in rows if r["qc"]["passed"]}
+        attempts_by_slot = Counter(row["slot"] for row in rows)
         for row in rows:
             if digest(resolved(root, row["path"])) != row["sha256"]:
                 raise ValueError("Generated candidate changed")
@@ -172,11 +172,12 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
             model = _load_model(config["tts"]["clone_model" if method == "clone" else "design_model"], config["tts"], root)
         prompts = {}
         existing_hashes = {r["sha256"] for r in rows}
+        # These immutable settings and retry counts are independent of output.
+        generation_contract_id = identity(settings)
         for slot in pending:
             reference = references[slot % len(references)]
             family = reference.get("voice_family_id", reference.get("family_id"))
-            attempts = sum(r["slot"] == slot for r in rows)
-            for attempt in range(attempts, 3):
+            for attempt in range(attempts_by_slot[slot], 3):
                 sample_id = f"{split}_{slot:06d}_attempt{attempt}"
                 seed = int(identity([config["tts"]["seed"], split, slot, attempt])[:8], 16)
                 _seed(seed)
@@ -212,13 +213,15 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
                     "voice_family_id": family, "text": config["wakeword"], "provenance": "qwen_tts",
                     "human_reference_used": False, "call_start_s": bounds[0] if bounds else None,
                     "call_end_s": bounds[1] if bounds else None, "qc": qc, "axes": {"voice_family": family, **axes, "text_profile": "standalone"},
-                    "generation_contract_id": identity(settings), "generation_seconds": time.perf_counter() - started,
-                    "generation_method": method, "tts_settings_id": identity(config["tts"]),
+                    "generation_contract_id": generation_contract_id, "generation_seconds": time.perf_counter() - started,
+                    "generation_method": method, "tts_settings_id": tts_settings_id,
                     "individual_human_listening": False, "created_at": now()}
                 if not pilot and qc["passed"]:
                     row["admission"] = admission
                 append_row(output / "candidates.jsonl", row)
-                rows.append(row); existing_hashes.add(sha)
+                rows.append(row)
+                existing_hashes.add(sha)
+                attempts_by_slot[slot] += 1
                 if qc["passed"]:
                     by_slot[slot] = row
                     break

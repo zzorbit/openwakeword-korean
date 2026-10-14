@@ -1,16 +1,15 @@
 """Measure resources before large work; distinguish speed from numeric equality."""
 import time
 import importlib.metadata
-from pathlib import Path
 import numpy as np
 from .common import now, write_json
 from .train import build_classifier, apply_backend
 from .project import default_profile, training_batch
 
 
-def doctor():
+def doctor(include_tts=False):
     versions = {}
-    for name in ("korean-openwakeword", "openwakeword", "torch", "onnxruntime", "qwen-tts", "numpy"):
+    for name in ("korean-openwakeword", "openwakeword", "torch", "torchaudio", "onnxruntime", "qwen-tts", "numpy"):
         try:
             versions[name] = importlib.metadata.version(name)
         except importlib.metadata.PackageNotFoundError:
@@ -24,6 +23,25 @@ def doctor():
             report["GPU"] = {"name": torch.cuda.get_device_name(), "free_bytes": free, "total_bytes": total}
     except ImportError:
         report["cuda_available"] = False
+    if include_tts:
+        import contextlib
+        import io
+        reasons = []
+        for name, expected in (("torch", "2.8.0"), ("torchaudio", "2.8.0"), ("qwen-tts", "0.1.1")):
+            if not versions[name] or versions[name].split("+", 1)[0] != expected:
+                reasons.append(f"{name}=={expected} is required for the supported TTS path")
+        warnings = io.StringIO()
+        if not reasons:
+            try:
+                with contextlib.redirect_stdout(warnings), contextlib.redirect_stderr(warnings):
+                    __import__("torchaudio")
+                    __import__("qwen_tts")
+            except (ImportError, OSError, RuntimeError) as error:
+                reasons.append(f"TTS binary/import check failed: {error}")
+        report["tts_check"] = {"ready": not reasons, "reasons": reasons,
+                               "import_warnings": warnings.getvalue()[-3000:],
+                               "model_download_or_generation": False,
+                               "installation_guide": "https://pytorch.org/get-started/previous-versions/"}
     return report
 
 
@@ -70,7 +88,7 @@ def benchmark_training(output, steps=20, architecture="cnn128", batch=None):
             "warm_train_update_p95_ms": float(np.quantile(timings, .95) * 1000),
             "initial_logits_max_difference_from_CPU": float(np.max(np.abs(probe - reference))),
             "initial_logits_bitwise_equal_to_CPU": bool(np.array_equal(probe.view("u4"), reference.view("u4"))),
-            "scope": "CNN128 representative resident batch; excludes full pool transfer/disk IO; not recall/FA equivalence"}
+            "scope": f"{architecture} representative resident batch; excludes full pool transfer/disk IO; not recall/FA equivalence"}
     report = {"kind": "CPU_GPU_training_resource_probe", "created_at": now(), "steps": steps, "architecture": architecture,
         "resources": doctor(), "results": results, "batch": batch, "batch_size": batch_size,
         "fastest_measured": min(results, key=lambda k: results[k]["warm_train_update_median_ms"]),

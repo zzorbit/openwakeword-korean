@@ -29,7 +29,7 @@ def export_site(evaluation, output):
         if digest(dest) != row["sha256"]:
             raise ValueError("Copied WAV changed")
     root = files("korean_openwakeword") / "resources"
-    for name in ("results.html", "results.js", "results.css"):
+    for name in ("results.html", "results_scope.js", "results.js", "results.css"):
         (output / ("index.html" if name == "results.html" else name)).write_bytes((root / name).read_bytes())
     text = json.dumps({"report": report, "clips": clips}, ensure_ascii=False, allow_nan=False).replace("<", "\\u003c")
     (output / "results-data.js").write_text("window.KOWW_RESULTS=" + text + ";\n", encoding="utf-8")

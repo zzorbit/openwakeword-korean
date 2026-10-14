@@ -1,0 +1,190 @@
+{
+  "library_version": "0.4.0",
+  "checked_date": "2026-10-14",
+  "environment": {
+    "system": "Windows",
+    "python": "3.12",
+    "versions": {
+      "korean-openwakeword": "0.4.0",
+      "openwakeword": "0.6.0",
+      "torch": "2.8.0+cu128",
+      "torchaudio": "2.8.0+cu128",
+      "onnxruntime": "1.31.0",
+      "qwen-tts": "0.1.1",
+      "numpy": "2.5.4"
+    },
+    "cuda_available": true
+  },
+  "installed_wheel_tests": {
+    "tests": 513,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 1,
+    "passed": 512,
+    "seconds": 152.712,
+    "excluded_internal_history_tests": 5,
+    "skip_reasons": [
+      "Symlink permission unavailable"
+    ]
+  },
+  "installed_package_isolation": {
+    "all_library_imports_from_installed_wheel": true,
+    "historical_imports_blocked": true,
+    "fresh_venv_without_shared_dependency_bridge": true
+  },
+  "installed_library_module_count": 34,
+  "microphone_javascript": {
+    "state": "passed",
+    "tests": 14,
+    "actual_microphone_opened": false,
+    "actual_browser_interaction": false,
+    "files": {
+      "microphone.html": "91d2e6a08489110314407726eb3df149a907b352ba59a662776855d8283e77da",
+      "microphone.css": "b50ff05a781dd28891f6bd22d37c1f871769793cd0351132fb007606edc0404b",
+      "microphone.js": "2dd541f66f3b12174c3339ebfb9366d5ccc94a28f16681ca65a5efe985651765",
+      "microphone_worklet.js": "2d53d7c06e15c6355c3a5a8167583e414653daa35465e50209a9c447aa0b6c48"
+    }
+  },
+  "actual_public_preparation": {
+    "all_original_source_hashes_checked": 685,
+    "all_source_headers_checked": 685,
+    "waveform_decoded_files": 4,
+    "unselected_waveforms_not_decoded": 681,
+    "train_sources": 4,
+    "train_hours": 0.011111111111111112,
+    "representative_count": 2,
+    "gain_changed": false,
+    "resume_succeeded": true,
+    "prepared_files_and_timestamps_unchanged_on_resume": true,
+    "originals_and_metadata_preserved": true,
+    "human_listened_count": 0,
+    "training_admitted": false,
+    "Final_accessed": false,
+    "model_training_started": false,
+    "new_downloads": false,
+    "input_scope": "Existing 685 derived PCM AudioSet WAV candidates plus original provider CSV/ontology; no claim of freshly decoding 685 original FLACs"
+  },
+  "candidate_selection_reuse": {
+    "sessions_reused": 1603,
+    "score_rows_reused": 89503,
+    "all_selected_frame_score_bits_equal": true,
+    "all_selected_clip_results_equal": true,
+    "original_candidate_ranks_preserved": true,
+    "runtime_unchanged": true,
+    "operational_model_changed": false
+  },
+  "candidate_actual_ONNX_checks": [
+    {
+      "sample_id": "original_0001_clean",
+      "category": "clean",
+      "snr_db": null,
+      "frames": 50,
+      "score_bits_equal": true,
+      "event_times_equal": true
+    },
+    {
+      "sample_id": "original_0001_environment_section1_snr5",
+      "category": "environment",
+      "snr_db": 5,
+      "frames": 50,
+      "score_bits_equal": true,
+      "event_times_equal": true
+    },
+    {
+      "sample_id": "original_0001_music_section1_snr5",
+      "category": "music",
+      "snr_db": 5,
+      "frames": 50,
+      "score_bits_equal": true,
+      "event_times_equal": true
+    },
+    {
+      "sample_id": "original_0001_competing_speech_section1_snr5",
+      "category": "competing_speech",
+      "snr_db": 5,
+      "frames": 50,
+      "score_bits_equal": true,
+      "event_times_equal": true
+    }
+  ],
+  "streaming_parity": {
+    "audit_comparisons": [
+      {
+        "check_files": false,
+        "include_final_files": false,
+        "full_report_equal": true
+      },
+      {
+        "check_files": false,
+        "include_final_files": true,
+        "full_report_equal": true
+      },
+      {
+        "check_files": true,
+        "include_final_files": false,
+        "full_report_equal": true
+      },
+      {
+        "check_files": true,
+        "include_final_files": true,
+        "full_report_equal": true
+      },
+      {
+        "duplicate_and_cross_split_errors": true,
+        "full_report_equal": true
+      }
+    ],
+    "feature_comparisons": [
+      {
+        "role": "positive",
+        "rounds": 1,
+        "feature_file_sha_equal": true,
+        "all_augmentation_pcm_seed_and_feature_rows_equal": true,
+        "interrupted_resume_equal": true,
+        "legacy_schema1_and_new_schema2_completed_cache_verified": true
+      },
+      {
+        "role": "positive",
+        "rounds": 3,
+        "feature_file_sha_equal": true,
+        "all_augmentation_pcm_seed_and_feature_rows_equal": true,
+        "interrupted_resume_equal": true,
+        "legacy_schema1_and_new_schema2_completed_cache_verified": true
+      },
+      {
+        "role": "korean_negative",
+        "rounds": 1,
+        "feature_file_sha_equal": true,
+        "all_augmentation_pcm_seed_and_feature_rows_equal": true,
+        "interrupted_resume_equal": true,
+        "legacy_schema1_and_new_schema2_completed_cache_verified": true
+      }
+    ],
+    "large_window_python_memory": [
+      {
+        "window_rows": 10000,
+        "seconds": 4.504559599999993,
+        "python_peak_bytes": 8486511
+      },
+      {
+        "window_rows": 100000,
+        "seconds": 45.222575799999504,
+        "python_peak_bytes": 8486511
+      }
+    ],
+    "scope": "Fixtures only; actual waveforms/frontends are identical test inputs, no real 2,500-hour corpus was downloaded or trained",
+    "sqlite_page_cache_kib": 4096,
+    "bounded_metadata_cache_entries": 256,
+    "source_feature_contract_schema": 2,
+    "legacy_cache_verification_supported": true
+  },
+  "tts_installation": {
+    "ready": true,
+    "model_download_or_generation": false
+  },
+  "scope_limits": [
+    "Functionality verification, not a new large model training campaign",
+    "No new human listening admission or independent Final claim",
+    "Windows/Linux CI results are available in repository Actions"
+  ]
+}

@@ -81,6 +81,7 @@ def test_historical_three_pool_project_can_still_train(project):
 
 @pytest.mark.parametrize('change', [
     {'text': '보라야'}, {'text': '보 라 야 불 켜줘'}, {'text': ''},
+    {'text': '보라'}, {'text': '보라가'}, {'text': '보라를'}, {'text': '보라는'},
     {'human_reference_used': True}, {'speech': False}, {'voice_family_id': ''},
 ])
 def test_hard_negative_rejects_call_or_missing_synthetic_provenance(change):
@@ -88,6 +89,24 @@ def test_hard_negative_rejects_call_or_missing_synthetic_provenance(change):
     row = dict(text='보람아', speech=True, provenance='qwen_tts', human_reference_used=False, voice_family_id='train_voice_000')
     with pytest.raises(ValueError):
         validate_hard_negative({**row, **change}, config)
+
+
+def test_direct_call_name_is_rejected_by_audit_windows_and_feature_resume(project):
+    root, config = load_project(project)
+    manifest = root / config['manifests']['hard_negative']
+    rows = read_rows(manifest)
+    rows[0]['text'] = '보라를'
+    manifest.write_text(''.join(json.dumps(r, ensure_ascii=False) + '\n' for r in rows), encoding='utf-8')
+    audit = audit_project(project, check_files=False)
+    assert not audit['passed']
+    assert any('complete call-name' in message for message in audit['errors'])
+    with pytest.raises(ValueError, match='complete call-name'):
+        validate_admission(root, rows, config, 'hard_negative', smoke=True)
+    with pytest.raises(ValueError, match='complete call-name'):
+        prepare_windows(project, 'hard_negative', root / 'data/negative/forbidden_windows.jsonl')
+    # Even an already created feature cache cannot bypass the text guard.
+    with pytest.raises(ValueError, match='complete call-name'):
+        build_features(project, 'hard_negative', smoke=True, resume=True, frontend=StubFrontend())
 
 
 class StubFrontend:

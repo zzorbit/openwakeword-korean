@@ -35,3 +35,7 @@
 - 호출 Positive는 프로젝트의 Qwen 합성 ‘춘식아’ 발화이며 개인 호출 녹음은 아니다.
 
 이 파일은 출처 기록이다. 미확인된 권리를 추가로 부여하는 문서가 아니며 라이선스 원문과 데이터 제공자의 조건을 보존한다.
+
+## Qwen CUDA 가속 구성요소
+
+`tts_cuda_predictor.py`와 `tts_cuda_sampling.py`는 [faster-qwen3-tts](https://github.com/andimarafioti/faster-qwen3-tts)의 MIT 코드에서 가져왔습니다. 원본 commit과 파일 해시는 `resources/faster_qwen3_tts_UPSTREAM.json`, 라이선스는 `resources/faster_qwen3_tts_LICENSE.txt`에 보존합니다. 한국어 라이브러리 adapter는 기본 Qwen 호출과 같은 출력인지 별도로 검증합니다.

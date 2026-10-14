@@ -5,8 +5,13 @@ const $=id=>document.getElementById(id), pct=x=>x==null?"미측정":`${(x*100).t
 const labels={clean:"Clean",environment:"환경소음",music:"음악·전자음",competing_speech:"한국어 대화·방송"};
 const cell=(tr,value)=>{const td=document.createElement("td");td.textContent=value;tr.append(td);};
 $("title").textContent=`${report.wakeword} · 학습 결과`;
-$("scope").textContent=`${report.stage==="final"?"동결 모델 Final 평가":"개발 평가"} · ${report.sessions}개 오디오${report.smoke_test_only?" · 기능 시험용 결과":""}`;
-for(const m of report.models){const tr=document.createElement("tr");if(m.kind==="ensemble")tr.className="ensemble";[m.kind==="ensemble"?"앙상블":m.rank,m.id,`${m.primary.successes}/${m.primary.calls} · ${pct(m.primary.recall)}`,pct(m.clean.recall),pct(m.noise_cell_mean),`${m.negative.events}회 / ${m.negative.hours.toFixed(2)}h · ${num(m.negative.fa_per_hour,3)}/h`,m.primary.latency_p95_s==null?"미측정":`${Math.round(m.primary.latency_p95_s*1000)}ms`].forEach(v=>cell(tr,v));$("summary").tBodies[0].append(tr);
+$("scope").textContent=evaluationScopeText(report,clips);
+const decisions=report.candidate_adoptions||{};
+const decisionFor=id=>decisions[id]||(report.adoption?.candidate===id?report.adoption:null);
+const reasonText=value=>value.includes("FP duration below")?"비호출 평가 시간 부족":value.includes("Clean recall")?"Clean 성공률 미달 또는 미측정":value.includes("FA/hour")?"시간당 오호출 기준 미달 또는 미측정":value.includes("Latency")?"감지 지연 기준 미달 또는 미측정":value.replace("environment","환경소음").replace("music","음악").replace("competing_speech","겹치는 말소리").replace("below target or unmeasured","기준 미달 또는 미측정");
+$("candidateStatus").textContent=`채택 판정 후보: ${report.selected_candidate||report.adoption?.candidate||"미선택"} · 선택은 해당 모델을 자동 배포하거나 Final 통과를 뜻하지 않습니다.`;
+for(const m of report.models){const tr=document.createElement("tr");if(m.kind==="ensemble")tr.className="ensemble";const decision=decisionFor(m.id);[m.kind==="ensemble"?"앙상블":m.rank,m.id,`${m.primary.successes}/${m.primary.calls} · ${pct(m.primary.recall)}`,pct(m.clean.recall),pct(m.noise_cell_mean),`${m.negative.events}회 / ${m.negative.hours.toFixed(2)}h · ${num(m.negative.fa_per_hour,3)}/h`,m.primary.latency_p95_s==null?"미측정":`${Math.round(m.primary.latency_p95_s*1000)}ms`,!decision?"미검증":decision.passed?"통과":"미달"].forEach(v=>cell(tr,v));$("summary").tBodies[0].append(tr);
+if(decision&&!decision.passed){const p=document.createElement("p");p.textContent=`${m.id}: ${(decision.reasons||[]).map(reasonText).join(" · ")}`;$("candidateReasons").append(p);}
 for(const [k,v] of Object.entries(m.conditions)){const r=document.createElement("tr");[m.id,k,`${v.successes}/${v.calls}`,pct(v.recall)].forEach(x=>cell(r,x));$("conditions").tBodies[0].append(r);}}
 $("denominators").textContent="소음 평균: 실제 측정한 환경·음악·한국어 음성 × SNR20/15/10/5 조건의 균등 평균. 같은 비호출 자료를 여러 모델이 평가해도 독립 시간을 합산하지 않습니다.";
 let queue=[],index=0,continuous=false,token=0;

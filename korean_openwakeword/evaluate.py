@@ -5,20 +5,20 @@ Final has one frozen gate and never grants tuning authority.
 """
 from collections import defaultdict
 from pathlib import Path
-import math
 import numpy as np
 import soundfile as sf
 
-from .common import bound_file, digest, identity, now, read_json, read_rows, resolved, write_json, writer_lock
+from .common import bound_file, digest, now, read_json, read_rows, resolved, write_json, writer_lock
 from .data import CATEGORIES, audit_project, source_key
 from .events import EventDetector, PositiveTracker, positive_statistics, poisson_rate_interval
 from .project import load_project
-from .runtime import WakeWordDetector, verify_bundle
+from .runtime import WakeWordDetector, verify_bundle, bundle_candidates, deployment_candidate
 from .storage import project_storage
 
 
-def summarize(clip_rows, config):
+def summarize(clip_rows, config, candidates=None):
     summaries = []
+    kinds = {row["id"]: row["kind"] for row in candidates or []}
     for model_id in clip_rows[0]["results"] if clip_rows else []:
         positives, negatives, cells = [], [], defaultdict(list)
         for row in clip_rows:
@@ -39,7 +39,7 @@ def summarize(clip_rows, config):
         for category in CATEGORIES:
             selected = [(row, r) for row, r in negatives if row["category"] == category]
             by_negative[category] = poisson_rate_interval(sum(r["false_activations"] for _, r in selected), sum(row["eligible_seconds"] for row, _ in selected) / 3600)
-        summaries.append({"id": model_id, "kind": "ensemble" if model_id == "mean" else "single",
+        summaries.append({"id": model_id, "kind": kinds.get(model_id, "ensemble" if model_id == "mean" else "single"),
             "primary": positive_statistics(primary), "all_positive": positive_statistics(positives),
             "clean": positive_statistics(clean), "noise_cell_mean": float(np.mean(noise_recalls)) if noise_recalls else None,
             "noise_cells_measured": len(noise_recalls), "conditions": grouped,
@@ -55,8 +55,14 @@ def summarize(clip_rows, config):
     return singles + [r for r in summaries if r["kind"] == "ensemble"]
 
 
-def adoption(summaries, config):
-    selected = next((r for r in summaries if r["id"] == "mean"), summaries[0] if summaries else None)
+def adoption(summaries, config, candidate=None):
+    if candidate is not None:
+        selected = next((r for r in summaries if r["id"] == candidate), None)
+        if selected is None:
+            raise ValueError(f"Unknown evaluated candidate: {candidate}")
+    else:
+        selected = next((r for r in summaries if r["kind"] == "ensemble"),
+                        summaries[0] if len(summaries) == 1 else None)
     errors = []
     if selected is None:
         return {"passed": False, "reasons": ["No evaluated candidate"]}
@@ -66,11 +72,11 @@ def adoption(summaries, config):
     for category in CATEGORIES:
         for snr, key in ((10, "snr10_recall"), (5, "snr5_recall")):
             cell = selected["conditions"].get(f"{category}:{snr}", selected["conditions"].get(f"{category}:{float(snr)}"))
-            if not cell or cell["recall"] < targets[key]:
+            if not cell or cell["recall"] is None or cell["recall"] < targets[key]:
                 errors.append(f"{category} SNR{snr} below target or unmeasured")
     negative = selected["negative"]
     if negative["hours"] < config["targets"]["development_negative_hours"][0]:
-        errors.append("Development FP duration below 20h")
+        errors.append(f"Development FP duration below {config['targets']['development_negative_hours'][0]:g}h")
     if negative["fa_per_hour"] is None or negative["fa_per_hour"] > targets["fa_per_hour"]:
         errors.append("FA/hour target failed or unmeasured")
     latency = selected["primary"].get("latency_p95_s")
@@ -80,16 +86,28 @@ def adoption(summaries, config):
             "scope": "Development observed values; not a population guarantee or independent Final"}
 
 
+def candidate_adoptions(summaries, config):
+    """Apply identical declared gates independently to every measured candidate."""
+    return {row["id"]: adoption(summaries, config, row["id"]) for row in summaries}
+
+
 @project_storage
-def evaluate(project, bundle, output, stage="development", manifest=None, smoke=False):
+def evaluate(project, bundle, output, stage="development", manifest=None, smoke=False, candidate=None):
     root, config = load_project(project)
     directory = Path(bundle).resolve()
     package = verify_bundle(directory)
+    candidates = bundle_candidates(package)
+    deployed = deployment_candidate(package)
+    candidate = deployed["id"] if candidate is None else candidate
+    if candidate not in {row["id"] for row in candidates}:
+        raise ValueError(f"Unknown bundle candidate: {candidate}")
     if package["wakeword"] != config["wakeword"]:
         raise ValueError("Candidate word differs from this project")
     if stage not in ("development", "final"):
         raise ValueError("Unknown evaluation stage")
     if stage == "final":
+        if candidate != deployed["id"]:
+            raise ValueError("Final evaluates the frozen deployed candidate; no candidate selection")
         lock = read_json(root / "final_lock.json")
         if lock["bundle_manifest_sha256"] != digest(directory / "manifest.json") or lock["project_config_sha256"] != digest(project):
             raise ValueError("Final model/runtime/project changed after freeze")
@@ -127,9 +145,7 @@ def evaluate(project, bundle, output, stage="development", manifest=None, smoke=
         raise ValueError("Evaluation outputs are immutable; choose a new directory")
     predictor = WakeWordDetector(directory)
     runtime = package["runtime"]
-    model_ids = [m["path"].split("/")[-1].removesuffix(".onnx") for m in package["members"]]
-    if len(model_ids) == 3:
-        model_ids.append("mean")
+    model_ids = [row["id"] for row in candidates]
     clips, cached_scores, offsets = [], [], [0]
     with writer_lock(output):
         for index, row in enumerate(sources):
@@ -192,11 +208,14 @@ def evaluate(project, bundle, output, stage="development", manifest=None, smoke=
             clean = clean_by_original.get(row.get("original_id", row["sample_id"]))
             for key, value in row["results"].items():
                 value["clean_score_drop"] = clean["results"][key]["max_score"] - value["max_score"] if clean else None
-        summaries = summarize(clips, config)
+        summaries = summarize(clips, config, candidates)
         report = {"schema_version": 1, "wakeword": config["wakeword"], "stage": stage, "created_at": now(),
             "smoke_test_only": smoke or any(m.get("smoke_test_only") for m in package["members"]),
             "bundle_manifest_sha256": digest(directory / "manifest.json"), "manifest_sha256": digest(manifest),
-            "runtime": runtime, "sessions": len(clips), "models": summaries, "adoption": adoption(summaries, config),
+            "runtime": runtime, "sessions": len(clips), "models": summaries,
+            "candidate_definitions": candidates, "selected_candidate": candidate,
+            "deployment_candidate": deployed, "candidate_adoptions": candidate_adoptions(summaries, config),
+            "adoption": adoption(summaries, config, candidate),
             "scope": "Supplied held-out manifest; synthetic and real human calls remain separate",
             "main_noise_snrs": [20, 15, 10, 5], "snr0_is_diagnostic": True}
         for summary in summaries:

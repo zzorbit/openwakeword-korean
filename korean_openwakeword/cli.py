@@ -64,13 +64,17 @@ def parser():
     setup_arguments(a)
     a = sub.add_parser("settings", help="현재 작업량 또는 세부 학습 설정 확인")
     a.add_argument("--project", type=Path, required=True); a.add_argument("--advanced", action="store_true")
-    sub.add_parser("check", aliases=["doctor"], help="설치·GPU 상태 확인")
+    a = sub.add_parser("check", aliases=["doctor"], help="설치·GPU 상태 확인")
+    a.add_argument("--tts", action="store_true", help="Qwen·PyTorch·torchaudio 버전과 실제 import 확인 (생성 없음)")
     a = sub.add_parser("sample", help="춘식아 예시 모델 검증 또는 복사")
     a.add_argument("--output", type=Path)
     a = sub.add_parser("demo", help="동봉 예시 WAV 재채점·결과 사이트 생성")
     a.add_argument("--output", type=Path, required=True)
     a = sub.add_parser("infer", help="실제 WAV의 CPU ONNX 호출 결과")
     a.add_argument("--bundle", type=Path); a.add_argument("--audio", required=True, type=Path); a.add_argument("--output", type=Path)
+    a = sub.add_parser("mic", help="브라우저에서 마이크 선택·실시간 호출 시험 (녹음 저장 없음)")
+    a.add_argument("--bundle", type=Path, help="학습한 실행 bundle; 생략하면 동봉 춘식아 모델")
+    a.add_argument("--port", type=int, default=8792, help="로컬 시험 화면 포트; 기본 8792")
     a = sub.add_parser("benchmark", help="CPU/GPU의 학습 업데이트 비용·수치 차이 측정")
     a.add_argument("--output", type=Path, required=True); a.add_argument("--steps", type=int, default=20)
     a = sub.add_parser("download-generic", help="검증된 공개 Generic feature 다운로드 (~17.28GB)")
@@ -81,6 +85,44 @@ def parser():
     a = sub.add_parser("import-generic", help="전체 공개 Generic feature를 외부 경로로 재사용")
     a.add_argument("--project", type=Path, required=True); a.add_argument("--features", type=Path, required=True)
     a.add_argument("--output", type=Path, required=True)
+    a = sub.add_parser("index-data", help="공급자 메타데이터로 음원별 출처·화자 목록 만들기 (STT 없음)")
+    a.add_argument("--input", type=Path, required=True)
+    a.add_argument("--output", type=Path, required=True)
+    a.add_argument("--dataset", choices=("zeroth", "manifest", "audioset", "fma", "mit_rir"), default="manifest")
+    a.add_argument("--metadata", type=Path)
+    a.add_argument("--ontology", type=Path, help="AudioSet의 제공자 ontology.json")
+    a.add_argument("--room-metadata", type=Path, help="제공자가 명시한 RIR 파일별 공간 목록")
+    a.add_argument("--dataset-id"); a.add_argument("--source-url"); a.add_argument("--license")
+    a = sub.add_parser("prepare-materials", help="공개 음원 변환·자료 분리·대표 검수 큐 준비")
+    a.add_argument("--project", type=Path, required=True)
+    a.add_argument("--input", type=Path, required=True)
+    a.add_argument("--output", type=Path, required=True)
+    a.add_argument("--source-index", type=Path, help="index-data 결과 또는 원출처 CSV/JSONL")
+    a.add_argument("--dataset-id"); a.add_argument("--source-url"); a.add_argument("--license")
+    a.add_argument("--category", choices=("environment", "music", "competing_speech", "rir"))
+    a.add_argument("--category-basis", help="제공자가 명시한 자료 범주 근거")
+    a.add_argument("--language", default="unknown")
+    speech = a.add_mutually_exclusive_group()
+    speech.add_argument("--speech", dest="speech", action="store_true")
+    speech.add_argument("--no-speech", dest="speech", action="store_false")
+    a.set_defaults(speech=None)
+    a.add_argument("--hours", type=float, help="고유 학습 원본의 선택 분량; 부족하면 결과에 표시")
+    a.add_argument("--validation-fraction", type=float, default=.1, help="원본·화자·공간 그룹을 분리할 개발용 예약 비율")
+    a.add_argument("--seed", type=int, default=20260928)
+    a.add_argument("--representatives", type=int, default=3, help="자료셋·범주당 대표 수")
+    a.add_argument("--preview-seconds", type=float, default=10)
+    a = sub.add_parser("admit-materials", help="저장된 검수 답변 적용·폐기 제외·학습 자료 연결")
+    a.add_argument("--project", type=Path, required=True)
+    a.add_argument("--preparation", type=Path, required=True, help="prepare-materials의 preparation_receipt.json")
+    a.add_argument("--answers", type=Path, help="생략하면 이 프로젝트의 저장된 pool_results.json")
+    a.add_argument("--output", type=Path)
+    a.add_argument("--pools", nargs="+", choices=("generic_negative", "korean_negative", "noise", "rir"), default=[])
+    a.add_argument("--connect", action="store_true", help="현재 프로젝트의 비어 있는 해당 자료 목록에 연결")
+    a = sub.add_parser("connect-materials", help="여러 승인 자료 묶음을 검증·병합해 한 번에 연결")
+    a.add_argument("--project", type=Path, required=True)
+    a.add_argument("--admissions", type=Path, nargs="+", required=True, help="admit-materials의 admission_receipt.json 목록")
+    a.add_argument("--pools", nargs="+", choices=("generic_negative", "korean_negative", "noise", "rir"), required=True)
+    a.add_argument("--output", type=Path)
     for name in ("status", "audit", "prepare-frontend", "storage"):
         a = sub.add_parser(name); a.add_argument("--project", type=Path, required=True)
     a = sub.add_parser("windows", help="공개 Negative 원본의 고정 2초 구간 manifest")
@@ -91,8 +133,16 @@ def parser():
         a.add_argument("--split", choices=("train", "validation", "final"), default="train"); a.add_argument("--limit", type=int)
         if name == "generate":
             a.add_argument("--pilot", action="store_true"); a.add_argument("--method", choices=("clone", "design"), default="clone")
+            a.add_argument("--tts-backend", choices=("auto", "eager"), default="auto", help="GPU 가속은 원본과 PCM/QC/RNG가 같은지 참조별 확인 후 사용")
+            a.add_argument("--tts-cpu-threads", type=int, default=4)
+    a = sub.add_parser("generate-hard", help="Qwen 유사어 후보 생성; 별도 내용 승인 전에는 학습하지 않음")
+    a.add_argument("--project", type=Path, required=True); a.add_argument("--phrases", nargs="+", required=True)
+    a.add_argument("--count", type=int, default=100, help="유사어 원본 수; 배치 추출 수와 별개")
+    a.add_argument("--tts-backend", choices=("auto", "eager"), default="auto")
+    a.add_argument("--tts-cpu-threads", type=int, default=4)
     a = sub.add_parser("review", help="검수 큐 전체 연속 청취·직접 저장")
     a.add_argument("--project", type=Path, required=True); a.add_argument("--queue", type=Path, required=True)
+    a.add_argument("--pool-manifest", type=Path, help="대표 청취와 별도 동의로 승인할 고정 자료 묶음; content 전용")
     a.add_argument("--kind", choices=("references", "pilot", "content"), default="pilot"); a.add_argument("--port", type=int, default=8790)
     a = sub.add_parser("features", help="실제 N×rounds 증강 feature")
     a.add_argument("--project", type=Path, required=True); a.add_argument("--role", choices=("positive", "generic_negative", "korean_negative", "hard_negative"), required=True)
@@ -113,10 +163,16 @@ def parser():
     a.add_argument("--project", type=Path, required=True); a.add_argument("--bundle", type=Path, required=True)
     a.add_argument("--manifest", type=Path); a.add_argument("--stage", choices=("development", "final"), default="development")
     a.add_argument("--output", type=Path, required=True); a.add_argument("--smoke", action="store_true")
+    a.add_argument("--candidate", help="채택 판정을 확인할 모델 ID; 생략하면 현재 bundle의 실제 출력")
+    a = sub.add_parser("select-candidate", help="저장된 개발 평가로 단일/앙상블 실행 묶음 선택")
+    a.add_argument("--project", type=Path, required=True); a.add_argument("--bundle", type=Path, required=True)
+    a.add_argument("--evaluation", type=Path, required=True); a.add_argument("--output", type=Path, required=True)
+    a.add_argument("--candidate", required=True, help="개발 평가에 있는 정확한 모델 ID 또는 mean")
     a = sub.add_parser("tune", help="개발 점수 캐시로 임계값·연속 프레임 비교")
     a.add_argument("--project", type=Path, required=True); a.add_argument("--bundle", type=Path, required=True)
     a.add_argument("--evaluation", type=Path, required=True); a.add_argument("--output", type=Path, required=True)
     a.add_argument("--thresholds", type=float, nargs="+", required=True); a.add_argument("--consecutive", type=int, nargs="+", default=[2])
+    a.add_argument("--candidate", help="감지 기준을 비교할 모델 ID; 생략하면 실제 bundle 출력")
     a = sub.add_parser("select-runtime", help="선택한 개발 실행 설정을 새 프로젝트에 적용")
     a.add_argument("--project", type=Path, required=True); a.add_argument("--bundle", type=Path, required=True)
     a = sub.add_parser("import-references", help="청취 근거가 있는 Qwen 합성 참조 뱅크 재사용")
@@ -161,7 +217,10 @@ def dispatch(a):
         return result
     if a.command in ("check", "doctor"):
         from .benchmark import doctor
-        return doctor()
+        report = doctor(include_tts=True) if a.tts else doctor()
+        if a.tts and not report["tts_check"]["ready"]:
+            raise ValueError("TTS 설치 확인 실패: " + "; ".join(report["tts_check"]["reasons"]))
+        return report
     if a.command == "benchmark":
         from .benchmark import benchmark_training
         return benchmark_training(a.output, a.steps)
@@ -178,6 +237,9 @@ def dispatch(a):
         if a.output:
             write_json(a.output, result)
         return result
+    if a.command == "mic":
+        from .microphone import serve_microphone
+        return serve_microphone(a.bundle, a.port)
     if a.command == "status":
         return status(a.project)
     if a.command == "audit":
@@ -201,15 +263,50 @@ def dispatch(a):
         root, config = load_project(a.project)
         frontend = StreamingFrontend(resolved(root, config["frontend_dir"]))
         return import_generic(a.features, a.output, frontend.identity)
+    if a.command == "index-data":
+        from .preparation import create_source_index
+        return create_source_index(a.input.resolve(), output=a.output.resolve(), dataset=a.dataset,
+                                   metadata=a.metadata.resolve() if a.metadata else None,
+                                   ontology=a.ontology.resolve() if a.ontology else None,
+                                   room_metadata=a.room_metadata.resolve() if a.room_metadata else None,
+                                   dataset_id=a.dataset_id, source_url=a.source_url, license=a.license)
+    if a.command == "prepare-materials":
+        from .preparation import prepare_public_audio
+        return prepare_public_audio(a.project, input_directory=a.input.resolve(), output=a.output.resolve(),
+            dataset_id=a.dataset_id, source_url=a.source_url, license=a.license, category=a.category,
+            category_basis=a.category_basis, language=a.language, speech=a.speech,
+            source_index=a.source_index.resolve() if a.source_index else None,
+            target_hours=a.hours, validation_fraction=a.validation_fraction,
+            seed=a.seed, representatives_per_stratum=a.representatives, preview_seconds=a.preview_seconds)
+    if a.command == "admit-materials":
+        from .preparation import apply_prepared_review
+        return apply_prepared_review(a.project, preparation=a.preparation.resolve(),
+            answers=a.answers.resolve() if a.answers else None,
+            output=a.output.resolve() if a.output else None, pools=a.pools, connect=a.connect)
+    if a.command == "connect-materials":
+        from .preparation import connect_materials
+        return connect_materials(a.project, admissions=[p.resolve() for p in a.admissions],
+                                 pools=a.pools, output=a.output.resolve() if a.output else None)
     if a.command == "windows":
         from .data import prepare_windows
         return prepare_windows(a.project, a.pool, a.output)
     if a.command in ("references", "generate"):
-        from .tts import generate, generate_references
-        return generate_references(a.project, a.split, a.limit) if a.command == "references" else generate(a.project, a.split, a.limit, a.pilot, a.method)
+        from .tts import generate_references
+        if a.command == "references":
+            return generate_references(a.project, a.split, a.limit)
+        from .tts_runtime import generate_with_runtime
+        return generate_with_runtime(a.project, a.split, a.limit, a.pilot, a.method, a.tts_backend, a.tts_cpu_threads)
+    if a.command == "generate-hard":
+        from .hard_tts import generate_hard
+        from .tts_runtime import CloneRuntime
+        root, config = load_project(a.project)
+        if a.tts_cpu_threads < 1:
+            raise ValueError("CPU thread count must be positive")
+        model = CloneRuntime(config["tts"]["clone_model"], config["tts"], root, a.tts_backend, a.tts_cpu_threads)
+        return generate_hard(a.project, a.phrases, a.count, model=model)
     if a.command == "review":
         from .review import serve_review
-        return serve_review(a.project, a.queue, a.kind, a.port)
+        return serve_review(a.project, a.queue, a.kind, a.port, a.pool_manifest)
     if a.command == "features":
         from .features import build_features
         return build_features(a.project, a.role, a.output, a.rounds, a.batch_size, a.smoke, a.resume)
@@ -230,10 +327,13 @@ def dispatch(a):
         return prepare_evaluation(a.project, a.output, a.split, a.originals, a.noise_sections)
     if a.command == "evaluate":
         from .evaluate import evaluate
-        return evaluate(a.project, a.bundle, a.output, a.stage, a.manifest, a.smoke)
+        return evaluate(a.project, a.bundle, a.output, a.stage, a.manifest, a.smoke, a.candidate)
+    if a.command == "select-candidate":
+        from .selection import select_candidate
+        return select_candidate(a.project, a.bundle, a.evaluation, a.output, a.candidate)
     if a.command == "tune":
         from .tune import tune
-        return tune(a.project, a.bundle, a.evaluation, a.output, a.thresholds, a.consecutive)
+        return tune(a.project, a.bundle, a.evaluation, a.output, a.thresholds, a.consecutive, a.candidate)
     if a.command == "select-runtime":
         from .tune import select_runtime
         return select_runtime(a.project, a.bundle)

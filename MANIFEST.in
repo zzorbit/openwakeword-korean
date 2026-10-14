@@ -10,5 +10,7 @@ prune .venv
 prune wakeword_lab
 prune scripts
 include scripts/Use-ProjectStorage.ps1
+include scripts/package_library.py
+recursive-include tests test_korean_library*.py check_microphone_ui.cjs
 recursive-include validation *.json
 recursive-include examples/library_demo_site *.html *.js *.css *.json *.wav

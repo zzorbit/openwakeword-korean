@@ -148,7 +148,45 @@ class InputDelivery:
         return torch.cat(xs), torch.cat(ys)
 
 
-def _train_member(config, root, metadata, pools, seed, output, smoke, resume, selected_device=None):
+    def validate_member(self, pools, device, batch):
+        """Reuse only the same verified array objects, device and role order."""
+        if (self.device != device or list(self.batch_counts.items()) != list(batch.items())
+                or set(self.pools) != set(pools)
+                or any(self.pools[role] is not pools[role] for role in pools)):
+            raise ValueError("Shared input delivery needs identical verified pools, device and batch order")
+
+
+class _SharedInputDelivery:
+    """Invocation-local cache, constructed after the first unfinished model.
+
+    InputDelivery's usual free-VRAM measurement and 2 GiB model/optimizer
+    reserve stay unchanged. Constructing after model allocation also avoids
+    consuming memory for a completed-only resume. No sampler or RNG is shared.
+    """
+    def __init__(self, pools, settings):
+        self.pools, self.settings = pools, settings
+        self.value, self.creations, self.member_uses = None, 0, 0
+
+    def __call__(self, device, batch):
+        created = self.value is None
+        if created:
+            self.value = InputDelivery(self.pools, device,
+                self.settings.get("gpu_cache_budget_mb", 0), self.settings.get("delivery", "auto"), batch)
+            self.creations += 1
+        self.value.validate_member(self.pools, device, batch)
+        self.member_uses += 1
+        self.value._member_reuse_receipt = {
+            "scope": "Same immutable verified pools within this train invocation only",
+            "cache_constructions_this_invocation": self.creations,
+            "member_uses_this_invocation": self.member_uses,
+            "created_for_this_member": created,
+            "sampler_and_random_states_shared": False,
+        }
+        return self.value
+
+
+def _train_member(config, root, metadata, pools, seed, output, smoke, resume,
+                  selected_device=None, delivery=None):
     import torch
     settings = config["training"]
     device = settings["device"]
@@ -182,7 +220,18 @@ def _train_member(config, root, metadata, pools, seed, output, smoke, resume, se
                 return receipt
         else:
             write_json(prior, contract)
-        delivery = InputDelivery(pools, device, settings.get("gpu_cache_budget_mb", 0), settings.get("delivery", "auto"), batch)
+        # The lazy shared factory is invoked only after contract/completion
+        # checks and this member's model allocation. Cache copies use no RNG;
+        # every member retains its own seeded model, optimizer and sampler.
+        if delivery is None:
+            delivery = InputDelivery(pools, device, settings.get("gpu_cache_budget_mb", 0), settings.get("delivery", "auto"), batch)
+        elif callable(delivery):
+            delivery = delivery(device, batch)
+        delivery.validate_member(pools, device, batch)
+        delivery_reuse = dict(getattr(delivery, "_member_reuse_receipt", {
+            "scope": "Single member or explicit caller-owned delivery",
+            "sampler_and_random_states_shared": False,
+        }))
         step = 0
         if resume and (output / "last_checkpoint.json").exists():
             record = read_json(output / "last_checkpoint.json")
@@ -246,6 +295,7 @@ def _train_member(config, root, metadata, pools, seed, output, smoke, resume, se
         receipt = {"state": "smoke_trained_not_performance_validated" if smoke else "trained_not_final_evaluated",
             "model_sha256": digest(output / "model.onnx"), "contract_id": contract_id,
             "seed": seed, "updates": step, "exposure": exposure, "delivery": delivery.report,
+            "input_delivery_reuse": delivery_reuse,
             "device": device, "compute_precision": "float32 with recorded backend; no AMP",
             "elapsed_this_invocation_s": time.perf_counter() - started,
             "onnx_max_absolute_export_error": float(np.max(np.abs(actual - expected))), "completed_at": now()}
@@ -303,8 +353,13 @@ def train(project, output=None, smoke=False, resume=False):
         else:
             probe = read_json(probe_path) if probe_path.exists() else benchmark_training(probe_path, steps=10, architecture=config["training"]["architecture"], batch=training_batch(config))
             selected_device = probe["fastest_measured"]
+    shared_delivery = _SharedInputDelivery(pools, config["training"])
     for index, seed in enumerate(config["training"]["seeds"], 1):
-        receipts.append(_train_member(config, root, metadata, pools, seed, directory / f"member{index}_seed{seed}", smoke, resume, selected_device))
+        receipts.append(_train_member(config, root, metadata, pools, seed,
+            directory / f"member{index}_seed{seed}", smoke, resume, selected_device, shared_delivery))
     return {"directory": str(directory), "members": receipts, "formal_training": not smoke,
             "selected_workload": workload_summary(config),
+            "input_delivery_reuse": {"scope": "This invocation only; exact pools/device/batch; independent member RNGs",
+                                     "cache_constructions": shared_delivery.creations,
+                                     "unfinished_members_using_delivery": shared_delivery.member_uses},
             "next": "Development evaluation and threshold selection; then freeze and independent Final"}

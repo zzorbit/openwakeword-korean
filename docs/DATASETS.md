@@ -2,7 +2,7 @@
 
 **호출어 음성은 Qwen TTS로 새로 생성**합니다. 비호출·소음·잔향 자료는 공개 데이터셋에서 내려받아 여러 호출어 학습에 재사용할 수 있습니다.
 
-이 문서는 자료를 구하는 방법을 안내합니다. 내려받은 음원을 학습에 연결하는 방법은 [자료 목록 작성법](DATA_FORMAT.md), 전체 순서는 [학습 가이드](LIBRARY_GUIDE.md)를 참고하세요.
+이 문서는 자료를 구하는 방법을 안내합니다. 압축을 푼 음원은 [공개 음원 자동 준비](DATA_FORMAT.md#공개-음원-자동-준비)의 명령으로 변환·분리·검수·연결합니다. 전체 순서는 [학습 가이드](LIBRARY_GUIDE.md)를 참고하세요.
 
 `koww init`에서 자료 목표 시간을 선택합니다. 기본 상용 모델용 비호출은 **일반 7,500시간·한국어 2,500시간(75:25)**이며 설정 요약에 기록됩니다. 동작 확인용은 일반 **2,000시간·한국어 1시간**, 시험 모델용은 [README](../README.md#학습-규모-선택)의 값을 직접 입력하세요. 환경소음 시간은 별도 준비 목표로 선택할 수 있지만 학습 배치에 추가하지 않습니다. 목표 시간만 바꿔서는 실제 자료가 늘거나 줄지 않습니다.
 
@@ -28,11 +28,13 @@ README의 **동작 확인용·시험 모델용**은 모두 [openWakeWord 공식 
 
 | 재료 | 공식 예제의 준비 범위 | 사용하는 이유 |
 | --- | --- | --- |
-| AudioSet | [agkphysics/AudioSet](https://huggingface.co/datasets/agkphysics/AudioSet)의 `data/bal_train09.tar` 압축파일 1개 | 말소리·음악·생활 소리 등 실제 배경음을 호출어에 섞음 |
+| AudioSet | [agkphysics/AudioSet의 압축파일 보존 버전](https://huggingface.co/datasets/agkphysics/AudioSet/tree/5a2fa42a1506470d275a47ff8e1fdac5b364e6ef)의 `data/bal_train09.tar` 압축파일 1개 | 말소리·음악·생활 소리 등 실제 배경음을 호출어에 섞음 |
 | FMA 음악 | [rudraml/fma](https://huggingface.co/datasets/rudraml/fma)의 `small` 구성에서 30초 음원 120개, 총 1시간 | 음악이 들리는 상황을 학습 |
 | MIT 잔향(RIR) | [MIT_environmental_impulse_responses](https://huggingface.co/datasets/davidscripka/MIT_environmental_impulse_responses)의 `train` 전체 | 실제 공간에서 측정한 울림을 호출 음성에 적용 |
 
 **AudioSet 일부**는 임의의 시간 목표가 아니라 위 압축파일 하나를 뜻합니다. 공식 예제는 이 파일의 총 오디오 시간을 따로 명시하지 않으므로, 압축을 푼 뒤 실제 시간을 기록합니다. AudioSet은 [Google이 공개한 다양한 실제 소리 자료](https://research.google.com/audioset/)입니다.
+
+AudioSet의 최신 버전은 Parquet 형식으로 바뀌어 기존 압축파일 경로가 없습니다. 공식 예제와 같은 파일을 받을 때는 위의 고정 버전 `5a2fa42a1506470d275a47ff8e1fdac5b364e6ef`를 사용하세요. [직접 다운로드](https://huggingface.co/datasets/agkphysics/AudioSet/resolve/5a2fa42a1506470d275a47ff8e1fdac5b364e6ef/data/bal_train09.tar)의 크기는 **968,540,160바이트**이며 SHA256은 `9ab88550e77c8289acf71d19ae3f254fadad16f3cea305ef08a16949a928acf9`입니다. 내려받은 파일의 크기·해시를 확인한 뒤 압축을 풉니다.
 
 **MIT RIR**은 소음 녹음이 아니라 소리가 공간을 거치면서 어떻게 울리는지 측정한 자료입니다. 음성에 적용하면 해당 공간의 울림을 재현할 수 있습니다. [MIT 원출처](https://mcdermottlab.mit.edu/Reverb/IR_Survey.html)와 Hugging Face의 실제 파일 목록을 함께 기록하며, 파일 개수는 내려받은 버전에서 확인합니다.
 

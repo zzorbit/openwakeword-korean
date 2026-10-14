@@ -2,9 +2,75 @@
 
 이 문서는 다운로드한 공개 음원을 프로젝트에 연결하는 방법을 설명합니다. 음원을 내려받는 절차는 [데이터 준비 안내](DATASETS.md), 전체 작업 순서는 [학습 가이드](LIBRARY_GUIDE.md)를 참고하세요.
 
+## 공개 음원 자동 준비
+
+처음에는 아래 명령으로 자료 목록을 자동으로 만드세요. 직접 JSONL을 작성하는 형식 설명은 문서 뒤의 고급 사용 안내입니다.
+
+**1. 제공자 메타데이터 연결**
+
+Zeroth는 배포본의 화자 폴더와 `*.trans.txt`를 읽습니다. 전사 모델을 새로 실행하지 않습니다.
+
+```powershell
+koww index-data --dataset zeroth --input shared/zeroth/train_data_01 --output shared/zeroth_index.jsonl --source-url https://www.openslr.org/40/ --license CC-BY-4.0
+```
+
+다른 자료가 음원별 출처·범주·이용조건을 가진 JSONL 또는 JSON의 `files`/`tracks` 목록을 제공하면 `index-data --dataset manifest --metadata 제공자목록.json`으로 연결합니다. CSV/JSONL의 음원별 정보를 `--source-index`로 직접 사용할 수도 있습니다. 여러 범주가 섞인 자료는 각 음원의 실제 범주를 기록하세요. 언어·화자·방을 소리에서 자동 추정하지 않습니다.
+
+공식 예제의 소음·잔향 자료도 원출처 메타데이터를 직접 읽습니다. 아래 경로는 다운로드·압축 해제 위치에 맞게 바꾸세요.
+
+```powershell
+koww index-data --dataset audioset --input shared/audioset/audio/bal_train --metadata shared/audioset/balanced_train_segments.csv --ontology shared/audioset/ontology.json --output shared/audioset_index.jsonl
+koww index-data --dataset fma --input shared/fma_small --metadata shared/fma_metadata/tracks.csv --output shared/fma_index.jsonl
+koww index-data --dataset mit_rir --input shared/mit_rir/16khz --output shared/mit_rir_index.jsonl
+```
+
+AudioSet는 제공자 라벨로 범주와 원본 영상·구간을, FMA는 개별 곡의 이용조건·곡 ID를 읽습니다. 이용조건이 없는 곡과 같은 곡의 중복 파일은 제외 이유를 기록합니다. 말소리 유무와 언어가 제공되지 않았으면 미확인으로 유지합니다.
+
+MIT에 실제 공간 대응표가 없다면 전체 자료를 하나의 보수적인 공간 그룹으로 묶습니다. **각 파일이 독립된 방이라고 주장하지 않습니다.** 이 경우 `prepare-materials --validation-fraction 0`으로 학습용 전체를 준비하고, 공간 평가용 자료는 별도 출처에서 확보하세요. 실제 공간 대응표가 있으면 `index-data --room-metadata`로 연결합니다.
+
+**2. 변환·분리·대표 검수 목록 만들기**
+
+```powershell
+koww prepare-materials --project projects/bora/project.json --input shared/zeroth/train_data_01 --source-index shared/zeroth_index.jsonl --hours 1 --output projects/bora/prepared/korean_v1
+```
+
+원본을 보존하고 16kHz·모노·PCM16 음원, 기술 검사, 학습 분량, 개발용 예약 자료, 대표 청취 목록을 만듭니다. `--hours`는 고유 학습 분량이며 같은 파일을 복제해 채우지 않습니다. 자료가 부족하면 `target_met: false`와 실제 시간을 보고합니다.
+
+분할을 먼저 고정한 뒤 학습 분할 안에서 원본 녹음 단위로 필요한 분량을 선택합니다. 마지막 녹음 길이만큼 목표 시간을 넘을 수 있습니다. 전체 원본의 해시·메타데이터·파일 헤더는 확인하고, 실제 변환·기술 검사는 선택한 학습 자료와 필요한 개발용 예약 자료에만 수행합니다. 선택하지 않은 원본을 검사·청취·승인 완료로 기록하지 않습니다.
+
+같은 녹음·화자·공간은 같은 분할에 둡니다. 기본 개발용 예약 비율은 10%이며 실제 비율은 그룹 크기에 따라 달라질 수 있습니다. 화자를 알 수 없는 같은 자료셋의 음성은 하나의 그룹으로 취급합니다. 별도 평가 자료를 확보해 학습용만 준비하려면 `--validation-fraction 0`을 지정하세요. Final 음원은 이 경로에서 열지 않습니다.
+
+폴더 전체의 출처와 범주가 동일하다면 `--dataset-id`, `--source-url`, `--license`, `--category`, `--category-basis`, `--language`, `--speech` 또는 `--no-speech`로 지정할 수 있습니다. 잔향은 `--category rir`로 준비하고, 제공자가 명시한 실제 `canonical_room_id`를 음원별 목록에 넣습니다. 파일 이름마다 다른 방이라고 가정하지 않습니다.
+
+잔향 검수 화면에는 고정 시험음을 해당 RIR에 통과시킨 소리를 제공합니다. 울림을 듣기 위한 미리듣기이며 학습용 RIR을 바꾸거나 성능 평가 오디오로 사용하지 않습니다. RIR은 시간 대신 파일 수와 공간 다양성으로 관리합니다.
+
+**3. 검수 답변 적용·학습 자료 연결**
+
+```powershell
+koww review --project projects/bora/project.json --queue projects/bora/prepared/korean_v1/representatives.jsonl --pool-manifest projects/bora/prepared/korean_v1/train_sources.jsonl --kind content
+# 대표 음원을 듣고 자료 묶음 사용 동의·저장을 완료합니다. Ctrl+C로 서버를 종료합니다.
+koww admit-materials --project projects/bora/project.json --preparation projects/bora/prepared/korean_v1/preparation_receipt.json --pools korean_negative --connect
+```
+
+저장된 답변을 서버에서 읽어 승인 목록을 연결합니다. 폐기한 대표의 원본은 제외하고 재검수 항목이 남으면 중단합니다. 대표 검수와 묶음 사용 동의는 듣지 않은 모든 음원의 개별 청취를 뜻하지 않습니다. 일반·한국어 비호출은 고정 2초 구간까지 준비하므로 `project.json`을 직접 바꿀 필요가 없습니다.
+
+소음 재료로도 쓸 한국어 원본이라면 `--pools korean_negative noise`를 지정할 수 있습니다. 같은 원본을 두 역할로 재사용해도 고유 시간을 다시 더하지 않습니다.
+
+**여러 자료셋 병합**
+
+AudioSet·음악을 각각 준비·검수했다면 `admit-materials --pools noise`로 승인 목록만 만들고, 다음으로 함께 연결합니다. 이 예시의 경로는 각 준비 결과에 맞추세요.
+
+```powershell
+koww connect-materials --project projects/bora/project.json --admissions projects/bora/prepared/audioset_v1/admitted/admission_receipt.json projects/bora/prepared/music_v1/admitted/admission_receipt.json --pools noise
+```
+
+출처·승인·해시·교차 분할을 다시 확인한 뒤 비어 있는 학습 목록에 한 번 연결합니다. 이미 시작한 실험은 바꾸지 않습니다. 중단된 준비·승인·연결은 같은 입력과 명령으로 재개하며, 기존 결과와 내용이 다르면 새 출력 폴더를 사용합니다.
+
+`validation_reserve.jsonl`은 학습과 분리한 개발용 원본 목록입니다. 이를 평가용으로 사용할 때도 다른 원본과의 분리를 확인하고 아래 평가 목록 형식을 따릅니다. 학습 자료의 승인으로 Final 사용을 승인하지 않습니다.
+
 ## 자료 목록이란?
 
-자료 목록(manifest)은 **어떤 파일을 어디에 사용할지 적는 JSONL 파일**입니다. JSONL은 한 줄에 하나의 JSON 객체를 저장하는 형식입니다. 호출어 자료 목록은 생성 명령이 만들지만, 공개 자료 목록은 사용하는 원본의 출처와 검수 결과를 넣어 준비해야 합니다.
+자료 목록(manifest)은 **어떤 파일을 어디에 사용할지 적는 JSONL 파일**입니다. JSONL은 한 줄에 하나의 JSON 객체를 저장하는 형식입니다. 호출어는 생성 명령, 공개 음원은 위 준비·승인 명령이 목록을 만듭니다. 직접 작성하거나 외부 자료를 연결할 때는 아래 필드를 사용합니다.
 
 경로는 `project.json`이 있는 폴더를 기준으로 적습니다. 예를 들어 `data/negative/source_0001.wav`는 `projects/bora/data/negative/source_0001.wav`를 가리킵니다. 여러 프로젝트에서 공유하는 음원은 절대 경로로 연결할 수도 있습니다.
 
@@ -19,6 +85,7 @@
 | `provenance` | 공개 자료는 `public_dataset` |
 | `category` | 환경음 `environment`, 음악·전자음 `music`, 겹치는 대화 `competing_speech`, 잔향 `rir` |
 | `speech` / `language` | 발화 유무와 실제 언어 |
+| `canonical_speaker_ids` | 제공자가 여러 참여 화자를 명시했다면 모든 화자 ID. 주 화자만 확인해 분리하지 않음 |
 | `admission` | 내용 검수 후 반환된 승인 파일의 경로·해시 |
 
 화자 정보가 있으면 `canonical_speaker_id`, 방 정보가 있으면 `canonical_room_id`를 추가합니다. 같은 원본·화자·음색·방이 학습과 평가 양쪽에 들어가지 않도록 분리합니다. 원본 화자 정보가 없으면 임의의 화자 ID를 만들어 분리가 입증된 것처럼 기록하지 않습니다.

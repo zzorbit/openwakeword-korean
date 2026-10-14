@@ -1,0 +1,11 @@
+{
+  "repository": "https://github.com/andimarafioti/faster-qwen3-tts",
+  "commit": "7a729d602235462ba1c0f47565d90f50c330510e",
+  "files": {
+    "predictor_graph.py": "661e282e51d0d6ba2c265bd5389a6f27c34d372f6970be23cac1fc2cddca653e",
+    "sampling.py": "d52f136cb5d985f532239cb3f74ce5e8b9bfd269080e99295f09ce5f87bac988",
+    "talker_graph.py": "b43393b11b15a39b849095432e5fde734b25b48528988e249cc6a951de52bc0c",
+    "LICENSE": "442472a518bf71e371f2581aa0fcaf6ee2ef6854f78c340fdbe87c099950ea82"
+  },
+  "scope": "unchanged CUDA graph primitives; full alternative engine and dependencies not installed"
+}

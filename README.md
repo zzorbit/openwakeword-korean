@@ -1,6 +1,6 @@
 # Korean openWakeWord
 
-**영어 호출어에 특화된 openWakeWord를 한국어 호출어 전용으로 수정한 라이브러리입니다.** 
+**영어 호출어에 특화된 openWakeWord를 한국어 호출어 전용으로 수정한 라이브러리입니다.**
 
 이 프로젝트는 **[openWakeWord](https://github.com/dscripka/openWakeWord)(David Scripka 및 기여자)를 기반으로 개발한 파생 프로젝트**입니다. 원 프로젝트의 공통 음성 특징 추출 기능을 사용하며, 한국어 Qwen TTS 데이터 생성·소음 증강·판별기 학습·평가·결과 사이트를 위한 절차를 추가했습니다. 원 프로젝트와 별도로 개발·관리합니다.
 
@@ -16,7 +16,7 @@
 
 ## 설치
 
-**Git과 Python 3.10–3.13**을 준비하세요. 아래 명령은 **Windows PowerShell** 기준이며, 저장소에 접근할 수 있는 GitHub 계정이 필요합니다.
+**Git과 Python 3.10–3.13**을 준비하세요. 아래 명령은 **Windows PowerShell** 기준입니다.
 
 ```powershell
 git clone https://github.com/zzorbit/openwakeword-korean.git
@@ -37,11 +37,11 @@ koww check
 
 ### 음성 생성·학습 도구 설치
 
-호출어 음성을 만드는 **Qwen TTS**와 **모델 학습 도구**를 설치합니다. GPU를 사용할 경우 먼저 [공식 설치 안내](https://pytorch.org/get-started/previous-versions/)의 **PyTorch 2.8.0** 항목에서 자신의 환경에 맞는 GPU용 PyTorch를 설치합니다.
+호출어 음성을 만드는 **Qwen TTS**와 **모델 학습 도구**를 설치합니다. 먼저 [공식 설치 안내](https://pytorch.org/get-started/previous-versions/)의 **PyTorch 2.8.0** 항목에서 자신의 CPU/GPU 환경에 맞는 **`torch==2.8.0`과 `torchaudio==2.8.0`을 함께** 설치하세요. 두 패키지의 버전과 CPU/CUDA 배포판을 맞춰야 합니다.
 
 ```powershell
 python -m pip install ".[train,tts]"
-koww check
+koww check --tts
 ```
 
 ### 필요한 학습 자료
@@ -59,7 +59,7 @@ koww check
 
 ### 학습 규모 선택
 
-준비할 자료의 양과 학습 작업량을 먼저 정하세요. 아래 표는 모델의 목적에 맞춰 임의대로 정한 시작 설정값입니다. 아래 설정값은 최적값으로 검증된 수치가 아니며 모델을 학습 후에 결과물에 따라 세부적으로 조정하여 모델의 결과물을 개선할 수 있습니다. 선택한 값은 다음 **호출어 학습 시작** 단계에서 입력합니다.
+준비할 자료의 양과 학습 작업량을 먼저 정하세요. 아래 표는 모델의 목적에 맞추어 임의대로 정한 설정 예시입니다. 아래 설정값은 최적값으로 입증된 수치는 아니며 모델 학습 후에 결과물에 따라 설정값을 조정하여 더 좋은 결과물을 얻을 수 있습니다. 선택한 값은 다음 **호출어 학습 시작** 단계에서 입력합니다.
 
 | 선택 항목 | 동작 확인용 | 시험 모델용 | 상용 모델용 |
 | --- | ---: | ---: | ---: |
@@ -71,7 +71,7 @@ koww check
 | 소음 증강 재료 | 공식 예제 | 공식 예제 | |
 | 잔향 증강 재료 | MIT RIR | MIT RIR | MIT RIR |
 
-소음 증강 재료의 **공식 예제**는 **AudioSet 일부 + FMA 음악 1시간**을 뜻합니다. 출처와 준비 범위는 [증강 재료 안내](docs/DATASETS.md#공식-자동-학습-예제의-증강-재료)를 참고하세요.
+소음 증강 재료의 **공식 예제**는 **AudioSet 일부 + FMA 음악 1시간**을 뜻합니다. 잔향 재료는 **세 단계 모두 MIT RIR의 `train` 전체**를 사용합니다. 출처와 준비 범위는 [증강 재료 안내](docs/DATASETS.md#공식-자동-학습-예제의-증강-재료)를 참고하세요.
 
 동작 확인용·시험 모델용의 일반 비호출은 [openWakeWord 공개 특징 자료](https://huggingface.co/datasets/davidscripka/openwakeword_features)의 약 2,000시간짜리 파일을 사용합니다. **원본 오디오가 아니라, 학습에 바로 넣을 수 있도록 미리 숫자로 변환한 자료**이며 아래의 `koww download-generic` 명령으로 받습니다.
 
@@ -128,7 +128,7 @@ koww status --project projects/bora/project.json
 
 입력한 값은 `projects/bora/project.json`에 저장됩니다. 이후 명령은 이 설정을 읽으므로 학습량을 매번 다시 입력하지 않습니다.
 
-CNN128·AdamW 등은 초기 표본 모델 학습 결과에서 선정한 **권장 시작값**입니다. 이 시작값은 최적값으로 검증된 수치는 아니며 모델을 학습 후에 결과물에 따라 세부적으로 조정하여 모델의 결과물을 개선할 수 있습니다. 직접 변경하려면 `init` 명령에 `--advanced`를 추가하세요. 새 호출어와 선택한 작업량의 성능은 학습 후 평가로 확인합니다.
+CNN128·AdamW 등은 초기 표본 모델 학습 결과에서 선정한 **권장 시작값**입니다. 이 시작값은 최적값으로 입증된 수치는 아니며 모델 학습 후에 결과물에 따라 설정값을 조정하여 더 좋은 결과물을 얻을 수 있습니다. 직접 변경하려면 `init` 명령에 `--advanced`를 추가하세요. 새 호출어와 선택한 작업량의 성능은 학습 후 평가로 확인합니다.
 
 <details>
 <summary>상용 모델용 값을 한 번에 지정하는 명령</summary>
@@ -153,7 +153,19 @@ koww generate --project projects/bora/project.json --split train
 koww generate --project projects/bora/project.json --split validation
 ```
 
-앞서 내려받은 비호출·소음·잔향 자료는 [자료 연결 안내](docs/LIBRARY_GUIDE.md#5-비호출소음잔향-자료-연결하기)에 따라 프로젝트에 연결합니다. 사용할 파일과 구간, 학습·평가 구분을 기록하고, 공개 일반 비호출 특징 자료도 가져옵니다. 다운로드만으로 이 과정이 완료되지는 않습니다.
+공개 음원은 **`prepare-materials`로 변환·자료 분리·검수 목록을 준비**하고, 검수 화면에서 저장한 답변을 **`admit-materials`로 학습에 연결**합니다. 한국어 비호출은 고정 2초 구간까지 자동으로 준비합니다. 출처·언어·화자 정보는 제공자 메타데이터를 사용합니다.
+
+예를 들어 압축을 푼 Zeroth 한국어 자료에서 동작 확인용 1시간을 준비합니다. `shared/zeroth/train_data_01`은 실제로 압축을 푼 음원 폴더로 바꾸세요.
+
+```powershell
+koww index-data --dataset zeroth --input shared/zeroth/train_data_01 --output shared/zeroth_index.jsonl --source-url https://www.openslr.org/40/ --license CC-BY-4.0
+koww prepare-materials --project projects/bora/project.json --input shared/zeroth/train_data_01 --source-index shared/zeroth_index.jsonl --hours 1 --output projects/bora/prepared/korean_v1
+koww review --project projects/bora/project.json --queue projects/bora/prepared/korean_v1/representatives.jsonl --pool-manifest projects/bora/prepared/korean_v1/train_sources.jsonl --kind content
+# 브라우저에서 검수·저장한 뒤 Ctrl+C로 서버를 종료합니다.
+koww admit-materials --project projects/bora/project.json --preparation projects/bora/prepared/korean_v1/preparation_receipt.json --pools korean_negative --connect
+```
+
+소음·잔향 준비와 여러 자료 묶음의 연결은 [자료 준비 안내](docs/DATA_FORMAT.md#공개-음원-자동-준비)에 있습니다. 개발용 자료는 원본·화자·공간 단위로 분리해 예약하며, 실제 확보 시간과 부족분은 준비 결과에 표시합니다. 일반 비호출의 공개 특징 자료는 기존 `import-generic` 명령으로 연결합니다.
 
 유사어는 별도 자료 목록과 특징 배열로 준비합니다. 배치의 100개는 매회 뽑는 수이며, 유사어 원본을 총 100개만 준비한다는 뜻은 아닙니다. 준비 방법은 [유사어 자료 안내](docs/DATA_FORMAT.md#유사어-학습-자료)를 따릅니다.
 
@@ -188,9 +200,37 @@ koww package --project projects/bora/project.json --run projects/bora/runs/selec
 
 ```powershell
 koww evaluate --project projects/bora/project.json --bundle projects/bora/models/candidate_selected --manifest projects/bora/data/eval/development.jsonl --output projects/bora/reports/dev_selected
+koww site --evaluation projects/bora/reports/dev_selected --output projects/bora/reports/dev_selected/site
+koww serve --directory projects/bora/reports/dev_selected/site --port 8791
 ```
 
-호출 성공률·오호출·지연을 확인하고 감지 기준을 선택합니다. 모델과 설정을 확정한 뒤 [별도 최종 평가](docs/LIBRARY_GUIDE.md#8-모델설정-확정-후-최종-평가하기)를 수행하고 [결과 사이트](docs/LIBRARY_GUIDE.md#9-결과-사이트에서-확인하기)를 만듭니다. 최종 평가 자료는 모델 선택이나 감지 기준 조정에 사용하지 않습니다.
+[http://127.0.0.1:8791/](http://127.0.0.1:8791/)에서 단일 모델과 앙상블의 성공률·오호출·지연, **각 후보의 기준 통과 여부**를 비교합니다. 확인 후 Ctrl+C로 서버를 종료하세요. 앙상블이 항상 더 좋다고 가정하지 않습니다. 사용할 후보는 평가에 표시된 ID로 직접 선택합니다.
+
+```powershell
+# 아래 ID는 선택 예시입니다. 실제 결과를 보고 원하는 후보를 지정하세요.
+koww select-candidate --project projects/bora/project.json --bundle projects/bora/models/candidate_selected --evaluation projects/bora/reports/dev_selected --candidate member3_seed20260930 --output projects/bora/models/selected_v1
+koww mic --bundle projects/bora/models/selected_v1/bundle
+```
+
+선택은 기존 평가 점수를 재사용하며, 단일 모델을 골랐다면 실제 실행 묶음에도 그 모델만 넣습니다. 감지 기준 비교·동결·[별도 최종 평가](docs/LIBRARY_GUIDE.md#8-모델설정-확정-후-최종-평가하기)는 [학습 가이드](docs/LIBRARY_GUIDE.md)를 따르세요. 평가 기준을 통과하지 않은 후보도 시험할 수 있지만 Final 동결은 할 수 없습니다.
+
+## 마이크로 모델 시험
+
+기본 설치만 마쳤다면 다음 명령으로 동봉된 ‘춘식아’ 모델을 시험할 수 있습니다. 추가 패키지는 필요하지 않습니다.
+
+```powershell
+koww mic
+```
+
+[http://127.0.0.1:8792/](http://127.0.0.1:8792/)을 열어 마이크를 선택하고 **시작**을 누르세요. 마이크 권한을 허용하고 준비 표시가 끝나면(기본 2초) 호출어를 말합니다. 각 모델과 앙상블의 점수·감지 여부·감지 횟수를 확인할 수 있습니다.
+
+직접 학습한 모델 묶음을 시험하려면 경로를 지정합니다.
+
+```powershell
+koww mic --bundle projects/bora/models/candidate_selected
+```
+
+모델의 감지 기준은 바꾸지 않으며, 음성은 파일로 저장하거나 학습에 사용하지 않습니다. **중지**를 누르면 마이크 입력을 종료합니다. 서버를 유지하려면 터미널을 열어 두고, 종료할 때는 Ctrl+C를 누르세요. 상세 사용법은 [마이크 시험 안내](docs/LIBRARY_GUIDE.md#마이크로-모델-시험하기)에 있습니다.
 
 ## Python에서 모델 사용
 

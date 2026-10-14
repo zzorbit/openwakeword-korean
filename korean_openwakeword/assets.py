@@ -62,13 +62,12 @@ def download_generic(output):
 
 
 def import_generic(path, output, frontend_identity):
-    """The narrow publisher bridge used in the original project, explicitly limited.
+    """Import only the publisher's pinned precomputed Generic feature file.
 
     All rows are scanned; only the pinned full file is supported. No fabricated
     source IDs, waveform augmentation or train/Final disjointness are asserted.
     """
     import numpy as np
-    from .common import identity
     path, output = Path(path).resolve(), Path(output).resolve()
     if output.exists() and any(output.iterdir()):
         raise ValueError("Choose a new Generic metadata/cache namespace")

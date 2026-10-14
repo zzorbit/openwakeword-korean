@@ -14,17 +14,46 @@ def sample_bundle():
     return Path(str(files("korean_openwakeword") / "resources" / "sample_chunsik"))
 
 
+def bundle_candidates(manifest):
+    """Bind score columns to actual heads, including a collision-safe mean ID."""
+    candidates = [{"id": Path(m["path"]).stem, "kind": "single",
+                   "members": [{"path": m["path"], "sha256": m["sha256"]}],
+                   "aggregation": "single"} for m in manifest["members"]]
+    if len({row["id"] for row in candidates}) != len(candidates):
+        raise ValueError("Model filenames need unique stems")
+    if len(candidates) == 3:
+        identifier = "mean"
+        while identifier in {row["id"] for row in candidates}:
+            identifier = "_" + identifier
+        candidates.append({"id": identifier, "kind": "ensemble",
+                           "members": [{"path": m["path"], "sha256": m["sha256"]}
+                                       for m in manifest["members"]],
+                           "aggregation": "ordered_float64_mean_to_float32"})
+    return candidates
+
+
+def deployment_candidate(manifest):
+    """The score emitted by process(), independent of evaluation ranking."""
+    return bundle_candidates(manifest)[-1]
+
+
 def verify_bundle(directory):
     directory = Path(directory).resolve()
     manifest = read_json(directory / "manifest.json")
-    if manifest.get("schema_version") != 1 or manifest.get("aggregation") != "ordered_float64_mean_to_float32":
+    if manifest.get("schema_version") != 1 or manifest.get("aggregation") not in ("single", "ordered_float64_mean_to_float32"):
         raise ValueError("Unsupported bundle schema or score aggregation")
     members = manifest["members"]
     if len(members) not in (1, 3) or len({m["path"] for m in members}) != len(members):
         raise ValueError("One model or three distinct member files required")
     if len({m["sha256"] for m in members}) != len(members):
         raise ValueError("Duplicate heads cannot be counted as independent members")
-    for entry in members + manifest["frontend"]:
+    if manifest["aggregation"] == "single" and len(members) != 1:
+        raise ValueError("Single aggregation requires exactly one model")
+    selected = deployment_candidate(manifest)
+    if manifest.get("selected_candidate", selected) != selected:
+        raise ValueError("Selected candidate does not match deployed members/aggregation")
+    evidence = [manifest["candidate_selection_evidence"]] if manifest.get("candidate_selection_evidence") else []
+    for entry in members + manifest["frontend"] + evidence:
         p = Path(entry["path"])
         if p.is_absolute() or not (directory / p).resolve().is_relative_to(directory):
             raise ValueError("Bundle assets must stay inside the portable bundle")

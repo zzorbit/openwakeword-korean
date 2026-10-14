@@ -1,0 +1,53 @@
+:root { color-scheme: light; font-family: -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans KR",sans-serif; color: #18263b; background: #f4f6fa; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+main { width: min(980px,100%); margin: 0 auto; padding: 36px 24px 28px; }
+header { margin-bottom: 24px; }
+.eyebrow { font-size: 11px; font-weight: 750; letter-spacing: .14em; color: #52749c; }
+h1 { margin: 10px 0 12px; font-size: 29px; letter-spacing: -.04em; }
+h2 { margin: 0; font-size: 18px; letter-spacing: -.025em; }
+p { margin: 11px 0; line-height: 1.65; }
+section,details { margin-top: 18px; padding: 24px; background: #fff; border: 1px solid #dfe5ee; border-radius: 14px; }
+.device-row { display: flex; align-items: center; gap: 12px; margin: 18px 0 8px; }
+label { flex-shrink: 0; font-size: 14px; font-weight: 650; }
+select,button { font: inherit; font-size: 14px; border: 1px solid #cbd5e2; border-radius: 8px; min-height: 43px; }
+select { width: 100%; padding: 10px 32px 10px 12px; background: #fff; color: #18263b; }
+button { flex-shrink: 0; padding: 10px 16px; color: #263a56; background: #fff; font-weight: 650; cursor: pointer; }
+button:hover:enabled { background: #f0f4fa; border-color: #97a9c1; }
+button.primary { color: #fff; background: #2364d7; border-color: #2364d7; }
+button.primary:hover:enabled { background: #1c54b9; }
+button:disabled,select:disabled { cursor: default; opacity: .48; }
+button:focus-visible,select:focus-visible,summary:focus-visible { outline: 3px solid #8bb5ff; outline-offset: 3px; }
+.hint,.metric-note,footer { color: #66768c; font-size: 13px; }
+.actions { display: flex; align-items: center; gap: 10px; margin-top: 19px; flex-wrap: wrap; }
+.connection { margin-left: 3px; font-size: 13px; color: #60728c; }
+.status-line { display: flex; align-items: center; gap: 10px; }
+.status-dot { flex: 0 0 9px; width: 9px; height: 9px; border-radius: 50%; background: #a9b4c3; }
+.status-dot.listening { background: #18a373; box-shadow: 0 0 0 4px #e4f6ee; }
+.status-dot.preparing { background: #d68c20; }
+.status-dot.error { background: #cf3548; }
+.live { background: #fbfcff; }
+#statusText { min-height: 24px; color: #50647f; }
+.metrics { display: grid; grid-template-columns: 1.1fr .8fr 1.4fr; gap: 24px; margin-top: 20px; padding-top: 20px; border-top: 1px solid #e7ecf3; }
+.metrics > div { min-width: 0; }
+.metric-label { display: block; margin-bottom: 10px; font-size: 12px; color: #66768c; }
+.metrics strong { display: block; font-size: 19px; min-height: 25px; overflow-wrap: anywhere; }
+.metric-note { display: block; margin-top: 7px; font-size: 12px; }
+meter { display: block; width: 100%; height: 24px; accent-color: #2364d7; }
+.section-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.table-wrap { overflow-x: auto; margin-top: 18px; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; white-space: nowrap; }
+th,td { text-align: right; padding: 13px 10px; border-bottom: 1px solid #e7ecf3; }
+th { color: #67758a; font-size: 12px; font-weight: 650; background: #f6f8fb; }
+th:first-child,td:first-child { text-align: left; }
+td { font-variant-numeric: tabular-nums; }
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr.detected td { background: #e7f7ed; color: #147749; }
+tbody tr.ensemble td:first-child { font-weight: 750; }
+details { padding: 18px 24px; color: #50647f; font-size: 13px; }
+summary { font-weight: 650; cursor: pointer; color: #263a56; }
+dl { display: grid; grid-template-columns: 150px 1fr; gap: 9px 12px; padding: 12px 0; margin: 0; }
+dt { color: #66768c; }
+dd { margin: 0; overflow-wrap: anywhere; }
+footer { margin-top: 22px; line-height: 1.7; padding: 0 5px; }
+@media(max-width:640px) { main { padding: 25px 14px; } h1 { font-size: 25px; } section { padding: 20px 17px; } .device-row { flex-wrap: wrap; gap: 9px; } .device-row label { width: 100%; } .device-row select { flex: 1; min-width: 0; } .device-row button { padding: 10px 11px; } .metrics { grid-template-columns: 1fr 1fr; gap: 20px 15px; } .metrics > div:last-child { grid-column: 1/-1; } .section-heading { display: block; } .section-heading .hint { display: block; margin-top: 7px; } dl { grid-template-columns: 115px 1fr; } }

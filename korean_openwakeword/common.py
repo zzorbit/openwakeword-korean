@@ -37,12 +37,19 @@ def identity(value):
                                   separators=(",", ":"), allow_nan=False).encode()).hexdigest()
 
 
-def read_rows(path):
+def iter_rows(path):
+    """Read JSONL in order without retaining a large window or feature journal."""
     path = Path(path)
     if not path.exists():
-        return []
+        return
     with path.open(encoding="utf-8-sig") as f:
-        return [json.loads(line) for line in f if line.strip()]
+        for line in f:
+            if line.strip():
+                yield json.loads(line)
+
+
+def read_rows(path):
+    return list(iter_rows(path))
 
 
 def append_row(path, value):

@@ -3,7 +3,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 import json
-import mimetypes
 
 from .common import digest, identity, now, read_json, read_rows, resolved, write_json, snapshot_json
 from .project import load_project
@@ -84,17 +83,66 @@ def apply_review(project, queue, decisions, kind):
     return {"state": "saved", "kept": len(kept), "total": len(rows), "policy_approved": approval.get("generation_policy_approved")}
 
 
-def serve_review(project, queue, kind="pilot", port=8790):
+def apply_pool_review(project, queue, source_manifest, decisions, policy_approved):
+    """Save actual preview answers and a separate explicit frozen-pool policy."""
+    if policy_approved is not True:
+        raise ValueError("자료 묶음 사용 동의에 체크한 뒤 저장하세요.")
+    root, config = load_project(project)
+    queue, source_manifest = Path(queue).resolve(), Path(source_manifest).resolve()
+    rows = read_rows(queue)
+    if not rows or len({r["sample_id"] for r in rows}) != len(rows) or set(decisions) != {r["sample_id"] for r in rows}:
+        raise ValueError("Every representative needs an explicit disposition")
+    for row in rows:
+        answer = decisions[row["sample_id"]]
+        if answer.get("decision") not in ("keep", "discard", "review"):
+            raise ValueError("Invalid disposition")
+        if answer["decision"] == "keep" and answer.get("listened") is not True:
+            raise ValueError("Unheard preview cannot be approved")
+        if digest(resolved(root, row["path"])) != row["sha256"]:
+            raise ValueError("Review audio changed")
+    record = {"kind": "content_listening_review", "wakeword": config["wakeword"],
+        "queue_sha256": digest(queue), "representative_queue_sha256": digest(queue),
+        "source_manifest_sha256": digest(source_manifest), "whole_pool_policy_approved": True,
+        "queued_audio_sha256": {r["sample_id"]: r["sha256"] for r in rows},
+        "decisions": decisions, "saved_at": now(),
+        "source_scope": "Human dispositions entered through the local review screen"}
+    evidence = root / "review" / "evidence" / ("pool_answers_" + identity(record) + ".json")
+    write_json(evidence, record)
+    write_json(root / "review" / "pool_results.json", record)
+    if any(a["decision"] != "keep" for a in decisions.values()):
+        return {"state": "content_exceptions_pending", "kept": sum(a["decision"] == "keep" for a in decisions.values()),
+                "total": len(rows), "note": "문제 항목을 확인한 뒤 자료 묶음을 수정합니다. 아직 학습 승인하지 않았습니다."}
+    from .pool_review import approve_pool
+    result = approve_pool(project, source_manifest={"path": str(source_manifest), "sha256": record["source_manifest_sha256"]},
+        representative_queue={"path": str(queue), "sha256": record["queue_sha256"]},
+        answers={"path": str(evidence), "sha256": digest(evidence)},
+        output="review/evidence/pool_admission_" + identity(record) + ".json")
+    write_json(root / "review" / "pool_save_receipt.json", result)
+    return result
+
+
+def serve_review(project, queue, kind="pilot", port=8790, pool_manifest=None):
     root, config = load_project(project)
     queue = Path(queue).resolve()
     rows = read_rows(queue)
     if not rows:
         raise ValueError("Empty review queue")
     snapshot = digest(queue)
+    if pool_manifest is not None and kind != "content":
+        raise ValueError("Whole-pool policy is only for content review")
+    pool_manifest = Path(pool_manifest).resolve() if pool_manifest is not None else None
+    pool_snapshot = digest(pool_manifest) if pool_manifest is not None else None
     purpose = "합성 참조 음색이 자연스러운 한국어이며 서로 충분히 다른지 확인합니다." if kind == "references" else f"대량 생성 전에 '{config['wakeword']}' 단독 호출이 명확하고 불필요한 말이 없는지 확인합니다."
     if kind == "content":
         purpose = f"비호출·증강 자료의 내용 범주와 사용 적합성을 확인합니다. '{config['wakeword']}' 호출이 들리거나 자료가 깨졌으면 폐기합니다."
-    payload = {"purpose": purpose, "wakeword": config["wakeword"], "queue_sha256": snapshot, "items": [{"id": r["sample_id"], "text": r.get("text", r.get("category", "비호출 자료")), "audio": f"/audio/{i}"} for i, r in enumerate(rows)]}
+    payload = {"purpose": purpose, "wakeword": config["wakeword"], "queue_sha256": snapshot,
+        "items": [{"id": r["sample_id"], "text": r.get("text", r.get("category", "비호출 자료")),
+                   "instruction": r.get("review_instruction"), "group": r.get("review_group"), "audio": f"/audio/{i}"} for i, r in enumerate(rows)]}
+    if pool_manifest is not None:
+        sources = read_rows(pool_manifest)
+        payload.update(purpose="새 유사어·소음·울림 자료의 대표 음원을 확인합니다. 이미 생성한 호출어를 다시 검수하는 작업이 아닙니다.",
+            policy_review=True, source_count=len(sources),
+            policy_text=f"대표 {len(rows)}개 청취와 출처·기술 검사에 근거해 전체 {len(sources):,}개 자료 묶음을 학습에 사용하는 데 동의합니다. 나머지를 모두 들었다는 뜻은 아닙니다.")
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             path = urlparse(self.path).path
@@ -123,12 +171,13 @@ def serve_review(project, queue, kind="pilot", port=8790):
             try:
                 if self.headers.get("Origin") not in (f"http://127.0.0.1:{port}", f"http://localhost:{port}"):
                     raise ValueError("Review saving requires the local review page's Origin")
-                if urlparse(self.path).path != "/save" or digest(queue) != snapshot:
+                if urlparse(self.path).path != "/save" or digest(queue) != snapshot or (pool_manifest is not None and digest(pool_manifest) != pool_snapshot):
                     raise ValueError("Queue changed or unsupported route")
                 if int(self.headers.get("Content-Length", "0")) > 1000000:
                     raise ValueError("Review response too large")
-                decisions = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-                result = apply_review(project, queue, decisions, kind)
+                submitted = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                result = (apply_pool_review(project, queue, pool_manifest, submitted["decisions"], submitted.get("policy_approved"))
+                          if pool_manifest is not None else apply_review(project, queue, submitted, kind))
                 self.send_response(200); self.send_header("Content-Type", "application/json; charset=utf-8"); self.end_headers(); self.wfile.write(json.dumps(result, ensure_ascii=False).encode())
             except (ValueError, KeyError) as e:
                 self.send_response(400); self.end_headers(); self.wfile.write(str(e).encode())

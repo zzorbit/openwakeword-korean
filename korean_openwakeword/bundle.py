@@ -1,9 +1,9 @@
 """Portable candidate bundles and hash-bound Final locks."""
 from pathlib import Path
 import shutil
-from .common import bound_file, digest, now, read_json, resolved, write_json
+from .common import digest, now, read_json, resolved, write_json
 from .project import load_project
-from .runtime import verify_bundle
+from .runtime import verify_bundle, bundle_candidates, deployment_candidate
 
 
 def package_run(project, run, output):
@@ -39,6 +39,7 @@ def package_run(project, run, output):
         "members": members, "frontend": frontend, "aggregation": "ordered_float64_mean_to_float32",
         "runtime": config["runtime"], "training": config["training"], "rounds": config["augmentation_rounds"],
         "created_at": now(), "stage": "candidate_not_final_validated", "project_config_sha256": digest(project)}
+    manifest["selected_candidate"] = deployment_candidate(manifest)
     write_json(output / "manifest.json", manifest)
     return verify_bundle(output)
 
@@ -57,13 +58,27 @@ def freeze(project, bundle, development_report, output=None):
         raise ValueError("A functional smoke model/report cannot authorize Final")
     if report.get("wakeword") != config["wakeword"] or manifest["runtime"] != config["runtime"]:
         raise ValueError("Word/runtime differs from the evaluated project setting")
+    if report.get("runtime") != manifest["runtime"]:
+        raise ValueError("Development runtime differs from the deployed bundle")
+    deployed = deployment_candidate(manifest)
+    if report.get("selected_candidate", report.get("adoption", {}).get("candidate")) != deployed["id"]:
+        raise ValueError("Selected evaluation candidate differs from deployed members/aggregation; use select-candidate")
+    if report.get("candidate_definitions", bundle_candidates(manifest)) != bundle_candidates(manifest):
+        raise ValueError("Development candidate member/hash binding differs from deployed bundle")
+    if report.get("deployment_candidate", deployed) != deployed:
+        raise ValueError("Development deployment identity differs from deployed bundle")
+    from .evaluate import adoption
+    decision = adoption(report["models"], config, deployed["id"])
+    if report.get("adoption", {}).get("candidate") != deployed["id"] or decision != report["adoption"]:
+        raise ValueError("Development adoption does not describe the deployed candidate")
     # Evidence may be under target. Preserve the explicit judgement rather than fabricate a pass.
-    if not report.get("adoption", {}).get("passed"):
+    if not decision["passed"]:
         raise ValueError("Selected configuration does not pass declared Development adoption criteria")
     lock = {"schema_version": 1, "frozen_at": now(), "wakeword": config["wakeword"],
         "bundle": str(bundle), "bundle_manifest_sha256": digest(bundle / "manifest.json"),
         "development_report": str(development_report), "development_report_sha256": digest(development_report),
         "project_config_sha256": digest(project), "runtime": config["runtime"],
+        "selected_candidate": deployed,
         "Final_used_for_selection": False}
     output = Path(output) if output else root / "final_lock.json"
     if output.exists():

@@ -2,13 +2,12 @@
 from copy import deepcopy
 from pathlib import Path
 import math
-import shutil
 import numpy as np
 from .common import digest, now, read_json, write_json, writer_lock
 from .project import load_project
-from .events import EventDetector, PositiveTracker, positive_statistics
-from .evaluate import summarize, adoption
-from .runtime import verify_bundle
+from .events import EventDetector, PositiveTracker
+from .evaluate import summarize, adoption, candidate_adoptions
+from .runtime import verify_bundle, deployment_candidate
 
 
 def replay(clips, scores, offsets, model_ids, runtime):
@@ -45,46 +44,64 @@ def replay(clips, scores, offsets, model_ids, runtime):
     return result
 
 
-def tune(project, bundle, evaluation, output, thresholds, consecutive=(2,)):
-    _, config = load_project(project)
+def tune(project, bundle, evaluation, output, thresholds, consecutive=(2,), candidate=None):
+    from .selection import verified_evaluation, copy_candidate_bundle, restrict_evaluation
+    root, config, package, report, clips, scores, offsets, candidates = verified_evaluation(project, bundle, evaluation)
+    if (root / "final_lock.json").exists():
+        raise ValueError("Runtime is frozen; start a versioned experiment")
     evaluation, bundle, output = map(lambda p: Path(p).resolve(), (evaluation, bundle, output))
-    package, report, receipt = verify_bundle(bundle), read_json(evaluation / "report.json"), read_json(evaluation / "receipt.json")
-    if report["stage"] != "development" or report["wakeword"] != config["wakeword"]:
-        raise ValueError("Only this word's Development scores can select a gate")
-    if digest(bundle / "manifest.json") != report["bundle_manifest_sha256"] or digest(evaluation / "report.json") != receipt["report_sha256"] or digest(evaluation / "clips.json") != receipt["clips_sha256"] or digest(evaluation / "scores.npz") != report["score_cache_sha256"]:
-        raise ValueError("Evaluation/model/score cache changed")
-    if not thresholds or any(not math.isfinite(t) or not 0 < t < 1 for t in thresholds) or any(type(n) is not int or n < 1 for n in consecutive):
+    candidate = deployment_candidate(package)["id"] if candidate is None else candidate
+    chosen = next((row for row in candidates if row["id"] == candidate), None)
+    if chosen is None:
+        raise ValueError(f"Unknown evaluated candidate: {candidate}")
+    if not thresholds or not consecutive or any(not math.isfinite(t) or not 0 < t < 1 for t in thresholds) or any(type(n) is not int or n < 1 for n in consecutive):
         raise ValueError("Declare finite thresholds in (0,1) and positive frame counts")
+    if output == bundle or output == evaluation or output.is_relative_to(bundle) or output.is_relative_to(evaluation):
+        raise ValueError("Tuning output must not modify the source bundle/evaluation")
     if output.exists() and any(output.iterdir()):
         raise ValueError("Tuning output is immutable")
-    clips = read_json(evaluation / "clips.json")
-    with np.load(evaluation / "scores.npz", allow_pickle=False) as cache:
-        scores, offsets, ids = cache["scores"], cache["offsets"], cache["model_ids"].tolist()
+    ids = [row["id"] for row in candidates]
     comparisons, best = [], None
     with writer_lock(output):
         for threshold in dict.fromkeys(thresholds):
             for count in dict.fromkeys(consecutive):
                 runtime = dict(package["runtime"], threshold=threshold, consecutive_frames=count)
                 rows = replay(clips, scores, offsets, ids, runtime)
-                summaries = summarize(rows, config)
-                decision = adoption(summaries, config)
-                candidate = next((s for s in summaries if s["id"] == "mean"), summaries[0])
-                key = (decision["passed"], candidate["clean"]["recall"] or 0, candidate["noise_cell_mean"] or 0, -(candidate["negative"]["fa_per_hour"] if candidate["negative"]["fa_per_hour"] is not None else math.inf))
-                comparisons.append({"runtime": runtime, "adoption": decision, "models": summaries})
+                summaries = summarize(rows, config, candidates)
+                decision = adoption(summaries, config, candidate)
+                selected = next(s for s in summaries if s["id"] == candidate)
+                key = (decision["passed"], selected["clean"]["recall"] or 0, selected["noise_cell_mean"] or 0, -(selected["negative"]["fa_per_hour"] if selected["negative"]["fa_per_hour"] is not None else math.inf))
+                comparisons.append({"runtime": runtime, "adoption": decision,
+                                    "candidate_adoptions": candidate_adoptions(summaries, config), "models": summaries})
                 if best is None or key > best[0]:
                     best = (key, runtime, rows, summaries, decision)
                 print(f"Development gate: threshold={threshold} frames={count} adoption={decision['passed']}", flush=True)
-        write_json(output / "comparison.json", {"stage": "development", "created_at": now(), "source_report_sha256": digest(evaluation / "report.json"), "source_score_cache_sha256": digest(evaluation / "scores.npz"), "comparisons": comparisons, "selection_order": ["all admission targets passed", "clean recall", "balanced noise recall", "lower FA/hour"], "scope": "Declared gates only; no network retraining and no Final tuning"})
+        write_json(output / "comparison.json", {"stage": "development", "created_at": now(), "selected_candidate": chosen,
+                    "source_report_sha256": digest(evaluation / "report.json"), "source_score_cache_sha256": digest(evaluation / "scores.npz"),
+                    "comparisons": comparisons, "selection_order": ["all admission targets passed", "clean recall", "balanced noise recall", "lower FA/hour"],
+                    "scope": "Declared gates for one explicit/default deployed candidate; no network retraining and no Final tuning"})
         selected_bundle = output / "bundle"
-        shutil.copytree(bundle, selected_bundle)
         package.update(runtime=best[1], gate_selection_sha256=digest(output / "comparison.json"), stage="development_gate_selected")
-        write_json(selected_bundle / "manifest.json", package)
-        selected_report = dict(report, runtime=best[1], models=best[3], adoption=best[4], bundle_manifest_sha256=digest(selected_bundle / "manifest.json"), gate_selection_sha256=digest(output / "comparison.json"), created_at=now())
+        evidence = {"stage": "development", "candidate": chosen, "selection": "declared_gate_comparison",
+                    "source_bundle_manifest_sha256": digest(bundle / "manifest.json"),
+                    "source_report_sha256": digest(evaluation / "report.json"),
+                    "source_score_cache_sha256": digest(evaluation / "scores.npz"),
+                    "comparison_sha256": digest(output / "comparison.json"), "runtime": best[1],
+                    "adoption": best[4], "Final_used_for_selection": False, "network_rerun": False}
+        copy_candidate_bundle(bundle, selected_bundle, package, chosen, evidence=evidence)
+        selected_report = dict(report, runtime=best[1], models=best[3], adoption=best[4])
+        selected_report, selected_clips, selected_scores = restrict_evaluation(selected_report, best[2], scores, candidates, chosen, config)
+        selected_report.update(bundle_manifest_sha256=digest(selected_bundle / "manifest.json"),
+                               gate_selection_sha256=digest(output / "comparison.json"), created_at=now())
         selected_dir = output / "evaluation"
-        write_json(selected_dir / "clips.json", best[2]); write_json(selected_dir / "report.json", selected_report)
-        shutil.copyfile(evaluation / "scores.npz", selected_dir / "scores.npz")
+        write_json(selected_dir / "clips.json", selected_clips)
+        np.savez_compressed(selected_dir / "scores.npz", scores=selected_scores, offsets=offsets,
+                            model_ids=np.asarray([row["id"] for row in selected_report["candidate_definitions"]]))
+        selected_report["score_cache_sha256"] = digest(selected_dir / "scores.npz")
+        write_json(selected_dir / "report.json", selected_report)
         write_json(selected_dir / "receipt.json", {"report_sha256": digest(selected_dir / "report.json"), "clips_sha256": digest(selected_dir / "clips.json"), "bundle_sha256": digest(selected_bundle / "manifest.json"), "completed_at": now()})
-    return {"bundle": str(selected_bundle), "evaluation": str(selected_dir), "runtime": best[1], "adoption": best[4], "smoke_test_only": report["smoke_test_only"]}
+    return {"bundle": str(selected_bundle), "evaluation": str(selected_dir), "candidate": candidate,
+            "runtime": best[1], "adoption": best[4], "smoke_test_only": report["smoke_test_only"]}
 
 
 def select_runtime(project, bundle):
@@ -92,7 +109,7 @@ def select_runtime(project, bundle):
     if (root / "final_lock.json").exists():
         raise ValueError("Runtime is frozen; start a versioned experiment")
     package = verify_bundle(bundle)
-    if package["wakeword"] != config["wakeword"] or not package.get("gate_selection_sha256"):
+    if package["wakeword"] != config["wakeword"] or not (package.get("gate_selection_sha256") or package.get("candidate_selection_evidence")):
         raise ValueError("Use this word's Development-selected bundle")
     config["runtime"] = package["runtime"]
     from .project import validate_project

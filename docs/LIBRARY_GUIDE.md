@@ -107,6 +107,20 @@ koww status --project projects/bora/project.json
 
 학습용은 처음 선택한 수량, 개발용은 기본 약 5,000개를 생성합니다. 무음·깨짐·길이·중복 등을 자동 검사하며 **음원마다 별도로 음성 인식(STT)을 실행하지 않습니다.** 생성 방식에 대한 대표 청취와 대량 생성 결과의 기술 검사는 구분합니다.
 
+CUDA·BF16·SDPA로 단독 호출을 생성할 때는 GPU 가속을 자동 비교합니다. 각 참조 음색의 첫 발화를 같은 난수 상태로 반복해 학습용 PCM·품질 검사·CPU/GPU 난수 상태가 모두 같은지 확인합니다. 초기 준비 비용을 제외한 재실행이 기본 경로보다 최소 5% 빨라야 가속을 사용하며, 출력이 다르거나 충분히 빠르지 않으면 기본 결과를 사용합니다. 비교용 반복 음성은 학습 자료에 추가하지 않습니다. 확인 결과와 실측 시간은 프로젝트의 `runtime/tts_execution.json`에 저장합니다. 기본 경로를 직접 비교하려면 생성 명령에 `--tts-backend eager`를 붙입니다. 출력이 같다는 확인은 음성의 발음 검수를 대신하지 않습니다.
+
+유사어 원본도 Qwen으로 만들 수 있습니다. 아래 명령은 **후보만 생성**하며, 대표 발음 검수와 자료 사용 승인 전에는 학습에 넣지 않습니다. `--count`는 원본 수이고, 배치의 유사어 100개는 매 학습 단계의 추출량입니다.
+
+**호출어 자체나 호출어의 동일한 이름·낱말이 통째로 들어간 표현(호격 생략·변경 포함)은 유사어에서 제외합니다.** ‘보라야’의 ‘보라’는 제외하고, 다른 낱말인 ‘보리야’·‘보람아’·‘돌아와’는 사용할 수 있습니다. 공통 음절이나 부분 문자열만으로 제외하지 않습니다. 같은 표현을 서로 다른 음색·발음으로 생성하는 것은 가능하지만, 동일 WAV를 복제해 수량을 채우지는 않습니다.
+
+```powershell
+koww generate-hard --project projects/bora/project.json --phrases 보리야 보람아 돌아와 --count 100
+```
+
+공개 소음·잔향과 유사어를 한 번에 대표 검수할 때는 원본 목록과 대표 목록을 먼저 고정합니다. 각 데이터셋·소리 범주와 새 유사어의 표현·음색 조합을 대표 목록에 포함하고, `review --kind content --pool-manifest 원본목록.jsonl`로 엽니다. 화면에서 대표 음원을 듣고 **자료 묶음 사용 동의**를 직접 체크해야 전체 목록을 승인합니다. 듣지 않은 원본은 개별 청취 완료로 기록하지 않습니다. 폐기·재검수가 있으면 먼저 해결하고 다시 승인합니다.
+
+폐기한 표현은 원본 목록과 승인 범위에서도 제외합니다. 승인된 원본이 75개여도 학습 배치에서는 100개를 무작위 복원 추출할 수 있습니다. 원본 수와 배치 추출량을 구분하고, 배치를 맞추려고 폐기한 표현이나 복제 WAV를 추가하지 않습니다.
+
 **동작 확인용**에서는 개발용 생성 명령을 아래처럼 바꿔 우선 100개만 만드세요. 학습용과 다른 개발용 음색·자료를 사용하는 원칙은 유지합니다.
 
 ```powershell
@@ -121,9 +135,9 @@ koww generate --project projects/bora/project.json --split validation --limit 10
 
 ## 5. 비호출·소음·잔향 자료 연결하기
 
-[데이터 준비 안내](DATASETS.md)에 따라 공개 자료를 내려받습니다. 다운로드만으로 학습용 자료 목록이 만들어지지는 않습니다. 사용할 원본을 선택하고 출처·이용조건·학습/평가 구분·검수 결과를 기록해야 합니다.
+[데이터 준비 안내](DATASETS.md)에 따라 공개 자료를 내려받고 압축을 풉니다. [공개 음원 자동 준비](DATA_FORMAT.md#공개-음원-자동-준비)의 `index-data → prepare-materials → review → admit-materials` 순서로 변환·분리·검수·연결합니다. 자료 목록과 파일 해시는 명령이 기록하므로 직접 작성할 필요가 없습니다. 여러 소음 묶음은 `connect-materials`로 함께 연결합니다.
 
-[자료 목록 작성법](DATA_FORMAT.md)의 예시를 따라 다음 파일을 준비합니다.
+자동 연결 결과는 다음 프로젝트 목록에 저장됩니다. 외부에서 만든 목록을 연결하려면 [자료 목록 작성법](DATA_FORMAT.md)을 참고하세요.
 
 | 프로젝트 파일 | 넣을 자료 |
 | --- | --- |
@@ -142,14 +156,14 @@ koww import-generic --project projects/bora/project.json --features shared/openw
 
 이 파일은 약 17.28GB이며 처음 연결할 때 전체 파일을 검사합니다. 원본 WAV가 없으므로 이 자료에 소음을 추가했다고 기록하지 않습니다.
 
-한국어 원본은 학습할 2초 구간 목록으로 바꿉니다. 음원 자체를 구간마다 복사하지 않습니다.
+`admit-materials --pools korean_negative --connect`는 원본을 복사하지 않는 2초 구간 목록까지 연결합니다. 아래 수동 `windows` 명령은 외부에서 작성한 기존 원본 목록을 연결할 때만 필요합니다.
 
 ```powershell
 koww audit --project projects/bora/project.json
 koww windows --project projects/bora/project.json --pool korean_negative --output projects/bora/data/negative/korean_windows.jsonl
 ```
 
-완료 후 `project.json`의 `manifests` 안에 있는 `korean_negative` 값을 **`data/negative/korean_windows.jsonl`**로 바꾸세요. 학습을 시작한 뒤에는 이 설정을 변경하지 않습니다.
+수동 목록을 사용했다면 완료 후 `project.json`의 `manifests.korean_negative`를 **`data/negative/korean_windows.jsonl`**로 바꿉니다. 자동 연결 경로는 이 수정이 필요하지 않습니다. 학습을 시작한 뒤에는 입력을 변경하지 않습니다.
 
 학습 전에는 **처음 선택한 일반 비호출·한국어 비호출 목표 시간**을 확인합니다. 상용 모델용은 각각 7,500시간 / 2,500시간이며 작은 단계는 1단계 표의 시간을 명시적으로 선택합니다. 공개 Generic 파일은 약 2,000시간만 포함하므로 상용 모델용에는 더 큰 자료가 필요합니다. 원본 일반 비호출 목록을 준비했다면 `windows --pool generic_negative`와 `features --role generic_negative`로 특징을 만들 수 있습니다. 공개 파일을 복제해 7,500시간으로 계산하거나 여러 특징 배열이 자동 통합된다고 가정하지 않습니다. 호출어 원본 수만 줄여도 자료 목표 시간이 자동으로 줄어들지는 않습니다.
 
@@ -197,13 +211,21 @@ koww prepare-eval --project projects/bora/project.json --output projects/bora/da
 
 ```powershell
 koww evaluate --project projects/bora/project.json --bundle projects/bora/models/candidate_selected --manifest projects/bora/data/eval/development.jsonl --output projects/bora/reports/dev_selected
-koww tune --project projects/bora/project.json --bundle projects/bora/models/candidate_selected --evaluation projects/bora/reports/dev_selected --output projects/bora/reports/gates_selected --thresholds 0.5 0.7 0.85 0.9 0.95 0.98 0.9862500429153442 0.995 --consecutive 1 2 3
+koww site --evaluation projects/bora/reports/dev_selected --output projects/bora/reports/dev_selected/site
+koww serve --directory projects/bora/reports/dev_selected/site --port 8791
+```
+
+[http://127.0.0.1:8791/](http://127.0.0.1:8791/)에서 단일 모델과 앙상블을 비교하고 Ctrl+C로 서버를 종료합니다. 사용할 후보를 선택한 뒤 감지 설정을 비교하세요.
+
+```powershell
+koww select-candidate --project projects/bora/project.json --bundle projects/bora/models/candidate_selected --evaluation projects/bora/reports/dev_selected --candidate member3_seed20260930 --output projects/bora/models/selected_v1
+koww tune --project projects/bora/project.json --bundle projects/bora/models/selected_v1/bundle --evaluation projects/bora/models/selected_v1/evaluation --output projects/bora/reports/gates_selected --thresholds 0.5 0.7 0.85 0.9 0.95 0.98 0.9862500429153442 0.995 --consecutive 1 2 3
 koww select-runtime --project projects/bora/project.json --bundle projects/bora/reports/gates_selected/bundle
 ```
 
 `evaluate`는 모델별 호출 성공률·오호출·지연을 계산합니다. `tune`은 저장된 점수를 재사용해 감지 기준을 비교하므로 같은 오디오를 신경망으로 다시 계산하지 않습니다. `threshold`는 감지로 인정할 최소 점수, `consecutive`는 그 점수를 연속으로 넘어야 하는 프레임 수입니다.
 
-평가 보고서의 `adoption.passed`가 목표 통과 여부입니다. 목표 미달이면 이유를 확인하고 필요한 부분을 보완하세요. 표본 모델의 임계값을 새 호출어에 그대로 확정하지 않습니다. 기준은 [학습 계획](../plan.md#5-평가-목표)에서 확인합니다.
+`candidate_adoptions`는 모든 단일 모델·앙상블 각각의 통과 여부이며 `adoption`은 지정한 후보의 판정입니다. `select-candidate`의 위 ID는 예시이므로 실제 결과에 표시된 ID로 바꾸세요. `mean`을 고르면 세 모델 평균, 단일 ID를 고르면 해당 모델 하나만 실행 묶음에 들어갑니다. 저장된 점수와 같은 채점 오디오를 재사용하며 자동 재학습은 없습니다. 목표 미달이면 이유를 확인하고 필요한 부분을 보완하세요. 표본 모델의 임계값을 새 호출어에 그대로 확정하지 않습니다. 기준은 [학습 계획](../plan.md#5-평가-목표)에서 확인합니다.
 
 ## 8. 모델·설정 확정 후 최종 평가하기
 
@@ -277,6 +299,32 @@ koww features --project projects/bora/project_R3.json --role positive
 각 설정의 `pool_features.positive`에 생성된 경로를 사용해 `compare-rounds`로 확인하고, 같은 학습량·Negative·배치·seed로 별도 학습합니다. 필요하면 같은 방식으로 R5를 추가합니다. R 비교와 원본 수 비교는 다른 실험입니다.
 
 학습량을 바꾸면 기본 학습률 변화 기간과 저장 시점도 연동됩니다. 같은 기간에서 학습량만 비교하려면 `--schedule-horizon`을 지정합니다. 자세한 통제 기준과 지원 설정은 [학습 계획](../plan.md)에 있습니다.
+
+### 마이크로 모델 시험하기
+
+새로 학습하지 않고도 기본 설치에 포함된 ‘춘식아’ 모델을 마이크로 시험할 수 있습니다. 추가 패키지를 설치하지 않고 실행합니다.
+
+```powershell
+koww mic
+```
+
+직접 학습한 모델은 `manifest.json`이 있는 모델 묶음 폴더를 지정합니다. 아래 경로를 자신의 `package` 결과 폴더로 바꾸세요.
+
+```powershell
+koww mic --bundle projects/bora/models/candidate_selected
+```
+
+1. [http://127.0.0.1:8792/](http://127.0.0.1:8792/)을 열고 사용할 마이크를 선택합니다.
+2. **시작**을 누르고 브라우저의 마이크 권한 요청을 허용합니다. 허용 전에는 장치 이름이 표시되지 않을 수 있습니다.
+3. 준비 표시가 끝난 뒤(기본 2초) 화면에 나온 호출어를 말합니다.
+4. 입력 크기와 각 모델의 점수·감지 여부·감지 횟수를 확인합니다. 모델 3개가 있는 묶음은 세 점수의 평균에 따른 앙상블 결과도 보여줍니다.
+5. **중지**를 누르면 마이크 입력을 종료합니다. 다시 시작하면 모델의 입력 이력과 준비 시간이 초기화됩니다.
+
+마이크 시험은 **기존 모델의 반응을 확인하는 기능**입니다. 임계값·연속 프레임·초기 준비·재감지 간격은 모델 묶음의 실행 설정을 그대로 사용합니다. 개인 음성은 녹음 파일로 저장하지 않으며, 학습·임계값 조정·TTS 참조로 사용하지 않습니다.
+
+자동 음량 보정은 하지 않습니다. 브라우저의 자동 음량 조절·소음 제거·에코 제거를 끄도록 요청하고 실제 장치 설정을 화면에 표시합니다. 장치나 운영체제에서 별도로 적용하는 음성 처리는 다를 수 있습니다.
+
+서버가 실행되는 동안 터미널을 열어 두세요. 종료는 **Ctrl+C**, 재실행은 같은 `mic` 명령입니다. 포트를 바꾸려면 `--port 8793`처럼 지정합니다. 권한이 거부되면 브라우저의 사이트 권한에서 마이크를 허용하고, 다른 장치가 선택되었거나 입력이 없다면 마이크를 다시 선택해 시작하세요.
 
 ### Python에서 직접 학습한 모델 사용하기
 

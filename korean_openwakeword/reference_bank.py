@@ -1,7 +1,6 @@
 """Reuse a reviewed synthetic bank without importing personal voice recordings."""
-from pathlib import Path
 import shutil
-from .common import bound_file, digest, identity, now, read_json, read_rows, write_json, append_row, resolved, snapshot_json, require_final_lock
+from .common import bound_file, digest, identity, now, read_json, read_rows, write_json, append_row, snapshot_json, require_final_lock
 from .project import load_project
 
 
