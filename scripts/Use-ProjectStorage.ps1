@@ -1,4 +1,4 @@
-param([string]$ProjectRoot = (Join-Path $PSScriptRoot '..'))
+﻿param([string]$ProjectRoot = (Join-Path $PSScriptRoot '..'))
 $ErrorActionPreference = 'Stop'
 $kowwProjectRoot = (Resolve-Path -LiteralPath $ProjectRoot).ProviderPath
 $kowwCacheRoot = Join-Path $kowwProjectRoot 'storage\runtime_cache'

@@ -3,12 +3,27 @@ from pathlib import Path
 import sys
 import tempfile
 import types
+import subprocess
 
 import pytest
 
 from korean_openwakeword.storage import (
     local_tts_snapshot, project_storage, storage_environment, storage_paths,
 )
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows PowerShell 5.1 encoding regression")
+def test_storage_script_is_readable_in_windows_powershell_51(tmp_path):
+    script = Path(__file__).parents[1] / "scripts" / "Use-ProjectStorage.ps1"
+    environment = dict(os.environ, KOWW_TEST_STORAGE_SCRIPT=str(script), KOWW_TEST_STORAGE_ROOT=str(tmp_path))
+    shell = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    result = subprocess.run([str(shell), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
+        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
+        ". $env:KOWW_TEST_STORAGE_SCRIPT -ProjectRoot $env:KOWW_TEST_STORAGE_ROOT"],
+        env=environment, capture_output=True, encoding="utf-8", timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    assert result.stdout.startswith("프로젝트 캐시: " + str(tmp_path / "storage/runtime_cache"))
 
 
 def test_caches_and_previously_cached_temp_are_project_local_then_restored(tmp_path, monkeypatch):

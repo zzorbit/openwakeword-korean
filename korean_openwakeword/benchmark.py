@@ -1,10 +1,69 @@
 """Measure resources before large work; distinguish speed from numeric equality."""
 import time
 import importlib.metadata
+import os
+import re
+import subprocess
+import sys
 import numpy as np
 from .common import now, write_json
 from .train import build_classifier, apply_backend
 from .project import default_profile, training_batch
+
+
+def _tts_import_messages(output):
+    """Summarize only known optional Qwen 0.1.1 import noise.
+
+    Qwen imports its unused 25Hz tokenizer even for our supported 12Hz models.
+    Keep any other warnings visible, and never apply this filter to failures.
+    """
+    notes = []
+    if "SoX could not be found!" in output:
+        notes.append("SoX 미설치: 이 라이브러리의 Qwen 12Hz 음성 생성에는 필요하지 않습니다.")
+        output = re.sub(r"SoX could not be found!.*?path variables\.[ \t]*", "", output, flags=re.S)
+        # PySOX's shell probe writes directly to native stderr in these locales.
+        for message in (
+            r"'sox' is not recognized as an internal or external command,\s*operable program or batch file\.",
+            r"'sox'은\(는\) 내부 또는 외부 명령, 실행할 수 있는 프로그램, 또는\s*배치 파일이 아닙니다\.",
+            r"(?:/[^\s:]+sh|sh): (?:\d+: )?sox: (?:not found|command not found)",
+        ):
+            output = re.sub(message, "", output)
+    flash_warning = (
+        "Warning: flash-attn is not installed. Will only run the manual PyTorch version. "
+        "Please install flash-attn for faster inference."
+    )
+    if flash_warning in output:
+        notes.append("flash-attn 미설치: 기본 SDPA 설정으로 사용할 수 있습니다.")
+        output = re.sub(r"\*{8}\s*" + re.escape(flash_warning) + r"\s*\*{8}", "", output)
+    return output.strip(), notes
+
+
+def _check_tts_imports():
+    """Capture native child stderr too, without changing vendor imports or PATH."""
+    environment = dict(os.environ, PYTHONIOENCODING="utf-8")
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", "import torchaudio; from qwen_tts import Qwen3TTSModel"],
+            capture_output=True, timeout=120,
+            env=environment, check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return ["TTS binary/import check timed out after 120 seconds"], "", []
+    except OSError as error:
+        return [f"TTS binary/import check could not start: {error}"], "", []
+    # Python emits UTF-8; CMD's missing-command message may still use Windows ACP.
+    lines = []
+    for part in (result.stdout, result.stderr):
+        for line in part.splitlines():
+            try:
+                lines.append(line.decode("utf-8"))
+            except UnicodeDecodeError:
+                lines.append(line.decode("mbcs" if os.name == "nt" else "utf-8", errors="replace"))
+    output = "\n".join(lines)
+    if result.returncode:
+        return [f"TTS binary/import check failed (exit {result.returncode}): {output[-6000:] or 'no diagnostic output'}"], "", []
+    warnings, notes = _tts_import_messages(output)
+    return [], warnings[-3000:], notes
 
 
 def doctor(include_tts=False):
@@ -24,22 +83,15 @@ def doctor(include_tts=False):
     except ImportError:
         report["cuda_available"] = False
     if include_tts:
-        import contextlib
-        import io
         reasons = []
         for name, expected in (("torch", "2.8.0"), ("torchaudio", "2.8.0"), ("qwen-tts", "0.1.1")):
             if not versions[name] or versions[name].split("+", 1)[0] != expected:
                 reasons.append(f"{name}=={expected} is required for the supported TTS path")
-        warnings = io.StringIO()
+        warnings, notes = "", []
         if not reasons:
-            try:
-                with contextlib.redirect_stdout(warnings), contextlib.redirect_stderr(warnings):
-                    __import__("torchaudio")
-                    __import__("qwen_tts")
-            except (ImportError, OSError, RuntimeError) as error:
-                reasons.append(f"TTS binary/import check failed: {error}")
+            reasons, warnings, notes = _check_tts_imports()
         report["tts_check"] = {"ready": not reasons, "reasons": reasons,
-                               "import_warnings": warnings.getvalue()[-3000:],
+                               "import_warnings": warnings, "notes": notes,
                                "model_download_or_generation": False,
                                "installation_guide": "https://pytorch.org/get-started/previous-versions/"}
     return report
