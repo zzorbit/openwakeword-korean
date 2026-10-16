@@ -386,3 +386,81 @@ def test_synthetic_category_basis_can_come_from_verified_generation_contract(syn
     synthetic_pool["rows"][-1].pop("category_basis")
     _refresh(synthetic_pool)
     assert _approve(synthetic_pool)["source_count"] == 16
+
+
+def test_fresh_generated_references_review_pilot_and_hard_pool_need_no_manifest_rewrite(tmp_path, monkeypatch):
+    """The public fresh-project flow keeps reference rows pending/immutable.
+
+    A user review approves family IDs in approval.json. That is the authority
+    used by both generators; pool admission must recognize the same evidence.
+    No Qwen weights/downloads are needed for this procedural audio fixture.
+    """
+    from korean_openwakeword import tts
+    from korean_openwakeword.common import read_rows
+    from korean_openwakeword.hard_tts import generate_hard
+    from korean_openwakeword.review import apply_review, apply_pool_review
+
+    class ProceduralQwen:
+        def __init__(self):
+            self.calls = 0
+        def _wave(self):
+            self.calls += 1
+            time = np.arange(16000) / 16000
+            return [.1 * np.sin(2 * np.pi * (210 + self.calls * 13) * time)], 16000
+        def generate_voice_design(self, **kwargs):
+            return self._wave()
+        def create_voice_clone_prompt(self, **kwargs):
+            return kwargs["ref_audio"]
+        def generate_voice_clone(self, **kwargs):
+            return self._wave()
+
+    monkeypatch.setattr(tts, "_seed", lambda seed: None)
+    project = create_project(tmp_path / "fresh", "보라야", "bora", positive_originals=4)
+    root = project.parent
+    model = ProceduralQwen()
+    references = tts.generate_references(project, "train", 2, model=model)
+    reference_queue = references["review_queue"]
+    original_bank_sha = digest(reference_queue)
+    generated_rows = read_rows(reference_queue)
+    assert {row["status"] for row in generated_rows} == {"pending_review"}
+    apply_review(project, reference_queue, {r["sample_id"]: {"decision": "keep", "listened": True} for r in generated_rows}, "references")
+    pilot = tts.generate(project, "train", 4, True, "clone", model=model)
+    pilot_rows = read_rows(pilot["review_queue"])
+    assert pilot["full_target_reached"]
+    apply_review(project, pilot["review_queue"], {r["sample_id"]: {"decision": "keep", "listened": True} for r in pilot_rows}, "pilot")
+    candidates = generate_hard(project, ["보리야", "돌아와"], 4, model=model)
+    assert candidates["full_target_reached"]
+    sources = [r for r in read_rows(candidates["candidates"]) if r["technical_pass"]]
+    source_manifest = root / "review/fresh_sources.jsonl"
+    queue = root / "review/fresh_representatives.jsonl"
+    _rows(source_manifest, sources)
+    previews = [{**r, "sample_id": "preview_" + r["sample_id"], "reviewed_source": {"path": r["path"], "sha256": r["sha256"]}} for r in sources]
+    _rows(queue, previews)
+    result = apply_pool_review(project, queue, source_manifest,
+                              {r["sample_id"]: {"decision": "keep", "listened": True} for r in previews}, True)
+    assert result["source_count"] == 4
+    admission = read_json(root / result["admission"]["path"])
+    assert len(admission["synthetic_phrase_family_strata"]) == 4
+    assert digest(reference_queue) == original_bank_sha
+    assert {r["status"] for r in read_rows(reference_queue)} == {"pending_review"}
+    _, config = load_project(project)
+    validate_admission(root, [{**r, "admission": result["admission"]} for r in sources], config, "hard_negative")
+
+
+@pytest.mark.parametrize("status", ["pending_review", "accepted"])
+def test_reference_row_status_cannot_replace_actual_accepted_family_ids(synthetic_pool, status):
+    from korean_openwakeword.common import read_rows
+    reference_path = synthetic_pool["root"] / "data/references/train/references.jsonl"
+    references = read_rows(reference_path)
+    for row in references:
+        row["status"] = status
+    _rows(reference_path, references)
+    for row in synthetic_pool["contract"]["references"]:
+        row["status"] = status
+    _refresh_contract(synthetic_pool)
+    approval_path = synthetic_pool["root"] / "approval.json"
+    approval = read_json(approval_path)
+    approval["accepted_reference_families"] = []
+    write_json(approval_path, approval)
+    with pytest.raises(ValueError, match="approved Train family"):
+        _approve(synthetic_pool)

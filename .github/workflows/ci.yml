@@ -38,6 +38,8 @@ jobs:
         run: python -m pytest tests -m "not legacy_parity" -q --junitxml=test-results.xml
       - name: Microphone browser and PCM frame regression
         run: node tests/check_microphone_ui.cjs .test-tmp/microphone-ui.json
+      - name: Training studio browser regression
+        run: node tests/check_studio_ui.cjs
       - name: Build wheel and source archive
         run: python -m build
       - uses: actions/upload-artifact@v4

@@ -1,5 +1,8 @@
 .venv*/
 .cache/
+cache/
+.koww-studio/
+.studio/
 storage/
 projects/
 shared/

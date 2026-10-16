@@ -56,6 +56,10 @@ def parser():
     from . import __version__
     p.add_argument("--version", action="version", version="korean-openwakeword " + __version__)
     sub = p.add_subparsers(dest="command", required=True)
+    a = sub.add_parser("web", help="하나의 웹 화면에서 자료 준비·검수·학습·시험")
+    a.add_argument("--workspace", type=Path, help="프로젝트·공유 자료·캐시 저장 폴더; 기본은 현재 폴더")
+    a.add_argument("--port", type=int, default=8793)
+    a.add_argument("--no-browser", action="store_true", help="브라우저를 자동으로 열지 않음")
     a = sub.add_parser("init", help="새 한국어 호출어 프로젝트")
     a.add_argument("--wakeword", required=True); a.add_argument("--id", required=True); a.add_argument("--output", type=Path, required=True)
     setup_arguments(a)
@@ -189,6 +193,9 @@ def parser():
 
 
 def dispatch(a):
+    if a.command == "web":
+        from .studio import serve_studio
+        return serve_studio(a.workspace, a.port, not a.no_browser)
     if a.command == "datasets":
         from .downloads import dataset_catalog
         return dataset_catalog()

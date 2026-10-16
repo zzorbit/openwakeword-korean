@@ -1,0 +1,664 @@
+"""Bounded, checksum-bound public-data recipes for the training studio.
+
+Downloads and technical preparation never imply that a person listened or that
+the material was admitted.  All user decisions pass through the existing
+representative-review admission code, including explicit whole-pool consent.
+"""
+from __future__ import annotations
+
+import csv
+import hashlib
+import os
+from pathlib import Path, PurePosixPath
+import re
+import shutil
+import stat
+import tarfile
+import threading
+import zipfile
+
+import requests
+
+from .common import (bound_file, digest, identity, now, read_json, read_rows,
+                     resolved, write_json, writer_lock)
+from .downloads import dataset_catalog, download_checked
+from .project import load_project
+
+AS_REV = "5a2fa42a1506470d275a47ff8e1fdac5b364e6ef"
+MIT_REV = "b824a1ef2821f112fda0b9cb26e4278c62b425bb"
+FMA_REV = "607364e7d8263f890d23c838802f29637600611f"
+DNS_REV = "70f19285c36cca4df2338f9248775ddc50980c6b"
+_AUDIO = {".wav", ".flac", ".mp3", ".ogg", ".aif", ".aiff", ".au"}
+
+
+def _official_assets():
+    catalog = dataset_catalog()["assets"]
+    assets = {key: {**catalog[key], "id": key, "checksum_algorithm": "sha256"}
+              for key in ("generic", "zeroth")}
+    assets.update({
+        "audioset": {"id": "audioset", "filename": "bal_train09.tar", "size_bytes": 968540160,
+            "source_url": f"https://huggingface.co/datasets/agkphysics/AudioSet/resolve/{AS_REV}/data/bal_train09.tar",
+            "sha256": "9ab88550e77c8289acf71d19ae3f254fadad16f3cea305ef08a16949a928acf9",
+            "checksum_algorithm": "sha256", "upstream_revision": AS_REV,
+            "license": "Provider card CC-BY-4.0; preserve individual original YouTube rights limitations",
+            "role": "noise_train"},
+        "audioset_segments": {"id": "audioset_segments", "filename": "balanced_train_segments.csv", "size_bytes": 1211931,
+            "source_url": f"https://huggingface.co/datasets/agkphysics/AudioSet/resolve/{AS_REV}/data/balanced_train_segments.csv",
+            "sha256": "3b83e5ff9ed72cfda37d4e36ce08250e107c1ea70f109f6ab6668ac200db5e94",
+            "checksum_algorithm": "sha256", "upstream_revision": AS_REV, "license": "CC-BY-4.0", "role": "provider_metadata"},
+        "audioset_ontology": {"id": "audioset_ontology", "filename": "ontology.json", "size_bytes": 342780,
+            "source_url": f"https://huggingface.co/datasets/agkphysics/AudioSet/resolve/{AS_REV}/data/ontology.json",
+            "sha256": "9c685f4403eecc3ca9be37fd7285cf212feaaea6ff7229d3e7ca89e0d1f2d15d",
+            "checksum_algorithm": "sha256", "upstream_revision": AS_REV, "license": "CC-BY-4.0", "role": "provider_metadata"},
+        "fma": {"id": "fma", "filename": "fma_small.zip", "size_bytes": 7679594875,
+            "source_url": "https://os.unil.cloud.switch.ch/fma/fma_small.zip",
+            "sha1": "ade154f733639d52e35e32f5593efe5be76c6d70", "checksum_algorithm": "sha1",
+            "upstream_revision": FMA_REV,
+            "checksum_source": f"https://github.com/mdeff/fma/blob/{FMA_REV}/README.md",
+            "license": "Per-track Creative Commons conditions from original tracks.csv; not the HF loader code license",
+            "role": "noise_music_train", "selection": "First 120 licensed tracks by provider numeric ID; 30-second clips, approximately one hour total"},
+        "fma_metadata": {"id": "fma_metadata", "filename": "fma_metadata.zip", "size_bytes": 358412441,
+            "source_url": "https://os.unil.cloud.switch.ch/fma/fma_metadata.zip",
+            "sha1": "f0df49ffe5f2a6008d7dc83c6915b31835dfe733", "checksum_algorithm": "sha1",
+            "checksum_source": f"https://github.com/mdeff/fma/blob/{FMA_REV}/README.md",
+            "upstream_revision": FMA_REV, "license": "FMA metadata CC-BY-4.0; audio license is per track", "role": "provider_metadata"},
+        "dns_fan": _dns("fan_Freesound_validated_100355_0.wav", "a3d2ede479606cae392b5332973ed1a1a6e9f0d4176e030bb22920379e3cd5ba", "train", "freesound:100355"),
+        "dns_door": _dns("door_Freesound_validated_102956_0.wav", "ae7bc15f5460a4809922e5d4594a487b8cfe7f96e0ead159a3627f75d46add85", "validation", "freesound:102956"),
+        "electronic_validation": {"id": "electronic_validation", "filename": "1-13613-A-37.wav", "size_bytes": 441044,
+            "source_url": "https://raw.githubusercontent.com/karolpiczak/ESC-50/33c8ce9eb2cf0b1c2f8bcf322eb349b6be34dbb6/audio/1-13613-A-37.wav",
+            "git_sha1": "bb19394d9ff398d31aab405c4ce12c25ff8cdff0", "checksum_algorithm": "git_sha1",
+            "upstream_revision": "33c8ce9eb2cf0b1c2f8bcf322eb349b6be34dbb6", "license": "Original Freesound 13613 by hookhead CC0; ESC-50 corpus CC-BY-NC-3.0 attribution preserved",
+            "canonical_source_id": "freesound:13613", "split": "validation", "role": "held_out_electronic_smoke"},
+    })
+    return list(assets.values())
+
+
+def _dns(filename, checksum, split, source):
+    return {"id": "dns_" + ("fan" if split == "train" else "door"), "filename": filename,
+            "size_bytes": 320044, "source_url": f"https://media.githubusercontent.com/media/microsoft/DNS-Challenge/{DNS_REV}/datasets/noise/{filename}",
+            "sha256": checksum, "checksum_algorithm": "sha256", "upstream_revision": DNS_REV,
+            "license": "CC0-1.0 Freesound selection per pinned DNS README", "canonical_source_id": source,
+            "split": split, "role": "environment_smoke"}
+
+
+def _preset(preset):
+    aliases = {"operation_check": "check", "smoke": "check", "trial": "test", "commercial": "full", "production": "full"}
+    preset = aliases.get(preset, preset)
+    if preset not in ("check", "test", "full"):
+        raise ValueError("Material preset must be check, test or full")
+    return preset
+
+
+def material_recipe(preset="check", workspace=None):
+    """Preview known downloads and limits without accessing network or audio."""
+    preset = _preset(preset)
+    assets = _official_assets()
+    for asset in assets:
+        path = _cached_asset(asset, Path(workspace).resolve() / "shared" / "downloads") if workspace else None
+        asset["local_path"] = str(path) if path else None
+        asset["availability"] = "cached_requires_integrity_check" if path and path.is_file() else "download_required"
+    return {"schema_version": 1, "preset": preset, "assets": assets,
+            "known_download_bytes": sum(a["size_bytes"] for a in assets),
+            "additional_download": {"id": "mit_rir", "source_url": f"https://huggingface.co/datasets/davidscripka/MIT_environmental_impulse_responses/tree/{MIT_REV}/16khz",
+                "upstream_revision": MIT_REV, "files": 271, "size_bytes": None,
+                "license": "Unknown in provider card; preserve MIT original source terms and review before use",
+                "verification": "Each file's LFS SHA256 and size from the pinned provider tree; no guessed hash or room identity"},
+            "estimated_workspace_bytes": 90 * 1024**3,
+            "automatic_target_hours": {"generic_nominal": 2000, "korean_train": 1},
+            "shortages": [] if preset == "check" else [
+                "This bounded recipe supplies only publisher-nominal 2,000h Generic and 1h Korean Train; connect additional reviewed materials to reach the selected test/full targets.",
+                "More diverse independent continuous Negative evaluation is required for a production claim."],
+            "limitations": [
+                "The public Generic file contains features only, not waveform audio, and its 2,000h is nominal publisher duration.",
+                "FMA's original checksum-verified small archive is 7.68GB even though only 120 tracks are extracted; cached archives are reused.",
+                "Unknown AudioSet/FMA speaker identities and MIT rooms stay conservative Train-only groups; no invented independence.",
+                "Check evaluation reserves use Korean held-out speakers plus one environmental and one electronic clip, which are functionality coverage, not broad noise robustness evidence.",
+                "Downloads and technical QC are not human listening, admission, or Final evaluation approval."],
+            "human_review_required": True, "Final_accessed": False}
+
+
+def _cached_asset(asset, directory):
+    """Bounded paths used by this studio and the documented manual commands."""
+    primary = directory / asset["filename"]
+    candidates = (primary, directory.parent / asset["filename"],
+                  directory.parent.parent / "downloads" / asset["filename"])
+    return next((p for p in candidates if p.is_file()), primary)
+
+
+def _emit(progress, label, done=None, total=None, unit=None):
+    if progress:
+        progress({"label": label, "done": done, "total": total, "unit": unit,
+                  "task_id": os.environ.get("KOWW_STUDIO_TASK_ID")})
+
+
+def _checksum(path, algorithm):
+    if algorithm == "sha256":
+        return digest(path)
+    h = hashlib.sha1()
+    if algorithm == "git_sha1":
+        h.update(f"blob {Path(path).stat().st_size}\0".encode("ascii"))
+    with Path(path).open("rb") as stream:
+        for block in iter(lambda: stream.read(8 * 1024**2), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def _download(asset, directory, progress=None):
+    """Use existing SHA256 downloader; retain original upstream SHA1 pins too."""
+    target = _cached_asset(asset, directory)
+    if not asset["source_url"].startswith("https://"):
+        raise ValueError("Public-data sources must use HTTPS")
+    _emit(progress, "자료 다운로드·해시 확인: " + asset["id"], 0, asset["size_bytes"], "bytes")
+    algorithm = asset["checksum_algorithm"]
+    if algorithm == "sha256" and target.parent != directory:
+        if target.stat().st_size != asset["size_bytes"] or digest(target) != asset["sha256"]:
+            raise ValueError("Existing manual download differs from the pinned asset")
+        result = {"path": str(target), "sha256": asset["sha256"], "bytes": target.stat().st_size,
+                  "reused": True, "completed_at": now(), "content_approved": False}
+    elif algorithm == "sha256":
+        # Keep the already-tested download implementation and expose its
+        # actual partial-file length while it is working, including resume.
+        stopped = threading.Event()
+        def monitor():
+            while not stopped.wait(1):
+                partial = target.with_name(target.name + ".part")
+                try:
+                    size = partial.stat().st_size if partial.is_file() else target.stat().st_size if target.is_file() else 0
+                    _emit(progress, "자료 다운로드·해시 확인: " + asset["id"], size, asset["size_bytes"], "bytes")
+                except OSError:
+                    pass  # Atomic rename may occur between stat and exists.
+        observer = threading.Thread(target=monitor, daemon=True) if progress else None
+        if observer:
+            observer.start()
+        try:
+            result = download_checked(asset["source_url"], target, asset["sha256"], asset["size_bytes"])
+        finally:
+            stopped.set()
+            if observer:
+                observer.join()
+    else:
+        directory.mkdir(parents=True, exist_ok=True)
+        expected = asset[algorithm]
+        if algorithm not in ("sha1", "git_sha1") or not re.fullmatch("[0-9a-f]{40}", expected):
+            raise ValueError("Expected the original upstream SHA1 or Git blob checksum")
+        with writer_lock(directory / ("." + target.name + ".download")):
+            reused = target.is_file()
+            partial = target.with_name(target.name + ".part")
+            if not reused:
+                offset = partial.stat().st_size if partial.is_file() else 0
+                if offset > asset["size_bytes"]:
+                    raise ValueError("Partial file exceeds pinned upstream size")
+                if offset < asset["size_bytes"]:
+                    if shutil.disk_usage(directory).free < asset["size_bytes"] - offset:
+                        raise ValueError("Insufficient workspace space for public-data download")
+                    headers = {"Accept-Encoding": "identity", **({"Range": f"bytes={offset}-"} if offset else {})}
+                    with requests.get(asset["source_url"], headers=headers, stream=True, timeout=(30, 180)) as response:
+                        response.raise_for_status()
+                        if response.status_code == 206:
+                            match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", response.headers.get("Content-Range", ""))
+                            if not match or int(match[1]) != offset or int(match[3]) != asset["size_bytes"]:
+                                raise ValueError("Mismatched public-data resume range")
+                        elif response.status_code == 200:
+                            offset = 0
+                        else:
+                            raise ValueError("Unexpected public-data response")
+                        with partial.open("ab" if offset else "wb") as stream:
+                            for chunk in response.iter_content(8 * 1024**2):
+                                if not chunk:
+                                    continue
+                                if offset + len(chunk) > asset["size_bytes"]:
+                                    raise ValueError("Public-data response exceeds pinned size")
+                                stream.write(chunk)
+                                offset += len(chunk)
+                                _emit(progress, "자료 다운로드: " + asset["id"], offset, asset["size_bytes"], "bytes")
+                if partial.stat().st_size != asset["size_bytes"] or _checksum(partial, algorithm) != expected:
+                    raise ValueError("Public-data download checksum mismatch; partial is preserved")
+                partial.replace(target)
+            if target.stat().st_size != asset["size_bytes"] or _checksum(target, algorithm) != expected:
+                raise ValueError("Existing public-data archive differs from upstream checksum")
+            result = {"path": str(target), "sha256": digest(target), "bytes": target.stat().st_size,
+                      "verified_upstream_algorithm": algorithm, "verified_upstream_checksum": expected,
+                      "reused": reused, "completed_at": now(), "content_approved": False}
+    result.update(source_url=asset["source_url"], license=asset["license"], upstream_revision=asset.get("upstream_revision"))
+    # A manual download's original receipt can already be bound by another
+    # project. Leave it untouched when reusing the original in place.
+    receipt = (target.with_name(target.name + ".receipt.json") if target.parent == directory
+               else directory / (target.name + ".reused.receipt.json"))
+    write_json(receipt, result)
+    _emit(progress, "자료 확인 완료: " + asset["id"], asset["size_bytes"], asset["size_bytes"], "bytes")
+    return target
+
+
+def _archive_target(root, name):
+    parts = PurePosixPath(name).parts
+    if (not parts or name.startswith("/") or "\\" in name or ":" in name
+            or any(p in (".", "..") or p.rstrip(" .") != p for p in parts)
+            or any(re.fullmatch(r"(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?", p, re.I) for p in parts)):
+        raise ValueError("Unsafe public archive member path")
+    target = root.joinpath(*parts).resolve()
+    if target == root or not target.is_relative_to(root):
+        raise ValueError("Public archive member escapes extraction directory")
+    return target
+
+
+def extract_archive(archive, output, *, members=None, max_bytes=40 * 1024**3):
+    """Safely resume exact selected files; never follow links or call extractall."""
+    archive, output = Path(archive).resolve(), Path(output).resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    requested = set(members) if members is not None else None
+    request = {"archive": {"path": str(archive), "sha256": digest(archive)},
+               "members": sorted(requested) if requested is not None else None, "max_bytes": max_bytes}
+    receipt_path = output / "extraction_receipt.json"
+    if receipt_path.is_file():
+        receipt = read_json(receipt_path)
+        if receipt.get("request") != request:
+            raise ValueError("Archive extraction request changed; use another directory")
+        if all((output / item["path"]).is_file() and digest(output / item["path"]) == item["sha256"] for item in receipt["files"]):
+            return {**receipt, "resumed": True}
+        raise ValueError("Published extracted files changed; original archive preserved")
+    with writer_lock(output):
+        is_zip = zipfile.is_zipfile(archive)
+        handle = zipfile.ZipFile(archive) if is_zip else tarfile.open(archive, "r:*")
+        with handle:
+            inventory = handle.infolist() if is_zip else handle.getmembers()
+            selected, names, targets, required = [], set(), set(), 0
+            for member in inventory:
+                name = member.filename if is_zip else member.name
+                directory_member = member.is_dir() if is_zip else member.isdir()
+                if directory_member and name.rstrip("/") in ("", "."):
+                    continue  # A conventional tar root entry creates nothing.
+                # Validate every member, even one outside the selected subset.
+                target = _archive_target(output, name.rstrip("/"))
+                mode = member.external_attr >> 16 if is_zip else member.mode
+                if (is_zip and stat.S_IFMT(mode) not in (0, stat.S_IFREG, stat.S_IFDIR)) or (not is_zip and not (member.isfile() or member.isdir())):
+                    raise ValueError("Archive links and special files are not allowed")
+                if directory_member:
+                    continue
+                if name in names or target in targets:
+                    raise ValueError("Duplicate public archive member path")
+                names.add(name)
+                targets.add(target)
+                if requested is not None and name not in requested:
+                    continue
+                size = member.file_size if is_zip else member.size
+                if not 0 <= size <= 512 * 1024**2:
+                    raise ValueError("Public archive member exceeds extraction safety limit")
+                required += size
+                selected.append((member, target, size))
+            if requested is not None and requested - names:
+                raise ValueError("Requested public archive members are missing")
+            if required > max_bytes or shutil.disk_usage(output).free < required:
+                raise ValueError("Insufficient disk space or extraction exceeds recipe budget")
+            records = []
+            for member, target, size in selected:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                partial = target.with_name(target.name + ".part")
+                source = handle.open(member) if is_zip else handle.extractfile(member)
+                with source, partial.open("wb") as stream:
+                    remaining = size
+                    while remaining:
+                        block = source.read(min(1024**2, remaining))
+                        if not block:
+                            raise EOFError("Truncated public archive member")
+                        stream.write(block)
+                        remaining -= len(block)
+                    if source.read(1):
+                        raise ValueError("Archive member exceeds its declared size")
+                actual = digest(partial)
+                if target.exists() and digest(target) != actual:
+                    raise ValueError("Interrupted extraction contains a conflicting file")
+                os.replace(partial, target)
+                records.append({"path": target.relative_to(output).as_posix(), "sha256": actual, "bytes": size})
+        receipt = {"request": request, "files": records, "bytes": required, "completed_at": now(), "content_approved": False}
+        write_json(receipt_path, receipt)
+        return {**receipt, "resumed": False}
+
+
+def _fetch_mit(shared, progress=None):
+    directory = shared / "mit_rir"
+    directory.mkdir(parents=True, exist_ok=True)
+    manifest = directory / "provider_tree.json"
+    url = f"https://huggingface.co/api/datasets/davidscripka/MIT_environmental_impulse_responses/tree/{MIT_REV}/16khz?limit=1000"
+    if manifest.is_file():
+        saved = read_json(manifest)
+        if saved.get("source_url") != url:
+            raise ValueError("MIT cached provider revision changed")
+        entries = saved["entries"]
+    else:
+        response = requests.get(url, timeout=(30, 120))
+        response.raise_for_status()
+        if response.links.get("next"):
+            raise ValueError("MIT provider listing unexpectedly paginated")
+        entries = response.json()
+        write_json(manifest, {"source_url": url, "entries": entries, "retrieved_at": now()})
+    entries = [r for r in entries if r.get("type") == "file" and r.get("path", "").endswith(".wav")]
+    if len(entries) != 271 or len({r["path"] for r in entries}) != 271:
+        raise ValueError("Pinned MIT provider inventory must contain exactly 271 WAVs")
+    for order, row in enumerate(entries):
+        path = _archive_target(directory, row["path"])
+        checksum = row.get("lfs", {}).get("oid")
+        if not isinstance(checksum, str) or not re.fullmatch("[0-9a-f]{64}", checksum) or row["size"] > 8 * 1024**2:
+            raise ValueError("MIT provider file lacks bounded LFS SHA256 metadata")
+        download_checked(f"https://huggingface.co/datasets/davidscripka/MIT_environmental_impulse_responses/resolve/{MIT_REV}/{row['path']}", path, checksum, row["size"])
+        _emit(progress, "잔향 자료 확인", order + 1, len(entries), "files")
+    return directory / "16khz"
+
+
+def _fma_selection(metadata, archive, output):
+    """Select 120 provider-licensed original tracks, retaining original metadata."""
+    with zipfile.ZipFile(archive) as stream:
+        available = {Path(n).stem: n for n in stream.namelist() if n.endswith(".mp3") and Path(n).stem.isdigit()}
+    with Path(metadata).open(encoding="utf-8-sig", newline="") as stream:
+        reader = csv.reader(stream)
+        columns = list(zip(next(reader), next(reader)))
+        license_i, subset_i = columns.index(("track", "license")), columns.index(("set", "subset"))
+        selected = []
+        for row in reader:
+            if not row or not row[0].isdigit():
+                continue
+            track = f"{int(row[0]):06d}"
+            terms = row[license_i].strip()
+            if (track in available and row[subset_i] == "small"
+                    and terms.lower() not in ("", "nan", "unknown", "none")):
+                selected.append((int(track), available[track]))
+    chosen = [name for _, name in sorted(selected)[:120]]
+    if len(chosen) != 120:
+        raise ValueError("FMA archive and original metadata need 120 licensed small-subset tracks")
+    return extract_archive(archive, output, members=chosen, max_bytes=200 * 1024**2)
+
+
+def _write_rows(path, rows):
+    import json
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    value = "".join(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n" for row in rows)
+    if path.exists() and path.stat().st_size and path.read_text(encoding="utf-8") != value:
+        raise ValueError("Existing studio manifest differs from immutable prepared sources")
+    if not path.exists() or not path.stat().st_size:
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(value, encoding="utf-8")
+        os.replace(temporary, path)
+    return {"path": str(path.resolve()), "sha256": digest(path)}
+
+
+def prepare_materials(project_path, workspace, preset="check", progress=None):
+    """Download, normalize and reserve sources, then return actual review gates."""
+    from .preparation import create_source_index, prepare_public_audio
+    from .assets import import_generic
+    from .frontend import PINNED_ASSETS
+
+    project_path = Path(project_path).resolve()
+    root, config = load_project(project_path)
+    workspace = Path(workspace).resolve()
+    if any(part.lower() == ".codex" for part in workspace.parts):
+        raise ValueError("Public learning material must not be stored inside .codex")
+    shared = workspace / "shared"
+    downloads = shared / "downloads"
+    recipe = material_recipe(preset, workspace)
+    workspace.mkdir(parents=True, exist_ok=True)
+    # A minimum preflight before any download; actual per-file checks also run.
+    missing = sum(a["size_bytes"] for a in recipe["assets"] if a["availability"] == "download_required")
+    if shutil.disk_usage(workspace).free < missing + 4 * 1024**3:
+        raise ValueError("Not enough selected-workspace space for the displayed data recipe and preparation")
+    assets = {a["id"]: a for a in recipe["assets"]}
+    paths = {key: _download(asset, downloads, progress) for key, asset in assets.items()}
+    extract_archive(paths["zeroth"], shared / "zeroth")
+    extract_archive(paths["audioset"], shared / "audioset")
+    extract_archive(paths["fma_metadata"], shared / "fma_metadata", members=["fma_metadata/tracks.csv"], max_bytes=200 * 1024**2)
+    tracks = shared / "fma_metadata/fma_metadata/tracks.csv"
+    _fma_selection(tracks, paths["fma"], shared / "fma_1h")
+    mit = _fetch_mit(shared, progress)
+    stage = root / ".studio" / "materials"
+    stage.mkdir(parents=True, exist_ok=True)
+
+    extra = shared / "check_noise"
+    extra.mkdir(parents=True, exist_ok=True)
+    extra_rows = []
+    for key in ("dns_fan", "dns_door", "electronic_validation"):
+        asset, original = assets[key], paths[key]
+        destination = extra / asset["filename"]
+        if destination.exists() and digest(destination) != digest(original):
+            raise ValueError("Existing held-out smoke audio differs from original")
+        if not destination.exists():
+            shutil.copyfile(original, destination)
+        extra_rows.append({"path": destination.name, "dataset_id": "dns_pinned_smoke" if key.startswith("dns") else "esc50_electronic_smoke",
+            "canonical_source_id": asset["canonical_source_id"], "canonical_recording_id": asset["canonical_source_id"],
+            "source_url": asset["source_url"], "license": asset["license"], "sha256": digest(destination),
+            "split": asset["split"], "category": "music" if key == "electronic_validation" else "environment",
+            "language": "unknown", "speech": None if key == "electronic_validation" else False,
+            "speech_presence": "unknown" if key == "electronic_validation" else "declared",
+            "category_basis": "ESC-50 electronic alarm (music/electronic evaluation category)" if key == "electronic_validation" else "Pinned DNS Freesound environmental source metadata"})
+    extra_index = stage / "extra_source_index.jsonl"
+    _write_rows(extra_index, extra_rows)
+    sources = [
+        {"id": "zeroth", "directory": shared / "zeroth", "adapter": "zeroth", "license": assets["zeroth"]["license"],
+         "source_url": "https://www.openslr.org/40/", "target_hours": 1, "validation_fraction": .1, "pools": ["korean_negative", "noise"]},
+        {"id": "audioset", "directory": shared / "audioset", "adapter": "audioset", "metadata": paths["audioset_segments"],
+         "ontology": paths["audioset_ontology"], "validation_fraction": 0, "pools": ["noise"]},
+        {"id": "fma", "directory": shared / "fma_1h", "adapter": "fma", "metadata": tracks, "validation_fraction": 0, "pools": ["noise"]},
+        {"id": "mit_rir", "directory": mit, "adapter": "mit_rir", "validation_fraction": 0, "pools": ["rir"]},
+        {"id": "check_noise", "directory": extra, "index": extra_index, "validation_fraction": 0, "pools": ["noise"]},
+    ]
+    queues, reserves, preparations = [], [], []
+    for order, source in enumerate(sources):
+        name = source["id"]
+        _emit(progress, "자료 변환·분리: " + name, order, len(sources), "datasets")
+        index = source.get("index") or stage / (name + "_source_index.jsonl")
+        if "index" not in source:
+            create_source_index(source["directory"], output=index, dataset=source["adapter"],
+                                dataset_id=name, metadata=source.get("metadata"), ontology=source.get("ontology"),
+                                license=source.get("license"), source_url=source.get("source_url"))
+        record = prepare_public_audio(project_path, input_directory=source["directory"], output=stage / name,
+                    source_index=index, target_hours=source.get("target_hours"), validation_fraction=source["validation_fraction"],
+                    representatives_per_stratum=2)
+        binding = record["preparation"]
+        preparation = binding["path"]
+        queues.append({"id": "materials_" + name, "kind": "content", "queue": record["artifacts"]["representative_queue"]["path"],
+                       "pool_manifest": record["artifacts"]["source_manifest"]["path"], "preparation": preparation,
+                       "pools": source["pools"], "label": name + " 대표 음원 확인"})
+        reserves.extend(read_rows(record["artifacts"]["validation_reserve"]["path"]))
+        preparations.append({"id": name, "preparation": binding, "train_hours": record["train_hours"],
+                             "validation_hours": record["validation_hours"], "target_met": record["target_met"]})
+    validation = _write_rows(stage / "noise_validation.jsonl", [r for r in reserves if r["category"] != "rir"])
+    negative = _write_rows(stage / "negative_validation.jsonl", [{**r, "kind": "negative", "calls": []}
+                          for r in reserves if r["category"] != "rir"])
+    generic_output = resolved(root, config["pool_features"]["generic_negative"])
+    metadata_path = generic_output / "metadata.json"
+    if metadata_path.is_file():
+        metadata = read_json(metadata_path)
+        if (metadata.get("feature_sha256") != assets["generic"]["sha256"]
+                or Path(metadata.get("feature_path", "")).resolve() != paths["generic"].resolve()
+                or metadata.get("canonical_frontend_assets") != {"melspectrogram": PINNED_ASSETS["melspectrogram.onnx"], "embedding": PINNED_ASSETS["embedding_model.onnx"]}):
+            raise ValueError("Existing Generic import differs from the studio recipe")
+    else:
+        _emit(progress, "일반 비호출 특징 전체 검사·연결")
+        metadata = import_generic(paths["generic"], generic_output, {"model_sha256": {
+            "melspectrogram": PINNED_ASSETS["melspectrogram.onnx"], "embedding": PINNED_ASSETS["embedding_model.onnx"]}})
+    shortages = list(recipe["shortages"])
+    if config["targets"]["generic_hours"] > 2000:
+        shortages.append(f"Generic target {config['targets']['generic_hours']}h exceeds the available publisher nominal 2000h")
+    if config["targets"]["korean_hours"] > 1:
+        shortages.append(f"Korean target {config['targets']['korean_hours']}h exceeds this bounded 1h preparation; add reviewed admissions")
+    if any(not r["target_met"] for r in preparations):
+        shortages.append("One or more source preparations did not reach the actual unique Train duration quota")
+    result = {"kind": "studio_material_preparation_v1", "project": str(project_path), "preset": _preset(preset),
+              "state": "awaiting_human_review", "review_queues": queues, "preparations": preparations,
+              "generic_feature_import": {"features": str(paths["generic"]), "output": str(generic_output), "imported": True,
+                  "publisher_declared_hours": metadata["publisher_declared_hours"], "unique_source_hours": None},
+              "validation_noise_manifest": validation, "negative_validation_manifest": negative,
+              "validation_source_count": len(reserves), "validation_unique_source_hours": sum(r["duration_s"] for r in reserves) / 3600,
+              "shortages": shortages, "limitations": recipe["limitations"], "human_listened_count": 0,
+              "training_admitted": False, "Final_accessed": False, "created_at": now()}
+    write_json(stage / "preparation_result.json", result)
+    return result
+
+
+def prepare_additional_materials(project_path, workspace, source):
+    """Prepare an explicitly supplied public corpus folder through the same UI.
+
+    The source is user-supplied; no licensing, category, transcript, speaker or
+    room fact is guessed. A manifest adapter requires actual per-file metadata.
+    """
+    from .preparation import create_source_index, prepare_public_audio
+    root, config = load_project(project_path)
+    if not isinstance(source, dict):
+        raise ValueError("Additional material must describe one public corpus folder")
+    source = dict(source)
+    dataset, pool = source.get("dataset", "manifest"), source.get("pool")
+    if dataset not in ("zeroth", "manifest", "audioset", "fma", "mit_rir"):
+        raise ValueError("Choose an existing public-data adapter")
+    if pool not in ("generic_negative", "korean_negative", "noise", "rir"):
+        raise ValueError("Additional pool must be generic_negative, korean_negative, noise or rir")
+    if dataset == "mit_rir" and pool != "rir":
+        raise ValueError("The MIT RIR adapter belongs to the rir pool; use a provider manifest for another RIR corpus")
+    workspace = Path(workspace).expanduser().resolve()
+    directory_value = Path(source.get("directory", "")).expanduser()
+    directory = resolved(workspace, directory_value)
+    if not source.get("directory") or not directory.is_dir():
+        raise ValueError("Select an existing directory of public source audio")
+    if any(p.lower() == ".codex" for p in directory.parts):
+        raise ValueError("Additional learning material must not be stored inside .codex")
+    for key in ("metadata", "ontology", "room_metadata"):
+        if source.get(key):
+            source[key] = str(resolved(workspace, Path(source[key]).expanduser()))
+    metadata = source.get("metadata")
+    if dataset in ("manifest", "audioset", "fma") and not metadata:
+        raise ValueError("This adapter requires the original provider metadata file")
+    if dataset == "audioset" and not source.get("ontology"):
+        raise ValueError("AudioSet also requires its original ontology JSON")
+    hours = source.get("hours")
+    if pool != "rir" and (type(hours) not in (int, float) or not __import__("math").isfinite(hours) or hours <= 0):
+        raise ValueError("Additional raw audio needs a positive finite preparation-hour quota")
+    # These provider-known defaults remain the corpus's actual public terms;
+    # arbitrary folder contents cannot be labelled as a verified archive.
+    if dataset == "zeroth":
+        source.setdefault("source_url", "https://www.openslr.org/40/")
+        source.setdefault("license", dataset_catalog()["assets"]["zeroth"]["license"])
+    request = {**source, "directory": str(directory), "wakeword": config["wakeword"]}
+    key = identity(request)[:20]
+    stage = root / ".studio" / "materials" / ("additional_" + key)
+    index = stage.with_name(stage.name + "_source_index.jsonl")
+    create_source_index(directory, output=index, dataset=dataset, metadata=metadata,
+                        ontology=source.get("ontology"), room_metadata=source.get("room_metadata"),
+                        dataset_id=source.get("dataset_id"), source_url=source.get("source_url"),
+                        license=source.get("license"))
+    record = prepare_public_audio(project_path, input_directory=directory, output=stage,
+                    source_index=index, target_hours=None if pool == "rir" else hours,
+                    validation_fraction=source.get("validation_fraction", .1),
+                    dataset_id=source.get("dataset_id"), source_url=source.get("source_url"),
+                    license=source.get("license"), category=source.get("category"),
+                    category_basis=source.get("category_basis"), language=source.get("language", "unknown"),
+                    speech=source.get("speech"), representatives_per_stratum=2)
+    descriptor = {"id": "materials_additional_" + key, "kind": "content",
+        "queue": record["artifacts"]["representative_queue"]["path"],
+        "pool_manifest": record["artifacts"]["source_manifest"]["path"],
+        "preparation": record["preparation"]["path"], "pools": [pool],
+        "label": "추가 공개 자료 · " + pool}
+    return {"kind": "studio_additional_material_preparation_v1", "source": request,
+            "review_queue": descriptor, "preparation": record["preparation"],
+            "target_met": record["target_met"], "train_hours": record["train_hours"],
+            "validation_reserve": record["artifacts"]["validation_reserve"],
+            "human_listened_count": 0, "training_admitted": False, "Final_accessed": False}
+
+
+def admit_materials(project_path, prepared, answers_by_preparation=None, *, admissions=()):
+    """Consume actual saved review answers and connect their exact admitted pools."""
+    from .preparation import apply_prepared_review, connect_materials
+    root, config = load_project(project_path)
+    answers = answers_by_preparation or {}
+    receipts, all_pools = [], set()
+    for queue in prepared.get("review_queues", []):
+        answer = answers.get(queue["preparation"], answers.get(queue["id"]))
+        if answer is None:
+            raise ValueError("Saved representative answers are required for " + queue["id"])
+        if isinstance(answer, dict):
+            answer = bound_file(root, answer)
+        record = apply_prepared_review(project_path, preparation=queue["preparation"], answers=answer,
+                                       pools=queue["pools"], connect=False)
+        receipts.append(record["receipt"])
+        all_pools.update(queue["pools"])
+    receipts.extend(admissions)
+    for receipt in admissions:
+        path = bound_file(root, receipt) if isinstance(receipt, dict) else resolved(root, receipt)
+        all_pools.update(read_json(path).get("manifests", {}))
+    if not receipts:
+        raise ValueError("No reviewed material admissions are available")
+    # Recompute real source duration after merging additional admissions instead
+    # of preserving a preset's now-obsolete planning shortage.  Generic's
+    # publisher-nominal hours stay distinct from waveform unique hours.
+    from .data import coverage_interval, union_hours
+    durations, raw_generic_bindings = {}, []
+    for pool in ("generic_negative", "korean_negative"):
+        intervals, seen_intervals = {}, set()
+        for receipt in receipts:
+            record_path = bound_file(root, receipt) if isinstance(receipt, dict) else resolved(root, receipt)
+            record = read_json(record_path)
+            if record.get("kind") != "prepared_public_audio_admission_v1" or record.get("state") != "accepted":
+                raise ValueError("Additional materials require an authentic accepted preparation receipt")
+            binding = record.get("source_manifests", {}).get(pool, record.get("manifests", {}).get(pool))
+            if binding:
+                if pool == "generic_negative":
+                    raw_generic_bindings.append(binding)
+                for row in read_rows(bound_file(root, binding)):
+                    start, end = row.get("start_s", 0), row.get("end_s", row.get("duration_s", 0))
+                    exact = (row["sha256"], start, end)
+                    if exact in seen_intervals:
+                        continue
+                    seen_intervals.add(exact)
+                    source, interval = coverage_interval(row, start, end)
+                    intervals.setdefault(source, []).append(interval)
+        durations[pool] = union_hours(intervals)
+    generic = prepared.get("generic_feature_import") or {}
+    nominal = generic.get("publisher_declared_hours", 0) if generic.get("imported") else 0
+    shortages = []
+    generic_target = config["targets"]["generic_hours"]
+    korean_target = config["targets"]["korean_hours"]
+    # Original overlap with the precomputed file cannot be established, so
+    # adding raw sources to the legacy array cannot certify a larger pool.
+    raw_generic = (durations["generic_negative"] + 1e-9 >= generic_target
+                   and (not generic.get("imported") or generic_target > nominal))
+    generic_available = durations["generic_negative"] if raw_generic or not generic.get("imported") else nominal
+    if (generic or "generic_negative" in all_pools) and generic_available + 1e-9 < generic_target:
+        shortages.append(f"Active Generic feature cache covers {generic_available:g}h, below selected {generic_target:g}h; additional raw Generic admissions require a separately rebuilt feature cache, not addition to the legacy 2,000h file")
+    if "korean_negative" in all_pools and durations["korean_negative"] + 1e-9 < korean_target:
+        shortages.append(f"Korean unique admitted Train duration {durations['korean_negative']:g}h is below selected {korean_target:g}h")
+    # Do not freeze partial pool manifests: the next resume may supply another
+    # authentic admission and merge once. Existing experiments stay immutable.
+    if shortages:
+        return {"state": "awaiting_additional_materials", "admissions": receipts, "pools_ready": [],
+                "shortages": shortages, "admitted_unique_hours": durations,
+                "generic_publisher_nominal_hours": nominal, "Final_accessed": False}
+    connection = connect_materials(project_path, admissions=receipts, pools=sorted(all_pools))
+    # All source reserves remain separate, including added datasets.  They
+    # are never promoted to Train merely to meet a selected time target.
+    reserves, seen = [], set()
+    reserve_bindings = []
+    for receipt in receipts:
+        record_path = bound_file(root, receipt) if isinstance(receipt, dict) else resolved(root, receipt)
+        record = read_json(record_path)
+        binding = record["evaluation_reserve"]
+        reserve_bindings.append(binding)
+        for row in read_rows(bound_file(root, binding)):
+            key = (row["sha256"], row.get("start_s", 0), row.get("end_s", row["duration_s"]))
+            if row["category"] != "rir" and key not in seen:
+                reserves.append(row)
+                seen.add(key)
+    stage = root / ".studio" / "materials"
+    reserve_key = identity(sorted(reserve_bindings, key=lambda x: x["path"]))[:16]
+    validation = _write_rows(stage / ("noise_validation_" + reserve_key + ".jsonl"), reserves)
+    negative = _write_rows(stage / ("negative_validation_" + reserve_key + ".jsonl"),
+                           [{**r, "kind": "negative", "calls": []} for r in reserves])
+    _write_rows(resolved(root, config["manifests"]["noise_validation"]), reserves)
+    if raw_generic:
+        relative_cache = "features/generic_negative_raw_" + identity(sorted(raw_generic_bindings, key=lambda x: x["path"]))[:16]
+        config["pool_features"]["generic_negative"] = relative_cache
+        write_json(project_path, config)
+        generic = {"mode": "raw_generic", "imported": False, "output": str(resolved(root, relative_cache)),
+                   "unique_source_hours": durations["generic_negative"], "publisher_declared_hours": None,
+                   "previous_legacy_cache_preserved": True}
+    return {"state": "connected", "connection": connection, "admissions": receipts,
+            "pools_ready": sorted(all_pools), "generic_feature_import": generic,
+            "negative_validation_manifest": negative,
+            "validation_noise_manifest": validation,
+            "admitted_unique_hours": durations, "generic_publisher_nominal_hours": nominal,
+            "shortages": shortages, "Final_accessed": False}

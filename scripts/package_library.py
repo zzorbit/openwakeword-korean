@@ -14,6 +14,7 @@ ROOT_FILES = (
 GUIDES = (
     "LIBRARY_GUIDE.md", "DATASETS.md", "DATA_FORMAT.md", "VALIDATION.md",
     "TRAINING_RESULTS_SITE.md", "STORAGE_POLICY.md",
+    "WEB_GUIDE.md",
 )
 PRIVATE_TEXT = re.compile(
     r"C:[\\/]+Users[\\/]+|F:[\\/]+project-wakeword|"
@@ -40,7 +41,7 @@ def stage_library(repository, output, inventory):
     for name in GUIDES:
         shutil.copyfile(repository / "docs" / name, output / "docs" / name)
     (output / "scripts").mkdir()
-    for name in ("Use-ProjectStorage.ps1", "package_library.py"):
+    for name in ("Use-ProjectStorage.ps1", "Start-Web.ps1", "Start-Web.cmd", "package_library.py"):
         shutil.copyfile(repository / "scripts" / name, output / "scripts" / name)
     (output / "tests").mkdir()
     for source in sorted((repository / "tests").glob("test_korean_library*.py")):
@@ -48,6 +49,9 @@ def stage_library(repository, output, inventory):
     node_tests = repository / "tests/check_microphone_ui.cjs"
     if node_tests.is_file():
         shutil.copyfile(node_tests, output / "tests" / node_tests.name)
+    studio_tests = repository / "tests/check_studio_ui.cjs"
+    if studio_tests.is_file():
+        shutil.copyfile(studio_tests, output / "tests" / studio_tests.name)
     (output / "validation").mkdir()
     for source in sorted((repository / "validation").glob("*.json")):
         shutil.copyfile(source, output / "validation" / source.name)

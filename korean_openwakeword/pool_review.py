@@ -92,9 +92,16 @@ def _synthetic_contract(root, row, config, contracts):
         if not isinstance(references, list) or not references or not isinstance(contract.get("texts"), list) or not contract["texts"]:
             raise ValueError("Synthetic contract needs actual references and declared phrases")
         train_refs = read_rows(root / "data/references/train/references.jsonl")
-        allowed = {(r["voice_family_id"], r["sha256"]): r for r in train_refs
-                   if r.get("split") == "train" and r.get("status") == "accepted" and r.get("human_reference_used") is False}
         accepted_families = set(read_json(root / "approval.json").get("accepted_reference_families", []))
+        # Fresh generation keeps its reference manifest immutable with
+        # status=pending_review. apply_review records accepted family IDs in
+        # approval.json, which is also the authority used by both generators.
+        # Do not require rewriting the original rows to admit their exact
+        # reviewed Train bindings. Split/provenance/no-human/hash checks below
+        # remain mandatory, including for older status=accepted banks.
+        allowed = {(r["voice_family_id"], r["sha256"]): r for r in train_refs
+                   if r.get("split") == "train" and r.get("voice_family_id") in accepted_families
+                   and r.get("human_reference_used") is False}
         selected = {}
         for reference in references:
             family = reference.get("voice_family_id")
