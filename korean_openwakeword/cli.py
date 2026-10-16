@@ -163,6 +163,8 @@ def parser():
     a.add_argument("--project", type=Path, required=True); a.add_argument("--output", type=Path, required=True)
     a.add_argument("--split", choices=("validation", "final"), default="validation"); a.add_argument("--originals", type=int, default=100)
     a.add_argument("--noise-sections", type=int, default=5)
+    a.add_argument("--noise-selection", choices=("legacy", "balanced_sources"), default="legacy",
+                   help="legacy: 기존 원본 선택 / balanced_sources: 소음 세부 종류와 원본 균형 선택")
     a = sub.add_parser("evaluate", help="동일 WAV의 단일·평균 모델 평가")
     a.add_argument("--project", type=Path, required=True); a.add_argument("--bundle", type=Path, required=True)
     a.add_argument("--manifest", type=Path); a.add_argument("--stage", choices=("development", "final"), default="development")
@@ -331,7 +333,8 @@ def dispatch(a):
         return package_run(a.project, a.run, a.output)
     if a.command == "prepare-eval":
         from .paired import prepare_evaluation
-        return prepare_evaluation(a.project, a.output, a.split, a.originals, a.noise_sections)
+        return prepare_evaluation(a.project, a.output, a.split, a.originals, a.noise_sections,
+                                  noise_selection=a.noise_selection)
     if a.command == "evaluate":
         from .evaluate import evaluate
         return evaluate(a.project, a.bundle, a.output, a.stage, a.manifest, a.smoke, a.candidate)

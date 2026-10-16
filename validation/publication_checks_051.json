@@ -1,0 +1,231 @@
+{
+  "library_version": "0.5.1",
+  "checked_date": "2026-10-16",
+  "environment": {
+    "system": "Windows",
+    "python": "3.12",
+    "torch": "2.8.0+cu128",
+    "test_imports": "installed wheel, separate working directory"
+  },
+  "installed_wheel_tests": {
+    "tests": 692,
+    "passed": 691,
+    "skipped": 1,
+    "failures": 0,
+    "errors": 0,
+    "seconds": 206.295,
+    "excluded_internal_history_tests": 5
+  },
+  "javascript_tests": {
+    "studio": 14,
+    "microphone": 14,
+    "actual_microphone_opened": false
+  },
+  "downloaded_evaluation_media": {
+    "files": 34,
+    "original_bytes": 15317230,
+    "total_duration_s": 242.9354375,
+    "headroom_files": 10,
+    "min_uniform_gain": 0.8683496937760578,
+    "max_original_decoded_clipped_fraction": 0.0026485260770975055,
+    "all_technical_pass": true,
+    "human_listened": 0,
+    "training_admitted": false
+  },
+  "actual_audio_construction": {
+    "passed": true,
+    "elapsed_seconds": 20.23929290000524,
+    "functional_original_slots": 100,
+    "independent_positive_utterances": 1,
+    "audio_files": 1600,
+    "used_public_background_sources": 35,
+    "used_new_catalog_background_sources": 34,
+    "condition_counts": [
+      {
+        "category": "clean",
+        "snr_db": null,
+        "samples": 100
+      },
+      {
+        "category": "environment",
+        "snr_db": 20,
+        "samples": 100
+      },
+      {
+        "category": "environment",
+        "snr_db": 15,
+        "samples": 100
+      },
+      {
+        "category": "environment",
+        "snr_db": 10,
+        "samples": 100
+      },
+      {
+        "category": "environment",
+        "snr_db": 5,
+        "samples": 100
+      },
+      {
+        "category": "environment",
+        "snr_db": 0,
+        "samples": 100
+      },
+      {
+        "category": "music",
+        "snr_db": 20,
+        "samples": 100
+      },
+      {
+        "category": "music",
+        "snr_db": 15,
+        "samples": 100
+      },
+      {
+        "category": "music",
+        "snr_db": 10,
+        "samples": 100
+      },
+      {
+        "category": "music",
+        "snr_db": 5,
+        "samples": 100
+      },
+      {
+        "category": "music",
+        "snr_db": 0,
+        "samples": 100
+      },
+      {
+        "category": "competing_speech",
+        "snr_db": 20,
+        "samples": 100
+      },
+      {
+        "category": "competing_speech",
+        "snr_db": 15,
+        "samples": 100
+      },
+      {
+        "category": "competing_speech",
+        "snr_db": 10,
+        "samples": 100
+      },
+      {
+        "category": "competing_speech",
+        "snr_db": 5,
+        "samples": 100
+      },
+      {
+        "category": "competing_speech",
+        "snr_db": 0,
+        "samples": 100
+      }
+    ],
+    "categories": {
+      "environment": {
+        "effective_unique_sources": 20,
+        "used_sources": 20,
+        "available_types": 10,
+        "used_types": 10,
+        "source_selections": 100,
+        "all_sources_used": true
+      },
+      "music": {
+        "effective_unique_sources": 14,
+        "used_sources": 14,
+        "available_types": 9,
+        "used_types": 9,
+        "source_selections": 100,
+        "all_sources_used": true
+      },
+      "competing_speech": {
+        "effective_unique_sources": 1,
+        "used_sources": 1,
+        "available_types": 1,
+        "used_types": 1,
+        "source_selections": 100,
+        "all_sources_used": true
+      }
+    },
+    "noise_construction_counts": {
+      "zero_padded_event_alignment": 31,
+      "original_contiguous": 269
+    },
+    "minimum_persisted_call_rms_dbfs": -34.778997959590406,
+    "maximum_persisted_peak": 0.980010986328125,
+    "maximum_persisted_snr_error_db": 0.001124129053447831,
+    "model_inference_runs": 0,
+    "training_runs": 0,
+    "human_listened_count": 0,
+    "new_human_admissions": 0,
+    "Final_accessed": false,
+    "limitations": [
+      "Audio construction and exact persisted signal quality only; no call success or false activation result.",
+      "100 functional slots reuse one real existing synthetic utterance; they are not 100 independent utterances.",
+      "New public sources remain unreviewed and unadmitted; this disposable fixture does not change production project manifests or approval.",
+      "Legacy published generic precomputed features have no complete raw-source mapping; this fixture has no Train sources and makes no broad historical-disjointness claim."
+    ]
+  },
+  "additional_checks": [
+    "actual tiny three-CNN optimizer/export/evaluation/site pipeline in installed suite",
+    "source/type balance and manifest-order invariance",
+    "source aliases do not multiply sampling weight",
+    "same background construction for all paired SNRs",
+    "single-event zero-padding without looping impacts",
+    "unheard or training-scoped consent cannot admit evaluation media",
+    "known raw Train ID/file/full-source PCM overlap rejection and PCM-cache reuse",
+    "unstarted update rebind only; active/started/modified/locked states remain protected",
+    "evaluation catalog JSON is part of worker implementation identity"
+  ],
+  "package_implementation_sha256": {
+    "__init__.py": "b071184039a84fa45da380ce75375df2b067b4dee1aa065d3191d97670680b06",
+    "__main__.py": "6d8b7d7846a845059d7a3107143f11131f63c5511d669b44085b15ec5e3d2279",
+    "assets.py": "db2d19e2c87b480d9efd80e9b461f47120b4d516c321efd2e5d58dda14b4cfc3",
+    "audio.py": "2b4b7b1a0f188ead63275362310d89c026ec1fa36e320bbdca6351e496e2ac06",
+    "benchmark.py": "b829149e4251d658966601728db4b8577d62d9212c6234844fd5bd978ed96120",
+    "bundle.py": "4dd67caaaf19d18d145aaf38446a3a0c2610bb6c91536c63df3064df8ac0664a",
+    "cli.py": "3b888456b3b3c5ab6f0d5e35375962a09bc80872a9fb39135d4a593fa32e1aee",
+    "common.py": "1d70b2a38162f78e45802686fc0a0c94c704caa696715cc6326daeae3f5f8838",
+    "data.py": "96569dbf2e22ff7e1a28d91ac2be1e17260ad3ff554c2f99d450106e5e06226e",
+    "demo.py": "7feb062e8169efb0e00b9d7b33ca25df9acae008aa9cd9f3c801b354ef9b40b5",
+    "downloads.py": "9abd3f5a4e663aad9a445ba9957aa5206b2317c6eb6f00f4489dd824c3401c20",
+    "evaluate.py": "0fa8498b0c8f50f5f2b609ed68cc64db588c87d6a35bca81c3034b7007200337",
+    "events.py": "e5f6eefccd1cfb86696cf4df67b19089ecbedeec60731a100a2a57e871cfdf67",
+    "features.py": "2788dcf7acf38e0cd050b5caac704aa4b2aab209d050c3ee87f0ab6506080464",
+    "frontend.py": "80dbd4e00b3bfc28b33602b97a7013fcf5b1eff8ec8c0e1babda01bca6433835",
+    "hard_phrase_policy.py": "91585708904e8809388447a3857b9121407804762a0f480a66c4210fbde4a356",
+    "hard_tts.py": "4a8c077430606d82780c853398f63df58988e2e8be9393a475344f0c6f2c17fc",
+    "microphone.py": "96a23e9e9eec89dcb731742e89a9786c2d57b665d431000c86a8144d468d0bd5",
+    "paired.py": "9a48b53678b594ebe32daa601022a9463f6f89090c360993629e3a9f04c663e3",
+    "pool_review.py": "6867fe3ef930af1b6b20dcce83562acbe1d35b0fbe3944bbb781ca3917624c26",
+    "preparation.py": "efd306f33d44aff4efa2a2f80e80038e5954d3305ce89c0f3929a3637bb2f276",
+    "project.py": "766283c7bf849886e8f4dac7ece2f90b09ba64a9b662e0ebf11bc3b40c722201",
+    "provider_index.py": "fd6c0bb09ad72a2c26c80390674ac9e911563c015f4ba7010bf143bb33979ddf",
+    "reference_bank.py": "a1a0bb8a7ea97fcf841b69cf5279fb221860d88f8b5d0d7835a7e933b9ca82a8",
+    "review.py": "30b0022804fa08e5225a1e0e224ded8453971eeaef84eff9f3f22d43def1ed30",
+    "runtime.py": "0825f263334cfcdc19f1ecd3f95f41e3c611218795fec4f27513b0857814d5ca",
+    "selection.py": "163bd91dbebbd386f9c9e6b9438b46c61a143239b0f86505bb0263c1a5b00603",
+    "setup.py": "6e2e994826f14400d7402d15b9c579c3443bb6877264f0a940abdd445b2b3e5f",
+    "site.py": "e9d4b484b46722023b4e33de08ea74e09e172b990aa4d93931566c6207f69381",
+    "storage.py": "8210ec288d49d0451d87ccfd5e3a3777609ed6dbfbdac7dbce80ff29368b565b",
+    "streaming.py": "0df46381db3e17608a142da4c05c1bbb2e6c8577b83cd198efe347a05c2d4a6f",
+    "studio.py": "368c19615da94d9b96ff97a92d34f4bfc0cd9a90bc37797b0d73d68d203a5ce2",
+    "studio_data.py": "4e09c06b0d5b046265199b5836dcab5de48522888e8c229a8e277e0bd5c20ef9",
+    "studio_evaluation_data.py": "a2525154aa90397be2f0c8af4b97e12ee17a857d63c4fe363cc59a6bdaad3daa",
+    "studio_steps.py": "e138ff72e3c3ba984b20651ca2bf50582b655d7389dc9b337d6b0a90d3a0f023",
+    "studio_worker.py": "c1720a811cc9000a0340fa9665c03022494a715a8c0a4476352bc1b803f5bc58",
+    "train.py": "8c56e65f376b59429a111f2cea7cce37dc70a7033761ad7081970ce1eeccb8cc",
+    "tts.py": "5fe03bdde49e5b062e22bddeeb625c1d387758d123fbfd25cd4e2ae48713a46a",
+    "tts_cuda_graph.py": "5e16cb2a1433eaea6bbaef5c99d5fd42e0225b9e81cee5f04404e65b368e7996",
+    "tts_cuda_predictor.py": "66d3955250a882bfd31917e3546ecae66c11d6765e83b9fd3ee2f3adb69fe3ab",
+    "tts_cuda_sampling.py": "fb66181a8db91076346adf7b0e6d0f2c06c339365d5c466bf056fcb28ac837ed",
+    "tts_runtime.py": "75cf8c9fe6d676aeb53962feec5528e199c8a634a95051b42e3421b115bbf0e6",
+    "tune.py": "34ac6566a86d8599073a7afcf64358a3a4a3ac2be74071b82824aab3eead59fe",
+    "resources/default_profile.json": "ef860204b730869d7d3a3dc82e65d9edf2971fa9ecb41a98814ae4dc0d7e8de4",
+    "resources/evaluation_noise_v2.json": "c15e701929e0658917f2d96bb5c37e154243ad1ea140fe1784e10108cde7d31f",
+    "resources/faster_qwen3_tts_UPSTREAM.json": "a5edfb06f36f1ee7b0681b50214fb06999859a58bc2b50c1470354a8a338d1aa",
+    "resources/public_datasets.json": "2d219fe505c58ff437f834d931bf9e3df0bbacb3539560a8af91b7bc7b7db2e6"
+  },
+  "scope": "Library functionality and actual signal construction. No new bulk TTS, population performance claim or independent Final evaluation. Generic precomputed rows have no complete raw-source mapping."
+}

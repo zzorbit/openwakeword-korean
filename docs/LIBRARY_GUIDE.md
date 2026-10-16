@@ -196,7 +196,7 @@ koww package --project projects/bora/project.json --run projects/bora/runs/selec
 개발용 호출어와 배경음이 준비되면 같은 호출에 같은 소음 구간을 섞어 평가 오디오를 만듭니다.
 
 ```powershell
-koww prepare-eval --project projects/bora/project.json --output projects/bora/data/eval/paired_v1 --split validation --originals 5000 --noise-sections 5
+koww prepare-eval --project projects/bora/project.json --output projects/bora/data/eval/paired_v1 --split validation --originals 5000 --noise-sections 5 --noise-selection balanced_sources
 ```
 
 Clean(소음 없음)과 SNR 20·15·10·5·0dB를 만듭니다. SNR이 낮을수록 호출어에 비해 소음이 큽니다. 환경소음·음악·겹치는 한국어 대화 결과를 따로 비교합니다. 처음 흐름을 확인할 때는 `--originals 100`으로 줄일 수 있으나 최종 모델 선택은 계획한 평가 규모로 확인합니다. 여러 조건의 WAV가 생성되므로 [저장 공간](STORAGE_POLICY.md)도 확인하세요.
@@ -204,7 +204,7 @@ Clean(소음 없음)과 SNR 20·15·10·5·0dB를 만듭니다. SNR이 낮을수
 **동작 확인용**에서는 위 명령을 아래처럼 바꿔 호출 원본 100개와 배경 종류별 소음 구간 1개로 시험합니다.
 
 ```powershell
-koww prepare-eval --project projects/bora/project.json --output projects/bora/data/eval/paired_v1 --split validation --originals 100 --noise-sections 1
+koww prepare-eval --project projects/bora/project.json --output projects/bora/data/eval/paired_v1 --split validation --originals 100 --noise-sections 1 --noise-selection balanced_sources
 ```
 
 동작 확인만 할 때는 아래 **`evaluate` 명령의 결과 저장까지 확인하면 이 단계를 마칩니다.** `tune`·`select-runtime`과 8단계의 최종 평가는 이후 성능 검증 때 진행합니다. 짧은 평가 결과를 오호출 목표 통과나 최종 모델로 표시하지 않으며, 개발용 20~30시간·최종 100시간 등의 평가 기준은 그대로 유지합니다.
@@ -246,7 +246,7 @@ koww review --project projects/bora/project.json --queue projects/bora/data/refe
 
 ```powershell
 koww generate --project projects/bora/project.json --split final
-koww prepare-eval --project projects/bora/project.json --output projects/bora/data/eval/final_paired_v1 --split final --originals 5000 --noise-sections 5
+koww prepare-eval --project projects/bora/project.json --output projects/bora/data/eval/final_paired_v1 --split final --originals 5000 --noise-sections 5 --noise-selection balanced_sources
 ```
 
 이 단계에서 만든 호출어 목록과 **별도 연속 비호출 100시간 이상**을 합쳐 `data/eval/final.jsonl`을 준비합니다. 학습·개발용 자료와 음색·원본을 공유하지 않습니다.

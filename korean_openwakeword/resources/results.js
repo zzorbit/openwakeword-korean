@@ -6,6 +6,7 @@ const labels={clean:"Clean",environment:"환경소음",music:"음악·전자음"
 const cell=(tr,value)=>{const td=document.createElement("td");td.textContent=value;tr.append(td);};
 $("title").textContent=`${report.wakeword} · 학습 결과`;
 $("scope").textContent=evaluationScopeText(report,clips);
+$("noiseCoverage").textContent=evaluationNoiseCoverageText(clips);
 const decisions=report.candidate_adoptions||{};
 const decisionFor=id=>decisions[id]||(report.adoption?.candidate===id?report.adoption:null);
 const reasonText=value=>value.includes("FP duration below")?"비호출 평가 시간 부족":value.includes("Clean recall")?"Clean 성공률 미달 또는 미측정":value.includes("FA/hour")?"시간당 오호출 기준 미달 또는 미측정":value.includes("Latency")?"감지 지연 기준 미달 또는 미측정":value.replace("environment","환경소음").replace("music","음악").replace("competing_speech","겹치는 말소리").replace("below target or unmeasured","기준 미달 또는 미측정");

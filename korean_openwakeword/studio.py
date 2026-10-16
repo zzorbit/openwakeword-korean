@@ -89,7 +89,8 @@ def _lock_paths(root):
 
 def _implementation():
     root = Path(__file__).parent
-    return identity({path.name: digest(path) for path in sorted(root.glob("*.py"))})
+    paths = sorted(root.glob("*.py")) + sorted((root / "resources").glob("*.json"))
+    return identity({path.relative_to(root).as_posix(): digest(path) for path in paths})
 
 
 @contextmanager
@@ -273,7 +274,36 @@ class StudioManager:
         if digest(state["project"]) != state["config_sha256"]:
             raise ValueError("프로젝트 설정이 변경되었습니다. 실행 중인 실험 설정은 덮어쓰지 않습니다.")
         if state.get("implementation_id") != self._implementation_id:
-            raise ValueError("라이브러리 코드가 변경되었습니다. 기존 실행 자료를 보존하고 새 실험을 만드세요.")
+            root = Path(state["project"]).parent
+            jobs = root / ".studio" / "jobs"
+            unstarted = (state.get("status") == "ready" and type(state.get("index")) is int
+                         and state["index"] == 0 and state.get("results", {}) == {}
+                         and state.get("inputs", {}) == {} and state.get("history", []) == []
+                         and state.get("job") in (None, {}) and state.get("last_job") in (None, {})
+                         and not (jobs.exists() and any(jobs.iterdir())) and not _lock_paths(root))
+            if not unstarted:
+                raise ValueError("라이브러리 코드가 변경되었습니다. 기존 실행 자료를 보존하고 새 실험을 만드세요.")
+            # A configuration made before the first worker has no execution or
+            # human decisions to reinterpret. Preserve its exact prior state,
+            # then bind only future requests to this implementation. Started
+            # experiments still require an explicit compatibility migration.
+            directory = root / ".studio" / "migrations" / uuid.uuid4().hex
+            directory.mkdir(parents=True, exist_ok=False)
+            before = directory / "workflow_before.json"
+            before.write_bytes(self._path(state["id"]).read_bytes())
+            receipt = directory / "receipt.json"
+            write_json(receipt, {
+                "schema_version": 1, "kind": "unstarted_workflow_implementation_rebind",
+                "old_implementation_id": state.get("implementation_id"),
+                "new_implementation_id": self._implementation_id,
+                "project": state["project"], "config_sha256": state["config_sha256"],
+                "previous_workflow": {"path": str(before), "sha256": digest(before)},
+                "migrated_at": now(),
+                "reason": "No workflow execution or human decisions exist; frozen project configuration is unchanged",
+                "preserved_scope": "Existing downloads, audio, approvals, models and evaluation files are unchanged"})
+            state["implementation_id"] = self._implementation_id
+            state.setdefault("migrations", []).append({"path": str(receipt), "sha256": digest(receipt)})
+            self._save(state)
 
     def _verify_history(self, state):
         for entry in state.get("history", []):
@@ -531,6 +561,9 @@ class StudioManager:
         from .review import apply_review
         with self._lock:
             state, review, rows = self.review_queue(project_id, queue_id)
+            evaluation_only = review.get("evaluation_only") is True
+            if evaluation_only and (not review.get("pool_manifest") or review.get("pools") != []):
+                raise ValueError("평가 전용 검수 자료는 학습 풀에 연결할 수 없습니다.")
             decisions = payload.get("decisions", payload)
             if (not isinstance(decisions, dict) or set(decisions) != {r["sample_id"] for r in rows}
                     or any(not isinstance(a, dict) or a.get("decision") not in ("keep", "discard", "review")
@@ -547,6 +580,8 @@ class StudioManager:
                 # pool's provenance, exclusions and technical admission later.
                 result = {"state": "review_saved", "kept": sum(a["decision"] == "keep" for a in decisions.values()),
                           "total": len(rows), "admission_pending": True}
+                if evaluation_only:
+                    result.update(evaluation_only=True, intended_use="held_out_development_noise", pools=[])
             else:
                 result = apply_review(state["project"], review["queue"], decisions, review["kind"])
             if any(a.get("decision") == "review" for a in decisions.values()) or (review["kind"] == "pilot" and result.get("policy_approved") is not True):
@@ -565,6 +600,9 @@ class StudioManager:
                       "whole_pool_policy_approved": payload.get("policy_approved") is True}
             if review.get("pool_manifest"):
                 answer["source_manifest_sha256"] = digest(review["pool_manifest"])
+            if evaluation_only:
+                answer.update(evaluation_only=True, intended_use="held_out_development_noise", pools=[],
+                              consent_scope="Held-out Development noise evaluation only; not for training")
             path = Path(state["project"]).parent / ".studio" / "answers" / (identity(answer) + ".json")
             write_json(path, answer)
             state["inputs"].setdefault("review_answers", {})[queue_id] = {"path": str(path), "sha256": digest(path)}
@@ -800,7 +838,12 @@ def make_studio_server(manager, port=8793):
                                               "group": r.get("review_group"), "instruction": r.get("review_instruction"),
                                               "audio": f"/review/audio/{i}" + base} for i, r in enumerate(rows)]}
                         if review.get("pool_manifest"):
-                            payload.update(policy_review=True, policy_text="대표 음원 청취와 출처·기술 검사에 근거해 이 자료 묶음을 학습에 사용하는 데 동의합니다. 모든 원본을 들었다는 뜻은 아닙니다.")
+                            if review.get("evaluation_only") is True:
+                                payload.update(policy_review=True, evaluation_only=True,
+                                    intended_use="held_out_development_noise", pools=[],
+                                    policy_text="이 자료를 학습에는 사용하지 않고, 학습과 분리한 소음 평가에만 사용하는 데 동의합니다.")
+                            else:
+                                payload.update(policy_review=True, policy_text="대표 음원 청취와 출처·기술 검사에 근거해 이 자료 묶음을 학습에 사용하는 데 동의합니다. 모든 원본을 들었다는 뜻은 아닙니다.")
                         return self.respond(payload)
                     if path.startswith("/review/audio/"):
                         index = int(path.rsplit("/", 1)[1])

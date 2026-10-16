@@ -139,19 +139,45 @@
     const download = bytes(recipe.download_bytes ?? recipe.known_download_bytes);
     $("download-size").textContent = download ? `알려진 다운로드 ${download}` : "용량은 자료 확인 후 표시";
     const sourceNames = { generic: "openWakeWord 일반 비호출 특징", zeroth: "Zeroth 한국어 음성", audioset: "AudioSet 일부", fma: "FMA 음악 일부", mit_rir: "MIT 공간 울림", dns_fan: "DNS 팬 소음", dns_door: "DNS 문 소리", electronic_validation: "별도 전자음 시험 자료" };
-    const roleNames = { generic_features: "일반 비호출", korean_negative: "한국어 비호출", noise_train: "소음 증강", noise_music_train: "음악 증강", room_impulse_response: "잔향 증강", environment_smoke: "환경음 시험", held_out_electronic_smoke: "전자음 시험" };
+    const roleNames = { generic_features: "일반 비호출", korean_negative: "한국어 비호출", noise_train: "소음 증강", noise_music_train: "음악 증강", room_impulse_response: "잔향 증강", environment_smoke: "환경음", held_out_electronic_smoke: "전자음", held_out_evaluation_noise: "평가 소음" };
     const sources = recipe.sources || [...(recipe.assets || []).filter(source => source.role !== "provider_metadata"), ...(recipe.additional_download ? [{ ...recipe.additional_download, role: "room_impulse_response" }] : [])];
-    replace($("source-preview"), sources.map(source => {
+    const evaluation = source => ["validation", "development"].includes(source.split) || /held_out|evaluation|validation/.test(source.role || "");
+    const trainingSources = sources.filter(source => !evaluation(source));
+    const evaluationSources = [...sources.filter(evaluation), ...(recipe.evaluation_sources || []).map(source => ({ role: "held_out_evaluation_noise", ...source }))];
+    const sourceRow = source => {
       const row = element("div", undefined, "source-row"), info = element("div");
       const href = webUrl(source.url || source.source_url);
-      const title = element(href ? "a" : "span", source.name || sourceNames[source.id] || source.id || "공개 자료");
+      const title = element(href ? "a" : "span", source.display_name || source.name || sourceNames[source.id] || source.id || source.dataset_id || "공개 자료");
       if (href) { title.href = href; title.target = "_blank"; title.rel = "noopener"; }
       info.append(title);
       if (source.description) info.append(element("div", source.description, "source-detail"));
-      const details = [source.hours === undefined ? "" : `${number(source.hours)}시간`, bytes(source.bytes ?? source.size_bytes), source.license].filter(Boolean);
-      row.append(element("div", roleNames[source.role] || source.role || "학습 자료", "source-role"), info, element("div", details.join(" · "), "source-meta")); return row;
-    }));
-    if (!sources.length) $("source-preview").append(element("p", "자료 목록은 준비 과정에서 확인합니다. 필요한 입력이나 이용 동의가 있으면 작업을 멈추고 안내합니다.", "hint"));
+      if (source.type_count !== undefined || source.file_count !== undefined) info.append(element("div", [source.type_count === undefined ? "" : `소음 ${number(source.type_count)}종`, source.file_count === undefined ? "" : `음원 ${number(source.file_count)}개`].filter(Boolean).join(" · "), "source-detail"));
+      const details = [source.hours === undefined ? "" : `${number(source.hours)}시간`, bytes(source.bytes ?? source.size_bytes ?? source.totalbytes ?? source.total_bytes), source.license].filter(Boolean);
+      const meta = element("div", details.join(" · "), "source-meta");
+      if (Array.isArray(source.individual_licenses) && source.individual_licenses.length) {
+        const licenses = element("details"); licenses.append(element("summary", "개별 음원 이용 조건"));
+        for (const item of source.individual_licenses) {
+          const line = element("div");
+          if (typeof item === "string") line.textContent = item;
+          else {
+            const original = webUrl(item.source_url), name = item.display_name || item.name || item.id || "원출처";
+            const link = element(original ? "a" : "span", name);
+            if (original) { link.href = original; link.target = "_blank"; link.rel = "noopener"; }
+            line.append(link);
+            if (item.license) line.append(element("span", " · " + item.license));
+          }
+          licenses.append(line);
+        }
+        meta.append(licenses);
+      }
+      const role = source.id === "dns_fan" && source.split === "train" ? "환경음 증강" : roleNames[source.role] || source.role || "학습 자료";
+      row.append(element("div", role, "source-role"), info, meta); return row;
+    };
+    const groups = [];
+    if (trainingSources.length) { const group = element("section"); group.append(element("h3", "학습용 자료"), ...trainingSources.map(sourceRow)); groups.push(group); }
+    if (evaluationSources.length) { const group = element("section"); group.append(element("h3", "학습과 분리한 평가용 자료"), element("p", "학습에 섞지 않은 별도 소음으로 호출어를 시험합니다.", "hint"), ...evaluationSources.map(sourceRow)); groups.push(group); }
+    replace($("source-preview"), groups);
+    if (!groups.length) $("source-preview").append(element("p", "자료 목록은 준비 과정에서 확인합니다. 필요한 입력이나 이용 동의가 있으면 작업을 멈추고 안내합니다.", "hint"));
     const placeholders = { "adv-originals": recipe.originals ?? recipe.positive_originals, "adv-rounds": recipe.rounds ?? recipe.augmentation_rounds, "adv-updates": recipe.updates, "adv-generic": recipe.generic_hours, "adv-korean": recipe.korean_hours };
     for (const [id, value] of Object.entries(placeholders)) $(id).placeholder = value === undefined ? "규모 기본값" : String(value);
     const workspace = bytes(recipe.estimated_workspace_bytes);

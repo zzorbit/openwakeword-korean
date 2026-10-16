@@ -318,6 +318,49 @@ def test_partial_immutable_outputs_are_retained_instead_of_overwritten(tmp_path)
     assert (directory / "partial.onnx").read_bytes() == b"keep"
 
 
+def test_old_completed_output_with_different_recipe_is_retained_as_separate_version(tmp_path):
+    directory = tmp_path / "paired"
+    directory.mkdir()
+    (directory / "manifest.jsonl").write_text("legacy immutable evidence\n")
+    write_json(directory / "recipe.json", {"noise_selection": "legacy"})
+    next_path, complete = steps._next_directory(directory, "manifest.jsonl",
+        lambda p: read_json(p / "recipe.json")["noise_selection"] == "balanced_sources_v1")
+    assert next_path == tmp_path / "paired_attempt2" and not complete
+    assert (directory / "manifest.jsonl").read_text() == "legacy immutable evidence\n"
+
+
+@pytest.mark.parametrize("preset", ["check", "trial", "production"])
+def test_studio_development_selects_balanced_policy_and_preserves_old_pair_outputs(project, monkeypatch, preset):
+    from korean_openwakeword import paired
+    settings = steps.preset_settings(preset)
+    project = create_project(project.parent.parent / preset, "보라야", "bora", positive_originals=settings["originals"],
+                             augmentation_rounds=settings["rounds"], updates=settings["updates"],
+                             generic_hours=settings["generic_hours"], korean_hours=settings["korean_hours"])
+    root = project.parent
+    negative = fake_audio(root, "heldout", kind="negative", split="validation")
+    negative_manifest = steps._publish_rows(root / ".studio/negative.jsonl", [negative])
+    old = root / "reports/studio_paired"
+    old.mkdir()
+    (old / "manifest.jsonl").write_text("old completed pair evidence\n")
+    calls = []
+    def prepare(path, output, **kwargs):
+        calls.append(kwargs)
+        output.mkdir()
+        recipe = paired.evaluation_recipe(path, **kwargs)
+        write_json(output / "recipe.json", recipe)
+        manifest = steps._publish_rows(output / "manifest.jsonl", [])
+        write_json(output / "noise_coverage.json", {"test": "coverage sidecar"})
+        return {"manifest": str(manifest), "noise_selection_policy": recipe["noise_selection"],
+                "noise_coverage": {"path": str(output / "noise_coverage.json"), "sha256": digest(output / "noise_coverage.json")}}
+    monkeypatch.setattr(paired, "prepare_evaluation", prepare)
+    result = run(project, "development", {"results": {"data_connect": {"result": {"negative_validation_manifest": str(negative_manifest)}}}}, settings=settings)
+    assert result["state"] == "completed" and calls[0]["noise_selection"] == "balanced_sources"
+    assert calls[0]["originals"] == settings["validation_originals"] and calls[0]["noise_sections"] == 1
+    assert (old / "manifest.jsonl").read_text() == "old completed pair evidence\n"
+    assert (root / "reports/studio_paired_attempt2/recipe.json").is_file()
+    assert result["result"]["noise_coverage"]
+
+
 def test_hard_representatives_cover_every_phrase_voice_pair(project):
     root = project.parent
     rows = []
@@ -392,6 +435,7 @@ def test_additional_raw_sources_are_prepared_once_then_reviewed_and_admitted_in_
         return {"shortages": [], "state": "connected"}
     monkeypatch.setattr(studio_data, "prepare_additional_materials", prepare)
     monkeypatch.setattr(studio_data, "admit_materials", admit)
+    monkeypatch.setattr(studio_data, "ensure_evaluation_materials", lambda p, w, prepared: prepared, raising=False)
     context = {"results": {"data_download": {"result": {"review_queues": [], "shortages": ["needs Korean"]}}},
                "inputs": {"additional_sources": [{"directory": str(root / "raw"), "dataset": "zeroth", "pool": "korean_negative", "hours": 1}]}}
     pending = run(project, "data_connect", context)
@@ -571,6 +615,8 @@ def test_actual_small_features_train_package_evaluate_site_without_downloads(tmp
     report = context["results"]["evaluation"]["result"]["report"]
     assert report["smoke_test_only"] is True and report["stage"] == "development"
     assert report["sessions"] == 17 and len(report["models"]) == 4
+    assert context["results"]["development"]["result"]["noise_selection_policy"] == "balanced_sources_v1"
+    assert read_json(result["noise_coverage"]["path"])["originals_used"] == 1
     assert result["independent_Final_completed"] is False and not (root / "final_lock.json").exists()
     assert context["results"]["features"]["result"]["positive_actual_rows"] == 2
     assert all(r["exposure"]["positive"]["drawn"] == 100 for r in context["results"]["training"]["result"]["members"])

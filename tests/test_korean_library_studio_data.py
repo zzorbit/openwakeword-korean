@@ -19,7 +19,7 @@ from korean_openwakeword import studio_data as module
 def test_recipe_is_offline_pinned_and_reports_real_scale(monkeypatch, tmp_path):
     monkeypatch.setattr(module.requests, "get", lambda *a, **k: pytest.fail("preview must be offline"))
     plan = module.material_recipe(workspace=tmp_path)
-    assert plan["known_download_bytes"] == sum(a["size_bytes"] for a in plan["assets"])
+    assert plan["known_download_bytes"] == sum(a["size_bytes"] for a in plan["assets"]) + plan["evaluation_download_bytes"]
     assert plan["known_download_bytes"] > 36_000_000_000
     assert plan["automatic_target_hours"] == {"generic_nominal": 2000, "korean_train": 1}
     assert plan["human_review_required"] and not plan["Final_accessed"]
@@ -232,6 +232,9 @@ def test_admission_reuses_existing_review_pipeline_and_keeps_reserve_out_of_trai
 def test_full_preparation_recipe_uses_real_qc_and_never_auto_approves(tmp_path, monkeypatch):
     """Tiny explicit fixture archives exercise all real provider/prep adapters."""
     project = create_project(tmp_path / "bora", "보라야", "bora")
+    # This legacy-corpus adapter fixture does not download new evaluation media;
+    # evaluation-only preparation/admission has separate tests below.
+    monkeypatch.setattr(module, "ensure_evaluation_materials", lambda project, workspace, prepared, progress=None: prepared)
     source = tmp_path / "fixture_sources"
     source.mkdir()
     assets = module._official_assets()
@@ -303,7 +306,7 @@ def test_full_preparation_recipe_uses_real_qc_and_never_auto_approves(tmp_path, 
     assert result["generic_feature_import"]["imported"]
     assert result["shortages"]  # Tiny fixture is truthfully below the 1h quota.
     validation = read_rows(result["validation_noise_manifest"]["path"])
-    assert {r["category"] for r in validation} == {"environment", "music", "competing_speech"}
+    assert {r["category"] for r in validation} == {"competing_speech"}
     train = [row for queue in result["review_queues"] for row in read_rows(queue["pool_manifest"])]
     assert {r["canonical_source_id"] for r in train}.isdisjoint(r["canonical_source_id"] for r in validation)
     assert not read_rows(project.parent / load_project(project)[1]["manifests"]["noise"])

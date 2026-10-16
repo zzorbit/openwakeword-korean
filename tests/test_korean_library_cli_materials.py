@@ -60,3 +60,25 @@ def test_candidate_options_and_relative_selection_dispatch(monkeypatch, tmp_path
     assert parser().parse_args(["evaluate", "--project", "p.json", "--bundle", "b", "--output", "e", "--candidate", "single"]).candidate == "single"
     assert parser().parse_args(["tune", "--project", "p.json", "--bundle", "b", "--evaluation", "e", "--output", "t",
                                "--thresholds", ".9", "--candidate", "single"]).candidate == "single"
+
+
+def test_balanced_noise_selection_reaches_evaluation_builder(monkeypatch):
+    from korean_openwakeword import paired
+    calls = []
+    def capture(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {"state": "fixture-dispatch-only"}
+    monkeypatch.setattr(paired, "prepare_evaluation", capture)
+    base = ["prepare-eval", "--project", "p.json", "--output", "evaluation"]
+    main(base)
+    main(base + ["--noise-selection", "balanced_sources", "--noise-sections", "2"])
+    assert calls[0][1]["noise_selection"] == "legacy"
+    assert calls[1][1]["noise_selection"] == "balanced_sources"
+    assert calls[1][0][-1] == 2
+
+
+def test_unknown_noise_selection_is_rejected_before_audio_work():
+    import pytest
+    with pytest.raises(SystemExit):
+        parser().parse_args(["prepare-eval", "--project", "p.json", "--output", "evaluation",
+                             "--noise-selection", "unverified-policy"])

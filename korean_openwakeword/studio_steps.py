@@ -288,13 +288,13 @@ def _generation_complete(summary):
     return None
 
 
-def _next_directory(base, marker):
+def _next_directory(base, marker, accept=None):
     """Retain an interrupted immutable output and use a new attempt directory."""
     base = Path(base)
     candidate = base
     index = 0
     while candidate.exists() and any(candidate.iterdir()):
-        if (candidate / marker).is_file():
+        if (candidate / marker).is_file() and (accept is None or accept(candidate)):
             return candidate, True
         index += 1
         candidate = base.with_name(base.name + f"_attempt{index + 1}")
@@ -395,8 +395,9 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         return _review_gate(root, reviews, context)
 
     if stage_id == "data_connect":
-        from .studio_data import admit_materials, prepare_additional_materials
+        from .studio_data import admit_materials, prepare_additional_materials, ensure_evaluation_materials
         prepared = deepcopy(_result(context, "data_download"))
+        prepared = ensure_evaluation_materials(project, selected_workspace, prepared)
         inputs = context.get("inputs", {})
         additions = inputs.get("additional_sources", [])
         if not isinstance(additions, list) or any(not isinstance(source, dict) for source in additions):
@@ -618,7 +619,7 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         return _completed({"bundle": str(destination), "manifest": result}, [destination / "manifest.json"])
 
     if stage_id == "development":
-        from .paired import prepare_evaluation
+        from .paired import prepare_evaluation, evaluation_recipe
         connected = _result(context, "data_connect")
         negatives = connected.get("negative_validation_manifest")
         if not negatives:
@@ -628,23 +629,37 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         negative_rows = read_rows(negatives)
         if not negative_rows or any(r.get("kind") != "negative" or r.get("split") != "validation" for r in negative_rows):
             raise ValueError("Held-out continuous Negative recordings are required")
-        directory, existing = _next_directory(root / "reports/studio_paired", "manifest.jsonl")
+        selection = "balanced_sources"
+        recipe = evaluation_recipe(project, originals=settings["validation_originals"],
+                                   noise_sections=settings["noise_sections"], noise_selection=selection)
+        def matches(directory):
+            return ((directory / "recipe.json").is_file() and read_json(directory / "recipe.json") == recipe
+                    and (selection == "legacy" or (directory / "noise_coverage.json").is_file()))
+        directory, existing = _next_directory(root / "reports/studio_paired", "manifest.jsonl", matches)
         if existing:
-            paired = {"manifest": str(directory / "manifest.jsonl")}
+            paired = {"manifest": str(directory / "manifest.jsonl"), "noise_selection_policy": recipe["noise_selection"],
+                      "recipe": {"path": str(directory / "recipe.json"), "sha256": digest(directory / "recipe.json")}}
+            if selection != "legacy":
+                paired["noise_coverage"] = {"path": str(directory / "noise_coverage.json"), "sha256": digest(directory / "noise_coverage.json")}
         else:
             paired = prepare_evaluation(project, directory, originals=settings["validation_originals"],
-                                        noise_sections=settings["noise_sections"])
+                                        noise_sections=settings["noise_sections"], noise_selection=selection)
         rows = read_rows(paired["manifest"]) + negative_rows
-        manifest = _publish_rows(workspace / "development.jsonl", rows)
+        manifest = _publish_rows(workspace / ("development_" + identity([recipe, digest(negatives), digest(paired["manifest"])])[:16] + ".jsonl"), rows)
+        artifacts = [manifest, directory / "recipe.json"]
+        if paired.get("noise_coverage"):
+            artifacts.append(paired["noise_coverage"]["path"])
         return _completed({**paired, "manifest": str(manifest), "positive_sessions": len(rows) - len(negative_rows),
-                           "negative_recordings": len(negative_rows), "functional_check_only": settings["functional_check_only"]}, [manifest])
+                           "negative_recordings": len(negative_rows), "functional_check_only": settings["functional_check_only"]}, artifacts)
 
     if stage_id == "evaluation":
         from .evaluate import evaluate
         from .selection import verified_evaluation
         bundle = _result(context, "package")["bundle"]
         manifest = _result(context, "development")["manifest"]
-        directory, existing = _next_directory(root / "reports/studio_evaluation", "receipt.json")
+        directory, existing = _next_directory(root / "reports/studio_evaluation", "receipt.json",
+            lambda p: (read_json(p / "report.json").get("manifest_sha256") == digest(manifest)
+                       and read_json(p / "report.json").get("bundle_manifest_sha256") == digest(Path(bundle) / "manifest.json")))
         if existing:
             verified_evaluation(project, bundle, directory)
             report = read_json(directory / "report.json")
@@ -652,7 +667,8 @@ def run_stage(project, workspace, settings, stage_id, context=None):
             report = evaluate(project, bundle, directory, manifest=manifest,
                               smoke=settings["functional_check_only"])
         return _completed({"evaluation": str(directory), "report": report,
-                           "functional_check_only": settings["functional_check_only"], "Final_accessed": False},
+                           "functional_check_only": settings["functional_check_only"], "Final_accessed": False,
+                           "noise_coverage": _result(context, "development").get("noise_coverage")},
                           [directory / "receipt.json", directory / "report.json", directory / "clips.json"])
 
     if stage_id == "results":
@@ -660,7 +676,8 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         from .selection import select_candidate
         evaluation = Path(_result(context, "evaluation")["evaluation"])
         report = read_json(evaluation / "report.json")
-        directory, existing = _next_directory(root / "reports/studio_results", "provenance.json")
+        directory, existing = _next_directory(root / "reports/studio_results", "provenance.json",
+            lambda p: read_json(p / "provenance.json").get("evaluation_receipt_sha256") == digest(evaluation / "receipt.json"))
         site = {"site": str(directory / "index.html")} if existing else export_site(evaluation, directory)
         candidates = report.get("candidate_adoptions", {})
         eligible = [r for r in report["models"] if candidates.get(r["id"], {}).get("passed")]
@@ -671,10 +688,13 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         result = {**site, "bundle": _result(context, "package")["bundle"],
                   "ranking": [r["id"] for r in ranked], "Final_accessed": False,
                   "functional_check_only": settings["functional_check_only"],
-                  "meets_development_targets": bool(eligible), "independent_Final_completed": False}
+                  "meets_development_targets": bool(eligible), "independent_Final_completed": False,
+                  "noise_coverage": _result(context, "development").get("noise_coverage")}
         if ranked:
             chosen = ranked[0]["id"]
-            selection_directory, selected = _next_directory(root / "models/studio_selected", "receipt.json")
+            selection_directory, selected = _next_directory(root / "models/studio_selected", "receipt.json",
+                lambda p: (read_json(p / "selection.json").get("source_report_sha256") == digest(evaluation / "report.json")
+                           and read_json(p / "selection.json").get("candidate", {}).get("id") == chosen))
             if not selected:
                 selection = select_candidate(project, result["bundle"], evaluation, selection_directory, chosen)
                 result["selection"] = selection

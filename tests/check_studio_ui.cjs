@@ -9,7 +9,7 @@ const flush = async () => { for (let index = 0; index < 12; index++) await new P
 const tests = [];
 async function test(name, action) { await action(); tests.push(name); }
 
-function browser({ noBoot = false, initialState, recipeError = false } = {}) {
+function browser({ noBoot = false, initialState, recipeError = false, recipeOverrides = {} } = {}) {
   const elements = new Map(), calls = [], intervals = [];
   class Element {
     constructor(tag = "div") { this.tagName = tag; this.value = ""; this.textContent = ""; this.children = []; this.handlers = {}; this.attributes = {}; this.hidden = false; this.disabled = false; this.open = false; this.srcWrites = 0; }
@@ -25,7 +25,7 @@ function browser({ noBoot = false, initialState, recipeError = false } = {}) {
   const state = { value: initialState || { projects: [], token: "local-token", workspace: "F:\\test" } };
   const doc = { hidden: false, getElementById: id => elements.get(id), createElement: tag => new Element(tag), addEventListener() {} };
   const json = (body, status = 200) => ({ ok: status < 400, status, text: async () => JSON.stringify(body) });
-  const presets = [{ id: "check", label: "동작 확인용", originals: 1000, rounds: 1, updates: 10000, sources: [{ name: "<img src=x onerror=bad()>", role: "비호출 자료", url: "javascript:alert(1)", bytes: 1024 }] }, { id: "trial", originals: 20000, rounds: 3, updates: 20000 }];
+  const presets = [{ id: "check", label: "동작 확인용", originals: 1000, rounds: 1, updates: 10000, sources: [{ name: "<img src=x onerror=bad()>", role: "비호출 자료", url: "javascript:alert(1)", bytes: 1024 }], ...recipeOverrides }, { id: "trial", originals: 20000, rounds: 3, updates: 20000 }];
   const fetch = async (url, options) => {
     calls.push({ url, options });
     if (url === "/api/state") return json(state.value);
@@ -73,8 +73,20 @@ function browser({ noBoot = false, initialState, recipeError = false } = {}) {
     const b = browser(); await flush();
     assert.deepEqual(b.calls.map(call => call.url), ["/api/state", "/api/recipes"]);
     assert.equal(b.elements.get("create").disabled, false);
-    const source = b.elements.get("source-preview").children[0].children[1].children[0];
+    const source = b.elements.get("source-preview").children[0].children[1].children[1].children[0];
     assert.equal(source.tagName, "span"); assert.equal(source.textContent, "<img src=x onerror=bad()>");
+  });
+  await test("training sources and independent evaluation summaries are clearly separated", async () => {
+    const b = browser({ recipeOverrides: { sources: [{ id: "generic", role: "generic_features", name: "일반 특징" }, { id: "dns_fan", role: "environment_smoke", split: "train" }], evaluation_sources: [{ dataset_id: "esc50_held_out_v2", name: "다양한 환경 소음", source_url: "https://example.org/noise", file_count: 24, type_count: 12, total_bytes: 1024, license: "CC-BY-NC-3.0", individual_licenses: ["CC0-1.0"] }] } }); await flush();
+    const groups = b.elements.get("source-preview").children;
+    assert.equal(groups.length, 2); assert.equal(groups[0].children[0].textContent, "학습용 자료");
+    assert.equal(groups[1].children[0].textContent, "학습과 분리한 평가용 자료");
+    assert.equal(groups[0].children[2].children[0].textContent, "환경음 증강");
+    const evaluation = groups[1].children[2];
+    assert.equal(evaluation.children[1].children[0].textContent, "다양한 환경 소음");
+    assert.equal(evaluation.children[1].children[1].textContent, "소음 12종 · 음원 24개");
+    assert.match(evaluation.children[2].textContent, /1 KiB.*CC-BY-NC-3.0/);
+    assert.equal(evaluation.children[2].children[0].children[0].textContent, "개별 음원 이용 조건");
   });
   await test("create-and-start needs one form submission and sends the local token", async () => {
     const b = browser(); await flush(); b.elements.get("wakeword").value = "보라야";

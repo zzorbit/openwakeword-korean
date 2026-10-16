@@ -38,4 +38,17 @@ function evaluationScopeText(report, clips) {
     if (report.smoke_test_only) parts.push("기능 시험용 결과");
     return parts.join(" · ");
 }
-if (typeof module !== "undefined" && module.exports) module.exports = {evaluationScopeText};
+function evaluationNoiseCoverageText(clips) {
+    const labels = {environment: "환경음", music: "음악·전자음", competing_speech: "한국어 말소리"};
+    const parts = [];
+    for (const [category, label] of Object.entries(labels)) {
+        const rows = clips.filter(c => c.kind === "positive" && c.category === category);
+        if (!rows.length) continue;
+        const sources = new Set(rows.map(c => c.noise_source_group_id || c.noise_source_id).filter(Boolean));
+        const types = new Set(rows.map(c => c.noise_eval_type).filter(Boolean));
+        const sourceText = sources.size ? `원본 ${sources.size.toLocaleString("ko-KR")}개` : "원본 수 미기록";
+        parts.push(`${label} ${sourceText} · ${types.size ? types.size.toLocaleString("ko-KR") + "종" : "세부 종류 미기록"}`);
+    }
+    return parts.length ? "실제 시험 배경: " + parts.join(" / ") : "실제 시험 배경: 미측정";
+}
+if (typeof module !== "undefined" && module.exports) module.exports = {evaluationScopeText, evaluationNoiseCoverageText};

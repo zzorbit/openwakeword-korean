@@ -761,3 +761,148 @@ def test_real_worker_subprocess_records_actual_python_identity_and_error_receipt
     result = read_json(request["result_path"])
     assert result["task_id"] == request["task_id"] and result["request_sha256"] == digest(path)
     assert "Unknown studio stage" in result["error"]["message"]
+
+
+def test_evaluation_catalog_changes_are_part_of_worker_implementation_identity(tmp_path, monkeypatch):
+    package = tmp_path / "fixture_package"
+    package.mkdir()
+    source = package / "studio.py"
+    source.write_text("# isolated fingerprint fixture\n", encoding="utf-8")
+    resources = package / "resources"
+    resources.mkdir()
+    catalog = resources / "evaluation_noise_v2.json"
+    catalog.write_text('{"recipe_version":2,"assets":[]}', encoding="utf-8")
+    monkeypatch.setattr(studio, "__file__", str(source))
+    before = studio._implementation()
+    catalog.write_text('{"recipe_version":2,"assets":["different held-out source"]}', encoding="utf-8")
+    assert studio._implementation() != before
+
+
+def test_unstarted_workflow_update_preserves_sources_and_records_exact_prior_state(manager):
+    project = create(manager)
+    workflow = manager._path(project["id"])
+    state = manager._load(project["id"])
+    previous_implementation = state["implementation_id"]
+    original_workflow = workflow.read_bytes()
+    root = Path(state["project"]).parent
+    original = root / "data" / "existing-public-material.bin"
+    original.write_bytes(b"previously downloaded material is preserved")
+    protected = {path: digest(path) for path in root.rglob("*") if path.is_file() and path != workflow}
+    manager._implementation_id = "new-tested-implementation"
+    manager.start(project["id"])
+    migrated = manager._load(project["id"])
+    assert migrated["implementation_id"] == "new-tested-implementation"
+    migration = migrated["migrations"][0]
+    assert digest(migration["path"]) == migration["sha256"]
+    audit = read_json(migration["path"])
+    assert audit["old_implementation_id"] == previous_implementation
+    assert audit["new_implementation_id"] == manager._implementation_id
+    assert audit["config_sha256"] == state["config_sha256"]
+    assert "No workflow execution" in audit["reason"]
+    assert Path(audit["previous_workflow"]["path"]).read_bytes() == original_workflow
+    assert digest(audit["previous_workflow"]["path"]) == audit["previous_workflow"]["sha256"]
+    assert all(digest(path) == checksum for path, checksum in protected.items())
+    request = read_json(manager.workers.items[0].request_path)
+    assert request["implementation_id"] == manager._implementation_id
+    # Starting the already live worker again must not create another migration.
+    manager.start(project["id"])
+    assert len(manager._load(project["id"])["migrations"]) == 1
+
+
+@pytest.mark.parametrize("changes", [
+    {"results": {"frontend": {"state": "completed"}}},
+    {"inputs": {"dependency_backend": "cpu"}},
+    {"history": [{"stage": "frontend", "sha256": "old"}]},
+    {"last_job": {"task_id": "previous-worker"}}, {"job": {"task_id": "active-worker"}},
+    {"status": "running"}, {"status": "paused"}, {"index": 1}])
+def test_started_or_decided_workflow_is_never_silently_rebound(manager, changes):
+    project = create(manager)
+    state = put_state(manager, project["id"], **changes)
+    workflow = manager._path(project["id"])
+    original = workflow.read_bytes()
+    project_hash = digest(state["project"])
+    manager._implementation_id = "new-tested-implementation"
+    with pytest.raises(ValueError, match="라이브러리 코드가 변경"):
+        manager._guard_config(state)
+    assert workflow.read_bytes() == original and digest(state["project"]) == project_hash
+    assert not (Path(state["project"]).parent / ".studio" / "migrations").exists()
+    assert not manager.workers.items
+
+
+@pytest.mark.parametrize("obstruction", ["lock", "old_job", "config"])
+def test_unstarted_update_refuses_locks_old_job_files_or_changed_config(manager, obstruction):
+    project = create(manager)
+    state = manager._load(project["id"])
+    root = Path(state["project"]).parent
+    if obstruction == "lock":
+        path = root / "features" / ".writer.lock"
+        write_json(path, {"pid": 12345})
+    elif obstruction == "old_job":
+        path = root / ".studio" / "jobs" / "previous" / "request.json"
+        write_json(path, {"task_id": "old-attempt"})
+    else:
+        path = Path(state["project"])
+        config = read_json(path)
+        config["wakeword"] = "다른호출어"
+        write_json(path, config)
+    before = path.read_bytes()
+    workflow = manager._path(project["id"])
+    previous = workflow.read_bytes()
+    manager._implementation_id = "new-tested-implementation"
+    with pytest.raises(ValueError):
+        manager._guard_config(state)
+    assert path.read_bytes() == before and workflow.read_bytes() == previous
+    assert not (root / ".studio" / "migrations").exists()
+    assert not manager.workers.items
+
+
+def evaluation_only_queue(manager, project_id):
+    _, queue = reference_queue(manager, project_id)
+    state = manager._load(project_id)
+    root = Path(state["project"]).parent
+    row = json.loads(queue.read_text(encoding="utf-8"))
+    pool = root / "review" / "held_out_sources.jsonl"
+    pool.write_text(json.dumps({**row, "provenance": "public_dataset", "split": "validation", "category": "environment"}) + "\n", encoding="utf-8")
+    descriptor = {"id": "fixture", "kind": "content", "queue": str(queue), "queue_sha256": digest(queue),
+                  "pool_manifest": str(pool), "pool_sha256": digest(pool), "evaluation_only": True, "pools": []}
+    state["results"]["fixture_review"]["reviews"] = [descriptor]
+    manager._save(state)
+    return root, descriptor
+
+
+def test_evaluation_only_review_consent_and_saved_evidence_never_approve_training(manager, http_server):
+    project = create(manager)
+    root, _ = evaluation_only_queue(manager, project["id"])
+    approval_hash = digest(root / "approval.json")
+    status, content, _ = http_server(f"/review/queue?project={project['id']}&queue=fixture")
+    assert status == 200
+    payload = json.loads(content)
+    assert "학습에는 사용하지 않고" in payload["policy_text"]
+    assert "소음 평가에만" in payload["policy_text"]
+    assert payload["evaluation_only"] is True and payload["pools"] == []
+    result = manager.save_review(project["id"], "fixture", {
+        "decisions": {"fixture-1": {"decision": "keep", "listened": True}}, "policy_approved": True})
+    assert result["evaluation_only"] is True and result["pools"] == []
+    assert result["intended_use"] == "held_out_development_noise" and "admission" not in result
+    state = manager._load(project["id"])
+    evidence = read_json(state["inputs"]["review_answers"]["fixture"]["path"])
+    assert evidence["source_scope"] == "Human dispositions entered through the local review screen"
+    assert evidence["evaluation_only"] is True and evidence["pools"] == []
+    assert evidence["intended_use"] == "held_out_development_noise"
+    assert evidence["consent_scope"] == "Held-out Development noise evaluation only; not for training"
+    assert digest(root / "approval.json") == approval_hash
+    assert not (root / "review" / "content_admission.json").exists()
+
+
+def test_evaluation_only_descriptor_cannot_request_training_pool_admission(manager):
+    project = create(manager)
+    _, descriptor = evaluation_only_queue(manager, project["id"])
+    state = manager._load(project["id"])
+    descriptor["pools"] = ["noise"]
+    state["results"]["fixture_review"]["reviews"] = [descriptor]
+    manager._save(state)
+    before = manager._path(project["id"]).read_bytes()
+    with pytest.raises(ValueError, match="평가 전용"):
+        manager.save_review(project["id"], "fixture", {
+            "decisions": {"fixture-1": {"decision": "keep", "listened": True}}, "policy_approved": True})
+    assert manager._path(project["id"]).read_bytes() == before

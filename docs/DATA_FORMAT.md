@@ -186,6 +186,8 @@ koww audit --project projects/bora/project.json
 
 `prepare-eval`이 만드는 `manifest.jsonl`은 소음 조건별 호출어 평가 목록입니다. 여기에 연속 비호출 평가 목록을 합칩니다.
 
+새 평가에는 `--noise-selection balanced_sources`로 소음의 세부 종류와 원본을 균형 있게 선택하세요. 같은 원본을 여러 구간으로 복제해도 선택 비중을 늘리지 않습니다. 선택한 배경과 구간은 SNR별로 고정하며, 실제 사용 분포는 같은 폴더의 `noise_coverage.json`에 기록합니다. 웹 화면은 이 정책을 사용합니다. 옵션을 생략한 CLI/API의 `legacy` 정책은 과거 선택 순서를 재현하기 위한 호환 경로입니다.
+
 연속 비호출 항목 예시입니다. 평가 음원은 **16kHz·모노·16비트 PCM WAV**로 준비합니다. 형식을 변환했다면 변환한 파일의 해시를 기록합니다.
 
 ```json
