@@ -87,16 +87,31 @@ def test_noise_coverage_does_not_count_snr_variants_or_negative_sessions_as_new_
               {"kind": "negative", "category": "environment", "noise_source_group_id": "not-a-positive-background",
                "noise_eval_type": "traffic"}]
     original = json.dumps(clips, sort_keys=True)
-    assert _coverage(clips) == "실제 시험 배경: 환경음 원본 2개 · 2종"
+    assert _coverage(clips) == "시험에 사용한 배경 음원: 환경음 원본 2개 · 2종"
     assert json.dumps(clips, sort_keys=True) == original
 
 
 def test_legacy_noise_coverage_uses_recorded_source_ids_without_inventing_subtypes():
     assert _coverage([{"kind": "positive", "category": "music", "noise_source_id": "original"}]) == \
-        "실제 시험 배경: 음악·전자음 원본 1개 · 세부 종류 미기록"
+        "시험에 사용한 배경 음원: 음악·전자음 원본 1개 · 세부 종류 미기록"
     assert _coverage([{"kind": "positive", "category": "competing_speech"}]) == \
-        "실제 시험 배경: 한국어 말소리 원본 수 미기록 · 세부 종류 미기록"
-    assert _coverage([]) == "실제 시험 배경: 미측정"
+        "시험에 사용한 배경 음원: 겹치는 한국어 음성 원본 수 미기록 · 세부 종류 미기록"
+    assert _coverage([]) == "시험에 사용한 배경 음원: 미측정"
+
+
+def test_background_detail_uses_actual_recorded_type_without_inventing_a_speech_style():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is needed to execute the browser's pure type formatter")
+    clips = [{"noise_eval_type": value} for value in (
+        "korean_read_speech", "korean_market_conversation", "korean_transit_announcement", "unknown_provider_type")]
+    clips.append({"category": "competing_speech"})
+    code = "const {evaluationBackgroundTypeText}=require(" + json.dumps(str(SCOPE_SCRIPT)) + ");" \
+        "let s='';process.stdin.setEncoding('utf8');process.stdin.on('data',x=>s+=x);" \
+        "process.stdin.on('end',()=>process.stdout.write(JSON.stringify(JSON.parse(s).map(evaluationBackgroundTypeText))));"
+    result = subprocess.run([node, "-e", code], input=json.dumps(clips), text=True,
+                            encoding="utf-8", capture_output=True, check=True)
+    assert json.loads(result.stdout) == ["한국어 낭독", "한국어 시장 대화", "한국어 교통 안내방송", "unknown_provider_type", ""]
 
 
 def test_export_adds_scope_asset_without_changing_scores_or_scored_audio(tmp_path):

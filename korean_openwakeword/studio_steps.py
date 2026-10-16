@@ -35,8 +35,8 @@ _PRESETS = {
 _STAGES = (
     ("frontend", "환경 점검 · 공통 음성 처리 모델", "task"),
     ("data_download", "공개 자료 다운로드 · 전처리", "task"),
-    ("data_review", "비호출 · 소음 · 울림 자료 확인", "review"),
-    ("data_connect", "검수한 자료를 학습에 연결", "task"),
+    ("data_review", "학습 · 평가 자료 확인", "review"),
+    ("data_connect", "검수한 자료를 용도별로 연결", "task"),
     ("references", "학습 · 평가용 합성 음색 생성", "task"),
     ("references_review", "합성 음색 듣기", "review"),
     ("pilot", "호출어 파일럿 생성", "task"),

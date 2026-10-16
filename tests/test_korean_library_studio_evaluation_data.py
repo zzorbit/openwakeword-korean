@@ -52,15 +52,15 @@ def saved_answers(project, prep, queue):
 def test_real_catalog_is_small_diverse_and_licensed_without_local_paths():
     catalog = module.evaluation_catalog()
     assets = catalog["assets"]
-    assert len(assets) == 34 and len({a["canonical_source_id"] for a in assets}) == 34
+    assert len(assets) == 40 and len({a["canonical_source_id"] for a in assets}) == 40
     assert len({a["eval_type"] for a in assets if a["category"] == "environment"}) == 10
     assert len({a["eval_type"] for a in assets if a["category"] == "music"}) == 9
-    assert catalog["size_bytes"] == sum(a["size_bytes"] for a in assets) < 16_000_000
+    assert catalog["size_bytes"] == sum(a["size_bytes"] for a in assets) < 35_000_000
     assert all(len(a["sha256"]) == 64 and a["license"] and a["attribution"] for a in assets)
     assert all(a["split"] == "validation" for a in assets)
     assert {"freesound:100355", "freesound:102956", "freesound:13613"}.isdisjoint(a["canonical_source_id"] for a in assets)
     assert len([a for a in assets if a["media_variant"] == "public_HQ_MP3_preview_not_original_WAV"]) == 4
-    assert sum(r["file_count"] for r in module.evaluation_preview()) == 34
+    assert sum(r.get("file_count", 0) for r in module.evaluation_preview()) == 40
     assert "F:\\" not in str(catalog) and "C:\\" not in str(catalog)
 
 

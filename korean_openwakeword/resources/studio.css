@@ -3,3 +3,4 @@
 .source-row{grid-template-columns:minmax(110px,.55fr) minmax(170px,1fr) minmax(170px,1.15fr)}.source-meta{overflow-wrap:anywhere;text-align:left}@media(max-width:760px){.source-row{grid-template-columns:1fr 1.3fr}.source-meta{grid-column:2}}
 .full-width,.source-metadata input,.advanced-grid select{width:100%}.advanced-grid select{display:block;margin-top:5px}.source-metadata{margin:12px 0}
 .preset-description:empty{display:none}.preset-summary{margin-top:12px}
+.source-list section+section{margin-top:24px}.source-list h3{font-size:15px;margin:0 0 6px}.source-list .evaluation-sources{border-top:1px solid var(--border);padding-top:18px}.evaluation-scope{margin:10px 0 0}.source-types{margin-top:4px;line-height:1.8}

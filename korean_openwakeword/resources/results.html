@@ -3,7 +3,7 @@
 <body><main><header><span class="eyebrow">KOREAN OPENWAKEWORD</span><h1 id="title">학습 결과</h1><p id="scope"></p></header>
 <section><h2>채점 요약</h2><p>단일 모델은 같은 평가 자료의 호출 성공률 순입니다. 앙상블은 별도로 표시합니다. 기준 통과 여부와 선택 후보를 함께 확인하세요.</p><div class="scroll"><table id="summary"><thead><tr><th>순위</th><th>모델</th><th>호출 성공</th><th>Clean</th><th>소음 평균</th><th>오호출 / 시간</th><th>지연 p95</th><th>기준 통과</th></tr></thead><tbody></tbody></table></div><p id="candidateStatus"></p><details><summary>후보별 미달·미측정 사유</summary><div id="candidateReasons"></div></details><p id="denominators"></p></section>
 <section><h2>오디오 듣기 · 모델 반응</h2><p>소음 수준을 고르고 시작하세요. 원본별로 배경과 소음 구간을 바꾸며 끝까지 자동 재생합니다.</p><p id="noiseCoverage"></p>
-<div class="controls"><label>소음 수준 <select id="snr"></select></label><label>배경 <select id="category"><option value="all">전체 배경</option><option value="environment">환경소음</option><option value="music">음악·전자음</option><option value="competing_speech">한국어 대화·방송</option></select></label></div>
+<div class="controls"><label>소음 수준 <select id="snr"></select></label><label>배경 음원 <select id="category"><option value="all">전체 배경</option><option value="environment">환경소음</option><option value="music">음악·전자음</option><option value="competing_speech">겹치는 한국어 음성</option></select></label></div>
 <div class="controls"><button id="start" class="primary">처음부터 연속 듣기</button><button id="resume">여기부터 이어 듣기</button><button id="pause">일시정지</button><button id="prev">이전</button><button id="next">다음</button></div>
 <p id="queue"></p><div class="controls"><label>원본 <select id="original"></select></label><label>항목 <select id="item"></select></label></div>
 <h3 id="clipTitle"></h3><p id="clipInfo"></p><audio id="audio" controls preload="metadata"></audio><p id="playState" role="status"></p>

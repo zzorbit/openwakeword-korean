@@ -80,13 +80,33 @@ function browser({ noBoot = false, initialState, recipeError = false, recipeOver
     const b = browser({ recipeOverrides: { sources: [{ id: "generic", role: "generic_features", name: "일반 특징" }, { id: "dns_fan", role: "environment_smoke", split: "train" }], evaluation_sources: [{ dataset_id: "esc50_held_out_v2", name: "다양한 환경 소음", source_url: "https://example.org/noise", file_count: 24, type_count: 12, total_bytes: 1024, license: "CC-BY-NC-3.0", individual_licenses: ["CC0-1.0"] }] } }); await flush();
     const groups = b.elements.get("source-preview").children;
     assert.equal(groups.length, 2); assert.equal(groups[0].children[0].textContent, "학습용 자료");
-    assert.equal(groups[1].children[0].textContent, "학습과 분리한 평가용 자료");
+    assert.equal(groups[1].children[0].textContent, "성능 평가용 배경 음원");
+    assert.match(groups[1].children[1].textContent, /호출어와 섞어.*배경만 재생해.*학습에 넣지 않습니다/);
     assert.equal(groups[0].children[2].children[0].textContent, "환경음 증강");
     const evaluation = groups[1].children[2];
     assert.equal(evaluation.children[1].children[0].textContent, "다양한 환경 소음");
-    assert.equal(evaluation.children[1].children[1].textContent, "소음 12종 · 음원 24개");
+    assert.equal(evaluation.children[0].textContent, "시험용 배경 음원");
+    assert.equal(evaluation.children[1].children[1].textContent, "종류 12종 · 음원 24개");
     assert.match(evaluation.children[2].textContent, /1 KiB.*CC-BY-NC-3.0/);
     assert.equal(evaluation.children[2].children[0].children[0].textContent, "개별 음원 이용 조건");
+    assert.match(groups[1].children.at(-1).textContent, /준비 예정.*실제 사용한 종류/);
+    assert.match(groups[1].children.at(-1).textContent, /개발 평가.*Final/);
+  });
+  await test("evaluation descriptions distinguish Korean field speech from read speech without inventing counts", async () => {
+    const b = browser({ recipeOverrides: { sources: [], evaluation_sources: [
+      { id: "field", role: "held_out_korean_speech", name: "한국어 현장 대화·안내방송", description: "원출처에서 한국어로 설명된 현장 음원입니다. 검수 후 사용합니다.", file_count: 6, type_count: 5, eval_types: ["korean_market_conversation", "korean_transit_announcement"], usage_description: "호출어 혼합과 배경 단독 시험" },
+      { id: "read", role: "held_out_korean_speech", name: "Zeroth 한국어 낭독 · 별도 화자", description: "학습용과 다른 화자를 분리합니다.", eval_types: ["korean_read_speech"] }
+    ] } }); await flush();
+    const group = b.elements.get("source-preview").children[0], field = group.children[2], read = group.children[3];
+    assert.equal(field.children[0].textContent, "겹치는 한국어 음성");
+    assert.equal(field.children[1].children[0].textContent, "한국어 현장 대화·안내방송");
+    assert.equal(field.children[1].children[1].textContent, "원출처에서 한국어로 설명된 현장 음원입니다. 검수 후 사용합니다.");
+    assert.equal(field.children[1].children[2].textContent, "종류 5종 · 음원 6개");
+    assert.equal(field.children[1].children[3].textContent, "시장 대화 · 교통 안내방송");
+    assert.equal(field.children[1].children[4].textContent, "호출어 혼합과 배경 단독 시험");
+    assert.equal(read.children[1].children[2].textContent, "한국어 낭독");
+    assert.equal(read.children[2].textContent, "");
+    assert.equal(read.children[1].children.some(child => /음원.*개/.test(child.textContent)), false);
   });
   await test("create-and-start needs one form submission and sends the local token", async () => {
     const b = browser(); await flush(); b.elements.get("wakeword").value = "보라야";

@@ -39,7 +39,7 @@ function evaluationScopeText(report, clips) {
     return parts.join(" · ");
 }
 function evaluationNoiseCoverageText(clips) {
-    const labels = {environment: "환경음", music: "음악·전자음", competing_speech: "한국어 말소리"};
+    const labels = {environment: "환경음", music: "음악·전자음", competing_speech: "겹치는 한국어 음성"};
     const parts = [];
     for (const [category, label] of Object.entries(labels)) {
         const rows = clips.filter(c => c.kind === "positive" && c.category === category);
@@ -49,6 +49,16 @@ function evaluationNoiseCoverageText(clips) {
         const sourceText = sources.size ? `원본 ${sources.size.toLocaleString("ko-KR")}개` : "원본 수 미기록";
         parts.push(`${label} ${sourceText} · ${types.size ? types.size.toLocaleString("ko-KR") + "종" : "세부 종류 미기록"}`);
     }
-    return parts.length ? "실제 시험 배경: " + parts.join(" / ") : "실제 시험 배경: 미측정";
+    return parts.length ? "시험에 사용한 배경 음원: " + parts.join(" / ") : "시험에 사용한 배경 음원: 미측정";
 }
-if (typeof module !== "undefined" && module.exports) module.exports = {evaluationScopeText, evaluationNoiseCoverageText};
+function evaluationBackgroundTypeText(clip) {
+    const types = {rain: "비", wind: "바람", vacuum_cleaner: "청소기", washing_machine: "세탁기", engine: "엔진", train: "기차",
+        keyboard_typing: "키보드", door_wood_knock: "문 두드림", glass_breaking: "유리 충격·파손", footsteps: "발걸음",
+        clock_alarm: "알람", clock_tick: "시계음", car_horn: "경적", siren: "사이렌", church_bells: "종소리",
+        music_instrumental_piano_drums: "피아노·드럼", music_instrumental_guitar_drums: "기타·드럼", music_singing: "보컬 멜로디", music_vocal_pad: "보컬 음악",
+        korean_read_speech: "한국어 낭독", korean_speech: "한국어 음성", korean_market_conversation: "한국어 시장 대화",
+        korean_restaurant_conversation: "한국어 식당 대화", korean_subway_conversation: "한국어 지하철 대화",
+        korean_street_conversation: "한국어 거리 대화", korean_transit_announcement: "한국어 교통 안내방송"};
+    return clip.noise_eval_type ? types[clip.noise_eval_type] || clip.noise_eval_type : "";
+}
+if (typeof module !== "undefined" && module.exports) module.exports = {evaluationScopeText, evaluationNoiseCoverageText, evaluationBackgroundTypeText};

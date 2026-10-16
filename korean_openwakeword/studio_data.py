@@ -101,7 +101,7 @@ def material_recipe(preset="check", workspace=None):
         asset["availability"] = "cached_requires_integrity_check" if path and path.is_file() else "download_required"
     from .studio_evaluation_data import evaluation_catalog, evaluation_preview
     evaluation = evaluation_catalog()
-    return {"schema_version": 1, "recipe_version": 2, "preset": preset, "assets": assets,
+    return {"schema_version": 1, "recipe_version": evaluation["recipe_version"], "preset": preset, "assets": assets,
             "evaluation_assets": evaluation["assets"], "evaluation_sources": evaluation_preview(),
             "evaluation_download_bytes": evaluation["size_bytes"],
             "known_download_bytes": sum(a["size_bytes"] for a in assets) + evaluation["size_bytes"],
@@ -118,7 +118,7 @@ def material_recipe(preset="check", workspace=None):
                 "The public Generic file contains features only, not waveform audio, and its 2,000h is nominal publisher duration.",
                 "FMA's original checksum-verified small archive is 7.68GB even though only 120 tracks are extracted; cached archives are reused.",
                 "Unknown AudioSet/FMA speaker identities and MIT rooms stay conservative Train-only groups; no invented independence.",
-                "Held-out Development adds 20 environmental, 10 electronic and 4 actual vocal/instrumental music clips plus reserved Korean speech; the small curated set does not prove broad population performance.",
+                "Held-out Development adds environmental sounds, music/electronic sounds, Korean field speech/announcements and reserved Korean read speech; the small curated set does not prove broad population performance.",
                 "Downloads and technical QC are not human listening, admission, or Final evaluation approval."],
             "human_review_required": True, "Final_accessed": False}
 
@@ -512,19 +512,24 @@ def ensure_evaluation_materials(project, workspace, prepared, progress=None):
     result = deepcopy(prepared)
     evaluation = prepare_evaluation_materials(project, workspace, result, progress)
     binding = evaluation["preparation"]
-    descriptor = {"id": "materials_evaluation_v2_" + evaluation["catalog_id"], "kind": "content",
+    version = evaluation["recipe_version"]
+    descriptor = {"id": f"materials_evaluation_v{version}_" + evaluation["catalog_id"], "kind": "content",
         "evaluation_only": True, "intended_use": "held_out_development_noise", "pools": [],
         "queue": evaluation["artifacts"]["representative_queue"]["path"],
         "pool_manifest": evaluation["artifacts"]["source_manifest"]["path"], "preparation": binding["path"],
-        "label": "학습과 분리한 환경음·음악·전자음 평가 자료"}
+        "label": "학습과 분리한 환경음·음악·전자음·한국어 음성 시험용 배경 음원"}
+    # Replace the old evaluation queue, not the training review queues. The new
+    # preparation inherits only hash-verified admissions, including discards.
+    result["review_queues"] = [q for q in result.get("review_queues", [])
+                               if not q.get("evaluation_only") or q["id"] == descriptor["id"]]
     ids = {q["id"] for q in result.get("review_queues", [])}
     if descriptor["id"] not in ids:
         result.setdefault("review_queues", []).append(descriptor)
-    result.update(recipe_version=2, evaluation_preparation=binding,
+    result.update(recipe_version=version, evaluation_preparation=binding,
                   evaluation_noise_source_count=evaluation["source_count"],
                   evaluation_noise_type_counts=evaluation["eval_type_counts"],
                   evaluation_only_review_required=True)
-    path = Path(binding["path"]).parent / "preparation_result_v2.json"
+    path = Path(binding["path"]).parent / f"preparation_result_v{version}.json"
     if not path.exists():
         write_json(path, result)
     return result
@@ -705,7 +710,7 @@ def admit_materials(project_path, prepared, answers_by_preparation=None, *, admi
     if destination.exists() and destination.stat().st_size and digest(destination) != validation["sha256"]:
         if not evaluation_rows or any((root / "features").rglob("contract.json")) or any((root / "runs").rglob("contract.json")):
             raise ValueError("Existing evaluation/training inputs are frozen; use a new experiment for the revised noise recipe")
-        relative = "data/materials/validation_noise_v2_" + reserve_key + ".jsonl"
+        relative = f"data/materials/validation_noise_v{prepared.get('recipe_version', 2)}_" + reserve_key + ".jsonl"
         config["manifests"]["noise_validation"] = relative
         destination = resolved(root, relative)
         config_changed = True
@@ -724,6 +729,6 @@ def admit_materials(project_path, prepared, answers_by_preparation=None, *, admi
             "negative_validation_manifest": negative,
             "validation_noise_manifest": validation,
             "evaluation_noise_admissions": evaluation_admissions,
-            "evaluation_noise_recipe_version": 2 if evaluation_rows else 1,
+            "evaluation_noise_recipe_version": prepared.get("recipe_version", 2) if evaluation_rows else 1,
             "admitted_unique_hours": durations, "generic_publisher_nominal_hours": nominal,
             "shortages": shortages, "Final_accessed": False}

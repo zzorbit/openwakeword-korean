@@ -86,6 +86,20 @@
     if (className) node.className = className;
     return node;
   }
+  const backgroundTypes = {
+    rain: "비", wind: "바람", vacuum_cleaner: "청소기", washing_machine: "세탁기", engine: "엔진", train: "기차",
+    keyboard_typing: "키보드", door_wood_knock: "문 두드림", glass_breaking: "유리 충격·파손", footsteps: "발걸음",
+    clock_alarm: "알람", clock_tick: "시계음", car_horn: "경적", siren: "사이렌", church_bells: "종소리",
+    music_instrumental_piano_drums: "피아노·드럼", music_instrumental_guitar_drums: "기타·드럼", music_singing: "보컬 멜로디", music_vocal_pad: "보컬 음악",
+    korean_read_speech: "한국어 낭독", korean_speech: "한국어 음성", korean_natural_conversation: "한국어 자연 대화",
+    korean_conversation: "한국어 대화", korean_broadcast: "한국어 방송", korean_overlapping_speech: "겹치는 한국어 음성",
+    korean_market_conversation: "시장 대화", korean_restaurant_conversation: "식당 대화", korean_subway_conversation: "지하철 대화",
+    korean_street_conversation: "거리 대화", korean_transit_announcement: "교통 안내방송"
+  };
+  function backgroundTypeNames(source) {
+    const types = source.type_labels || source.eval_types || [];
+    return Array.isArray(types) ? [...new Set(types.map(value => backgroundTypes[value] || value).filter(value => typeof value === "string" && value))] : [];
+  }
   function replace(node, children) { node.replaceChildren(...children); }
 
   let snapshot = { projects: [] }, recipes = [], selectedId = "", selectedPreset = "check";
@@ -139,7 +153,7 @@
     const download = bytes(recipe.download_bytes ?? recipe.known_download_bytes);
     $("download-size").textContent = download ? `알려진 다운로드 ${download}` : "용량은 자료 확인 후 표시";
     const sourceNames = { generic: "openWakeWord 일반 비호출 특징", zeroth: "Zeroth 한국어 음성", audioset: "AudioSet 일부", fma: "FMA 음악 일부", mit_rir: "MIT 공간 울림", dns_fan: "DNS 팬 소음", dns_door: "DNS 문 소리", electronic_validation: "별도 전자음 시험 자료" };
-    const roleNames = { generic_features: "일반 비호출", korean_negative: "한국어 비호출", noise_train: "소음 증강", noise_music_train: "음악 증강", room_impulse_response: "잔향 증강", environment_smoke: "환경음", held_out_electronic_smoke: "전자음", held_out_evaluation_noise: "평가 소음" };
+    const roleNames = { generic_features: "일반 비호출", korean_negative: "한국어 비호출", noise_train: "소음 증강", noise_music_train: "음악 증강", room_impulse_response: "잔향 증강", environment_smoke: "환경음", held_out_electronic_smoke: "전자음", held_out_evaluation_noise: "시험용 배경 음원", held_out_korean_speech: "겹치는 한국어 음성" };
     const sources = recipe.sources || [...(recipe.assets || []).filter(source => source.role !== "provider_metadata"), ...(recipe.additional_download ? [{ ...recipe.additional_download, role: "room_impulse_response" }] : [])];
     const evaluation = source => ["validation", "development"].includes(source.split) || /held_out|evaluation|validation/.test(source.role || "");
     const trainingSources = sources.filter(source => !evaluation(source));
@@ -151,7 +165,10 @@
       if (href) { title.href = href; title.target = "_blank"; title.rel = "noopener"; }
       info.append(title);
       if (source.description) info.append(element("div", source.description, "source-detail"));
-      if (source.type_count !== undefined || source.file_count !== undefined) info.append(element("div", [source.type_count === undefined ? "" : `소음 ${number(source.type_count)}종`, source.file_count === undefined ? "" : `음원 ${number(source.file_count)}개`].filter(Boolean).join(" · "), "source-detail"));
+      if (source.type_count !== undefined || source.file_count !== undefined) info.append(element("div", [source.type_count === undefined ? "" : `종류 ${number(source.type_count)}종`, source.file_count === undefined ? "" : `음원 ${number(source.file_count)}개`].filter(Boolean).join(" · "), "source-detail"));
+      const typeNames = backgroundTypeNames(source);
+      if (typeNames.length) info.append(element("div", typeNames.join(" · "), "source-detail source-types"));
+      if (source.usage_description) info.append(element("div", source.usage_description, "source-detail"));
       const details = [source.hours === undefined ? "" : `${number(source.hours)}시간`, bytes(source.bytes ?? source.size_bytes ?? source.totalbytes ?? source.total_bytes), source.license].filter(Boolean);
       const meta = element("div", details.join(" · "), "source-meta");
       if (Array.isArray(source.individual_licenses) && source.individual_licenses.length) {
@@ -175,7 +192,7 @@
     };
     const groups = [];
     if (trainingSources.length) { const group = element("section"); group.append(element("h3", "학습용 자료"), ...trainingSources.map(sourceRow)); groups.push(group); }
-    if (evaluationSources.length) { const group = element("section"); group.append(element("h3", "학습과 분리한 평가용 자료"), element("p", "학습에 섞지 않은 별도 소음으로 호출어를 시험합니다.", "hint"), ...evaluationSources.map(sourceRow)); groups.push(group); }
+    if (evaluationSources.length) { const group = element("section", undefined, "evaluation-sources"); group.append(element("h3", "성능 평가용 배경 음원"), element("p", "호출어와 섞어 소음 속 감지율을, 배경만 재생해 오호출을 확인합니다. 이 자료는 학습에 넣지 않습니다.", "hint"), ...evaluationSources.map(sourceRow), element("p", "표시된 항목은 준비 예정 자료입니다. 실제 사용한 종류·음원 수는 검수 후 평가 결과에 표시합니다. 이 단계는 개발 평가이며 Final 평가와 구분합니다.", "hint evaluation-scope")); groups.push(group); }
     replace($("source-preview"), groups);
     if (!groups.length) $("source-preview").append(element("p", "자료 목록은 준비 과정에서 확인합니다. 필요한 입력이나 이용 동의가 있으면 작업을 멈추고 안내합니다.", "hint"));
     const placeholders = { "adv-originals": recipe.originals ?? recipe.positive_originals, "adv-rounds": recipe.rounds ?? recipe.augmentation_rounds, "adv-updates": recipe.updates, "adv-generic": recipe.generic_hours, "adv-korean": recipe.korean_hours };

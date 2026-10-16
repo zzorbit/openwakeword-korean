@@ -11,7 +11,7 @@ import soundfile as sf
 from .common import bound_file, digest, identity, now, read_json, read_rows, resolved, write_json, writer_lock
 from .project import load_project
 
-EVALUATION_RECIPE_VERSION = 2
+EVALUATION_RECIPE_VERSION = 3
 _TYPE_NAMES = {
     "rain": "비", "wind": "바람", "vacuum_cleaner": "청소기", "washing_machine": "세탁기",
     "engine": "엔진", "train": "기차", "keyboard_typing": "키보드", "door_wood_knock": "문 두드림",
@@ -19,11 +19,14 @@ _TYPE_NAMES = {
     "clock_tick": "시계 전자·기계음", "car_horn": "경적", "siren": "사이렌", "church_bells": "종소리",
     "music_instrumental_piano_drums": "피아노·드럼 연주", "music_instrumental_guitar_drums": "기타·드럼 연주",
     "music_singing": "보컬 멜로디", "music_vocal_pad": "보컬 패드 음악",
+    "korean_market_conversation": "한국어 시장 대화", "korean_restaurant_conversation": "한국어 식당 대화",
+    "korean_subway_conversation": "한국어 지하철 대화", "korean_street_conversation": "한국어 거리 대화",
+    "korean_transit_announcement": "한국어 교통 안내방송",
 }
 
 
 def evaluation_catalog():
-    catalog = read_json(files("korean_openwakeword") / "resources/evaluation_noise_v2.json")
+    catalog = read_json(files("korean_openwakeword") / "resources/evaluation_noise_v3.json")
     if catalog.get("recipe_version") != EVALUATION_RECIPE_VERSION:
         raise ValueError("Unsupported held-out noise catalog")
     return catalog
@@ -35,17 +38,33 @@ def evaluation_preview():
     grouped = defaultdict(list)
     for row in catalog["assets"]:
         grouped[row["dataset_id"]].append(row)
-    labels = {"esc50_held_out_v2": "환경음·전자음 평가 자료", "freesound_music_held_out_v2": "보컬·연주곡 평가 자료"}
+    labels = {"esc50_held_out_v2": "환경음·전자음 시험용 배경 음원",
+              "freesound_music_held_out_v2": "보컬·연주곡 시험용 배경 음원",
+              "freesound_korean_held_out_v3": "한국어 현장 대화·안내방송 시험용 배경 음원"}
+    descriptions = {
+        "esc50_held_out_v2": "비·바람·가전·차량·키보드·충격음과 알람·경적·사이렌 등 지속음·순간음 15종입니다.",
+        "freesound_music_held_out_v2": "피아노·기타·드럼 연주와 보컬 멜로디·보컬 패드 4종입니다. 한국어 노래 모음은 아닙니다.",
+        "freesound_korean_held_out_v3": "시장·식당·지하철·거리의 한국어 현장 말소리와 교통 안내방송입니다. TV·라디오나 한국어 보컬 음악 자료는 포함하지 않습니다.",
+    }
     result = []
     for dataset, rows in grouped.items():
+        korean = dataset == "freesound_korean_held_out_v3"
         result.append({"id": dataset, "dataset_id": dataset, "name": labels.get(dataset, dataset),
-            "role": "held_out_evaluation_noise", "split": "validation", "evaluation_only": True,
+            "role": "held_out_korean_speech" if korean else "held_out_evaluation_noise", "split": "validation", "evaluation_only": True,
+            "description": descriptions.get(dataset, "학습에 넣지 않는 시험용 배경 음원입니다."),
             "file_count": len(rows), "type_count": len({r["eval_type"] for r in rows}),
             "eval_types": sorted({r["eval_type"] for r in rows}), "total_bytes": sum(r["size_bytes"] for r in rows),
+            "type_labels": [_TYPE_NAMES.get(kind, kind) for kind in sorted({r["eval_type"] for r in rows})],
             "source_url": "https://github.com/karolpiczak/ESC-50" if dataset.startswith("esc50") else "https://freesound.org/",
-            "license": "ESC-50 CC-BY-NC-3.0 / ESC-10 CC-BY-3.0; 개별 원출처 조건 보존" if dataset.startswith("esc50") else "CC0-1.0 · 공개 HQ MP3 미리듣기",
-            "individual_licenses": [{"id": r["id"], "name": _TYPE_NAMES.get(r["eval_type"], r["eval_type"]),
+            "license": "ESC-50 CC-BY-NC-3.0 / ESC-10 CC-BY-3.0; 개별 원출처 조건 보존" if dataset.startswith("esc50") else "개별 Creative Commons 조건 · 공개 HQ MP3 미리듣기",
+            "individual_licenses": [{"id": r["id"], "name": r.get("name", _TYPE_NAMES.get(r["eval_type"], r["eval_type"])),
                 "license": r["license"], "source_url": r["original_source_url"], "media_variant": r["media_variant"]} for r in rows]})
+    result.append({"id": "zeroth_validation_reserve", "dataset_id": "zeroth_validation_reserve",
+        "name": "한국어 낭독 음성 · Zeroth 평가 예약분", "role": "held_out_korean_speech",
+        "split": "validation", "evaluation_only": True,
+        "source_url": "https://www.openslr.org/40/", "license": "Zeroth 원자료 이용 조건",
+        "type_labels": ["한국어 낭독"],
+        "description": "이미 내려받는 Zeroth에서 학습 화자와 분리해 남긴 한국어 낭독 음성입니다. 실제 파일 수는 자료 준비 후 확정되며 별도 추가 다운로드는 없습니다."})
     return result
 
 
@@ -64,7 +83,7 @@ def _pcm_hash(path):
 def _convert_evaluation_audio(source, destination):
     """Preserve the source and explicitly record any resampling headroom gain.
 
-    These pinned excerpts are at most 36 seconds.  A single, short conversion
+    These pinned public recordings are at most five minutes. A single conversion
     avoids joining transient edges while leaving all Train conversion unchanged.
     """
     from .audio import read_audio, write_pcm16
@@ -155,6 +174,131 @@ def assert_held_out(project, rows, prepared=None):
             "generic_precomputed_original_mapping_available": False}
 
 
+def _source_identity(row):
+    metadata = {key: row.get(key) for key in ("canonical_recording_id", "category", "eval_type", "language", "source_url")}
+    source_sha = row.get("reviewed_source", {}).get("sha256", row["sha256"])
+    return row["canonical_source_id"], row["original_sha256"], source_sha, identity(metadata)
+
+
+def _supported_preparation(receipt, wakeword):
+    return (receipt.get("kind") in ("studio_evaluation_noise_preparation_v2", "studio_evaluation_noise_preparation_v3")
+            and receipt.get("recipe_version") in (2, 3) and receipt.get("wakeword") == wakeword
+            and receipt.get("evaluation_only") is True and receipt.get("training_admitted") is False
+            and receipt.get("intended_use") == "held_out_development_noise")
+
+
+def _validated_decisions(root, config, receipt, answer_path, seen=()):
+    """Recheck real answers and any immutable inherited admissions, never infer listening."""
+    if not _supported_preparation(receipt, config["wakeword"]):
+        raise ValueError("Evaluation-only preparation scope is required")
+    source = bound_file(root, receipt["artifacts"]["source_manifest"])
+    preview = bound_file(root, receipt["artifacts"]["representative_queue"])
+    rows, previews = read_rows(source), read_rows(preview)
+    inherited = {}
+    for binding in receipt.get("inherited_admissions", []):
+        path = bound_file(root, binding)
+        if str(path) in seen:
+            raise ValueError("Cyclic evaluation review inheritance")
+        record = read_json(path)
+        if (record.get("kind") not in ("studio_evaluation_noise_admission_v2", "studio_evaluation_noise_admission_v3")
+                or record.get("state") != "accepted_for_evaluation" or record.get("evaluation_only") is not True
+                or record.get("training_admitted") is not False or record.get("wakeword") != config["wakeword"]
+                or record.get("intended_use") != "held_out_development_noise" or record.get("content_review") != "accepted"):
+            raise ValueError("Inherited evaluation review scope changed")
+        previous = read_json(bound_file(root, record["preparation"]))
+        previous_answer = bound_file(root, record["human_answers"]) if record.get("human_answers") else None
+        checked, previous_rows = _validated_decisions(root, config, previous, previous_answer, (*seen, str(path)))
+        accepted = sorted({r["sha256"] for r in previous_rows if checked[_source_identity(r)]["decision"] == "keep"})
+        if (record.get("accepted_source_sha256") != accepted
+                or record.get("source_manifest") != previous["artifacts"]["source_manifest"]
+                or record.get("representative_queue") != previous["artifacts"]["representative_queue"]):
+            raise ValueError("Inherited evaluation admission differs from actual listening answers")
+        inherited.update(checked)
+    decisions = {}
+    if previews:
+        if answer_path is None:
+            raise ValueError("Real saved evaluation listening answers are required")
+        saved = read_json(answer_path)
+        decisions = saved.get("decisions", {})
+        if (saved.get("wakeword") != config["wakeword"] or saved.get("whole_pool_policy_approved") is not True
+                or saved.get("evaluation_only") is not True or saved.get("intended_use") != "held_out_development_noise"
+                or saved.get("pools") != []
+                or saved.get("consent_scope") != "Held-out Development noise evaluation only; not for training"
+                or saved.get("source_scope") != "Human dispositions entered through the local review screen"
+                or not saved.get("saved_at") or saved.get("source_manifest_sha256") != digest(source)
+                or saved.get("queue_sha256") != digest(preview)
+                or saved.get("representative_queue_sha256") != digest(preview)
+                or saved.get("queued_audio_sha256") != {r["sample_id"]: r["sha256"] for r in previews}
+                or set(decisions) != {r["sample_id"] for r in previews}):
+            raise ValueError("Real saved evaluation listening answers and exact source/queue bindings are required")
+        if (any(a.get("decision") not in ("keep", "discard") for a in decisions.values())
+                or any(a.get("listened") is not True for a in decisions.values() if a.get("decision") == "keep")):
+            raise ValueError("Unheard or unresolved evaluation audio cannot be approved")
+    checked = {}
+    source_rows = {_source_identity(r): r for r in rows}
+    for row in previews:
+        key = _source_identity(row)
+        if key not in source_rows or row["reviewed_source"]["sha256"] != source_rows[key]["sha256"]:
+            raise ValueError("Evaluation preview differs from its actual source")
+        bound_file(root, row)
+        bound_file(root, row["reviewed_source"])
+        checked[key] = {**decisions[row["sample_id"]],
+                        "review_scope": row.get("review_excerpt", {"scope": "full_source"})}
+    for key, row in source_rows.items():
+        if key not in checked:
+            if key not in inherited:
+                raise ValueError("New evaluation sources require their own real listening answers")
+            checked[key] = inherited[key]
+        bound_file(root, row)
+    return checked, rows
+
+
+def _previous_reviews(root, config):
+    """Only admitted answers can reduce a new review queue; candidates never do."""
+    candidates, bindings = {}, []
+    for path in sorted((root / ".studio" / "materials").glob("evaluation_v*/admissions/*.json")):
+        record = read_json(path)
+        if record.get("kind") not in ("studio_evaluation_noise_admission_v2", "studio_evaluation_noise_admission_v3"):
+            continue
+        prep = read_json(bound_file(root, record["preparation"]))
+        answer = bound_file(root, record["human_answers"]) if record.get("human_answers") else None
+        binding = {"path": str(path), "sha256": digest(path)}
+        # Validate the admission itself as well as all answer and source hashes.
+        wrapper = {"kind": "studio_evaluation_noise_preparation_v3", "recipe_version": 3,
+            "wakeword": config["wakeword"], "evaluation_only": True, "training_admitted": False,
+            "artifacts": prep["artifacts"], "inherited_admissions": [binding],
+            "intended_use": "held_out_development_noise"}
+        checked, rows = _validated_decisions(root, config, wrapper, answer)
+        bindings.append(binding)
+        for row in rows:
+            candidates[_source_identity(row)] = {"row": row, "decision": checked[_source_identity(row)], "admission": binding}
+    return candidates, bindings
+
+
+def _review_preview(row, output):
+    """Keep lengthy Korean sources intact, with an explicit 15-second preview."""
+    preview = {**row, "sample_id": "preview_" + row["sample_id"],
+        "reviewed_source": {"path": row["path"], "sha256": row["sha256"]},
+        "review_group": _TYPE_NAMES.get(row["eval_type"], row["eval_type"]),
+        "text": row.get("name", _TYPE_NAMES.get(row["eval_type"], row["eval_type"]))}
+    preview["review_instruction"] = "학습에 넣지 않는 시험용 배경 음원입니다. 표시한 종류의 소리가 정상적이면 보존하고, 호출어가 들리거나 깨졌으면 폐기하세요."
+    if row["category"] == "competing_speech" and row["duration_s"] > 20:
+        with sf.SoundFile(row["path"]) as stream:
+            count = 15 * stream.samplerate
+            start = max(0, (stream.frames - count) // 2)
+            stream.seek(start)
+            values = stream.read(count, dtype="int16")
+            destination = output / "review_audio" / (row["sample_id"] + "_15s.wav")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            sf.write(destination, values, stream.samplerate, subtype="PCM_16")
+        preview.update(path=str(destination), sha256=digest(destination), duration_s=len(values) / 16000,
+            review_excerpt={"scope": "representative_excerpt_not_full_source", "start_s": start / 16000,
+                "end_s": (start + len(values)) / 16000, "selection": "deterministic_contiguous_center_15_seconds",
+                "full_source_duration_s": row["duration_s"], "full_source_sha256": row["sha256"]},
+            review_instruction="원본 전체가 아닌 15초 대표 구간입니다. 한국어 말소리·안내방송이 정상적이면 보존하세요. 불명료하거나 호출어가 들리거나 깨졌으면 폐기하세요. 보존한 원본 전체는 시험용으로만 사용하며, 전체를 청취한 것으로 기록하지 않습니다.")
+    return preview
+
+
 def prepare_evaluation_materials(project, workspace, prepared, progress=None):
     from .studio_data import _download, _write_rows, _emit
     from .pool_review import _technical_check
@@ -163,7 +307,10 @@ def prepare_evaluation_materials(project, workspace, prepared, progress=None):
         raise ValueError("Final is locked; new Development noise belongs to a separate experiment")
     catalog = evaluation_catalog()
     catalog_id = identity(catalog)[:16]
-    output = root / ".studio" / "materials" / ("evaluation_v2_" + catalog_id)
+    version = catalog["recipe_version"]
+    if version not in (2, 3):
+        raise ValueError("Unsupported evaluation background source recipe")
+    output = root / ".studio" / "materials" / (f"evaluation_v{version}_" + catalog_id)
     output.mkdir(parents=True, exist_ok=True)
     receipt_path = output / "preparation.json"
     if receipt_path.exists():
@@ -175,11 +322,29 @@ def prepare_evaluation_materials(project, workspace, prepared, progress=None):
         rows = read_rows(receipt["artifacts"]["source_manifest"]["path"])
         for row in rows:
             bound_file(root, row)
+        for row in read_rows(receipt["artifacts"]["representative_queue"]["path"]):
+            bound_file(root, row)
+            bound_file(root, row["reviewed_source"])
         audit = assert_held_out(project, rows, prepared)
         return {**receipt, "preparation": {"path": str(receipt_path), "sha256": digest(receipt_path)}, "split_audit": audit, "resumed": True}
-    rows = []
+    if any((root / "features").rglob("contract.json")) or any((root / "runs").rglob("contract.json")):
+        raise ValueError("Existing evaluation/training inputs are frozen; use a new experiment for revised background sources")
+    previous, _ = _previous_reviews(root, config) if version >= 3 else ({}, [])
+    rows, pending, inherited = [], [], {}
     with writer_lock(output):
         for index, asset in enumerate(catalog["assets"]):
+            reused = next((entry for entry in previous.values()
+                           if entry["row"]["original_sha256"] == asset["sha256"]
+                           and entry["row"]["canonical_source_id"] == asset["canonical_source_id"]
+                           and all(entry["row"].get(key) == asset.get(key) for key in
+                                   ("canonical_recording_id", "category", "eval_type", "language", "source_url"))), None)
+            if reused:
+                row = dict(reused["row"])
+                bound_file(root, row)
+                rows.append(row)
+                inherited[reused["admission"]["sha256"]] = reused["admission"]
+                _emit(progress, "기존 청취 근거 재사용 · 시험용 배경 음원", index + 1, len(catalog["assets"]), "files")
+                continue
             source = _download(asset, Path(workspace).resolve() / "shared" / "downloads", progress)
             destination = output / "audio" / (asset["id"] + ".wav")
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -203,18 +368,19 @@ def prepare_evaluation_materials(project, workspace, prepared, progress=None):
                     "unknown_speaker_group": asset["dataset_id"], "evaluation_content_approved": False}
                 write_json(check, row)
             rows.append(row)
-            _emit(progress, "학습과 분리한 평가 소음 준비", index + 1, len(catalog["assets"]), "files")
+            pending.append(row)
+            _emit(progress, "학습과 분리한 시험용 배경 음원 준비", index + 1, len(catalog["assets"]), "files")
         audit = assert_held_out(project, rows, prepared)
         sources = _write_rows(output / "evaluation_sources.jsonl", rows)
-        queue_rows = [{**r, "sample_id": "preview_" + r["sample_id"], "reviewed_source": {"path": r["path"], "sha256": r["sha256"]},
-            "review_group": _TYPE_NAMES.get(r["eval_type"], r["eval_type"]), "text": _TYPE_NAMES.get(r["eval_type"], r["eval_type"]),
-            "review_instruction": "학습에 넣지 않는 소음 평가용 자료입니다. 표시한 종류의 소리가 정상적이면 보존하고, 호출어가 들리거나 깨졌으면 폐기하세요."} for r in rows]
+        queue_rows = [_review_preview(r, output) for r in pending]
         queue = _write_rows(output / "representatives.jsonl", queue_rows)
-        receipt = {"kind": "studio_evaluation_noise_preparation_v2", "recipe_version": 2, "catalog_id": catalog_id,
+        receipt = {"kind": f"studio_evaluation_noise_preparation_v{version}", "recipe_version": version, "catalog_id": catalog_id,
             "wakeword": config["wakeword"], "state": "awaiting_human_review", "evaluation_only": True,
             "intended_use": "held_out_development_noise", "artifacts": {"source_manifest": sources, "representative_queue": queue},
             "source_count": len(rows), "category_counts": dict(Counter(r["category"] for r in rows)),
             "eval_type_counts": dict(Counter(r["eval_type"] for r in rows)), "download_bytes": catalog["size_bytes"],
+            "inherited_admissions": list(inherited.values()), "inherited_source_count": len(rows) - len(pending),
+            "pending_review_source_count": len(pending),
             "human_listened_count": 0, "training_admitted": False, "Final_accessed": False,
             "split_audit": audit, "limitations": catalog["limitations"], "created_at": now()}
         write_json(receipt_path, receipt)
@@ -226,44 +392,28 @@ def admit_evaluation_review(project, queue, answer, prepared):
     root, config = load_project(project)
     prep_path = resolved(root, queue["preparation"])
     receipt = read_json(prep_path)
-    if (receipt.get("kind") != "studio_evaluation_noise_preparation_v2" or receipt.get("wakeword") != config["wakeword"]
+    if (not _supported_preparation(receipt, config["wakeword"])
             or queue.get("evaluation_only") is not True or queue.get("pools") != []):
         raise ValueError("Evaluation-only preparation/queue scope is required")
-    source = bound_file(root, receipt["artifacts"]["source_manifest"])
-    preview = bound_file(root, receipt["artifacts"]["representative_queue"])
-    answer_path = bound_file(root, answer) if isinstance(answer, dict) else resolved(root, answer)
-    saved = read_json(answer_path)
-    rows, previews = read_rows(source), read_rows(preview)
-    decisions = saved.get("decisions", {})
-    if (saved.get("wakeword") != config["wakeword"] or saved.get("whole_pool_policy_approved") is not True
-            or saved.get("evaluation_only") is not True or saved.get("intended_use") != "held_out_development_noise"
-            or saved.get("pools") != []
-            or saved.get("consent_scope") != "Held-out Development noise evaluation only; not for training"
-            or saved.get("source_scope") != "Human dispositions entered through the local review screen"
-            or not saved.get("saved_at") or saved.get("source_manifest_sha256") != digest(source)
-            or saved.get("queue_sha256") != digest(preview)
-            or saved.get("representative_queue_sha256") != digest(preview)
-            or saved.get("queued_audio_sha256") != {r["sample_id"]: r["sha256"] for r in previews}
-            or set(decisions) != {r["sample_id"] for r in previews}):
-        raise ValueError("Real saved evaluation listening answers and exact source/queue bindings are required")
-    if (any(a.get("decision") not in ("keep", "discard") for a in decisions.values())
-            or any(a.get("listened") is not True for a in decisions.values() if a.get("decision") == "keep")):
-        raise ValueError("Unheard or unresolved evaluation audio cannot be approved")
-    accepted = {r["reviewed_source"]["sha256"] for r in previews if decisions[r["sample_id"]]["decision"] == "keep"}
-    kept = [r for r in rows if r["sha256"] in accepted]
+    answer_path = (bound_file(root, answer) if isinstance(answer, dict) else resolved(root, answer)) if answer is not None else None
+    decisions, rows = _validated_decisions(root, config, receipt, answer_path)
+    kept = [r for r in rows if decisions[_source_identity(r)]["decision"] == "keep"]
+    accepted = {r["sha256"] for r in kept}
     if not kept:
         raise ValueError("No usable held-out evaluation noise was kept")
     for row in kept:
         bound_file(root, row)
     audit = assert_held_out(project, kept, prepared)
-    record = {"kind": "studio_evaluation_noise_admission_v2", "state": "accepted_for_evaluation",
+    version = receipt["recipe_version"]
+    record = {"kind": f"studio_evaluation_noise_admission_v{version}", "state": "accepted_for_evaluation",
         "content_review": "accepted", "evaluation_only": True, "training_admitted": False,
         "intended_use": "held_out_development_noise", "wakeword": config["wakeword"],
         "preparation": {"path": str(prep_path), "sha256": digest(prep_path)},
-        "human_answers": {"path": str(answer_path), "sha256": digest(answer_path)},
+        "human_answers": {"path": str(answer_path), "sha256": digest(answer_path)} if answer_path else None,
         "source_manifest": receipt["artifacts"]["source_manifest"],
         "representative_queue": receipt["artifacts"]["representative_queue"],
         "accepted_source_sha256": sorted(accepted), "human_listened_count": sum(a.get("listened") is True for a in decisions.values()),
+        "inherited_admissions": receipt.get("inherited_admissions", []),
         "kept_count": len(kept), "discarded_count": len(rows) - len(kept), "split_audit_scope": audit["scope"],
         "category_counts": dict(Counter(r["category"] for r in kept)),
         "eval_type_counts": dict(Counter(r["eval_type"] for r in kept)),
@@ -278,4 +428,7 @@ def admit_evaluation_review(project, queue, answer, prepared):
         write_json(path, record)
     binding = {"path": str(path), "sha256": digest(path)}
     return {"admission": binding, "rows": [{**r, "evaluation_admission": binding,
-        "evaluation_content_approved": True, "individual_human_listening": True} for r in kept]}
+        "evaluation_content_approved": True,
+        "evaluation_content_review_scope": decisions[_source_identity(r)]["review_scope"],
+        "individual_human_listening": decisions[_source_identity(r)]["review_scope"]["scope"] == "full_source",
+        "representative_human_listening": True} for r in kept]}
