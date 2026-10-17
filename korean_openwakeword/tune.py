@@ -6,7 +6,7 @@ import numpy as np
 from .common import digest, now, read_json, write_json, writer_lock
 from .project import load_project
 from .events import EventDetector, PositiveTracker
-from .evaluate import summarize, adoption, candidate_adoptions
+from .evaluate import summarize, adoption, candidate_adoptions, annotate_clean_score_drops
 from .runtime import verify_bundle, deployment_candidate
 
 
@@ -36,12 +36,7 @@ def replay(clips, scores, offsets, model_ids, runtime):
                 "events_s": events, "false_activations": len(events) if row["kind"] == "negative" else tracker.outside_call_events,
                 "max_score": max((c["max_wake_score"] or 0 for c in calls), default=float(np.max(frames[:, column])) if len(frames) else 0),
                 "latency_s": calls[0]["latency_s"] if len(calls) == 1 else None, "activity": gate.activity_statistics()}
-    clean = {r.get("original_id", r["sample_id"]): r for r in result if r["category"] == "clean"}
-    for row in result:
-        baseline = clean.get(row.get("original_id", row["sample_id"]))
-        for key, value in row["results"].items():
-            value["clean_score_drop"] = baseline["results"][key]["max_score"] - value["max_score"] if baseline else None
-    return result
+    return annotate_clean_score_drops(result)
 
 
 def tune(project, bundle, evaluation, output, thresholds, consecutive=(2,), candidate=None):

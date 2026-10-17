@@ -213,6 +213,24 @@ koww audit --project projects/bora/project.json
 
 같은 비호출 파일을 반복하거나 이어붙여 독립 평가 시간을 늘리지 않습니다. 최종 평가에서는 새로운 원본을 쓰고 `split`을 `final`로 지정합니다.
 
+공통 평가의 원본 비호출에는 `eval_bucket`으로 `korean_conversation`, `korean_interview`, `korean_read`, `other_speech`, `music`, `environment`, `electronic`을 구분합니다. `canonical_recording_id`와 원본 구간 `source_start_s`·`source_end_s`를 기록해 중복 없이 시간을 계산합니다. 증강 횟수나 모델 수를 곱한 시간은 자료 확보량이 아닙니다.
+
+### 평가용 잔향 자료
+
+평가 잔향은 `rir_validation` 또는 `rir_final` 목록에 연결하며, 비호출 음원 목록에 넣지 않습니다. 웹 화면은 공개 자료를 다음 형식으로 준비합니다.
+
+| 필드 | 의미 |
+| --- | --- |
+| `category`, `split` | `rir`, `validation` 또는 `final` |
+| `path`, `sha256` | 실제 모노 16kHz RIR 파일과 해시 |
+| `canonical_source_id`, `canonical_room_id` | 개별 응답과 제공자 공간 식별자 |
+| `reverb_group` | `moderate` 또는 `strong` |
+| `rt60_s`, `reverb_group_basis` | 잔향 시간과 분류 근거 |
+| `acoustic_source_type` | `simulated` 등 실제 출처의 종류 |
+| `provenance`, `source_url`, `license` | 공개 자료 출처와 이용 조건 |
+
+생성된 시험 WAV에는 `reverb_condition: none/moderate/strong`과 사용한 RIR 해시·공간 식별자가 남습니다. 소음 점수 하락은 같은 울림 조건의 Clean과 비교하고, 잔향 없는 Clean과의 차이도 별도 기록합니다. 시뮬레이션 공간을 실제 측정 공간으로 표시하지 않습니다.
+
 호출어 평가 항목은 `kind: "positive"`이며 `calls`에 실제 호출 시작·끝(`start_s`, `end_s`)과 원본 발화 식별자(`original_utterance_id`)가 있어야 합니다. 자동 생성한 목록의 호출 경계를 임의로 바꾸지 마세요.
 
 다음 Python 코드를 `combine_development.py`로 저장해 실행하면 두 목록을 합칩니다. 비호출 목록을 먼저 준비하세요. 이미 내용이 있는 출력 파일은 덮어쓰지 않으며, 큰 목록도 한 줄씩 처리합니다.

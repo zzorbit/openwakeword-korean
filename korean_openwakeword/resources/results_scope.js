@@ -39,7 +39,7 @@ function evaluationScopeText(report, clips) {
     return parts.join(" · ");
 }
 function evaluationNoiseCoverageText(clips) {
-    const labels = {environment: "환경음", music: "음악·전자음", competing_speech: "겹치는 한국어 음성"};
+    const labels = {environment: "환경음", music: "음악·전자음", competing_speech: "겹치는 말소리"};
     const parts = [];
     for (const [category, label] of Object.entries(labels)) {
         const rows = clips.filter(c => c.kind === "positive" && c.category === category);

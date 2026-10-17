@@ -26,7 +26,7 @@ def test_expanded_catalog_preserves_every_previous_pin_and_has_real_source_cover
 
 
 def _scope_fixture(tmp_path):
-    policy = {**common_evaluation_policy(), "validation_originals": 200}
+    policy = {**common_evaluation_policy(1), "validation_originals": 200}
     rows = []
     for slot in range(200):
         base = {"sample_id": f"call_{slot}", "original_id": f"call_{slot}", "kind": "positive",
@@ -78,5 +78,7 @@ def test_snr_variants_do_not_inflate_original_or_voice_counts(tmp_path):
 def test_every_training_budget_uses_one_full_common_protocol():
     values = [preset_settings(key) for key in ("check", "trial", "production")]
     assert len({json.dumps(v["evaluation_policy"], sort_keys=True) for v in values}) == 1
-    assert all(v["validation_originals"] == 5000 and v["validation_references"] == 10 for v in values)
+    assert all(v["validation_originals"] == 5000 and v["validation_references"] == 30 for v in values)
+    assert all(v["evaluation_policy"]["positive_sessions"] == 100000 for v in values)
+    assert sum(values[0]["evaluation_policy"]["negative_hours_by_bucket"].values()) == 30
     assert [v["originals"] for v in values] == [1000, 20000, 100000]

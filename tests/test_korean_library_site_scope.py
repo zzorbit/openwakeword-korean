@@ -95,7 +95,7 @@ def test_legacy_noise_coverage_uses_recorded_source_ids_without_inventing_subtyp
     assert _coverage([{"kind": "positive", "category": "music", "noise_source_id": "original"}]) == \
         "시험에 사용한 배경 음원: 음악·전자음 원본 1개 · 세부 종류 미기록"
     assert _coverage([{"kind": "positive", "category": "competing_speech"}]) == \
-        "시험에 사용한 배경 음원: 겹치는 한국어 음성 원본 수 미기록 · 세부 종류 미기록"
+        "시험에 사용한 배경 음원: 겹치는 말소리 원본 수 미기록 · 세부 종류 미기록"
     assert _coverage([]) == "시험에 사용한 배경 음원: 미측정"
 
 

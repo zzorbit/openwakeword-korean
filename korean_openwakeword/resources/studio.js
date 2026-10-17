@@ -160,7 +160,7 @@
     const download = bytes(recipe.download_bytes ?? recipe.known_download_bytes);
     $("download-size").textContent = download ? `알려진 다운로드 ${download}` : "용량은 자료 확인 후 표시";
     const sourceNames = { generic: "openWakeWord 일반 비호출 특징", zeroth: "Zeroth 한국어 음성", audioset: "AudioSet 일부", fma: "FMA 음악 일부", mit_rir: "MIT 공간 울림", dns_fan: "DNS 팬 소음", dns_door: "DNS 문 소리", electronic_validation: "별도 전자음 시험 자료" };
-    const roleNames = { generic_features: "일반 비호출", korean_negative: "한국어 비호출", noise_train: "소음 증강", noise_music_train: "음악 증강", room_impulse_response: "잔향 증강", environment_smoke: "환경음", held_out_electronic_smoke: "전자음", held_out_evaluation_noise: "시험용 배경 음원", held_out_korean_speech: "겹치는 한국어 음성" };
+    const roleNames = { generic_features: "일반 비호출", korean_negative: "한국어 비호출", noise_train: "소음 증강", noise_music_train: "음악 증강", room_impulse_response: "잔향 증강", environment_smoke: "환경음", held_out_electronic_smoke: "전자음", held_out_evaluation_noise: "시험용 배경 음원", held_out_evaluation_material: "시험용 원본", held_out_korean_speech: "겹치는 한국어 음성" };
     const sources = recipe.sources || [...(recipe.assets || []).filter(source => source.role !== "provider_metadata"), ...(recipe.additional_download ? [{ ...recipe.additional_download, role: "room_impulse_response" }] : [])];
     const evaluation = source => ["validation", "development"].includes(source.split) || /held_out|evaluation|validation/.test(source.role || "");
     const trainingSources = sources.filter(source => !evaluation(source));
@@ -183,7 +183,7 @@
         }
       }
       if (source.usage_description) info.append(element("div", source.usage_description, "source-detail"));
-      const details = [source.hours === undefined ? "" : `${number(source.hours)}시간`, bytes(source.bytes ?? source.size_bytes ?? source.totalbytes ?? source.total_bytes), source.license].filter(Boolean);
+      const details = [source.target_hours === undefined ? (source.hours === undefined ? "" : `${number(source.hours)}시간`) : `준비할 원본 ${number(source.target_hours)}시간`, bytes(source.bytes ?? source.size_bytes ?? source.totalbytes ?? source.total_bytes), source.license].filter(Boolean);
       const meta = element("div", details.join(" · "), "source-meta");
       if (Array.isArray(source.individual_licenses) && source.individual_licenses.length) {
         const licenses = element("details"); licenses.append(element("summary", "개별 음원 이용 조건"));
@@ -210,8 +210,9 @@
       const group = element("section", undefined, "evaluation-sources");
       group.append(element("h3", "성능 평가용 배경 음원"), element("p", "호출어와 섞어 소음 속 감지율을, 배경만 재생해 오호출을 확인합니다. 이 자료는 학습에 넣지 않습니다.", "hint"), ...evaluationSources.map(sourceRow));
       const policy = recipe.evaluation_policy;
-      if (policy?.id === "common_development_v1") {
+        if (policy?.id === "common_development_v1" || policy?.id === "common_development_v2") {
         group.append(element("p", `세 학습 규모 모두 같은 공통 평가를 사용합니다. 평가용 합성 음색 ${number(policy.validation_references)}개 · 호출어 ${number(policy.validation_originals)}개 · Clean 및 SNR ${policy.snrs.map(number).join("/")} dB · 총 ${number(policy.positive_sessions)}개 시험 오디오를 준비합니다. 학습용 호출어 수와 별개입니다.`, "hint common-evaluation"));
+          if (policy.id === "common_development_v2") group.append(element("p", "비호출 원본 30시간: 한국어 대화 10h · 인터뷰 5h · 낭독 3h · 다른 언어 4h · 음악 3h · 환경음 4h · 전자음 1h. 잔향 없음 80,000회와 일반·강한 울림 20,000회를 합쳐 시험합니다. 공간은 시뮬레이션 20개이며, 자료 준비 후 대표 구간을 확인합니다.", "hint common-evaluation"));
       }
       group.append(element("p", "표시된 항목은 준비 예정 자료입니다. 실제 사용한 종류·음원 수·비호출 평가 시간은 검수와 채점 후 표시합니다. 공통 개발 평가와 독립 Final 평가는 분리하며, Final은 학습·공통 평가에서 쓰지 않은 음원·잔향·음색으로 모델과 감지 설정 확정 후에만 진행합니다. 짧은 배경 세트만으로 장시간 오호출 검증이 완료되지는 않습니다.", "hint evaluation-scope"));
       groups.push(group);
@@ -222,7 +223,7 @@
     for (const [id, value] of Object.entries(placeholders)) $(id).placeholder = value === undefined ? "규모 기본값" : String(value);
     const workspace = bytes(recipe.estimated_workspace_bytes);
     const notes = [recipe.note || "이미 준비된 자료는 검증 후 재사용합니다."];
-    if (recipe.known_download_bytes !== undefined) notes.push("표시 용량에는 Qwen 음성 생성 모델과 잔향 자료의 추가 다운로드가 포함되지 않습니다.");
+    if (recipe.known_download_bytes !== undefined) notes.push("같은 압축 파일은 공유하며 총량에 한 번만 계산합니다. Qwen 음성 생성 모델과 학습용 MIT 잔향의 추가 다운로드는 별도입니다.");
     if (workspace) notes.push(`자료 준비 공간 추정 ${workspace}.`);
     if (recipe.shortages?.length) notes.push("선택한 규모에 필요한 비호출 자료를 모두 자동 확보하지는 않습니다. 자동 준비분 이후 추가 자료가 필요한 지점에서 안내하고 멈춥니다.");
     $("recipe-note").textContent = notes.join(" ");
@@ -265,6 +266,14 @@
     // Only supplied counters are shown; generation is never called human approval.
     replace($("counts"), records.map(record => { const item = element("span"); item.append(element("span", (labels[record.label || record.id] || record.label || record.id || "자료") + " "), element("strong", `${typeof record.value === "number" ? number(record.value) : String(record.value ?? "—")}${record.total !== undefined ? " / " + number(record.total) : ""}${record.unit || ""}`)); return item; }));
     $("counts").hidden = !records.length;
+    const materials = project.evaluation_materials;
+    $("material-coverage").hidden = !materials;
+    if (materials) {
+      const names = {korean_conversation:"한국어 대화",korean_interview:"한국어 인터뷰",korean_read:"한국어 낭독",other_speech:"다른 언어",music:"음악",environment:"환경음",electronic:"전자음"};
+      const targets = materials.candidate?.target_hours_by_bucket || materials.admitted?.target_hours_by_bucket || {};
+      $("material-coverage-note").textContent = materials.scope;
+      replace($("material-coverage-list"), Object.entries(targets).map(([key,target]) => element("li", `${names[key]||key}: 기술 검사 ${(materials.candidate?.actual_hours_by_bucket?.[key]||0).toFixed(2)}h · 검수 승인 ${(materials.admitted?.actual_hours_by_bucket?.[key]||0).toFixed(2)}h / ${number(target)}h`)));
+    }
   }
   function frameSource(frame, url) {
     const safe = localUrl(url);

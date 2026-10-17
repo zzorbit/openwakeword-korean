@@ -73,7 +73,7 @@ def audit_project(project, check_files=True, include_final_files=False, extra_ro
                     errors.append(f"{pool}/{sid}: wrong voice-family partition")
                 if pool in ("development", "final") and split != ("validation" if pool == "development" else "final"):
                     errors.append(f"{pool}/{sid}: wrong evaluation split")
-                if pool in ("noise_validation", "noise_final") and split != ("validation" if pool == "noise_validation" else "final"):
+                if pool in ("noise_validation", "noise_final", "rir_validation", "rir_final") and split != ("validation" if pool.endswith("validation") else "final"):
                     errors.append(f"{pool}/{sid}: wrong held-out noise split")
                 for key, value in partition_keys(row):
                     index.partition(key, value, split)

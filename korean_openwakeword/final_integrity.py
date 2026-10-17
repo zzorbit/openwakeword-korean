@@ -27,7 +27,7 @@ are bound as well, so their sources cannot be swapped after inspecting a score.
     bindings = {}
     for pool, value in config["manifests"].items():
         path = resolved(root, value)
-        final = pool in ("positive_final", "noise_final", "final")
+        final = pool in ("positive_final", "noise_final", "rir_final", "final")
         if final and (not path.is_file() or not path.stat().st_size):
             continue
         bindings["manifest:" + pool] = {"path": str(path), "sha256": digest(path)}
@@ -135,7 +135,7 @@ def audit_independent_final(project, extra_rows=None, check_files=True):
     with manifest_index(root) as index:
         for pool, row in _rows(project, extra_rows):
             split = row.get("split")
-            if pool in ("positive_final", "noise_final", "final", "external_final") and split != "final":
+            if pool in ("positive_final", "noise_final", "rir_final", "final", "external_final") and split != "final":
                 errors.append(f"{pool}: independent Final input has the wrong split")
             if split not in ("train", "validation", "final"):
                 continue

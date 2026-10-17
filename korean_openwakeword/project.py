@@ -194,12 +194,18 @@ def validate_project(config):
 
 def create_project(output, wakeword, project_id, *, positive_originals=None,
                    augmentation_rounds=None, updates=None, generic_hours=None,
-                   korean_hours=None, noise_hours=None, training_overrides=None):
+                   korean_hours=None, noise_hours=None, training_overrides=None,
+                   validation_voice_families=10):
     output = Path(output).resolve()
     if output.exists() and any(output.iterdir()):
         raise ValueError("Use a new empty project directory; existing experiments are immutable")
+    candidates = voice_candidates(validation_count=validation_voice_families)
     config = default_profile()
     config.update(wakeword=wakeword, project_id=project_id)
+    # New projects reserve RIR partitions explicitly. Loading historical JSON
+    # never adds manifests or rewrites its immutable input bindings.
+    config["manifests"].setdefault("rir_validation", "data/materials/validation_rir.jsonl")
+    config["manifests"].setdefault("rir_final", "data/materials/final_rir.jsonl")
     config = configure_budget(config, positive_originals=positive_originals,
         augmentation_rounds=augmentation_rounds, updates=updates, generic_hours=generic_hours,
         korean_hours=korean_hours, noise_hours=noise_hours, training_overrides=training_overrides)
@@ -211,7 +217,7 @@ def create_project(output, wakeword, project_id, *, positive_originals=None,
         (output / path).write_text("", encoding="utf-8")
     write_json(output / "project.json", config)
     write_json(output / "reports" / "setup_summary.json", workload_summary(config))
-    write_json(output / "voices.json", voice_candidates())
+    write_json(output / "voices.json", candidates)
     write_json(output / "approval.json", {"schema_version": 1, "state": "pending", "wakeword": wakeword,
         "human_reference_used": False, "generation_policy_approved": False,
         "note": "Approve the pilot and synthetic reference families before bulk generation; no invented listening decisions."})
@@ -239,13 +245,15 @@ def load_project(path):
     return path.parent, validate_project(read_json(path))
 
 
-def voice_candidates():
+def voice_candidates(validation_count=10):
     """Requested personas are candidates, not 120 certified distinct speakers."""
+    if type(validation_count) is not int or not 1 <= validation_count <= 100:
+        raise ValueError("Validation synthetic voice families must be an integer from 1 to 100")
     ages = ("young adult", "middle-aged", "older adult", "adult")
     textures = ("clear light", "warm rounded", "low resonant", "bright nasal", "slightly husky", "soft airy", "crisp focused", "deep mellow", "smooth balanced", "rich textured", "gentle thin", "firm dry", "light breathy", "dense midrange", "clear ringing")
     families = []
-    for i in range(120):
-        split = "train" if i < 100 else "validation" if i < 110 else "final"
+    for i in range(110 + validation_count):
+        split = "train" if i < 100 else "validation" if i < 100 + validation_count else "final"
         families.append({"family_id": f"{split}_voice_{i:03d}", "split": split,
             "description": f"A native Korean {ages[(i // 30) % 4]} {'woman' if i % 2 else 'man'} with a {textures[i % 15]} timbre, pitch variation {i // 15 + 1}. Natural dry speech.",
             "style": ("neutral", "friendly", "urgent", "projected")[i % 4], "speed": ("slow", "natural", "quick")[(i // 4) % 3], "intonation": ("level", "rising", "falling")[(i // 12) % 3], "vocal_effort": ("soft", "normal", "strong")[(i // 36) % 3], "call_length": ("short", "natural", "drawn_out")[(i // 3) % 3],

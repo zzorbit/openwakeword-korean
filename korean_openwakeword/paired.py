@@ -7,7 +7,7 @@ import numpy as np
 import soundfile as sf
 
 from .audio import active_speech_mask, pcm16, noise_scale, measured_snr, rms, common_headroom_gain
-from .common import digest, identity, read_rows, resolved, require_final_lock, write_json
+from .common import bound_file, digest, identity, read_rows, resolved, require_final_lock, write_json
 from .data import audit_project, rows_for, seek_audio, source_key, CATEGORIES
 from .project import load_project
 from .storage import project_storage
@@ -15,12 +15,12 @@ from .source_identity import component_lineage
 
 
 def evaluation_recipe(project, split="validation", originals=100, noise_sections=5,
-                      snrs=(20, 15, 10, 5, 0), noise_selection="legacy"):
+                      snrs=(20, 15, 10, 5, 0), noise_selection="legacy", reverb_originals=0):
     """Hash-bound construction inputs; old outputs never acquire a new policy."""
     if noise_selection not in ("legacy", "balanced_sources"):
         raise ValueError("Noise selection must be legacy or balanced_sources")
     root, config = load_project(project)
-    return {"kind": "paired_evaluation_recipe_v1", "split": split,
+    result = {"kind": "paired_evaluation_recipe_v1", "split": split,
             "noise_selection": "balanced_sources_v1" if noise_selection == "balanced_sources" else "legacy",
             "noise_window_policy": "bounded_offsets_then_zero_padded_event_v1" if noise_selection == "balanced_sources" else "legacy",
             "source_assignment_policy": "seed_sample_id_permutation_v1" if noise_selection == "balanced_sources" else "legacy",
@@ -28,6 +28,118 @@ def evaluation_recipe(project, split="validation", originals=100, noise_sections
             "seed": config["augmentation"]["seed"],
             "positive_manifest_sha256": digest(resolved(root, config["manifests"]["positive_" + split])),
             "noise_manifest_sha256": digest(resolved(root, config["manifests"]["noise_" + split]))}
+    if reverb_originals:
+        manifest = config["manifests"].get("rir_" + split)
+        if not manifest:
+            raise ValueError("A separate held-out RIR manifest is required; training RIRs cannot substitute")
+        result["reverberation"] = {"originals": reverb_originals, "groups": ["moderate", "strong"],
+            "selection_policy": "voice_then_style_stratified_fixed_subset_v1",
+            "rir_assignment_policy": "declared_group_then_room_then_source_v1",
+            "snr_basis": "reverberated_call_active_region_before_background_mixing",
+            "background_policy": "same_dry_source_window_and_offset_with_explicit_right_zero_padding",
+            "convolution": "full_linear_l2_normalized_no_tail_truncation",
+            "rir_manifest_sha256": digest(resolved(root, manifest))}
+    return result
+
+
+def reverb_subset(positives, count, seed):
+    """Fix a voice-balanced subset while spreading declared style combinations.
+
+    Missing style facts remain missing. IDs or requested TTS descriptions never
+    become evidence of distinct actual speakers or acoustic voice diversity.
+    """
+    if type(count) is not int or not 0 <= count <= len(positives):
+        raise ValueError("Reverberation subset must fit the selected original calls")
+    strata = defaultdict(lambda: defaultdict(list))
+    style_keys = ("style", "speed", "intonation", "vocal_effort", "call_length")
+    for row in positives:
+        family = row.get("voice_family_id")
+        if not family:
+            raise ValueError("Reverberation stratification needs declared synthetic voice families")
+        style = tuple(str(row.get(key, "unspecified")) for key in style_keys)
+        strata[family][style].append(row)
+    queues = {}
+    for family, styles in strata.items():
+        keys = sorted(styles, key=lambda key: identity([seed, family, key, "rir_subset_style"]))
+        for key in keys:
+            styles[key].sort(key=lambda row: identity([seed, row["sample_id"], "rir_subset_sample"]))
+        queue = []
+        for index in range(max(len(values) for values in styles.values())):
+            queue.extend(styles[key][index] for key in keys if index < len(styles[key]))
+        queues[family] = queue
+    families = sorted(queues, key=lambda key: identity([seed, key, "rir_subset_family"]))
+    ordered = []
+    for index in range(max((len(values) for values in queues.values()), default=0)):
+        ordered.extend(queues[key][index] for key in families if index < len(queues[key]))
+    return ordered[:count]
+
+
+def _reverb_pool(root, rows, split):
+    """Use provider room identities and declared acoustic groups, never filenames."""
+    pools = {"moderate": defaultdict(list), "strong": defaultdict(list)}
+    seen = {}
+    for row in rows:
+        group, room = row.get("reverb_group"), row.get("canonical_room_id")
+        if row.get("split") != split or row.get("category") != "rir":
+            raise ValueError("Held-out RIR has the wrong split/category")
+        if (not room or group not in pools or not source_key(row) or not row.get("sha256")
+                or row.get("provenance") != "public_dataset" or not row.get("source_url") or not row.get("license")):
+            raise ValueError("Evaluation RIR needs actual room/source identity, moderate/strong group and public provenance")
+        rt60 = row.get("rt60_s")
+        if type(rt60) not in (int, float) or not math.isfinite(rt60) or rt60 <= 0:
+            raise ValueError("Evaluation RIR needs a declared positive finite rt60_s and its classification basis")
+        if not row.get("reverb_group_basis"):
+            raise ValueError("Evaluation RIR needs a provider or measured reverb_group_basis")
+        previous = seen.get(row["sha256"])
+        facts = (source_key(row), room, group)
+        if previous and previous != facts:
+            raise ValueError("The same RIR audio has conflicting source, room or reverberation labels")
+        if previous:
+            continue
+        bound_file(root, row)
+        seen[row["sha256"]] = facts
+        pools[group][room].append(row)
+    for group, rooms in pools.items():
+        if not rooms:
+            raise ValueError("Missing held-out " + group + " reverberation RIR sources")
+        for values in rooms.values():
+            values.sort(key=lambda row: (str(source_key(row)), row["sha256"]))
+    return pools
+
+
+def _reverb_choice(pools, group, slot, seed):
+    rooms = sorted(pools[group], key=lambda room: identity([seed, group, room, "rir_room"]))
+    room = rooms[slot % len(rooms)]
+    candidates = pools[group][room]
+    return candidates[(slot // len(rooms)) % len(candidates)]
+
+
+def _reverberated_call(root, speech, row, calls, cache):
+    from scipy.signal import fftconvolve
+    key = (row["sha256"], row.get("start_s", 0), row.get("end_s"))
+    if key not in cache:
+        info = sf.info(resolved(root, row["path"]))
+        start, end = float(row.get("start_s", 0)), float(row.get("end_s", info.duration))
+        if not 0 < end - start <= 5:
+            raise ValueError("Evaluation RIR interval must be nonempty and at most five seconds; no implicit truncation")
+        impulse, _ = seek_audio(root, row, end - start)
+        norm = float(np.sqrt(np.sum(impulse ** 2)))
+        if norm <= 1e-8:
+            raise ValueError("Silent evaluation RIR")
+        # Earliest -40dB onset is an energy heuristic, not an invented measured
+        # propagation distance. Provider direct-path timing may override it.
+        onset = float(row.get("direct_path_s", np.flatnonzero(np.abs(impulse) >= np.max(np.abs(impulse)) * .01)[0] / 16000))
+        if not math.isfinite(onset) or not 0 <= onset < len(impulse) / 16000:
+            raise ValueError("Invalid evaluation RIR direct-path offset")
+        cache[key] = (impulse / norm, norm, onset)
+    impulse, norm, onset = cache[key]
+    wet = fftconvolve(speech, impulse, mode="full")
+    shifted_calls = [{**call, "start_s": call["start_s"] + onset,
+                      "end_s": call["end_s"] + onset} for call in calls]
+    mask = active_speech_mask(wet, shifted_calls[0]["start_s"], shifted_calls[0]["end_s"])
+    return wet, mask, shifted_calls, {"rir_l2_norm": norm, "rir_direct_path_s": onset,
+        "rir_direct_path_basis": "provider" if "direct_path_s" in row else "earliest_minus40dB_energy_onset",
+        "rir_frames": len(impulse), "rir_tail_truncated": False}
 
 
 def _noise_type(row):
@@ -197,7 +309,7 @@ def _coverage(pools, selections, entries, recipe, manifest):
     conditions = Counter((r["category"], str(r.get("snr_db"))) for r in entries)
     result = {"kind": "paired_noise_coverage_v1", "recipe": recipe,
               "manifest": {"path": str(manifest), "sha256": digest(manifest)},
-              "originals_used": sum(r["category"] == "clean" for r in entries),
+              "originals_used": sum(r["category"] == "clean" and not r.get("rir_applied") for r in entries),
               "condition_counts": [{"category": c, "snr_db": None if s == "None" else float(s), "samples": n}
                                    for (c, s), n in sorted(conditions.items())], "categories": {},
               "scope": "Held-out declared source/type coverage, not proof of real-population performance or independent acoustic diversity",
@@ -226,7 +338,7 @@ def _coverage(pools, selections, entries, recipe, manifest):
 
 
 @project_storage
-def prepare_evaluation(project, output, split="validation", originals=100, noise_sections=5, snrs=(20, 15, 10, 5, 0), noise_selection="legacy"):
+def prepare_evaluation(project, output, split="validation", originals=100, noise_sections=5, snrs=(20, 15, 10, 5, 0), noise_selection="legacy", reverb_originals=0):
     root, config = load_project(project)
     if type(originals) is not int or originals < 1 or type(noise_sections) is not int or noise_sections < 1 or not snrs or any(not math.isfinite(s) for s in snrs):
         raise ValueError("Declare positive counts and finite SNR conditions")
@@ -252,7 +364,9 @@ def prepare_evaluation(project, output, split="validation", originals=100, noise
         final_audit = audit_independent_final(project)
         if not final_audit["passed"]:
             raise ValueError("Independent Final source audit failed: " + str(final_audit["errors"][:3]))
-    recipe = evaluation_recipe(project, split, originals, noise_sections, snrs, noise_selection)
+    if type(reverb_originals) is not int or not 0 <= reverb_originals <= min(originals, len(positives)):
+        raise ValueError("Reverberation subset must fit the selected original calls")
+    recipe = evaluation_recipe(project, split, originals, noise_sections, snrs, noise_selection, reverb_originals)
     pools = _balanced_pool(noises) if noise_selection == "balanced_sources" else None
     selection_order = {}
     if pools is not None:
@@ -260,12 +374,15 @@ def prepare_evaluation(project, output, split="validation", originals=100, noise
         # Keep playback order stable while avoiding a periodic correlation
         # between synthetic voice/style slots and background-type cycles.
         selection_order = _assignment_order(positives[:originals], config["augmentation"]["seed"])
+    chosen_reverb = reverb_subset(positives[:originals], reverb_originals, config["augmentation"]["seed"])
+    reverb_order = {row["sample_id"]: index for index, row in enumerate(chosen_reverb)}
+    reverb_pools = _reverb_pool(root, read_rows(resolved(root, config["manifests"]["rir_" + split])), split) if reverb_originals else None
     output = Path(output).resolve()
     if output.exists() and any(output.iterdir()):
         raise ValueError("Evaluation audio versions are immutable")
     (output / "audio").mkdir(parents=True, exist_ok=True)
     write_json(output / "recipe.json", recipe)
-    entries, selections, peak_cache = [], [], {}
+    entries, selections, peak_cache, rir_cache, rir_selections = [], [], {}, {}, []
     for order, row in enumerate(positives[:originals]):
         source, _ = seek_audio(root, {**row, "start_s": row["call_start_s"], "end_s": row["call_end_s"]}, row["call_end_s"] - row["call_start_s"])
         # An explicit, recorded test construction gain; the same WAV is listened to and scored.
@@ -311,7 +428,7 @@ def prepare_evaluation(project, output, split="validation", originals=100, noise
                     samples = samples[:len(speech)]
                 for snr in snrs:
                     scaled = samples * noise_scale(speech, samples, mask, snr)
-                    variants.append((category, section, snr, noise, offset, scaled, source_group, construction))
+                    variants.append((category, section, snr, noise, offset, scaled, source_group, construction, samples))
         headroom = common_headroom_gain(speech, [v[5] for v in variants])
         if rms(speech * headroom, mask) < 10 ** (-35 / 20):
             if pools is not None:
@@ -327,7 +444,7 @@ def prepare_evaluation(project, output, split="validation", originals=100, noise
         entries.append({**common, "sample_id": f"original_{order+1:04d}_clean", "category": "clean", "snr_db": None,
             "path": str(base), "sha256": digest(base), "common_headroom_gain": headroom,
             "component_source_ids": [source_key(row)], "components": [call_lineage]})
-        for category, section, snr, noise, offset, scaled, source_group, construction in variants:
+        for category, section, snr, noise, offset, scaled, source_group, construction, _ in variants:
             name = f"original_{order+1:04d}_{category}_section{section+1}_snr{snr}"
             path = output / "audio" / (name + ".wav")
             sf.write(path, pcm16((speech + scaled) * headroom), 16000, subtype="PCM_16")
@@ -340,6 +457,51 @@ def prepare_evaluation(project, output, split="validation", originals=100, noise
                 entries[-1].update(noise_eval_type=source_group["eval_type"], noise_eval_label=noise.get("eval_type_label"),
                                    noise_source_group_id=source_group["id"],
                                    noise_selection_policy=recipe["noise_selection"], noise_construction=construction)
+        if row["sample_id"] in reverb_order:
+            for group in ("moderate", "strong"):
+                rir = _reverb_choice(reverb_pools, group, reverb_order[row["sample_id"]], config["augmentation"]["seed"])
+                wet, wet_mask, calls, details = _reverberated_call(root, speech, rir, common["calls"], rir_cache)
+                wet_variants = []
+                for category, section, snr, noise, offset, _, source_group, construction, samples in variants:
+                    # Exactly the dry recording/window is reused; the full RIR
+                    # tail extends the WAV with explicit silence in its background.
+                    raw = np.pad(samples, (0, len(wet) - len(samples)))
+                    scaled = raw * noise_scale(wet, raw, wet_mask, snr)
+                    wet_variants.append((category, section, snr, noise, offset, scaled, source_group, construction))
+                wet_headroom = common_headroom_gain(wet, [variant[5] for variant in wet_variants])
+                if rms(wet * wet_headroom, wet_mask) < 10 ** (-35 / 20):
+                    raise ValueError("Reverberant call becomes quieter than -35 dB RMS; do not drop the RIR or change SNR")
+                common_wet = {**common, "calls": calls, "rir_applied": True, "reverb_condition": group,
+                    "rir_source_id": source_key(rir), "rir_sha256": rir["sha256"],
+                    "canonical_room_id": rir["canonical_room_id"], "rt60_s": rir["rt60_s"],
+                    "rir_acoustic_source_type": rir.get("acoustic_source_type", "unspecified"),
+                    "snr_basis": "reverberated_call_active_region", **details}
+                rir_lineage = component_lineage(rir, "rir")
+                name = f"original_{order+1:04d}_reverb_{group}_clean"
+                path = output / "audio" / (name + ".wav")
+                sf.write(path, pcm16(wet * wet_headroom), 16000, subtype="PCM_16")
+                entries.append({**common_wet, "sample_id": name, "category": "clean", "snr_db": None,
+                    "path": str(path), "sha256": digest(path), "common_headroom_gain": wet_headroom,
+                    "component_source_ids": [source_key(row), source_key(rir)], "components": [call_lineage, rir_lineage]})
+                for category, section, snr, noise, offset, scaled, source_group, construction in wet_variants:
+                    name = f"original_{order+1:04d}_reverb_{group}_{category}_section{section+1}_snr{snr}"
+                    path = output / "audio" / (name + ".wav")
+                    sf.write(path, pcm16((wet + scaled) * wet_headroom), 16000, subtype="PCM_16")
+                    entry = {**common_wet, "sample_id": name, "category": category, "snr_db": snr,
+                        "noise_section": section + 1, "noise_source_id": source_key(noise), "noise_offset_s": offset,
+                        "measured_snr_db": measured_snr(wet, scaled, wet_mask), "common_headroom_gain": wet_headroom,
+                        "background_right_padding_samples": len(wet) - len(speech),
+                        "path": str(path), "sha256": digest(path),
+                        "component_source_ids": [source_key(row), source_key(noise), source_key(rir)],
+                        "components": [call_lineage, component_lineage(noise, "background"), rir_lineage]}
+                    if source_group is not None:
+                        entry.update(noise_eval_type=source_group["eval_type"], noise_eval_label=noise.get("eval_type_label"),
+                            noise_source_group_id=source_group["id"], noise_selection_policy=recipe["noise_selection"],
+                            noise_construction=construction)
+                    entries.append(entry)
+                rir_selections.append({"original_id": row["sample_id"], "group": group,
+                    "source_id": source_key(rir), "sha256": rir["sha256"], "room_id": rir["canonical_room_id"],
+                    "acoustic_source_type": rir.get("acoustic_source_type", "unspecified"), "rt60_s": rir["rt60_s"]})
     manifest = output / "manifest.jsonl"
     manifest.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in entries), encoding="utf-8")
     result = {"originals": min(originals, len(positives)), "audio_files": len(entries), "manifest": str(manifest),
@@ -347,7 +509,17 @@ def prepare_evaluation(project, output, split="validation", originals=100, noise
               "noise_selection_policy": recipe["noise_selection"],
               "next": "Combine these positive entries with intact held-out Negative recordings and evaluate the exact WAVs."}
     if pools is not None:
-        write_json(output / "noise_coverage.json", _coverage(pools, selections, entries, recipe, manifest))
+        coverage = _coverage(pools, selections, entries, recipe, manifest)
+        if reverb_originals:
+            coverage["reverberation"] = {"originals": reverb_originals,
+                "selected_original_ids": [r["sample_id"] for r in chosen_reverb],
+                "voice_family_counts": dict(Counter(r["voice_family_id"] for r in chosen_reverb)),
+                "used_rir_sources": len({r["sha256"] for r in rir_selections}),
+                "used_rooms": len({r["room_id"] for r in rir_selections}), "selections": rir_selections,
+                "available_rir_sources": sum(len(rows) for rooms in reverb_pools.values() for rows in rooms.values()),
+                "available_rooms": len({room for rooms in reverb_pools.values() for room in rooms}),
+                "scope": "Declared provider rooms, including explicitly marked simulated rooms; source counts are not measured real-space counts"}
+        write_json(output / "noise_coverage.json", coverage)
         result["noise_coverage"] = {"path": str(output / "noise_coverage.json"), "sha256": digest(output / "noise_coverage.json")}
     if final_audit is not None:
         write_json(output / "independent_source_audit.json", final_audit)

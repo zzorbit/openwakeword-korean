@@ -5,15 +5,42 @@ Final has one frozen gate and never grants tuning authority.
 """
 from collections import defaultdict
 from pathlib import Path
+import time
 import numpy as np
 import soundfile as sf
 
-from .common import bound_file, digest, now, read_json, read_rows, resolved, write_json, writer_lock, require_final_lock
+from .common import bound_file, digest, identity, now, read_json, read_rows, resolved, write_json, writer_lock, require_final_lock
 from .data import CATEGORIES, audit_project, source_key
-from .events import EventDetector, PositiveTracker, positive_statistics, poisson_rate_interval
+from .events import positive_statistics, poisson_rate_interval
 from .project import load_project
 from .runtime import WakeWordDetector, verify_bundle, bundle_candidates, deployment_candidate
 from .storage import project_storage
+from .evaluation_workers import EvaluationJournal, score_sessions, worker_plan
+
+
+def reverb_condition(row):
+    """Missing metadata is the historical unmodified/dry condition."""
+    return row.get("reverb_condition") or "none"
+
+
+def _score_drop_statistics(values):
+    values = [value for value in values if value is not None]
+    return {"samples": len(values), "mean": float(np.mean(values)) if values else None,
+            "minimum": min(values) if values else None, "maximum": max(values) if values else None}
+
+
+def annotate_clean_score_drops(clips):
+    """Compare noise against the same room and reverb against original dry audio."""
+    clean_by_original = {(row.get("original_id", row["sample_id"]), reverb_condition(row)): row
+                         for row in clips if row["category"] == "clean"}
+    for row in clips:
+        original_id = row.get("original_id", row["sample_id"])
+        clean = clean_by_original.get((original_id, reverb_condition(row)))
+        dry_clean = clean_by_original.get((original_id, "none"))
+        for key, value in row["results"].items():
+            value["clean_score_drop"] = clean["results"][key]["max_score"] - value["max_score"] if clean else None
+            value["dry_clean_score_drop"] = dry_clean["results"][key]["max_score"] - value["max_score"] if dry_clean else None
+    return clips
 
 
 def summarize(clip_rows, config, candidates=None):
@@ -26,11 +53,12 @@ def summarize(clip_rows, config, candidates=None):
             if row["kind"] == "positive":
                 for call in result["calls"]:
                     positives.append(call)
-                    cells[(row["category"], row.get("snr_db"))].append(call)
+                    if reverb_condition(row) == "none":
+                        cells[(row["category"], row.get("snr_db"))].append(call)
             else:
                 negatives.append((row, result))
         primary = [c for row in clip_rows if row["kind"] == "positive" and (row["category"] == "clean" or row.get("snr_db") in (20, 15, 10, 5)) for c in row["results"][model_id]["calls"]]
-        clean = [c for row in clip_rows if row["category"] == "clean" and row["kind"] == "positive" for c in row["results"][model_id]["calls"]]
+        clean = [c for row in clip_rows if row["category"] == "clean" and row["kind"] == "positive" and reverb_condition(row) == "none" for c in row["results"][model_id]["calls"]]
         grouped = {f"{cat}:{snr}": positive_statistics(calls) for (cat, snr), calls in cells.items()}
         noise_recalls = [v["recall"] for k, v in grouped.items() if k.split(":")[0] in CATEGORIES and k.split(":")[1] in ("20", "15", "10", "5", "20.0", "15.0", "10.0", "5.0")]
         fa = sum(r["false_activations"] for _, r in negatives)
@@ -45,6 +73,31 @@ def summarize(clip_rows, config, candidates=None):
             "noise_cells_measured": len(noise_recalls), "conditions": grouped,
             "negative": poisson_rate_interval(fa, hours), "negative_by_category": by_negative})
         summary = summaries[-1]
+        summary["reverb_conditions"] = {}
+        for condition in sorted({reverb_condition(row) for row in clip_rows if row["kind"] == "positive"}):
+            selected_rows = [row for row in clip_rows if row["kind"] == "positive" and reverb_condition(row) == condition]
+            selected_calls = [call for row in selected_rows for call in row["results"][model_id]["calls"]]
+            condition_cells = defaultdict(list)
+            for row in selected_rows:
+                condition_cells[(row["category"], row.get("snr_db"))].extend(row["results"][model_id]["calls"])
+            condition_statistics = {f"{cat}:{snr}": positive_statistics(calls)
+                                    for (cat, snr), calls in condition_cells.items()}
+            noise_statistics = [stats["recall"] for (cat, snr), calls in condition_cells.items()
+                                if cat in CATEGORIES and snr in (20, 15, 10, 5)
+                                for stats in [condition_statistics[f"{cat}:{snr}"]]]
+            summary["reverb_conditions"][condition] = {
+                "all_positive": positive_statistics(selected_calls),
+                "clean": positive_statistics([call for row in selected_rows if row["category"] == "clean"
+                                              for call in row["results"][model_id]["calls"]]),
+                "conditions": condition_statistics,
+                "noise_cell_mean": float(np.mean(noise_statistics)) if noise_statistics else None,
+                "noise_cells_measured": len(noise_statistics),
+                "noise_score_drop_from_same_reverb_clean": _score_drop_statistics(
+                    [row["results"][model_id].get("clean_score_drop") for row in selected_rows if row["category"] != "clean"]),
+                "clean_score_drop_from_dry_clean": _score_drop_statistics(
+                    [row["results"][model_id].get("dry_clean_score_drop") for row in selected_rows if row["category"] == "clean"])}
+        summary["positive_by_reverb_condition"] = {condition: value["all_positive"]
+                                                   for condition, value in summary["reverb_conditions"].items()}
         summary["positive_by_provenance"] = {p: positive_statistics([c for c in positives if c["provenance"] == p]) for p in sorted({c["provenance"] for c in positives})}
         human = [c for c in positives if c["provenance"] == "human"]
         for dimension in ("speaker_id", "category", "distance_m", "direction", "microphone"):
@@ -91,8 +144,23 @@ def candidate_adoptions(summaries, config):
     return {row["id"]: adoption(summaries, config, row["id"]) for row in summaries}
 
 
+def evaluation_binding(project, bundle, manifest, stage="development", candidate=None, smoke=False):
+    """Identity for resumable work; scoring still verifies all actual inputs.
+
+    Reading this identity does not certify WAVs, model assets or a checkpoint.
+    The evaluate entry point performs those checks before reusing any score.
+    """
+    directory = Path(bundle).resolve()
+    package = read_json(directory / "manifest.json")
+    model_ids = [row["id"] for row in bundle_candidates(package)]
+    candidate = deployment_candidate(package)["id"] if candidate is None else candidate
+    return identity({"project_sha256": digest(project), "bundle_sha256": digest(directory / "manifest.json"),
+                     "manifest_sha256": digest(manifest), "stage": stage, "candidate": candidate,
+                     "smoke": smoke, "model_ids": model_ids, "scoring_protocol": "reference_cpu_session_v1"})
+
+
 @project_storage
-def evaluate(project, bundle, output, stage="development", manifest=None, smoke=False, candidate=None):
+def evaluate(project, bundle, output, stage="development", manifest=None, smoke=False, candidate=None, workers="auto", resume=False):
     root, config = load_project(project)
     directory = Path(bundle).resolve()
     package = verify_bundle(directory)
@@ -133,6 +201,7 @@ def evaluate(project, bundle, output, stage="development", manifest=None, smoke=
                    for c in r.get("components", []) if isinstance(c, dict))) for r in sources):
         raise ValueError("Actual human call recordings are Final-only; do not select models/runtime with them")
     negative_sources, negative_hashes = set(), set()
+    paths, offsets = [], [0]
     for row in sources:
         if row["split"] != ("validation" if stage == "development" else "final"):
             raise ValueError("Evaluation stage/split mismatch")
@@ -147,81 +216,47 @@ def evaluate(project, bundle, output, stage="development", manifest=None, smoke=
             if key in negative_sources or row["sha256"] in negative_hashes:
                 raise ValueError("Repeated Negative originals cannot inflate independent evaluation hours")
             negative_sources.add(key); negative_hashes.add(row["sha256"])
-        bound_file(root, row)
+        path = bound_file(root, row)
+        info = sf.info(path)
+        if info.samplerate != 16000 or info.channels != 1 or info.subtype != "PCM_16":
+            raise ValueError("Scored WAV must already be mono16kHz PCM16; no playback-only gain")
+        paths.append(path)
+        offsets.append(offsets[-1] + info.frames // 1280)
     output = Path(output).resolve()
     if output.exists() and any(output.iterdir()):
-        raise ValueError("Evaluation outputs are immutable; choose a new directory")
-    predictor = WakeWordDetector(directory)
+        if not resume or (output / "receipt.json").exists():
+            raise ValueError("Evaluation outputs are immutable; choose a new directory (or resume an incomplete run explicitly)")
+    elif resume:
+        raise ValueError("No resumable evaluation checkpoint; choose a new output directory")
     runtime = package["runtime"]
     model_ids = [row["id"] for row in candidates]
-    clips, cached_scores, offsets = [], [], [0]
+    execution = worker_plan(workers, len(sources))
+    binding = evaluation_binding(project, directory, manifest, stage, candidate, smoke)
+    started = time.perf_counter()
     with writer_lock(output):
-        for index, row in enumerate(sources):
-            path = bound_file(root, row)
-            predictor.reset()
-            gates = {k: EventDetector(runtime["threshold"], runtime["consecutive_frames"], runtime["cooldown_s"]) for k in model_ids}
-            session = {"session_id": row["sample_id"], "source_id": source_key(row), "calls": row.get("calls", []),
-                "provenance": row.get("provenance", "qwen_tts" if row["kind"] == "positive" else "public_dataset"),
-                "voice_family_id": row.get("voice_family_id"), "category": row["category"], "speaker_id": row.get("speaker_id")}
-            session.update({key: row[key] for key in ("distance_m", "direction", "microphone") if key in row})
-            for call_index, call in enumerate(session["calls"]):
-                call.setdefault("call_id", row["sample_id"] + f":call{call_index}")
-                call.setdefault("original_utterance_id", row.get("original_id", row["sample_id"]))
-            trackers = {k: PositiveTracker(session, runtime["call_postroll_s"]) for k in model_ids}
-            events = {k: [] for k in model_ids}
-            max_scores = dict.fromkeys(model_ids, 0.0)
-            frames = 0
-            frame_scores = []
-            with sf.SoundFile(path) as audio:
-                if audio.samplerate != 16000 or audio.channels != 1 or audio.subtype != "PCM_16":
-                    raise ValueError("Scored WAV must already be mono16kHz PCM16; no playback-only gain")
-                for call in session["calls"]:
-                    if not 0 <= call["start_s"] < call["end_s"] <= audio.frames / 16000:
-                        raise ValueError("Call boundary exceeds evaluation file")
-                    if call["start_s"] < runtime["warmup_s"]:
-                        raise ValueError("Positive call starts during excluded warmup; fix the test audio")
-                while True:
-                    samples = audio.read(1280, dtype="int16")
-                    if len(samples) < 1280:
-                        break
-                    scores = predictor.score_members(samples)
-                    if len(scores) == 3:
-                        scores = np.r_[scores, np.float32((np.float64(scores[0]) + np.float64(scores[1]) + np.float64(scores[2])) / 3)]
-                    frame_scores.append(scores)
-                    timestamp = (frames + 1) * .08
-                    eligible = frames * .08 + 1e-9 >= runtime["warmup_s"]
-                    for key, score in zip(model_ids, scores):
-                        decision = gates[key].update(float(score), timestamp, eligible)
-                        max_scores[key] = max(max_scores[key], float(score))
-                        if decision["event"]:
-                            events[key].append(timestamp)
-                        if eligible and row["kind"] == "positive":
-                            trackers[key].update(timestamp, float(score), decision)
-                    frames += 1
-            results = {}
-            for key in model_ids:
-                calls = trackers[key].rows
-                results[key] = {"calls": calls, "success": all(c["success"] for c in calls) if calls else None,
-                    "events_s": events[key], "false_activations": len(events[key]) if row["kind"] == "negative" else trackers[key].outside_call_events,
-                    "max_score": max((c["max_wake_score"] or 0 for c in calls), default=max_scores[key]),
-                    "latency_s": calls[0]["latency_s"] if len(calls) == 1 else None,
-                    "activity": gates[key].activity_statistics()}
-            clips.append({**row, "path": str(path), "duration_s": frames * .08,
-                "eligible_seconds": max(0, frames * .08 - runtime["warmup_s"]), "results": results})
-            cached_scores.append(np.asarray(frame_scores, dtype=np.float32).reshape(-1, len(model_ids)))
-            offsets.append(offsets[-1] + frames)
-            print(f"Evaluate {stage}: {index+1}/{len(sources)}", flush=True)
-        clean_by_original = {r.get("original_id", r["sample_id"]): r for r in clips if r["category"] == "clean"}
-        for row in clips:
-            clean = clean_by_original.get(row.get("original_id", row["sample_id"]))
-            for key, value in row["results"].items():
-                value["clean_score_drop"] = clean["results"][key]["max_score"] - value["max_score"] if clean else None
+        journal = EvaluationJournal(output, binding, offsets, model_ids, resume=resume)
+        try:
+            execution["resumed_sessions"] = journal.resumed_sessions
+            items = ((index, sources[index], paths[index]) for index in range(journal.resumed_sessions, len(sources)))
+            for index, clip, scores in score_sessions(directory, model_ids, items, execution["workers"],
+                                                       detector_factory=WakeWordDetector):
+                journal.add(index, clip, scores)
+                if index < 9 or (index + 1) % 100 == 0 or index + 1 == len(sources):
+                    print(f"Evaluate {stage}: {index + 1}/{len(sources)} (CPU workers={execution['workers']})", flush=True)
+            journal.publish_scores()
+            clips = journal.clips
+        finally:
+            journal.close()
+        execution["scoring_and_cache_seconds"] = time.perf_counter() - started
+        execution["frame_scores_storage"] = "project-owned disk memmap; ordered resumable checkpoints every 32 sessions"
+        annotate_clean_score_drops(clips)
         summaries = summarize(clips, config, candidates)
         report = {"schema_version": 1, "wakeword": config["wakeword"], "stage": stage, "created_at": now(),
             "smoke_test_only": smoke or any(m.get("smoke_test_only") for m in package["members"]),
             "bundle_manifest_sha256": digest(directory / "manifest.json"), "manifest_sha256": digest(manifest),
             "evaluation_manifest": {"path": str(manifest), "sha256": digest(manifest)},
-            "runtime": runtime, "sessions": len(clips), "models": summaries,
+            "evaluation_binding": binding,
+            "runtime": runtime, "sessions": len(clips), "models": summaries, "execution": execution,
             "candidate_definitions": candidates, "selected_candidate": candidate,
             "deployment_candidate": deployed, "candidate_adoptions": candidate_adoptions(summaries, config),
             "adoption": adoption(summaries, config, candidate),
@@ -236,10 +271,10 @@ def evaluate(project, bundle, output, stage="development", manifest=None, smoke=
             report["final_negative_duration_passed"] = all(s["negative"]["hours"] >= 100 for s in summaries)
             report["real_human_calls_present"] = any(r.get("provenance") == "human" for r in clips)
             report["real_population_verified"] = False
-        np.savez_compressed(output / "scores.npz", scores=np.concatenate(cached_scores), offsets=np.asarray(offsets, dtype=np.int64), model_ids=np.asarray(model_ids))
         report["score_cache_sha256"] = digest(output / "scores.npz")
-        write_json(output / "clips.json", clips)
+        journal.publish_clips()
         write_json(output / "report.json", report)
         write_json(output / "receipt.json", {"report_sha256": digest(output / "report.json"),
             "clips_sha256": digest(output / "clips.json"), "bundle_sha256": digest(directory / "manifest.json"), "completed_at": now()})
+        journal.discard_completed_work()
     return report

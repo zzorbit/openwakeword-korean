@@ -49,7 +49,7 @@ def test_presets_are_explicit_not_changes_to_global_defaults(name, counts):
 def test_common_evaluation_is_identical_for_all_training_budgets_and_cannot_drift():
     settings = [steps.preset_settings(name) for name in ("check", "trial", "production")]
     assert all(s["evaluation_policy"] == steps.common_evaluation_policy() for s in settings)
-    assert all((s["validation_references"], s["validation_originals"], s["noise_sections"]) == (10, 5000, 1) for s in settings)
+    assert all((s["validation_references"], s["validation_originals"], s["noise_sections"]) == (30, 5000, 1) for s in settings)
     assert settings[0]["originals"] == 1000 and settings[-1]["originals"] == 100000
     changed = settings[0]
     changed["validation_originals"] = 100
@@ -195,13 +195,13 @@ def test_references_are_combined_once_and_require_actual_saved_answers(project, 
     monkeypatch.setattr(tts, "generate_references", generate)
     monkeypatch.setattr(tts, "_load_model", load)
     result = run(project, "references")
-    assert calls == [("train", 4), ("validation", 10)]
+    assert calls == [("train", 4), ("validation", 30)]
     assert len(loads) == 1
-    assert result["result"]["generated"] == 14
+    assert result["result"]["generated"] == 34
     queue = Path(result["result"]["queue"])
     assert queue.parent == project.parent / ".studio"
     pending = run(project, "references_review")
-    assert pending["state"] == "waiting_review" and pending["reviews"][0]["count"] == 14
+    assert pending["state"] == "waiting_review" and pending["reviews"][0]["count"] == 34
     assert read_json(project.parent / "approval.json")["generation_policy_approved"] is False
     approve(project, queue, "references")
     assert run(project, "references_review")["state"] == "completed"
@@ -346,6 +346,8 @@ def test_old_completed_output_with_different_recipe_is_retained_as_separate_vers
 @pytest.mark.parametrize("preset", ["check", "trial", "production"])
 def test_studio_development_selects_balanced_policy_and_preserves_old_pair_outputs(project, monkeypatch, preset):
     from korean_openwakeword import paired
+    from korean_openwakeword import evaluation_materials
+    monkeypatch.setattr(evaluation_materials, "evaluation_material_coverage", lambda rows: {"target_met": True, "shortages": []})
     settings = steps.preset_settings(preset)
     project = create_project(project.parent.parent / preset, "보라야", "bora", positive_originals=settings["originals"],
                              augmentation_rounds=settings["rounds"], updates=settings["updates"],

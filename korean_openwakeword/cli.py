@@ -62,6 +62,8 @@ def parser():
     a.add_argument("--no-browser", action="store_true", help="브라우저를 자동으로 열지 않음")
     a = sub.add_parser("init", help="새 한국어 호출어 프로젝트")
     a.add_argument("--wakeword", required=True); a.add_argument("--id", required=True); a.add_argument("--output", type=Path, required=True)
+    a.add_argument("--validation-voices", type=int, choices=(10, 30), default=10,
+                   help="평가용 합성 음색 계열 수; 새 웹 공통 평가와 맞추려면 30")
     setup_arguments(a)
     a = sub.add_parser("configure", help="기존 설정을 보존하고 별도 작업량·세부 설정 snapshot 작성")
     a.add_argument("--project", type=Path, required=True); a.add_argument("--output", type=Path, required=True)
@@ -167,6 +169,7 @@ def parser():
     a.add_argument("--project", type=Path, required=True); a.add_argument("--output", type=Path, required=True)
     a.add_argument("--split", choices=("validation", "final"), default="validation"); a.add_argument("--originals", type=int, default=100)
     a.add_argument("--noise-sections", type=int, default=5)
+    a.add_argument("--reverb-originals", type=int, default=0, help="잔향 추가 시험에 사용할 고정 원본 수; 625이면 5,000개 기준 총 10만 회")
     a.add_argument("--noise-selection", choices=("legacy", "balanced_sources"), default="legacy",
                    help="legacy: 기존 원본 선택 / balanced_sources: 소음 세부 종류와 원본 균형 선택")
     a = sub.add_parser("evaluate", help="동일 WAV의 단일·평균 모델 평가")
@@ -174,6 +177,8 @@ def parser():
     a.add_argument("--manifest", type=Path); a.add_argument("--stage", choices=("development", "final"), default="development")
     a.add_argument("--output", type=Path, required=True); a.add_argument("--smoke", action="store_true")
     a.add_argument("--candidate", help="채택 판정을 확인할 모델 ID; 생략하면 현재 bundle의 실제 출력")
+    a.add_argument("--workers", choices=("auto", "1", "2", "4"), default="auto", help="독립 음원 단위 CPU 병렬 평가")
+    a.add_argument("--resume", action="store_true", help="입력 해시가 같은 중단된 평가만 재개")
     a = sub.add_parser("select-candidate", help="저장된 개발 평가로 단일/앙상블 실행 묶음 선택")
     a.add_argument("--project", type=Path, required=True); a.add_argument("--bundle", type=Path, required=True)
     a.add_argument("--evaluation", type=Path, required=True); a.add_argument("--output", type=Path, required=True)
@@ -213,7 +218,8 @@ def dispatch(a):
         return describe_storage(a.project)
     if a.command == "init":
         choices = selected_choices(a, default_profile())
-        project = create_project(a.output, a.wakeword, a.id, **choices)
+        project = create_project(a.output, a.wakeword, a.id, **choices,
+                                 validation_voice_families=a.validation_voices)
         return {"project": str(project), "workload": workload_summary(load_project(project)[1]),
                 "next": "참조·파일럿·자료 준비 후 train 실행; init은 학습을 시작하지 않습니다."}
     if a.command == "configure":
@@ -349,10 +355,11 @@ def dispatch(a):
     if a.command == "prepare-eval":
         from .paired import prepare_evaluation
         return prepare_evaluation(a.project, a.output, a.split, a.originals, a.noise_sections,
-                                  noise_selection=a.noise_selection)
+                                  noise_selection=a.noise_selection, reverb_originals=a.reverb_originals)
     if a.command == "evaluate":
         from .evaluate import evaluate
-        return evaluate(a.project, a.bundle, a.output, a.stage, a.manifest, a.smoke, a.candidate)
+        return evaluate(a.project, a.bundle, a.output, a.stage, a.manifest, a.smoke, a.candidate,
+                        workers=a.workers, resume=a.resume)
     if a.command == "select-candidate":
         from .selection import select_candidate
         return select_candidate(a.project, a.bundle, a.evaluation, a.output, a.candidate)

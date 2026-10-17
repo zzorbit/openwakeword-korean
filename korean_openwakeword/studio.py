@@ -187,7 +187,7 @@ class StudioManager:
         presets = []
         for key, label in (("check", "동작 확인용"), ("trial", "시험 모델용"), ("production", "상용 모델용")):
             settings = preset_settings(key)
-            recipe = material_recipe(key)
+            recipe = material_recipe(key, evaluation_policy=settings["evaluation_policy"])
             presets.append({**settings, **recipe, "id": key, "label": label})
         return {"presets": presets, "default_directory": str(self.workspace / "projects"),
                 "storage_note": "선택한 작업 폴더에 자료·모델·캐시를 저장합니다. 공개 자료와 Qwen 모델의 첫 다운로드는 별도 용량이 필요합니다."}
@@ -233,11 +233,20 @@ class StudioManager:
                 if _lock_paths(target):
                     raise ValueError("기존 작업의 잠금이 있습니다. 실행 상태를 확인한 뒤 연결하세요.")
                 settings.update(generic_hours=config["targets"]["generic_hours"], korean_hours=config["targets"]["korean_hours"])
+                bank = read_json(target / "voices.json")
+                if sum(f["split"] == "validation" for f in bank["families"]) < settings["validation_references"]:
+                    # Reusing an existing project does not rewrite its voice bank
+                    # or pretend that the expanded protocol has been prepared.
+                    from .studio_steps import common_evaluation_policy
+                    policy = common_evaluation_policy(1)
+                    settings.update(evaluation_policy=policy,
+                                    **{k: policy[k] for k in ("validation_references", "validation_originals", "noise_sections")})
             else:
                 create_project(target, word, "word_" + project_id,
                                positive_originals=settings["originals"], augmentation_rounds=settings["rounds"],
                                updates=settings["updates"], generic_hours=settings["generic_hours"],
-                               korean_hours=settings["korean_hours"])
+                               korean_hours=settings["korean_hours"],
+                               validation_voice_families=settings["validation_references"])
             state = {"schema_version": 1, "id": project_id, "workspace": str(self.workspace),
                      "storage_workspace": str(self.workspace if target.is_relative_to(self.workspace) else target),
                      "project": str(project), "wakeword": word, "preset": preset, "settings": settings,
@@ -677,6 +686,16 @@ class StudioManager:
                 if seconds >= 10 and delta > 0:
                     view["eta_seconds"] = max(0, (current["total"] - current["done"]) * seconds / delta)
         reviews = self.review_descriptors(state)
+        material_results = state.get("results", {})
+        downloaded = material_results.get("data_download", {})
+        downloaded = downloaded.get("result", downloaded)
+        connected = material_results.get("data_connect", {})
+        connected = connected.get("result", connected)
+        candidate_coverage = downloaded.get("evaluation_material_coverage")
+        admitted_coverage = connected.get("evaluation_material_coverage")
+        if candidate_coverage or admitted_coverage:
+            view["evaluation_materials"] = {"candidate": candidate_coverage, "admitted": admitted_coverage,
+                "scope": "원본 고유 시간 · 다운로드/기술 검사와 대표 검수 승인은 별도 · 실제 채점 시간은 결과에서 확인"}
         if reviews:
             r = reviews[0]
             view["review"] = {"queue_id": r["id"], "title": r.get("title", "음원 확인"),
@@ -701,8 +720,9 @@ class StudioManager:
             scope += " 독립 최종 평가는 아직 완료하지 않았습니다."
             if observed is not None:
                 scope += f" 비호출 실측 {observed:.2f}시간"
-                if observed < 20:
-                    scope += " · 계획의 20시간 이상 장시간 오호출 검증은 미완료입니다."
+                minimum = (state.get("settings", {}).get("evaluation_policy") or {}).get("development_negative_target_hours", [20])[0]
+                if observed < minimum:
+                    scope += f" · 계획의 {minimum}시간 이상 장시간 오호출 검증은 미완료입니다."
                 else:
                     scope += "."
             view["results"] = {"url": f"/results/{state['id']}/", "mic_url": f"/mic/{state['id']}/",

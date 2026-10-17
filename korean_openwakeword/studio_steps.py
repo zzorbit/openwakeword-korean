@@ -30,20 +30,33 @@ _PRESETS = {
 }
 
 
-def common_evaluation_policy():
+def common_evaluation_policy(version=2):
     """One declared Development protocol, independent of the training budget.
 
     These are test coverage targets, not a claim that background-only hours or
     independent Final evidence have already been collected. The policy is
     frozen in each new workflow; old workflows keep their recorded settings.
     """
-    return {"id": "common_development_v1", "label": "공통 성능 평가",
+    previous = {"id": "common_development_v1", "label": "공통 성능 평가",
             "validation_references": 10, "validation_originals": 5000,
             "noise_sections": 1, "snrs": [20, 15, 10, 5, 0],
             "noise_selection": "balanced_sources", "positive_sessions": 80000,
             "development_negative_target_hours": [20, 30],
             "independent_final_negative_min_hours": 100,
             "scope": "Shared across training budgets; Final remains a separate locked holdout"}
+    if version == 1:
+        return previous
+    if version != 2:
+        raise ValueError("Unsupported common evaluation policy")
+    return {**previous, "id": "common_development_v2", "validation_references": 30,
+            "positive_sessions": 100000, "dry_positive_sessions": 80000,
+            "reverb_originals": 625, "reverb_groups": ["moderate", "strong"],
+            "reverb_positive_sessions": 20000,
+            "development_negative_target_hours": [30, 30],
+            "negative_hours_by_bucket": {"korean_conversation": 10, "korean_interview": 5,
+                "korean_read": 3, "other_speech": 4, "music": 3, "environment": 4, "electronic": 1},
+            "evaluation_materials_recipe": 5, "rir_rooms": 20, "rir_files": 80,
+            "evaluation_workers": "auto"}
 
 _STAGES = (
     ("frontend", "환경 점검 · 공통 음성 처리 모델", "task"),
@@ -92,11 +105,11 @@ def _validate_settings(settings):
         raise ValueError("증강 횟수는 R1 / R3 / R5입니다.")
     if settings.get("batch", BATCH) != BATCH:
         raise ValueError("Studio baseline batch must remain 768/256/100/100")
-    if settings["train_references"] > 100 or settings["validation_references"] > 10:
-        raise ValueError("The synthetic family bank has 100 Train and 10 Validation candidates")
+    if settings["train_references"] > 100 or settings["validation_references"] > 30:
+        raise ValueError("The synthetic family bank has 100 Train and up to 30 Validation candidates")
     policy = settings.get("evaluation_policy")
     if policy is not None:
-        expected = common_evaluation_policy()
+        expected = common_evaluation_policy(1 if policy.get("id") == "common_development_v1" else 2)
         if policy != expected or any(settings.get(key) != expected[key]
                                      for key in ("validation_references", "validation_originals", "noise_sections")):
             raise ValueError("공통 평가 설정은 학습 규모와 별개로 고정됩니다. 기존 실험의 평가량을 변경하지 않습니다.")
@@ -401,7 +414,8 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         from .studio_data import prepare_materials
         def progress(record):
             write_json(workspace / "progress.json", {"stage": stage_id, "updated_at": now(), **record})
-        prepared = prepare_materials(project, selected_workspace, preset=settings["preset"], progress=progress)
+        prepared = prepare_materials(project, selected_workspace, preset=settings["preset"], progress=progress,
+                                     evaluation_policy=settings.get("evaluation_policy"))
         # Downloaded candidates and reviewed/admitted sources are distinct.
         return _completed(prepared, [q["queue"] for q in prepared.get("review_queues", [])])
 
@@ -660,6 +674,12 @@ def run_stage(project, workspace, settings, stage_id, context=None):
                          "noise_sections": settings["noise_sections"], "noise_selection": selection}
         if settings.get("evaluation_policy"):
             pair_settings["snrs"] = tuple(settings["evaluation_policy"]["snrs"])
+            if settings["evaluation_policy"].get("reverb_originals"):
+                pair_settings["reverb_originals"] = settings["evaluation_policy"]["reverb_originals"]
+                from .evaluation_materials import evaluation_material_coverage
+                material_coverage = evaluation_material_coverage(negative_rows)
+                if not material_coverage["target_met"]:
+                    raise ValueError("공통 평가 자료가 부족합니다: " + str(material_coverage["shortages"]))
         recipe = evaluation_recipe(project, **pair_settings)
         def matches(directory):
             return ((directory / "recipe.json").is_file() and read_json(directory / "recipe.json") == recipe
@@ -684,7 +704,7 @@ def run_stage(project, workspace, settings, stage_id, context=None):
                            "independent_Final_completed": False}, artifacts)
 
     if stage_id == "evaluation":
-        from .evaluate import evaluate
+        from .evaluate import evaluate, evaluation_binding
         from .selection import verified_evaluation
         bundle = _result(context, "package")["bundle"]
         manifest = _result(context, "development")["manifest"]
@@ -695,8 +715,26 @@ def run_stage(project, workspace, settings, stage_id, context=None):
             verified_evaluation(project, bundle, directory)
             report = read_json(directory / "report.json")
         else:
+            resume = False
+            base = root / "reports/studio_evaluation"
+            attempts = [base] + sorted((p for p in base.parent.glob(base.name + "_attempt*")
+                if p.name[len(base.name + "_attempt"):].isdigit()),
+                key=lambda p: int(p.name[len(base.name + "_attempt"):]))
+            partials = [p for p in attempts if not (p / "receipt.json").exists()
+                        and (p / "_evaluation_work/checkpoint.json").is_file()]
+            scoring_smoke = settings["functional_check_only"] and not settings.get("evaluation_policy")
+            if partials:
+                expected = evaluation_binding(project, bundle, manifest, smoke=scoring_smoke)
+                for partial in partials:
+                    try:
+                        checkpoint = read_json(partial / "_evaluation_work/checkpoint.json")
+                    except (OSError, ValueError):
+                        continue  # Preserve malformed/unrelated work; never claim it is reusable.
+                    if isinstance(checkpoint, dict) and checkpoint.get("schema_version") == 1 and checkpoint.get("binding") == expected:
+                        directory, resume = partial, True
+                        break
             report = evaluate(project, bundle, directory, manifest=manifest,
-                              smoke=settings["functional_check_only"] and not settings.get("evaluation_policy"))
+                              smoke=scoring_smoke, workers="auto", resume=resume)
         assessment = None
         artifacts = [directory / "receipt.json", directory / "report.json", directory / "clips.json"]
         if settings.get("evaluation_policy"):
