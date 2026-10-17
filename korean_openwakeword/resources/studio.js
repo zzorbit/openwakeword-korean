@@ -89,12 +89,19 @@
   const backgroundTypes = {
     rain: "비", wind: "바람", vacuum_cleaner: "청소기", washing_machine: "세탁기", engine: "엔진", train: "기차",
     keyboard_typing: "키보드", door_wood_knock: "문 두드림", glass_breaking: "유리 충격·파손", footsteps: "발걸음",
-    clock_alarm: "알람", clock_tick: "시계음", car_horn: "경적", siren: "사이렌", church_bells: "종소리",
-    music_instrumental_piano_drums: "피아노·드럼", music_instrumental_guitar_drums: "기타·드럼", music_singing: "보컬 멜로디", music_vocal_pad: "보컬 음악",
+    clock_alarm: "알람", clock_tick: "시계 전자·기계음", car_horn: "경적", siren: "사이렌", church_bells: "종소리",
+    music_instrumental_piano_drums: "피아노·드럼 연주", music_instrumental_guitar_drums: "기타·드럼 연주", music_singing: "보컬 멜로디", music_vocal_pad: "보컬 패드 음악",
     korean_read_speech: "한국어 낭독", korean_speech: "한국어 음성", korean_natural_conversation: "한국어 자연 대화",
     korean_conversation: "한국어 대화", korean_broadcast: "한국어 방송", korean_overlapping_speech: "겹치는 한국어 음성",
     korean_market_conversation: "시장 대화", korean_restaurant_conversation: "식당 대화", korean_subway_conversation: "지하철 대화",
-    korean_street_conversation: "거리 대화", korean_transit_announcement: "교통 안내방송"
+    korean_street_conversation: "거리 대화", korean_transit_announcement: "교통 안내방송",
+    dog: "개 짖음", cat: "고양이", chirping_birds: "새소리", crying_baby: "아기 울음",
+    sneezing: "재채기", clapping: "박수", breathing: "숨소리", coughing: "기침", laughing: "웃음", snoring: "코골이",
+    pouring_water: "물 붓기", toilet_flush: "변기 물 내림", water_drops: "물방울", can_opening: "캔 따기",
+    mouse_click: "마우스 클릭", door_wood_creaks: "문 삐걱거림", airplane: "비행기", helicopter: "헬리콥터",
+    thunderstorm: "천둥", sea_waves: "파도", music_jazz: "재즈", music_techno: "테크노", music_hiphop: "힙합",
+    music_rock_vocals: "보컬 록", music_rock: "록", music_cinematic_orchestral: "영화풍 관현악",
+    music_house: "하우스 음악", music_orchestral_loop: "관현악 루프"
   };
   function backgroundTypeNames(source) {
     const types = source.type_labels || source.eval_types || [];
@@ -167,7 +174,14 @@
       if (source.description) info.append(element("div", source.description, "source-detail"));
       if (source.type_count !== undefined || source.file_count !== undefined) info.append(element("div", [source.type_count === undefined ? "" : `종류 ${number(source.type_count)}종`, source.file_count === undefined ? "" : `음원 ${number(source.file_count)}개`].filter(Boolean).join(" · "), "source-detail"));
       const typeNames = backgroundTypeNames(source);
-      if (typeNames.length) info.append(element("div", typeNames.join(" · "), "source-detail source-types"));
+      if (typeNames.length) {
+        info.append(element("div", typeNames.slice(0, 8).join(" · ") + (typeNames.length > 8 ? ` · 외 ${number(typeNames.length - 8)}종` : ""), "source-detail source-types"));
+        if (typeNames.length > 8) {
+          const more = element("details", undefined, "source-detail");
+          more.append(element("summary", `나머지 ${number(typeNames.length - 8)}종 보기`), element("p", typeNames.slice(8).join(" · ")));
+          info.append(more);
+        }
+      }
       if (source.usage_description) info.append(element("div", source.usage_description, "source-detail"));
       const details = [source.hours === undefined ? "" : `${number(source.hours)}시간`, bytes(source.bytes ?? source.size_bytes ?? source.totalbytes ?? source.total_bytes), source.license].filter(Boolean);
       const meta = element("div", details.join(" · "), "source-meta");
@@ -192,7 +206,16 @@
     };
     const groups = [];
     if (trainingSources.length) { const group = element("section"); group.append(element("h3", "학습용 자료"), ...trainingSources.map(sourceRow)); groups.push(group); }
-    if (evaluationSources.length) { const group = element("section", undefined, "evaluation-sources"); group.append(element("h3", "성능 평가용 배경 음원"), element("p", "호출어와 섞어 소음 속 감지율을, 배경만 재생해 오호출을 확인합니다. 이 자료는 학습에 넣지 않습니다.", "hint"), ...evaluationSources.map(sourceRow), element("p", "표시된 항목은 준비 예정 자료입니다. 실제 사용한 종류·음원 수는 검수 후 평가 결과에 표시합니다. 이 단계는 개발 평가이며 Final 평가와 구분합니다.", "hint evaluation-scope")); groups.push(group); }
+    if (evaluationSources.length) {
+      const group = element("section", undefined, "evaluation-sources");
+      group.append(element("h3", "성능 평가용 배경 음원"), element("p", "호출어와 섞어 소음 속 감지율을, 배경만 재생해 오호출을 확인합니다. 이 자료는 학습에 넣지 않습니다.", "hint"), ...evaluationSources.map(sourceRow));
+      const policy = recipe.evaluation_policy;
+      if (policy?.id === "common_development_v1") {
+        group.append(element("p", `세 학습 규모 모두 같은 공통 평가를 사용합니다. 평가용 합성 음색 ${number(policy.validation_references)}개 · 호출어 ${number(policy.validation_originals)}개 · Clean 및 SNR ${policy.snrs.map(number).join("/")} dB · 총 ${number(policy.positive_sessions)}개 시험 오디오를 준비합니다. 학습용 호출어 수와 별개입니다.`, "hint common-evaluation"));
+      }
+      group.append(element("p", "표시된 항목은 준비 예정 자료입니다. 실제 사용한 종류·음원 수·비호출 평가 시간은 검수와 채점 후 표시합니다. 공통 개발 평가와 독립 Final 평가는 분리하며, Final은 학습·공통 평가에서 쓰지 않은 음원·잔향·음색으로 모델과 감지 설정 확정 후에만 진행합니다. 짧은 배경 세트만으로 장시간 오호출 검증이 완료되지는 않습니다.", "hint evaluation-scope"));
+      groups.push(group);
+    }
     replace($("source-preview"), groups);
     if (!groups.length) $("source-preview").append(element("p", "자료 목록은 준비 과정에서 확인합니다. 필요한 입력이나 이용 동의가 있으면 작업을 멈추고 안내합니다.", "hint"));
     const placeholders = { "adv-originals": recipe.originals ?? recipe.positive_originals, "adv-rounds": recipe.rounds ?? recipe.augmentation_rounds, "adv-updates": recipe.updates, "adv-generic": recipe.generic_hours, "adv-korean": recipe.korean_hours };
@@ -311,7 +334,7 @@
     const resultUrl = localUrl(result.url || project.results_url), micUrl = localUrl(result.mic_url || project.mic_url);
     const show = Boolean(resultUrl);
     $("results-section").hidden = !show;
-    if (!show) { if (resultIdentity) frameSource($("result-frame"), ""); resultIdentity = ""; resultMode = "results"; return; }
+    if (!show) { if (resultIdentity) frameSource($("result-frame"), ""); $("evaluation-coverage").hidden = true; resultIdentity = ""; resultMode = "results"; return; }
     if (resultIdentity !== project.id + ":" + resultUrl) { resultMode = "results"; resultIdentity = project.id + ":" + resultUrl; }
     if (!micUrl) resultMode = "results";
     $("mic-tab").hidden = !micUrl;
@@ -321,7 +344,14 @@
     const url = resultMode === "mic" ? micUrl : resultUrl;
     frameSource($("result-frame"), url); $("result-open").href = url;
     $("result-frame").title = resultMode === "mic" ? "마이크로 호출어 시험" : "성능과 평가 오디오";
-    $("results-note").textContent = resultMode === "mic" ? "마이크 허용 후 시작하세요. 이 시험 음성을 학습이나 설정 조정에 자동 사용하지 않습니다." : result.note || "채점 결과와 실제 평가 오디오를 함께 확인하세요. 이 결과만으로 모든 화자와 환경의 성능을 보장하지 않습니다.";
+    $("results-note").textContent = resultMode === "mic" ? "마이크 허용 후 시작하세요. 이 시험 음성을 학습이나 설정 조정에 자동 사용하지 않습니다." : result.note || result.scope || "채점 결과와 실제 평가 오디오를 함께 확인하세요. 이 결과만으로 모든 화자와 환경의 성능을 보장하지 않습니다.";
+    const assessment = result.common_evaluation_assessment;
+    $("evaluation-coverage").hidden = !assessment || resultMode === "mic";
+    if (assessment) {
+      const shortages = Array.isArray(assessment.shortages) ? assessment.shortages : [];
+      $("evaluation-coverage-summary").textContent = assessment.coverage_targets_passed ? "공통 평가의 자료·표본 기준 충족 · 독립 최종 평가는 별도" : `공통 평가의 자료·표본 기준 미충족 · 부족 항목 ${number(shortages.length)}개 보기`;
+      replace($("evaluation-shortages"), shortages.map(item => element("li", item)));
+    }
   }
   function renderProject(project) {
     const running = activeStatuses.has(project.status), complete = completeStatuses.has(project.status), waiting = Boolean(project.review || project.input) || /wait|need|await/.test(project.status || "");

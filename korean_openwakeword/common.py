@@ -97,6 +97,17 @@ def require_final_lock(project):
     bundle = resolved(project.parent, lock["bundle"])
     if digest(bundle / "manifest.json") != lock["bundle_manifest_sha256"]:
         raise ValueError("Final bundle changed after freeze")
+    from .runtime import verify_bundle, deployment_candidate
+    package = verify_bundle(bundle)
+    if lock.get("runtime", package["runtime"]) != package["runtime"]:
+        raise ValueError("Final runtime changed after freeze")
+    if lock.get("selected_candidate", deployment_candidate(package)) != deployment_candidate(package):
+        raise ValueError("Final deployed candidate changed after freeze")
+    for name, entry in lock.get("input_bindings", {}).items():
+        try:
+            bound_file(project.parent, entry)
+        except ValueError as exc:
+            raise ValueError(f"Frozen Train/common/Final input changed after freeze: {name}") from exc
     return lock
 
 

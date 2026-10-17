@@ -619,6 +619,8 @@ class StudioManager:
         stage = plan[index] if index < len(plan) else {"id": "completed", "label": "완료"}
         view = {key: state.get(key) for key in ("id", "wakeword", "preset", "status", "error", "next_action", "created_at")}
         view.update(directory=str(Path(state["project"]).parent), stage=stage, stage_id=stage["id"],
+                    evaluation_policy=state.get("settings", {}).get("evaluation_policy"),
+                    evaluation_policy_sha256=identity(state["settings"]["evaluation_policy"]) if state.get("settings", {}).get("evaluation_policy") else None,
                     stages=[{**entry, "status": "completed" if i < index else state["status"] if i == index else "pending"}
                             for i, entry in enumerate(plan)],
                     progress={"done": index, "total": len(plan), "unit": "완료 단계"},
@@ -688,8 +690,25 @@ class StudioManager:
                                                    "suggestions": result.get("suggestions", [])})
         final = state["results"].get("results", {})
         if state["status"] == "completed" or final.get("site"):
+            result = state.get("results", {}).get("evaluation", {})
+            report = result.get("result", result).get("report", {})
+            assessment = result.get("result", result).get("common_evaluation_assessment")
+            hours = [r.get("negative", {}).get("hours") for r in report.get("models", [])]
+            hours = [value for value in hours if isinstance(value, (int, float))]
+            observed = min(hours) if hours else None
+            common = state.get("settings", {}).get("evaluation_policy") is not None
+            scope = ("공통 개발 평가 결과입니다." if common else "기존 설정의 개발 평가 결과입니다.")
+            scope += " 독립 최종 평가는 아직 완료하지 않았습니다."
+            if observed is not None:
+                scope += f" 비호출 실측 {observed:.2f}시간"
+                if observed < 20:
+                    scope += " · 계획의 20시간 이상 장시간 오호출 검증은 미완료입니다."
+                else:
+                    scope += "."
             view["results"] = {"url": f"/results/{state['id']}/", "mic_url": f"/mic/{state['id']}/",
-                               "scope": "개발용 결과입니다. 독립 Final 및 실제 다수 화자 성능과 구분합니다."}
+                               "scope": scope, "negative_hours": observed,
+                               "common_evaluation_assessment": assessment,
+                               "independent_Final_completed": False}
         return view
 
     def _journal_counts(self, path):

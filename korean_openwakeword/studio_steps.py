@@ -20,17 +20,30 @@ from .project import BATCH, load_project
 _PRESETS = {
     "check": {"title": "동작 확인용", "originals": 1000, "rounds": 1, "updates": 10000,
               "generic_hours": 2000, "korean_hours": 1, "train_references": 4,
-              "validation_references": 2, "validation_originals": 100, "hard_originals": 100,
-              "noise_sections": 1, "functional_check_only": True},
+              "hard_originals": 100, "functional_check_only": True},
     "trial": {"title": "시험 모델용", "originals": 20000, "rounds": 3, "updates": 50000,
               "generic_hours": 2000, "korean_hours": 2000 / 3, "train_references": 20,
-              "validation_references": 10, "validation_originals": 5000, "hard_originals": 1000,
-              "noise_sections": 1, "functional_check_only": False},
+              "hard_originals": 1000, "functional_check_only": False},
     "production": {"title": "상용 모델용", "originals": 100000, "rounds": 5, "updates": 100000,
               "generic_hours": 7500, "korean_hours": 2500, "train_references": 100,
-              "validation_references": 10, "validation_originals": 5000, "hard_originals": 2000,
-              "noise_sections": 1, "functional_check_only": False},
+              "hard_originals": 2000, "functional_check_only": False},
 }
+
+
+def common_evaluation_policy():
+    """One declared Development protocol, independent of the training budget.
+
+    These are test coverage targets, not a claim that background-only hours or
+    independent Final evidence have already been collected. The policy is
+    frozen in each new workflow; old workflows keep their recorded settings.
+    """
+    return {"id": "common_development_v1", "label": "공통 성능 평가",
+            "validation_references": 10, "validation_originals": 5000,
+            "noise_sections": 1, "snrs": [20, 15, 10, 5, 0],
+            "noise_selection": "balanced_sources", "positive_sessions": 80000,
+            "development_negative_target_hours": [20, 30],
+            "independent_final_negative_min_hours": 100,
+            "scope": "Shared across training budgets; Final remains a separate locked holdout"}
 
 _STAGES = (
     ("frontend", "환경 점검 · 공통 음성 처리 모델", "task"),
@@ -49,8 +62,8 @@ _STAGES = (
     ("features", "소음 · 울림 증강과 특징 추출", "task"),
     ("training", "모델 학습", "task"),
     ("package", "시험할 모델 묶음 준비", "task"),
-    ("development", "같은 호출어의 소음별 시험 오디오 준비", "task"),
-    ("evaluation", "모든 단일 모델과 앙상블 채점", "task"),
+    ("development", "공통 평가 · 같은 호출어의 소음별 시험 준비", "task"),
+    ("evaluation", "공통 평가 · 단일 모델과 앙상블 채점", "task"),
     ("results", "결과 · 오디오 · 마이크 시험 준비", "task"),
 )
 
@@ -58,7 +71,10 @@ _STAGES = (
 def preset_settings(name="check"):
     if name not in _PRESETS:
         raise ValueError("규모는 check / trial / production 중에서 선택하세요.")
-    return {"preset": name, **deepcopy(_PRESETS[name]), "batch": dict(BATCH),
+    policy = common_evaluation_policy()
+    return {"preset": name, **deepcopy(_PRESETS[name]),
+            **{key: policy[key] for key in ("validation_references", "validation_originals", "noise_sections")},
+            "evaluation_policy": policy, "batch": dict(BATCH),
             "final_locked": True, "positive_text_policy": "standalone_only"}
 
 
@@ -78,6 +94,12 @@ def _validate_settings(settings):
         raise ValueError("Studio baseline batch must remain 768/256/100/100")
     if settings["train_references"] > 100 or settings["validation_references"] > 10:
         raise ValueError("The synthetic family bank has 100 Train and 10 Validation candidates")
+    policy = settings.get("evaluation_policy")
+    if policy is not None:
+        expected = common_evaluation_policy()
+        if policy != expected or any(settings.get(key) != expected[key]
+                                     for key in ("validation_references", "validation_originals", "noise_sections")):
+            raise ValueError("공통 평가 설정은 학습 규모와 별개로 고정됩니다. 기존 실험의 평가량을 변경하지 않습니다.")
     for key in ("generic_hours", "korean_hours"):
         value = settings.get(key)
         if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
@@ -629,9 +651,16 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         negative_rows = read_rows(negatives)
         if not negative_rows or any(r.get("kind") != "negative" or r.get("split") != "validation" for r in negative_rows):
             raise ValueError("Held-out continuous Negative recordings are required")
+        if settings.get("evaluation_policy"):
+            positives = read_rows(resolved(root, config["manifests"]["positive_validation"]))
+            if len(positives) < settings["validation_originals"]:
+                raise ValueError("공통 평가용 호출어 5,000개가 준비되지 않았습니다. 적은 표본으로 공통 평가 완료를 기록하지 않습니다.")
         selection = "balanced_sources"
-        recipe = evaluation_recipe(project, originals=settings["validation_originals"],
-                                   noise_sections=settings["noise_sections"], noise_selection=selection)
+        pair_settings = {"originals": settings["validation_originals"],
+                         "noise_sections": settings["noise_sections"], "noise_selection": selection}
+        if settings.get("evaluation_policy"):
+            pair_settings["snrs"] = tuple(settings["evaluation_policy"]["snrs"])
+        recipe = evaluation_recipe(project, **pair_settings)
         def matches(directory):
             return ((directory / "recipe.json").is_file() and read_json(directory / "recipe.json") == recipe
                     and (selection == "legacy" or (directory / "noise_coverage.json").is_file()))
@@ -642,15 +671,17 @@ def run_stage(project, workspace, settings, stage_id, context=None):
             if selection != "legacy":
                 paired["noise_coverage"] = {"path": str(directory / "noise_coverage.json"), "sha256": digest(directory / "noise_coverage.json")}
         else:
-            paired = prepare_evaluation(project, directory, originals=settings["validation_originals"],
-                                        noise_sections=settings["noise_sections"], noise_selection=selection)
+            paired = prepare_evaluation(project, directory, **pair_settings)
         rows = read_rows(paired["manifest"]) + negative_rows
         manifest = _publish_rows(workspace / ("development_" + identity([recipe, digest(negatives), digest(paired["manifest"])])[:16] + ".jsonl"), rows)
         artifacts = [manifest, directory / "recipe.json"]
         if paired.get("noise_coverage"):
             artifacts.append(paired["noise_coverage"]["path"])
         return _completed({**paired, "manifest": str(manifest), "positive_sessions": len(rows) - len(negative_rows),
-                           "negative_recordings": len(negative_rows), "functional_check_only": settings["functional_check_only"]}, artifacts)
+                           "negative_recordings": len(negative_rows), "functional_check_only": settings["functional_check_only"],
+                           "evaluation_policy": deepcopy(settings.get("evaluation_policy")),
+                           "evaluation_policy_sha256": identity(settings["evaluation_policy"]) if settings.get("evaluation_policy") else None,
+                           "independent_Final_completed": False}, artifacts)
 
     if stage_id == "evaluation":
         from .evaluate import evaluate
@@ -665,11 +696,28 @@ def run_stage(project, workspace, settings, stage_id, context=None):
             report = read_json(directory / "report.json")
         else:
             report = evaluate(project, bundle, directory, manifest=manifest,
-                              smoke=settings["functional_check_only"])
+                              smoke=settings["functional_check_only"] and not settings.get("evaluation_policy"))
+        assessment = None
+        artifacts = [directory / "receipt.json", directory / "report.json", directory / "clips.json"]
+        if settings.get("evaluation_policy"):
+            from .evaluation_coverage import assess_common_evaluation
+            coverage = _result(context, "development").get("noise_coverage")
+            coverage = bound_file(root, coverage) if isinstance(coverage, dict) else coverage
+            assessment = assess_common_evaluation(settings["evaluation_policy"], report, manifest, coverage)
+            assessment_path = directory / ("common_coverage_" + identity(assessment)[:16] + ".json")
+            if assessment_path.exists() and read_json(assessment_path) != assessment:
+                raise ValueError("Frozen common evaluation coverage evidence changed")
+            if not assessment_path.exists():
+                write_json(assessment_path, assessment)
+            artifacts.append(assessment_path)
         return _completed({"evaluation": str(directory), "report": report,
                            "functional_check_only": settings["functional_check_only"], "Final_accessed": False,
+                           "evaluation_functional_check_only": settings["functional_check_only"] and not bool(settings.get("evaluation_policy")),
+                           "evaluation_policy": deepcopy(settings.get("evaluation_policy")),
+                           "evaluation_policy_sha256": identity(settings["evaluation_policy"]) if settings.get("evaluation_policy") else None,
+                           "common_evaluation_assessment": assessment,
                            "noise_coverage": _result(context, "development").get("noise_coverage")},
-                          [directory / "receipt.json", directory / "report.json", directory / "clips.json"])
+                          artifacts)
 
     if stage_id == "results":
         from .site import export_site
@@ -688,6 +736,9 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         result = {**site, "bundle": _result(context, "package")["bundle"],
                   "ranking": [r["id"] for r in ranked], "Final_accessed": False,
                   "functional_check_only": settings["functional_check_only"],
+                  "evaluation_policy": deepcopy(settings.get("evaluation_policy")),
+                  "evaluation_policy_sha256": identity(settings["evaluation_policy"]) if settings.get("evaluation_policy") else None,
+                  "common_evaluation_assessment": _result(context, "evaluation").get("common_evaluation_assessment"),
                   "meets_development_targets": bool(eligible), "independent_Final_completed": False,
                   "noise_coverage": _result(context, "development").get("noise_coverage")}
         if ranked:

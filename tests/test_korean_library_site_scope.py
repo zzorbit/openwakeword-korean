@@ -106,12 +106,16 @@ def test_background_detail_uses_actual_recorded_type_without_inventing_a_speech_
     clips = [{"noise_eval_type": value} for value in (
         "korean_read_speech", "korean_market_conversation", "korean_transit_announcement", "unknown_provider_type")]
     clips.append({"category": "competing_speech"})
+    clips.extend([{"noise_eval_type": "rain", "noise_eval_label": "실제 기록된 빗소리 조건"},
+                  {"noise_eval_type": "music_jazz", "noise_eval_label": " "},
+                  {"noise_eval_type": "coughing"}, {"noise_eval_type": "music_cinematic_orchestral"}])
     code = "const {evaluationBackgroundTypeText}=require(" + json.dumps(str(SCOPE_SCRIPT)) + ");" \
         "let s='';process.stdin.setEncoding('utf8');process.stdin.on('data',x=>s+=x);" \
         "process.stdin.on('end',()=>process.stdout.write(JSON.stringify(JSON.parse(s).map(evaluationBackgroundTypeText))));"
     result = subprocess.run([node, "-e", code], input=json.dumps(clips), text=True,
                             encoding="utf-8", capture_output=True, check=True)
-    assert json.loads(result.stdout) == ["한국어 낭독", "한국어 시장 대화", "한국어 교통 안내방송", "unknown_provider_type", ""]
+    assert json.loads(result.stdout) == ["한국어 낭독", "한국어 시장 대화", "한국어 교통 안내방송", "unknown_provider_type", "",
+                                        "실제 기록된 빗소리 조건", "재즈", "기침", "영화풍 관현악"]
 
 
 def test_export_adds_scope_asset_without_changing_scores_or_scored_audio(tmp_path):

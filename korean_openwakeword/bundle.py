@@ -74,11 +74,15 @@ def freeze(project, bundle, development_report, output=None):
     # Evidence may be under target. Preserve the explicit judgement rather than fabricate a pass.
     if not decision["passed"]:
         raise ValueError("Selected configuration does not pass declared Development adoption criteria")
-    lock = {"schema_version": 1, "frozen_at": now(), "wakeword": config["wakeword"],
+    from .final_integrity import freeze_input_bindings
+    lock = {"schema_version": 2, "frozen_at": now(), "wakeword": config["wakeword"],
         "bundle": str(bundle), "bundle_manifest_sha256": digest(bundle / "manifest.json"),
         "development_report": str(development_report), "development_report_sha256": digest(development_report),
         "project_config_sha256": digest(project), "runtime": config["runtime"],
         "selected_candidate": deployed,
+        "input_bindings": freeze_input_bindings(project, development_report),
+        "independent_final_policy": "known_train_common_lineage_and_exact_pcm_v1",
+        "generic_precomputed_original_mapping_available": False,
         "Final_used_for_selection": False}
     output = Path(output) if output else root / "final_lock.json"
     if output.exists():

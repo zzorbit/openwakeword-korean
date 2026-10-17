@@ -134,6 +134,10 @@ koww review --project projects/bora/project.json --queue projects/bora/review/pu
 
 ## 학습 자료 목록 예시
 
+독립 최종 평가의 배경·비호출·잔향도 실제 `path`·`sha256`·원출처·이용조건과 일관된 원본 ID를 기록하고 `split`은 `final`로 지정합니다. 같은 원본의 파일명·구간·형식이 바뀌어도 `canonical_recording_id`를 바꾸지 않습니다. 알려진 화자·음악가·공간 정보가 있으면 각각 `canonical_speaker_id`·`canonical_artist_id`·`canonical_room_id`로 보존합니다. 모르는 신원은 추측해 채우지 않습니다.
+
+`prepare-eval`은 혼합 오디오에 호출어·배경 원본의 `components`를 자동 기록합니다. 외부에서 만든 Final 혼합 오디오도 `role: call`과 `role: background`의 구성 자료를 제공해야 합니다. 각 구성 자료에 원본 경로·해시·출처·분할·음색 등 실제 메타데이터를 넣습니다. 잔향을 적용했다면 `role: rir`의 원본·공간 근거도 포함합니다. 구성 원본을 학습·공통 평가와 대조하므로 완성 WAV의 이름만 바꿔 Final로 사용할 수 없습니다.
+
 한국어 비호출 원본을 `data/negative/korean.jsonl`에 넣는 예시입니다.
 
 ```json

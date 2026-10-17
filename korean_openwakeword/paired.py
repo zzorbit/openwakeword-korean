@@ -11,6 +11,7 @@ from .common import digest, identity, read_rows, resolved, require_final_lock, w
 from .data import audit_project, rows_for, seek_audio, source_key, CATEGORIES
 from .project import load_project
 from .storage import project_storage
+from .source_identity import component_lineage
 
 
 def evaluation_recipe(project, split="validation", originals=100, noise_sections=5,
@@ -245,6 +246,12 @@ def prepare_evaluation(project, output, split="validation", originals=100, noise
     audit = audit_project(project, include_final_files=split == "final")
     if not audit["passed"]:
         raise ValueError("Cross-split audit failed")
+    final_audit = None
+    if split == "final":
+        from .final_integrity import audit_independent_final
+        final_audit = audit_independent_final(project)
+        if not final_audit["passed"]:
+            raise ValueError("Independent Final source audit failed: " + str(final_audit["errors"][:3]))
     recipe = evaluation_recipe(project, split, originals, noise_sections, snrs, noise_selection)
     pools = _balanced_pool(noises) if noise_selection == "balanced_sources" else None
     selection_order = {}
@@ -273,6 +280,7 @@ def prepare_evaluation(project, output, split="validation", originals=100, noise
             "original_order": order + 1, "calls": [{"start_s": lead, "end_s": lead + len(source) / 16000,
                 "call_id": row["sample_id"], "original_utterance_id": row["sample_id"]}],
             "source_id": source_key(row), "source_generation_gain": gain, "language": "Korean"}
+        call_lineage = component_lineage(row, "call")
         # One shared headroom gain for all the original's paired variants and clean baseline.
         variants = []
         for category in CATEGORIES:
@@ -317,7 +325,8 @@ def prepare_evaluation(project, output, split="validation", originals=100, noise
         base = output / "audio" / f"original_{order+1:04d}_clean.wav"
         sf.write(base, pcm16(speech * headroom), 16000, subtype="PCM_16")
         entries.append({**common, "sample_id": f"original_{order+1:04d}_clean", "category": "clean", "snr_db": None,
-            "path": str(base), "sha256": digest(base), "common_headroom_gain": headroom, "component_source_ids": [source_key(row)]})
+            "path": str(base), "sha256": digest(base), "common_headroom_gain": headroom,
+            "component_source_ids": [source_key(row)], "components": [call_lineage]})
         for category, section, snr, noise, offset, scaled, source_group, construction in variants:
             name = f"original_{order+1:04d}_{category}_section{section+1}_snr{snr}"
             path = output / "audio" / (name + ".wav")
@@ -325,9 +334,11 @@ def prepare_evaluation(project, output, split="validation", originals=100, noise
             entries.append({**common, "sample_id": name, "category": category, "snr_db": snr,
                 "noise_section": section + 1, "noise_source_id": source_key(noise), "noise_offset_s": offset,
                 "measured_snr_db": measured_snr(speech, scaled, mask), "common_headroom_gain": headroom,
-                "path": str(path), "sha256": digest(path), "component_source_ids": [source_key(row), source_key(noise)]})
+                "path": str(path), "sha256": digest(path), "component_source_ids": [source_key(row), source_key(noise)],
+                "components": [call_lineage, component_lineage(noise, "background")]})
             if source_group is not None:
-                entries[-1].update(noise_eval_type=source_group["eval_type"], noise_source_group_id=source_group["id"],
+                entries[-1].update(noise_eval_type=source_group["eval_type"], noise_eval_label=noise.get("eval_type_label"),
+                                   noise_source_group_id=source_group["id"],
                                    noise_selection_policy=recipe["noise_selection"], noise_construction=construction)
     manifest = output / "manifest.jsonl"
     manifest.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in entries), encoding="utf-8")
@@ -338,4 +349,8 @@ def prepare_evaluation(project, output, split="validation", originals=100, noise
     if pools is not None:
         write_json(output / "noise_coverage.json", _coverage(pools, selections, entries, recipe, manifest))
         result["noise_coverage"] = {"path": str(output / "noise_coverage.json"), "sha256": digest(output / "noise_coverage.json")}
+    if final_audit is not None:
+        write_json(output / "independent_source_audit.json", final_audit)
+        result["independent_source_audit"] = {"path": str(output / "independent_source_audit.json"),
+                                               "sha256": digest(output / "independent_source_audit.json")}
     return result

@@ -108,6 +108,35 @@ function browser({ noBoot = false, initialState, recipeError = false, recipeOver
     assert.equal(read.children[2].textContent, "");
     assert.equal(read.children[1].children.some(child => /음원.*개/.test(child.textContent)), false);
   });
+  await test("all training budgets advertise one shared full evaluation independently from training amount", async () => {
+    const policy = { id: "common_development_v1", validation_references: 10, validation_originals: 5000, snrs: [20, 15, 10, 5, 0], positive_sessions: 80000 };
+    const b = browser({ recipeOverrides: { evaluation_policy: policy, evaluation_sources: [{ name: "공통 배경 음원", file_count: 200 }] } }); await flush();
+    const group = b.elements.get("source-preview").children[1];
+    const notice = group.children.find(child => child.className?.includes("common-evaluation"));
+    assert.match(notice.textContent, /세 학습 규모 모두 같은 공통 평가/);
+    assert.match(notice.textContent, /5,000개.*20\/15\/10\/5\/0.*80,000개/);
+    assert.match(group.children.at(-1).textContent, /학습·공통 평가에서 쓰지 않은.*확정 후/);
+    assert.match(group.children.at(-1).textContent, /장시간 오호출 검증/);
+  });
+  await test("large background-type lists show eight examples and fold the remaining types", async () => {
+    const types = ["rain", "wind", "dog", "cat", "coughing", "laughing", "clapping", "snoring", "music_jazz", "music_techno", "music_hiphop"];
+    const b = browser({ recipeOverrides: { sources: [], evaluation_sources: [{ name: "공통 평가 자료", eval_types: types }] } }); await flush();
+    const info = b.elements.get("source-preview").children[0].children[2].children[1];
+    const preview = info.children.find(child => child.className?.includes("source-types"));
+    assert.match(preview.textContent, /비 · 바람 · 개 짖음.*외 3종/);
+    assert.equal(preview.textContent.includes("재즈"), false);
+    const folded = info.children.find(child => child.tagName === "details");
+    assert.equal(folded.children[0].textContent, "나머지 3종 보기");
+    assert.equal(folded.children[1].textContent, "재즈 · 테크노 · 힙합");
+  });
+  await test("result view shows measured scope and missing coverage without implying Final approval", async () => {
+    const project = { id: "bora", wakeword: "보라야", status: "completed", results: { url: "/results/bora/", scope: "비호출 실측 0.25시간 · 독립 최종 평가 미완료", common_evaluation_assessment: { coverage_targets_passed: false, shortages: ["연속 비호출 평가 0.25/20시간", "평가 음색 계열 2/10개"] } } };
+    const b = browser({ initialState: { projects: [project] } }); await flush();
+    assert.match(b.elements.get("results-note").textContent, /0.25시간.*최종 평가 미완료/);
+    assert.equal(b.elements.get("evaluation-coverage").hidden, false);
+    assert.match(b.elements.get("evaluation-coverage-summary").textContent, /미충족.*2개/);
+    assert.equal(b.elements.get("evaluation-shortages").children.length, 2);
+  });
   await test("create-and-start needs one form submission and sends the local token", async () => {
     const b = browser(); await flush(); b.elements.get("wakeword").value = "보라야";
     await b.submit("create-form");

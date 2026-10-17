@@ -112,7 +112,24 @@ def test_recipes_preview_has_three_budgets_known_sources_and_no_network(manager)
     assert [row["id"] for row in recipes["presets"]] == ["check", "trial", "production"]
     assert all(row["known_download_bytes"] > 0 and row["assets"] for row in recipes["presets"])
     assert all(row["human_review_required"] is True for row in recipes["presets"])
+    policies = [row["evaluation_policy"] for row in recipes["presets"]]
+    assert all(policy == policies[0] for policy in policies)
+    assert policies[0]["validation_originals"] == 5000
     assert manager.workers.calls == []
+
+
+def test_shared_evaluation_scope_reports_real_negative_hours_and_final_pending(manager):
+    project = create(manager)
+    state = manager._load(project["id"])
+    state.update(status="completed", index=len(state["plan"]), results={
+        "evaluation": {"state": "completed", "result": {"report": {"models": [
+            {"id": "mean", "negative": {"hours": .25}}]}}}})
+    view = manager.describe(state)
+    assert view["evaluation_policy_sha256"] == identity(state["settings"]["evaluation_policy"])
+    assert view["results"]["negative_hours"] == .25
+    assert "0.25시간" in view["results"]["scope"] and "미완료" in view["results"]["scope"]
+    assert view["results"]["independent_Final_completed"] is False
+    assert "공통 개발 평가" in view["results"]["scope"]
 
 
 @pytest.mark.parametrize("payload", [

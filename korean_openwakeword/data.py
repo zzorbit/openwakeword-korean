@@ -8,6 +8,7 @@ from .common import bound_file, digest, iter_rows, read_json, read_rows, resolve
 from .project import load_project
 from .hard_phrase_policy import validate_noncall_text
 from .streaming import manifest_index
+from .source_identity import partition_keys
 
 CATEGORIES = ("environment", "music", "competing_speech")
 
@@ -74,16 +75,8 @@ def audit_project(project, check_files=True, include_final_files=False, extra_ro
                     errors.append(f"{pool}/{sid}: wrong evaluation split")
                 if pool in ("noise_validation", "noise_final") and split != ("validation" if pool == "noise_validation" else "final"):
                     errors.append(f"{pool}/{sid}: wrong held-out noise split")
-                for key, value in (("source", source_key(row)), ("sha256", row.get("sha256")),
-                                   ("recording", row.get("canonical_recording_id", row.get("parent_source_id"))),
-                                   ("family", row.get("voice_family_id")), ("speaker", row.get("canonical_speaker_id")),
-                                   ("room", row.get("canonical_room_id"))):
-                    if value:
-                        index.partition(key, value, split)
-                for value in row.get("component_source_ids", []):
-                    index.partition("source", value, split)
-                for value in row.get("canonical_speaker_ids", []):
-                    index.partition("speaker", value, split)
+                for key, value in partition_keys(row):
+                    index.partition(key, value, split)
                 if pool.startswith("positive_"):
                     if row.get("provenance") != "qwen_tts" or row.get("human_reference_used") is not False or row.get("text") != config["wakeword"]:
                         errors.append(f"{pool}/{sid}: standalone Qwen/no-human provenance required")
@@ -120,7 +113,8 @@ def audit_project(project, check_files=True, include_final_files=False, extra_ro
     errors += [f"Cross-split {r['key']} leakage: {r['id']}" for r in leaks]
     return {"kind": "project_source_and_family_audit", "passed": not errors,
             "wakeword": config["wakeword"], "pools": totals, "errors": errors, "leaks": leaks,
-            "scope": "Declared IDs and exact files; acoustic near-duplicates require pilot review."}
+            "scope": "Declared original/component source, recording, file/PCM hash, synthetic family, speaker, artist and room identities; dataset names alone do not prove independence. Acoustic near-duplicates and unknown provenance remain unverified.",
+            "generic_precomputed_original_mapping_available": False}
 
 
 def union_hours(intervals):

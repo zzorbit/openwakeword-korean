@@ -46,6 +46,20 @@ def test_presets_are_explicit_not_changes_to_global_defaults(name, counts):
     assert steps.preset_settings(name)["batch"]["positive"] == 100
 
 
+def test_common_evaluation_is_identical_for_all_training_budgets_and_cannot_drift():
+    settings = [steps.preset_settings(name) for name in ("check", "trial", "production")]
+    assert all(s["evaluation_policy"] == steps.common_evaluation_policy() for s in settings)
+    assert all((s["validation_references"], s["validation_originals"], s["noise_sections"]) == (10, 5000, 1) for s in settings)
+    assert settings[0]["originals"] == 1000 and settings[-1]["originals"] == 100000
+    changed = settings[0]
+    changed["validation_originals"] = 100
+    with pytest.raises(ValueError, match="공통 평가"):
+        steps.workflow_plan(changed)
+    changed.pop("evaluation_policy")
+    changed["validation_references"] = 2
+    assert steps.workflow_plan(changed)  # Saved legacy workflows retain their original protocol.
+
+
 def test_plan_is_ordered_and_has_no_final_unlock():
     plan = steps.workflow_plan(steps.preset_settings())
     ids = [r["id"] for r in plan]
@@ -181,13 +195,13 @@ def test_references_are_combined_once_and_require_actual_saved_answers(project, 
     monkeypatch.setattr(tts, "generate_references", generate)
     monkeypatch.setattr(tts, "_load_model", load)
     result = run(project, "references")
-    assert calls == [("train", 4), ("validation", 2)]
+    assert calls == [("train", 4), ("validation", 10)]
     assert len(loads) == 1
-    assert result["result"]["generated"] == 6
+    assert result["result"]["generated"] == 14
     queue = Path(result["result"]["queue"])
     assert queue.parent == project.parent / ".studio"
     pending = run(project, "references_review")
-    assert pending["state"] == "waiting_review" and pending["reviews"][0]["count"] == 6
+    assert pending["state"] == "waiting_review" and pending["reviews"][0]["count"] == 14
     assert read_json(project.parent / "approval.json")["generation_policy_approved"] is False
     approve(project, queue, "references")
     assert run(project, "references_review")["state"] == "completed"
@@ -261,7 +275,7 @@ def test_positive_generation_uses_standalone_train_and_disjoint_validation_only(
     monkeypatch.setattr(tts_runtime, "CloneRuntime", lambda *a: shared)
     monkeypatch.setattr(tts, "generate", generate)
     result = run(project, "positives")
-    assert calls == [(project, "train", 1000, False, "clone"), (project, "validation", 100, False, "clone")]
+    assert calls == [(project, "train", 1000, False, "clone"), (project, "validation", 5000, False, "clone")]
     assert models == [shared, shared]
     assert result["result"]["independent_STT_runs"] == 0
     assert not (project.parent / "data/generated/final").exists()
@@ -337,6 +351,9 @@ def test_studio_development_selects_balanced_policy_and_preserves_old_pair_outpu
                              augmentation_rounds=settings["rounds"], updates=settings["updates"],
                              generic_hours=settings["generic_hours"], korean_hours=settings["korean_hours"])
     root = project.parent
+    config = read_json(project)
+    steps._publish_rows(root / config["manifests"]["positive_validation"],
+                        [{"sample_id": f"validation_{i:06d}"} for i in range(5000)], allow_initial_empty=True)
     negative = fake_audio(root, "heldout", kind="negative", split="validation")
     negative_manifest = steps._publish_rows(root / ".studio/negative.jsonl", [negative])
     old = root / "reports/studio_paired"
@@ -359,6 +376,45 @@ def test_studio_development_selects_balanced_policy_and_preserves_old_pair_outpu
     assert (old / "manifest.jsonl").read_text() == "old completed pair evidence\n"
     assert (root / "reports/studio_paired_attempt2/recipe.json").is_file()
     assert result["result"]["noise_coverage"]
+    assert result["result"]["evaluation_policy_sha256"] == identity(steps.common_evaluation_policy())
+    assert calls[0]["snrs"] == (20, 15, 10, 5, 0)
+
+
+def test_common_evaluation_refuses_a_short_positive_pool_before_building_wavs(project, monkeypatch):
+    from korean_openwakeword import paired
+    negative = fake_audio(project.parent, "background", kind="negative", split="validation")
+    manifest = steps._publish_rows(project.parent / ".studio/negative.jsonl", [negative])
+    monkeypatch.setattr(paired, "prepare_evaluation", lambda *a, **k: pytest.fail("Short pool cannot start full common evaluation"))
+    context = {"results": {"data_connect": {"result": {"negative_validation_manifest": str(manifest)}}}}
+    with pytest.raises(ValueError, match="5,000개"):
+        run(project, "development", context)
+
+
+def test_complete_common_evaluation_is_not_relabeled_as_a_smoke_run_for_check_budget(project, monkeypatch):
+    from korean_openwakeword import evaluate
+    bundle = project.parent / "models/fixture_bundle"
+    bundle.mkdir(parents=True)
+    write_json(bundle / "manifest.json", {"fixture": True})
+    manifest = steps._publish_rows(project.parent / ".studio/fixture_development.jsonl", [])
+    calls = []
+    def score(path, selected_bundle, output, **kwargs):
+        calls.append(kwargs)
+        write_json(output / "report.json", {"models": [], "smoke_test_only": kwargs["smoke"]})
+        write_json(output / "receipt.json", {})
+        write_json(output / "clips.json", [])
+        return read_json(output / "report.json")
+    monkeypatch.setattr(evaluate, "evaluate", score)
+    context = {"results": {"package": {"result": {"bundle": str(bundle)}},
+                           "development": {"result": {"manifest": str(manifest)}}}}
+    output = run(project, "evaluation", context)
+    result = output["result"]
+    assert calls[0]["smoke"] is False
+    assert result["functional_check_only"] is True  # The training budget remains the check preset.
+    assert result["evaluation_functional_check_only"] is False
+    assert result["evaluation_policy_sha256"] == identity(steps.common_evaluation_policy())
+    assert result["common_evaluation_assessment"]["coverage_targets_passed"] is False
+    assert result["common_evaluation_assessment"]["independent_Final_completed"] is False
+    assert any(Path(path).name.startswith("common_coverage_") and Path(path).is_file() for path in output["artifacts"])
 
 
 def test_hard_representatives_cover_every_phrase_voice_pair(project):
@@ -552,6 +608,7 @@ def test_actual_small_features_train_package_evaluate_site_without_downloads(tmp
     monkeypatch.setattr(requests, "get", lambda *a, **k: pytest.fail("No network in the integration fixture"))
     settings = steps.preset_settings()
     settings.update(originals=2, updates=1, generic_hours=.0001, korean_hours=.0001, validation_originals=1)
+    settings.pop("evaluation_policy")  # Explicit tiny integration fixture, not the full common protocol.
     path = create_project(tmp_path / "tiny", "보라야", "bora", positive_originals=2,
                           augmentation_rounds=1, updates=1, generic_hours=.0001, korean_hours=.0001,
                           training_overrides={"device": "cpu", "cpu_threads": 1, "log_every": 1})

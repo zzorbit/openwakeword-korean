@@ -16,7 +16,7 @@ from korean_openwakeword.project import create_project, load_project
 
 def test_v3_preserves_pinned_v2_sources_and_adds_real_korean_speech():
     old = read_json(files("korean_openwakeword") / "resources/evaluation_noise_v2.json")
-    current = evaluation.evaluation_catalog()
+    current = read_json(files("korean_openwakeword") / "resources/evaluation_noise_v3.json")
     assert current["recipe_version"] == 3
     old_by_id = {r["id"]: r for r in old["assets"]}
     current_by_id = {r["id"]: r for r in current["assets"]}

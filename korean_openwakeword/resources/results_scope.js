@@ -54,11 +54,21 @@ function evaluationNoiseCoverageText(clips) {
 function evaluationBackgroundTypeText(clip) {
     const types = {rain: "비", wind: "바람", vacuum_cleaner: "청소기", washing_machine: "세탁기", engine: "엔진", train: "기차",
         keyboard_typing: "키보드", door_wood_knock: "문 두드림", glass_breaking: "유리 충격·파손", footsteps: "발걸음",
-        clock_alarm: "알람", clock_tick: "시계음", car_horn: "경적", siren: "사이렌", church_bells: "종소리",
-        music_instrumental_piano_drums: "피아노·드럼", music_instrumental_guitar_drums: "기타·드럼", music_singing: "보컬 멜로디", music_vocal_pad: "보컬 음악",
+        clock_alarm: "알람", clock_tick: "시계 전자·기계음", car_horn: "경적", siren: "사이렌", church_bells: "종소리",
+        music_instrumental_piano_drums: "피아노·드럼 연주", music_instrumental_guitar_drums: "기타·드럼 연주", music_singing: "보컬 멜로디", music_vocal_pad: "보컬 패드 음악",
         korean_read_speech: "한국어 낭독", korean_speech: "한국어 음성", korean_market_conversation: "한국어 시장 대화",
         korean_restaurant_conversation: "한국어 식당 대화", korean_subway_conversation: "한국어 지하철 대화",
-        korean_street_conversation: "한국어 거리 대화", korean_transit_announcement: "한국어 교통 안내방송"};
+        korean_street_conversation: "한국어 거리 대화", korean_transit_announcement: "한국어 교통 안내방송",
+        korean_natural_conversation: "한국어 자연 대화", korean_conversation: "한국어 대화",
+        korean_broadcast: "한국어 방송", korean_overlapping_speech: "겹치는 한국어 음성",
+        dog: "개 짖음", cat: "고양이", chirping_birds: "새소리", crying_baby: "아기 울음",
+        sneezing: "재채기", clapping: "박수", breathing: "숨소리", coughing: "기침", laughing: "웃음", snoring: "코골이",
+        pouring_water: "물 붓기", toilet_flush: "변기 물 내림", water_drops: "물방울", can_opening: "캔 따기",
+        mouse_click: "마우스 클릭", door_wood_creaks: "문 삐걱거림", airplane: "비행기", helicopter: "헬리콥터",
+        thunderstorm: "천둥", sea_waves: "파도", music_jazz: "재즈", music_techno: "테크노", music_hiphop: "힙합",
+        music_rock_vocals: "보컬 록", music_rock: "록", music_cinematic_orchestral: "영화풍 관현악",
+        music_house: "하우스 음악", music_orchestral_loop: "관현악 루프"};
+    if (typeof clip.noise_eval_label === "string" && clip.noise_eval_label.trim()) return clip.noise_eval_label;
     return clip.noise_eval_type ? types[clip.noise_eval_type] || clip.noise_eval_type : "";
 }
 if (typeof module !== "undefined" && module.exports) module.exports = {evaluationScopeText, evaluationNoiseCoverageText, evaluationBackgroundTypeText};

@@ -11,7 +11,7 @@ import soundfile as sf
 from .common import bound_file, digest, identity, now, read_json, read_rows, resolved, write_json, writer_lock
 from .project import load_project
 
-EVALUATION_RECIPE_VERSION = 3
+EVALUATION_RECIPE_VERSION = 4
 _TYPE_NAMES = {
     "rain": "비", "wind": "바람", "vacuum_cleaner": "청소기", "washing_machine": "세탁기",
     "engine": "엔진", "train": "기차", "keyboard_typing": "키보드", "door_wood_knock": "문 두드림",
@@ -22,11 +22,20 @@ _TYPE_NAMES = {
     "korean_market_conversation": "한국어 시장 대화", "korean_restaurant_conversation": "한국어 식당 대화",
     "korean_subway_conversation": "한국어 지하철 대화", "korean_street_conversation": "한국어 거리 대화",
     "korean_transit_announcement": "한국어 교통 안내방송",
+    "dog": "개 짖음", "cat": "고양이", "chirping_birds": "새소리", "crying_baby": "아기 울음",
+    "sneezing": "재채기", "clapping": "박수", "breathing": "숨소리", "coughing": "기침",
+    "laughing": "웃음", "snoring": "코골이", "pouring_water": "물 붓기", "toilet_flush": "변기 물 내림",
+    "water_drops": "물방울", "can_opening": "캔 따기", "mouse_click": "마우스 클릭",
+    "door_wood_creaks": "문 삐걱거림", "airplane": "비행기", "helicopter": "헬리콥터",
+    "thunderstorm": "천둥", "sea_waves": "파도", "music_jazz": "재즈", "music_techno": "테크노",
+    "music_hiphop": "힙합", "music_rock_vocals": "보컬 록", "music_rock": "록",
+    "music_cinematic_orchestral": "영화풍 관현악", "music_house": "하우스 음악",
+    "music_orchestral_loop": "관현악 루프",
 }
 
 
 def evaluation_catalog():
-    catalog = read_json(files("korean_openwakeword") / "resources/evaluation_noise_v3.json")
+    catalog = read_json(files("korean_openwakeword") / "resources/evaluation_backgrounds_v4.json")
     if catalog.get("recipe_version") != EVALUATION_RECIPE_VERSION:
         raise ValueError("Unsupported held-out noise catalog")
     return catalog
@@ -37,13 +46,15 @@ def evaluation_preview():
     catalog = evaluation_catalog()
     grouped = defaultdict(list)
     for row in catalog["assets"]:
-        grouped[row["dataset_id"]].append(row)
-    labels = {"esc50_held_out_v2": "환경음·전자음 시험용 배경 음원",
-              "freesound_music_held_out_v2": "보컬·연주곡 시험용 배경 음원",
+        group = ("esc50_common_evaluation_v4" if row["dataset_id"].startswith("esc50") else
+                 "freesound_music_common_evaluation_v4" if row["category"] == "music" else row["dataset_id"])
+        grouped[group].append(row)
+    labels = {"esc50_common_evaluation_v4": "환경·생활·전자음 공통 평가 자료",
+              "freesound_music_common_evaluation_v4": "연주·보컬·여러 장르의 음악",
               "freesound_korean_held_out_v3": "한국어 현장 대화·안내방송 시험용 배경 음원"}
     descriptions = {
-        "esc50_held_out_v2": "비·바람·가전·차량·키보드·충격음과 알람·경적·사이렌 등 지속음·순간음 15종입니다.",
-        "freesound_music_held_out_v2": "피아노·기타·드럼 연주와 보컬 멜로디·보컬 패드 4종입니다. 한국어 노래 모음은 아닙니다.",
+        "esc50_common_evaluation_v4": "날씨·가전·차량·생활 충격음·동물·기침·웃음·알람 등 서로 다른 원본의 지속음과 순간음입니다.",
+        "freesound_music_common_evaluation_v4": "피아노·기타·드럼 연주와 보컬, 전자음악·록·재즈·관현악 등 게시자 정보로 구분한 음악입니다.",
         "freesound_korean_held_out_v3": "시장·식당·지하철·거리의 한국어 현장 말소리와 교통 안내방송입니다. TV·라디오나 한국어 보컬 음악 자료는 포함하지 않습니다.",
     }
     result = []
@@ -181,8 +192,8 @@ def _source_identity(row):
 
 
 def _supported_preparation(receipt, wakeword):
-    return (receipt.get("kind") in ("studio_evaluation_noise_preparation_v2", "studio_evaluation_noise_preparation_v3")
-            and receipt.get("recipe_version") in (2, 3) and receipt.get("wakeword") == wakeword
+    return (receipt.get("kind") in tuple(f"studio_evaluation_noise_preparation_v{v}" for v in (2, 3, 4))
+            and receipt.get("recipe_version") in (2, 3, 4) and receipt.get("wakeword") == wakeword
             and receipt.get("evaluation_only") is True and receipt.get("training_admitted") is False
             and receipt.get("intended_use") == "held_out_development_noise")
 
@@ -200,7 +211,7 @@ def _validated_decisions(root, config, receipt, answer_path, seen=()):
         if str(path) in seen:
             raise ValueError("Cyclic evaluation review inheritance")
         record = read_json(path)
-        if (record.get("kind") not in ("studio_evaluation_noise_admission_v2", "studio_evaluation_noise_admission_v3")
+        if (record.get("kind") not in tuple(f"studio_evaluation_noise_admission_v{v}" for v in (2, 3, 4))
                 or record.get("state") != "accepted_for_evaluation" or record.get("evaluation_only") is not True
                 or record.get("training_admitted") is not False or record.get("wakeword") != config["wakeword"]
                 or record.get("intended_use") != "held_out_development_noise" or record.get("content_review") != "accepted"):
@@ -258,7 +269,7 @@ def _previous_reviews(root, config):
     candidates, bindings = {}, []
     for path in sorted((root / ".studio" / "materials").glob("evaluation_v*/admissions/*.json")):
         record = read_json(path)
-        if record.get("kind") not in ("studio_evaluation_noise_admission_v2", "studio_evaluation_noise_admission_v3"):
+        if record.get("kind") not in tuple(f"studio_evaluation_noise_admission_v{v}" for v in (2, 3, 4)):
             continue
         prep = read_json(bound_file(root, record["preparation"]))
         answer = bound_file(root, record["human_answers"]) if record.get("human_answers") else None
@@ -308,7 +319,7 @@ def prepare_evaluation_materials(project, workspace, prepared, progress=None):
     catalog = evaluation_catalog()
     catalog_id = identity(catalog)[:16]
     version = catalog["recipe_version"]
-    if version not in (2, 3):
+    if version not in (2, 3, 4):
         raise ValueError("Unsupported evaluation background source recipe")
     output = root / ".studio" / "materials" / (f"evaluation_v{version}_" + catalog_id)
     output.mkdir(parents=True, exist_ok=True)
@@ -362,7 +373,7 @@ def prepare_evaluation_materials(project, workspace, prepared, progress=None):
                     "original_sha256": asset["sha256"], "original_path": str(source), "split": "validation",
                     "duration_s": count / 16000, "normalized_frames": count, "normalized_pcm_sha256": pcm,
                     "pcm_hash_scope": "exact_full_source_16khz_mono_pcm16", "technical_qc": technical,
-                    "conversion": conversion,
+                    "conversion": conversion, "eval_type_label": _TYPE_NAMES.get(asset["eval_type"], asset["eval_type"]),
                     "technical_pass": True, "provenance": "public_dataset", "training_admitted": False,
                     "evaluation_only": True, "individual_human_listening": False,
                     "unknown_speaker_group": asset["dataset_id"], "evaluation_content_approved": False}

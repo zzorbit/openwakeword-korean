@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from .common import bound_file, digest, now, read_json, read_rows, resolved, write_json, writer_lock
+from .common import bound_file, digest, now, read_json, read_rows, resolved, write_json, writer_lock, require_final_lock
 from .data import CATEGORIES, audit_project, source_key
 from .events import EventDetector, PositiveTracker, positive_statistics, poisson_rate_interval
 from .project import load_project
@@ -108,7 +108,7 @@ def evaluate(project, bundle, output, stage="development", manifest=None, smoke=
     if stage == "final":
         if candidate != deployed["id"]:
             raise ValueError("Final evaluates the frozen deployed candidate; no candidate selection")
-        lock = read_json(root / "final_lock.json")
+        lock = require_final_lock(project)
         if lock["bundle_manifest_sha256"] != digest(directory / "manifest.json") or lock["project_config_sha256"] != digest(project):
             raise ValueError("Final model/runtime/project changed after freeze")
         if smoke:
@@ -120,9 +120,17 @@ def evaluate(project, bundle, output, stage="development", manifest=None, smoke=
         raise ValueError("Source/family split audit failed: " + str(audit["errors"][:3]))
     if not sources:
         raise ValueError("Empty evaluation manifest")
+    final_audit = None
+    if stage == "final":
+        from .final_integrity import audit_independent_final
+        final_audit = audit_independent_final(project, extra_rows=sources)
+        if not final_audit["passed"]:
+            raise ValueError("Independent Final source audit failed: " + str(final_audit["errors"][:3]))
     if len({r["sample_id"] for r in sources}) != len(sources):
         raise ValueError("Repeated evaluation IDs")
-    if stage == "development" and any(r["kind"] == "positive" and r.get("provenance") == "human" for r in sources):
+    if stage == "development" and any(r["kind"] == "positive" and (r.get("provenance") == "human"
+            or any(c.get("role") == "call" and c.get("provenance") == "human"
+                   for c in r.get("components", []) if isinstance(c, dict))) for r in sources):
         raise ValueError("Actual human call recordings are Final-only; do not select models/runtime with them")
     negative_sources, negative_hashes = set(), set()
     for row in sources:
@@ -212,6 +220,7 @@ def evaluate(project, bundle, output, stage="development", manifest=None, smoke=
         report = {"schema_version": 1, "wakeword": config["wakeword"], "stage": stage, "created_at": now(),
             "smoke_test_only": smoke or any(m.get("smoke_test_only") for m in package["members"]),
             "bundle_manifest_sha256": digest(directory / "manifest.json"), "manifest_sha256": digest(manifest),
+            "evaluation_manifest": {"path": str(manifest), "sha256": digest(manifest)},
             "runtime": runtime, "sessions": len(clips), "models": summaries,
             "candidate_definitions": candidates, "selected_candidate": candidate,
             "deployment_candidate": deployed, "candidate_adoptions": candidate_adoptions(summaries, config),
@@ -221,6 +230,9 @@ def evaluate(project, bundle, output, stage="development", manifest=None, smoke=
         for summary in summaries:
             summary["positive_by_provenance"] = {p: positive_statistics([call for r in clips if r["kind"] == "positive" and r.get("provenance", "qwen_tts") == p for call in r["results"][summary["id"]]["calls"]]) for p in sorted({r.get("provenance", "qwen_tts") for r in clips if r["kind"] == "positive"})}
         if stage == "final":
+            report["independent_source_audit"] = final_audit
+            report["final_lock_policy"] = lock.get("independent_final_policy", "legacy_lock_new_source_audit_applied")
+            report["legacy_lock_without_input_bindings"] = not bool(lock.get("input_bindings"))
             report["final_negative_duration_passed"] = all(s["negative"]["hours"] >= 100 for s in summaries)
             report["real_human_calls_present"] = any(r.get("provenance") == "human" for r in clips)
             report["real_population_verified"] = False

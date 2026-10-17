@@ -129,6 +129,10 @@ def parser():
     a.add_argument("--output", type=Path)
     for name in ("status", "audit", "prepare-frontend", "storage"):
         a = sub.add_parser(name); a.add_argument("--project", type=Path, required=True)
+    a = sub.add_parser("audit-final", help="동결 후 독립 최종 자료의 학습·공통 평가 중복 검사 (채점 없음)")
+    a.add_argument("--project", type=Path, required=True)
+    a.add_argument("--manifest", type=Path, help="추가 최종 평가 manifest; 프로젝트 예약 자료와 함께 검사")
+    a.add_argument("--output", type=Path, required=True, help="새 검사 보고서 JSON; 기존 파일 덮어쓰기 금지")
     a = sub.add_parser("windows", help="공개 Negative 원본의 고정 2초 구간 manifest")
     a.add_argument("--project", type=Path, required=True); a.add_argument("--pool", choices=("generic_negative", "korean_negative", "hard_negative"), required=True)
     a.add_argument("--output", type=Path, required=True)
@@ -258,6 +262,17 @@ def dispatch(a):
         write_json(root / "reports" / "source_audit.json", report)
         if not report["passed"]:
             raise ValueError("Source audit failed: " + str(report["errors"][:10]))
+        return report
+    if a.command == "audit-final":
+        from .common import require_final_lock, read_rows
+        from .final_integrity import audit_independent_final
+        require_final_lock(a.project)
+        if a.output.exists():
+            raise ValueError("Final source audit reports are immutable; choose a new output file")
+        report = audit_independent_final(a.project, extra_rows=read_rows(a.manifest) if a.manifest else None)
+        write_json(a.output, report)
+        if not report["passed"]:
+            raise ValueError("Independent Final source audit failed: " + str(report["errors"][:10]))
         return report
     if a.command == "prepare-frontend":
         from .assets import prepare_frontend

@@ -123,7 +123,7 @@ koww generate-hard --project projects/bora/project.json --phrases 보리야 보�
 
 폐기한 표현은 원본 목록과 승인 범위에서도 제외합니다. 승인된 원본이 75개여도 학습 배치에서는 100개를 무작위 복원 추출할 수 있습니다. 원본 수와 배치 추출량을 구분하고, 배치를 맞추려고 폐기한 표현이나 복제 WAV를 추가하지 않습니다.
 
-**동작 확인용**에서는 개발용 생성 명령을 아래처럼 바꿔 우선 100개만 만드세요. 학습용과 다른 개발용 음색·자료를 사용하는 원칙은 유지합니다.
+학습 규모와 관계없이 **명령의 빠른 기능 시험만 따로 할 때**는 개발용 생성 수를 아래처럼 100개로 제한할 수 있습니다. 기본 공통 평가는 5,000개이며, 학습용과 다른 개발용 음색·자료를 사용하는 원칙은 유지합니다.
 
 ```powershell
 koww generate --project projects/bora/project.json --split validation --limit 100
@@ -196,20 +196,20 @@ koww package --project projects/bora/project.json --run projects/bora/runs/selec
 개발용 호출어와 배경음이 준비되면 같은 호출에 같은 소음 구간을 섞어 평가 오디오를 만듭니다.
 
 ```powershell
-koww prepare-eval --project projects/bora/project.json --output projects/bora/data/eval/paired_v1 --split validation --originals 5000 --noise-sections 5 --noise-selection balanced_sources
+koww prepare-eval --project projects/bora/project.json --output projects/bora/data/eval/paired_v1 --split validation --originals 5000 --noise-sections 1 --noise-selection balanced_sources
 ```
 
-Clean(소음 없음)과 SNR 20·15·10·5·0dB를 만듭니다. SNR이 낮을수록 호출어에 비해 소음이 큽니다. 환경소음·음악·겹치는 한국어 대화 결과를 따로 비교합니다. 처음 흐름을 확인할 때는 `--originals 100`으로 줄일 수 있으나 최종 모델 선택은 계획한 평가 규모로 확인합니다. 여러 조건의 WAV가 생성되므로 [저장 공간](STORAGE_POLICY.md)도 확인하세요.
+세 학습 규모 모두 같은 공통 평가 음색10계열·호출 원본5,000개와 배경193개+한국어 낭독을 사용합니다. Clean(소음 없음)과 범주별 SNR20·15·10·5·0dB를 합쳐 기본80,000개 WAV를 만듭니다. SNR이 낮을수록 호출어에 비해 소음이 큽니다. 환경음·음악/전자음·겹치는 한국어 음성 결과를 따로 비교합니다. 같은 호출어의 모델을 비교할 때는 기존 평가 WAV와 목록을 재사용하세요. [저장 공간](STORAGE_POLICY.md)도 확인합니다.
 
-**동작 확인용**에서는 위 명령을 아래처럼 바꿔 호출 원본 100개와 배경 종류별 소음 구간 1개로 시험합니다.
+학습 규모와 관계없이 **빠른 기능 시험만 선택할 때**는 아래처럼 원본100개로 일부를 실행할 수 있습니다. 이는 기본 공통 평가 전체를 완료한 결과가 아닙니다.
 
 ```powershell
 koww prepare-eval --project projects/bora/project.json --output projects/bora/data/eval/paired_v1 --split validation --originals 100 --noise-sections 1 --noise-selection balanced_sources
 ```
 
-동작 확인만 할 때는 아래 **`evaluate` 명령의 결과 저장까지 확인하면 이 단계를 마칩니다.** `tune`·`select-runtime`과 8단계의 최종 평가는 이후 성능 검증 때 진행합니다. 짧은 평가 결과를 오호출 목표 통과나 최종 모델로 표시하지 않으며, 개발용 20~30시간·최종 100시간 등의 평가 기준은 그대로 유지합니다.
+빠른 기능 시험은 아래 `evaluate`의 저장까지 확인하고 마칠 수 있습니다. 전체 공통 평가와 감지 설정 선택은 정해진 표본으로 진행하며 독립 최종 평가는8단계에서 따로 수행합니다. 짧은 결과를 오호출 목표 통과나 최종 성능으로 표시하지 않습니다.
 
-출력의 `manifest.jsonl`에 학습에 쓰지 않은 연속 비호출 평가 목록을 합쳐 `data/eval/development.jsonl`을 만듭니다. **성능 검증 단계에서는 20~30시간**, 동작 확인용에서는 소량을 사용해 채점 흐름을 확인할 수 있습니다. [평가 목록 작성법](DATA_FORMAT.md#평가-자료-목록)에 형식과 합치는 예시가 있습니다.
+출력의 `manifest.jsonl`에 학습에 쓰지 않은 연속 비호출 **20~30시간**의 목록을 합쳐 `data/eval/development.jsonl`을 만듭니다. 기본 배경 묶음만으로 이 시간이 자동 확보되는 것은 아닙니다. [평가 목록 작성법](DATA_FORMAT.md#평가-자료-목록)에 형식과 합치는 예시가 있습니다.
 
 ```powershell
 koww evaluate --project projects/bora/project.json --bundle projects/bora/models/candidate_selected --manifest projects/bora/data/eval/development.jsonl --output projects/bora/reports/dev_selected
@@ -237,7 +237,9 @@ koww select-runtime --project projects/bora/project.json --bundle projects/bora/
 koww freeze --project projects/bora/project.json --bundle projects/bora/reports/gates_selected/bundle --development-report projects/bora/reports/gates_selected/evaluation/report.json
 ```
 
-이후 최종 평가용 음색을 생성·검수합니다. 검수 저장 후 서버를 종료하세요.
+동결 후에는 학습·공통 평가 입력 목록과 실제 개발 평가 자료가 해시로 고정됩니다. Final용 배경은 `project.json`이 지정한 `noise_final` 목록에 실제 출처·원본 경로·해시·`split: final`을 넣어 별도로 연결합니다. 학습·공통 평가 자료를 재분류하지 않습니다. 미리 예약한 Final 목록이 동결 전에 비어 있지 않았다면 해당 목록도 고정되므로 변경할 수 없습니다. [자료 형식](DATA_FORMAT.md)을 참고하세요.
+
+이후 별도 최종 평가용 음색을 생성·검수합니다. 검수 저장 후 서버를 종료하세요.
 
 ```powershell
 koww references --project projects/bora/project.json --split final
@@ -249,7 +251,13 @@ koww generate --project projects/bora/project.json --split final
 koww prepare-eval --project projects/bora/project.json --output projects/bora/data/eval/final_paired_v1 --split final --originals 5000 --noise-sections 5 --noise-selection balanced_sources
 ```
 
-이 단계에서 만든 호출어 목록과 **별도 연속 비호출 100시간 이상**을 합쳐 `data/eval/final.jsonl`을 준비합니다. 학습·개발용 자료와 음색·원본을 공유하지 않습니다.
+이 단계에서 만든 호출어 목록과 **별도 연속 비호출100시간 이상**을 합쳐 `data/eval/final.jsonl`을 준비합니다. 학습·공통 평가와 음색·원본·알려진 화자·음악가·공간을 공유하지 않습니다. 생성된 혼합 오디오는 `components`에 호출어·배경의 원본 정보를 보존합니다. 다른 도구로 섞은 Final 오디오도 이 출처 정보를 제공해야 합니다.
+
+채점 전에 실제 입력 분리를 검사합니다. 파일명이 달라도 같은 원본 ID·해시·동일 길이 PCM이 겹치면 거부합니다. 원본을 알 수 없는 Generic 특징이나 미확인 화자 등의 검사 한계도 보고합니다.
+
+```powershell
+koww audit-final --project projects/bora/project.json --manifest projects/bora/data/eval/final.jsonl --output projects/bora/reports/final_source_audit_v1.json
+```
 
 ```powershell
 koww evaluate --project projects/bora/project.json --bundle projects/bora/reports/gates_selected/bundle --stage final --manifest projects/bora/data/eval/final.jsonl --output projects/bora/reports/final_v1
