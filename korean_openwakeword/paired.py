@@ -15,10 +15,13 @@ from .source_identity import component_lineage
 
 
 def evaluation_recipe(project, split="validation", originals=100, noise_sections=5,
-                      snrs=(20, 15, 10, 5, 0), noise_selection="legacy", reverb_originals=0):
+                      snrs=(20, 15, 10, 5, 0), noise_selection="legacy", reverb_originals=0,
+                      reverb_selection="legacy"):
     """Hash-bound construction inputs; old outputs never acquire a new policy."""
     if noise_selection not in ("legacy", "balanced_sources"):
         raise ValueError("Noise selection must be legacy or balanced_sources")
+    if reverb_selection not in ("legacy", "metadata_axes"):
+        raise ValueError("Reverberation selection must be legacy or metadata_axes")
     root, config = load_project(project)
     result = {"kind": "paired_evaluation_recipe_v1", "split": split,
             "noise_selection": "balanced_sources_v1" if noise_selection == "balanced_sources" else "legacy",
@@ -33,7 +36,8 @@ def evaluation_recipe(project, split="validation", originals=100, noise_sections
         if not manifest:
             raise ValueError("A separate held-out RIR manifest is required; training RIRs cannot substitute")
         result["reverberation"] = {"originals": reverb_originals, "groups": ["moderate", "strong"],
-            "selection_policy": "voice_then_style_stratified_fixed_subset_v1",
+            "selection_policy": ("voice_then_declared_axes_stratified_fixed_subset_v2" if reverb_selection == "metadata_axes"
+                                 else "voice_then_style_stratified_fixed_subset_v1"),
             "rir_assignment_policy": "declared_group_then_room_then_source_v1",
             "snr_basis": "reverberated_call_active_region_before_background_mixing",
             "background_policy": "same_dry_source_window_and_offset_with_explicit_right_zero_padding",
@@ -42,7 +46,7 @@ def evaluation_recipe(project, split="validation", originals=100, noise_sections
     return result
 
 
-def reverb_subset(positives, count, seed):
+def reverb_subset(positives, count, seed, *, selection="legacy"):
     """Fix a voice-balanced subset while spreading declared style combinations.
 
     Missing style facts remain missing. IDs or requested TTS descriptions never
@@ -50,13 +54,18 @@ def reverb_subset(positives, count, seed):
     """
     if type(count) is not int or not 0 <= count <= len(positives):
         raise ValueError("Reverberation subset must fit the selected original calls")
+    if selection not in ("legacy", "metadata_axes"):
+        raise ValueError("Reverberation selection must be legacy or metadata_axes")
     strata = defaultdict(lambda: defaultdict(list))
     style_keys = ("style", "speed", "intonation", "vocal_effort", "call_length")
     for row in positives:
         family = row.get("voice_family_id")
         if not family:
             raise ValueError("Reverberation stratification needs declared synthetic voice families")
-        style = tuple(str(row.get(key, "unspecified")) for key in style_keys)
+        axes = row.get("axes", {}) if selection == "metadata_axes" else {}
+        if not isinstance(axes, dict):
+            raise ValueError("Declared synthetic style axes must be an object")
+        style = tuple(str(axes.get(key, row.get(key, "unspecified"))) for key in style_keys)
         strata[family][style].append(row)
     queues = {}
     for family, styles in strata.items():
@@ -338,7 +347,7 @@ def _coverage(pools, selections, entries, recipe, manifest):
 
 
 @project_storage
-def prepare_evaluation(project, output, split="validation", originals=100, noise_sections=5, snrs=(20, 15, 10, 5, 0), noise_selection="legacy", reverb_originals=0):
+def prepare_evaluation(project, output, split="validation", originals=100, noise_sections=5, snrs=(20, 15, 10, 5, 0), noise_selection="legacy", reverb_originals=0, reverb_selection="legacy"):
     root, config = load_project(project)
     if type(originals) is not int or originals < 1 or type(noise_sections) is not int or noise_sections < 1 or not snrs or any(not math.isfinite(s) for s in snrs):
         raise ValueError("Declare positive counts and finite SNR conditions")
@@ -366,7 +375,7 @@ def prepare_evaluation(project, output, split="validation", originals=100, noise
             raise ValueError("Independent Final source audit failed: " + str(final_audit["errors"][:3]))
     if type(reverb_originals) is not int or not 0 <= reverb_originals <= min(originals, len(positives)):
         raise ValueError("Reverberation subset must fit the selected original calls")
-    recipe = evaluation_recipe(project, split, originals, noise_sections, snrs, noise_selection, reverb_originals)
+    recipe = evaluation_recipe(project, split, originals, noise_sections, snrs, noise_selection, reverb_originals, reverb_selection)
     pools = _balanced_pool(noises) if noise_selection == "balanced_sources" else None
     selection_order = {}
     if pools is not None:
@@ -374,7 +383,7 @@ def prepare_evaluation(project, output, split="validation", originals=100, noise
         # Keep playback order stable while avoiding a periodic correlation
         # between synthetic voice/style slots and background-type cycles.
         selection_order = _assignment_order(positives[:originals], config["augmentation"]["seed"])
-    chosen_reverb = reverb_subset(positives[:originals], reverb_originals, config["augmentation"]["seed"])
+    chosen_reverb = reverb_subset(positives[:originals], reverb_originals, config["augmentation"]["seed"], selection=reverb_selection)
     reverb_order = {row["sample_id"]: index for index, row in enumerate(chosen_reverb)}
     reverb_pools = _reverb_pool(root, read_rows(resolved(root, config["manifests"]["rir_" + split])), split) if reverb_originals else None
     output = Path(output).resolve()

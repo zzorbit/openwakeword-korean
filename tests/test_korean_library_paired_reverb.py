@@ -33,31 +33,69 @@ def rirs(project):
     return values
 
 
-def test_subset_is_fixed_voice_balanced_and_spreads_available_styles():
+@pytest.mark.parametrize("count", [625, 1000])
+def test_subset_is_fixed_voice_balanced_and_spreads_available_styles(count):
     values = [{"sample_id": f"call_{family}_{i}", "voice_family_id": f"voice_{family}",
                "style": ["neutral", "projected"][i % 2], "speed": ["slow", "fast"][(i // 2) % 2]}
               for family in range(10) for i in range(500)]
-    chosen = reverb_subset(values, 625, 42)
-    assert len(chosen) == len({r["sample_id"] for r in chosen}) == 625
+    chosen = reverb_subset(values, count, 42)
+    assert len(chosen) == len({r["sample_id"] for r in chosen}) == count
     assert {r["voice_family_id"] for r in chosen} == {f"voice_{i}" for i in range(10)}
-    assert set(Counter(r["voice_family_id"] for r in chosen).values()) == {62, 63}
-    assert chosen == reverb_subset(list(reversed(values)), 625, 42)
+    assert max(Counter(r["voice_family_id"] for r in chosen).values()) - min(Counter(r["voice_family_id"] for r in chosen).values()) <= 1
+    assert chosen == reverb_subset(list(reversed(values)), count, 42)
     assert len(Counter((r["voice_family_id"], r["style"], r["speed"]) for r in chosen)) == 40
 
 
-def test_reverb_adds_only_fixed_subset_preserves_dry_audio_and_pairs_backgrounds(project):
+def test_thousand_call_subset_balances_thirty_families_and_declared_styles():
+    values = [{"sample_id": f"call_{slot:05d}", "voice_family_id": f"voice_{slot % 30:02d}",
+               "axes": {"style": ["neutral", "projected"][(slot // 30) % 2],
+                        "speed": ["slow", "fast"][(slot // 60) % 2],
+                        "intonation": ["rising", "falling"][(slot // 120) % 2]}}
+              for slot in range(5000)]
+    chosen = reverb_subset(values, 1000, 42, selection="metadata_axes")
+    counts = Counter(row["voice_family_id"] for row in chosen)
+    assert set(counts.values()) == {33, 34} and len(counts) == 30
+    assert len(chosen) == len({row["sample_id"] for row in chosen}) == 1000
+    assert chosen == reverb_subset(values[2000:] + values[:2000], 1000, 42, selection="metadata_axes")
+    assert {r["sample_id"] for r in reverb_subset(values, 625, 42, selection="metadata_axes")} <= {r["sample_id"] for r in chosen}
+    assert chosen != reverb_subset(values, 1000, 42)  # Legacy ignores the nested TTS axes.
+    styles = Counter((row["voice_family_id"], row["axes"]["style"], row["axes"]["speed"], row["axes"]["intonation"]) for row in chosen)
+    assert len(styles) == 30 * 8 and max(styles.values()) - min(styles.values()) <= 1
+
+
+def test_metadata_axes_sampling_falls_back_to_old_explicit_fields_and_records_recipe(project):
+    from korean_openwakeword.paired import evaluation_recipe
+    values = [{"sample_id": f"call_{slot}", "voice_family_id": f"voice_{slot % 2}",
+               "style": ["neutral", "projected"][(slot // 2) % 2]} for slot in range(100)]
+    assert reverb_subset(values, 24, 42, selection="metadata_axes") == reverb_subset(values, 24, 42)
+    old = evaluation_recipe(project, originals=12, reverb_originals=3)
+    new = evaluation_recipe(project, originals=12, reverb_originals=3, reverb_selection="metadata_axes")
+    assert old["reverberation"]["selection_policy"] == "voice_then_style_stratified_fixed_subset_v1"
+    assert new["reverberation"]["selection_policy"] == "voice_then_declared_axes_stratified_fixed_subset_v2"
+    assert {key for key in old["reverberation"] if old["reverberation"][key] != new["reverberation"][key]} == {"selection_policy"}
+    with pytest.raises(ValueError, match="Declared synthetic style axes"):
+        reverb_subset([{**values[0], "axes": "not metadata"}], 1, 42, selection="metadata_axes")
+
+
+@pytest.mark.parametrize("selection", ["legacy", "metadata_axes"])
+def test_reverb_adds_only_fixed_subset_preserves_dry_audio_and_pairs_backgrounds(project, selection):
     root = project.parent
     rirs(project)
     baseline = prepare_evaluation(project, root / "reports/dry", originals=12, noise_sections=1,
                                   noise_selection="balanced_sources")
     result = prepare_evaluation(project, root / "reports/with_rir", originals=12, noise_sections=1,
-                                noise_selection="balanced_sources", reverb_originals=3)
+                                noise_selection="balanced_sources", reverb_originals=3, reverb_selection=selection)
     dry = read_rows(baseline["manifest"])
     all_rows = read_rows(result["manifest"])
     assert len(all_rows) == 12 * 16 + 3 * 16 * 2
     assert {r["sample_id"]: r["sha256"] for r in dry} == {
         r["sample_id"]: r["sha256"] for r in all_rows if not r.get("rir_applied")}
     assert Counter(r.get("reverb_condition", "none") for r in all_rows) == {"none": 192, "moderate": 48, "strong": 48}
+    originals_by_group = {group: {row["original_id"] for row in all_rows if row.get("reverb_condition", "none") == group}
+                          for group in ("none", "moderate", "strong")}
+    assert originals_by_group["moderate"] == originals_by_group["strong"]
+    assert len(originals_by_group["moderate"]) == 3
+    assert originals_by_group["moderate"] <= originals_by_group["none"]
     by_dry = {(r["original_id"], r["category"], r.get("snr_db")): r for r in dry}
     for row in all_rows:
         if not row.get("rir_applied"):

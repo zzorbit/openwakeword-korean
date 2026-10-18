@@ -118,6 +118,21 @@ def test_recipes_preview_has_three_budgets_known_sources_and_no_network(manager)
     assert manager.workers.calls == []
 
 
+def test_registered_v2_workflow_keeps_its_frozen_protocol_when_opened_after_upgrade(manager):
+    from korean_openwakeword.studio_steps import common_evaluation_policy
+    view = create(manager)
+    state = manager._load(view["id"])
+    state["settings"]["evaluation_policy"] = common_evaluation_policy(2)
+    manager._save(state)
+    path = manager._path(view["id"])
+    original = path.read_bytes()
+    reopened = create(manager, directory=str(Path(state["project"]).parent))
+    assert reopened["id"] == view["id"]
+    assert manager._load(view["id"])["settings"]["evaluation_policy"] == common_evaluation_policy(2)
+    assert path.read_bytes() == original
+    assert manager.workers.calls == []
+
+
 def test_shared_evaluation_scope_reports_real_negative_hours_and_final_pending(manager):
     project = create(manager)
     state = manager._load(project["id"])

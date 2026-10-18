@@ -13,8 +13,9 @@ def assess_common_evaluation(policy, report, manifest, noise_coverage):
     theorem or a guarantee of real-speaker or deployment performance.
     """
     coverage = read_json(noise_coverage) if isinstance(noise_coverage, (str, Path)) else noise_coverage
-    originals, families, conditions = set(), set(), Counter()
+    originals, dry_originals, families, conditions = set(), set(), set(), Counter()
     reverb_conditions, reverb_originals, reverb_sources, reverb_rooms = Counter(), {}, {}, {}
+    paired_cells = {} if policy.get("id") == "common_development_v3" else None
     measured = {key: {"sources": set(), "types": set(), "music_sources": set()} for key in
                 ("environment", "music", "competing_speech")}
     for row in iter_rows(manifest):
@@ -26,7 +27,10 @@ def assess_common_evaluation(policy, report, manifest, noise_coverage):
         category, snr = row.get("category"), row.get("snr_db")
         group = row.get("reverb_condition", "none")
         reverb_conditions[group, category, snr] += 1
+        if paired_cells is not None:
+            paired_cells.setdefault((group, category, snr), set()).add(row.get("original_id", row["sample_id"]))
         if group == "none":
+            dry_originals.add(row.get("original_id", row["sample_id"]))
             conditions[category, snr] += 1
         else:
             reverb_originals.setdefault(group, set()).add(row.get("original_id", row["sample_id"]))
@@ -74,11 +78,22 @@ def assess_common_evaluation(policy, report, manifest, noise_coverage):
                                        ("잔향 공간", actual_rooms, policy.get("rir_rooms", policy.get("rir_min_rooms", 20)))):
             if actual < minimum:
                 shortages.append(f"{label} {actual}/{minimum}개")
-        if policy.get("id") == "common_development_v2":
+        if policy.get("id") in ("common_development_v2", "common_development_v3"):
             for group in policy.get("reverb_groups", ("moderate", "strong")):
                 minimum = policy.get("rir_rooms", 20) // 2
                 if len(reverb_rooms.get(group, set())) < minimum:
                     shortages.append(f"잔향 {group} 공간 {len(reverb_rooms.get(group, set()))}/{minimum}개")
+        if policy.get("id") == "common_development_v3":
+            selected = [reverb_originals.get(group, set()) for group in policy["reverb_groups"]]
+            if selected and any(values != selected[0] for values in selected[1:]):
+                shortages.append("일반·강한 잔향 시험에 서로 다른 호출어 원본이 사용됨")
+            if any(values - dry_originals for values in selected):
+                shortages.append("잔향 시험 원본과 대응하는 잔향 없음 시험 누락")
+            # Marginal cell totals alone can hide a duplicated call replacing
+            # another. Each selected original needs all 16 paired conditions.
+            for group, selected_ids in [("none", dry_originals)] + list(zip(policy["reverb_groups"], selected)):
+                if any(paired_cells.get((group, category, snr), set()) != selected_ids for category, snr in expected):
+                    shortages.append(f"호출어 원본별 16조건 대응 누락: {group}")
     categories = {}
     category_names = {"environment": "환경음", "music": "음악·전자음", "competing_speech": "한국어 간섭 음성"}
     measure_names = {"types": "종류", "sources": "원본", "music_sources": "실제 음악 원본"}
@@ -95,7 +110,7 @@ def assess_common_evaluation(policy, report, manifest, noise_coverage):
     if minimum_hours is None or minimum_hours < target_hours:
         shortages.append(f"연속 비호출 평가 {minimum_hours if minimum_hours is not None else '미측정'}/{target_hours}시간")
     negative_materials = None
-    if policy.get("id") == "common_development_v2":
+    if policy.get("id") in ("common_development_v2", "common_development_v3"):
         from .evaluation_materials import evaluation_material_coverage
         negative_materials = evaluation_material_coverage(row for row in iter_rows(manifest) if row.get("kind") == "negative")
         # The material helper owns interval union/source deduplication; neither

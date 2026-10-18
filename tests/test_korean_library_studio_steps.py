@@ -344,11 +344,13 @@ def test_old_completed_output_with_different_recipe_is_retained_as_separate_vers
 
 
 @pytest.mark.parametrize("preset", ["check", "trial", "production"])
-def test_studio_development_selects_balanced_policy_and_preserves_old_pair_outputs(project, monkeypatch, preset):
+@pytest.mark.parametrize("policy_version", [2, 3])
+def test_studio_development_selects_balanced_policy_and_preserves_old_pair_outputs(project, monkeypatch, preset, policy_version):
     from korean_openwakeword import paired
     from korean_openwakeword import evaluation_materials
     monkeypatch.setattr(evaluation_materials, "evaluation_material_coverage", lambda rows: {"target_met": True, "shortages": []})
     settings = steps.preset_settings(preset)
+    settings["evaluation_policy"] = steps.common_evaluation_policy(policy_version)
     project = create_project(project.parent.parent / preset, "보라야", "bora", positive_originals=settings["originals"],
                              augmentation_rounds=settings["rounds"], updates=settings["updates"],
                              generic_hours=settings["generic_hours"], korean_hours=settings["korean_hours"])
@@ -375,10 +377,15 @@ def test_studio_development_selects_balanced_policy_and_preserves_old_pair_outpu
     result = run(project, "development", {"results": {"data_connect": {"result": {"negative_validation_manifest": str(negative_manifest)}}}}, settings=settings)
     assert result["state"] == "completed" and calls[0]["noise_selection"] == "balanced_sources"
     assert calls[0]["originals"] == settings["validation_originals"] and calls[0]["noise_sections"] == 1
+    assert calls[0]["reverb_originals"] == settings["evaluation_policy"]["reverb_originals"]
+    if policy_version == 3:
+        assert calls[0]["reverb_selection"] == "metadata_axes"
+    else:
+        assert "reverb_selection" not in calls[0]
     assert (old / "manifest.jsonl").read_text() == "old completed pair evidence\n"
     assert (root / "reports/studio_paired_attempt2/recipe.json").is_file()
     assert result["result"]["noise_coverage"]
-    assert result["result"]["evaluation_policy_sha256"] == identity(steps.common_evaluation_policy())
+    assert result["result"]["evaluation_policy_sha256"] == identity(settings["evaluation_policy"])
     assert calls[0]["snrs"] == (20, 15, 10, 5, 0)
 
 

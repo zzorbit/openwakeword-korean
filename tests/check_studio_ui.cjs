@@ -118,6 +118,19 @@ function browser({ noBoot = false, initialState, recipeError = false, recipeOver
     assert.match(group.children.at(-1).textContent, /학습·공통 평가에서 쓰지 않은.*확정 후/);
     assert.match(group.children.at(-1).textContent, /장시간 오호출 검증/);
   });
+  await test("versioned reverb summaries use each policy count and retain historical totals", async () => {
+    for (const [version, originals, reverb, total] of [[2, 625, 20000, 100000], [3, 1000, 32000, 112000]]) {
+      const policy = { id: `common_development_v${version}`, validation_references: 30, validation_originals: 5000, snrs: [20, 15, 10, 5, 0], positive_sessions: total, dry_positive_sessions: 80000, reverb_originals: originals, reverb_positive_sessions: reverb, rir_rooms: 20 };
+      const b = browser({ recipeOverrides: { evaluation_policy: policy, evaluation_sources: [{ name: "공통 배경 음원" }] } }); await flush();
+      const group = b.elements.get("source-preview").children[1];
+      const notices = group.children.filter(child => child.className?.includes("common-evaluation"));
+      assert.equal(notices.length, 3);
+      assert.match(notices[0].textContent, new RegExp(`총 ${total.toLocaleString("ko-KR")}개`));
+      assert.match(notices[1].textContent, new RegExp(`잔향 없음 80,000회와 일반·강한 울림 ${reverb.toLocaleString("ko-KR")}회`));
+      assert.match(notices[2].textContent, new RegExp(`같은 원본 ${originals.toLocaleString("ko-KR")}개를 두 잔향 강도`));
+      assert.match(notices[2].textContent, /목록과 seed를 고정.*최적값이라는 뜻은 아닙니다/);
+    }
+  });
   await test("large background-type lists show eight examples and fold the remaining types", async () => {
     const types = ["rain", "wind", "dog", "cat", "coughing", "laughing", "clapping", "snoring", "music_jazz", "music_techno", "music_hiphop"];
     const b = browser({ recipeOverrides: { sources: [], evaluation_sources: [{ name: "공통 평가 자료", eval_types: types }] } }); await flush();

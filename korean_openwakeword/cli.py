@@ -169,7 +169,8 @@ def parser():
     a.add_argument("--project", type=Path, required=True); a.add_argument("--output", type=Path, required=True)
     a.add_argument("--split", choices=("validation", "final"), default="validation"); a.add_argument("--originals", type=int, default=100)
     a.add_argument("--noise-sections", type=int, default=5)
-    a.add_argument("--reverb-originals", type=int, default=0, help="잔향 추가 시험에 사용할 고정 원본 수; 625이면 5,000개 기준 총 10만 회")
+    a.add_argument("--reverb-originals", type=int, default=0, help="잔향 추가 시험에 사용할 고정 원본 수; 1000이면 5,000개 기준 총 112,000회")
+    a.add_argument("--reverb-selection", choices=["legacy", "metadata_axes"], default="legacy", help="잔향 원본 선별: 새 공통 평가에는 metadata_axes 사용; 기존 recipe는 legacy 유지")
     a.add_argument("--noise-selection", choices=("legacy", "balanced_sources"), default="legacy",
                    help="legacy: 기존 원본 선택 / balanced_sources: 소음 세부 종류와 원본 균형 선택")
     a = sub.add_parser("evaluate", help="동일 WAV의 단일·평균 모델 평가")
@@ -355,7 +356,8 @@ def dispatch(a):
     if a.command == "prepare-eval":
         from .paired import prepare_evaluation
         return prepare_evaluation(a.project, a.output, a.split, a.originals, a.noise_sections,
-                                  noise_selection=a.noise_selection, reverb_originals=a.reverb_originals)
+                                  noise_selection=a.noise_selection, reverb_originals=a.reverb_originals,
+                                  reverb_selection=a.reverb_selection)
     if a.command == "evaluate":
         from .evaluate import evaluate
         return evaluate(a.project, a.bundle, a.output, a.stage, a.manifest, a.smoke, a.candidate,
