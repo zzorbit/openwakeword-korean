@@ -153,90 +153,152 @@
     });
     replace($("presets"), nodes.length ? nodes : [element("p", "사용 가능한 작업 규모가 없습니다. 서버 설정을 확인하세요.", "muted")]);
   }
+  function originalSize(value) {
+    if (!Number.isFinite(value) || value <= 0) return "";
+    return value >= 1e9 ? `${(value / 1e9).toFixed(2)} GB` : value >= 1e6 ? `${(value / 1e6).toFixed(1)} MB` : `${Math.round(value / 1e3)} KB`;
+  }
+  function materialGroups(recipe) {
+    const hours = value => `${number(value)}시간`, count = value => `${number(value)}개`;
+    const selected = (id, fallback) => $(id).value !== "" && Number.isFinite(Number($(id).value)) && Number($(id).value) >= 0 ? Number($(id).value) : fallback;
+    const originals = selected("adv-originals", recipe.originals ?? recipe.positive_originals);
+    const genericHours = selected("adv-generic", recipe.generic_hours ?? recipe.automatic_target_hours?.generic_nominal ?? 0);
+    const koreanHours = selected("adv-korean", recipe.korean_hours ?? recipe.automatic_target_hours?.korean_train ?? 0);
+    const policy = recipe.evaluation_policy || recipe.evaluation_materials_policy || {};
+    const assets = recipe.assets || [], sources = recipe.sources || assets;
+    const asset = id => sources.find(item => item.id === id) || assets.find(item => item.id === id);
+    const size = item => item?.bytes ?? item?.size_bytes ?? item?.total_bytes ?? item?.totalbytes;
+    const bundleSize = ids => {
+      const values = ids.map(id => size(asset(id))).filter(Number.isFinite);
+      return values.length ? values.reduce((sum, value) => sum + value, 0) : undefined;
+    };
+    const source = (name, content, amount, rank, record, fileBytes = size(record)) => ({ name, content, amount, rank, bytes: fileBytes, url: record?.url || record?.source_url });
+    const fallback = record => {
+      const time = record.target_hours ?? record.hours;
+      return source(record.display_name || record.name || record.id || record.dataset_id || "공개 자료",
+        record.description || backgroundTypeNames(record).join(" · ") || "공개 오디오 자료",
+        time !== undefined ? hours(time) : record.file_count !== undefined ? count(record.file_count) : "1묶음",
+        time === undefined ? null : time * 3600, record);
+    };
+    const suppliedGeneric = recipe.automatic_target_hours?.generic_nominal ?? asset("generic")?.hours ?? 0;
+    const suppliedKorean = recipe.automatic_target_hours?.korean_train ?? asset("zeroth")?.hours ?? 0;
+    const generic = asset("generic") ? [source("openWakeWord", "일반 음성·음악·환경음의 특징 데이터", hours(suppliedGeneric), suppliedGeneric * 3600, asset("generic"))] : [];
+    const korean = asset("zeroth") ? [source("Zeroth Korean", "한국어 낭독 음성", hours(suppliedKorean), suppliedKorean * 3600, asset("zeroth"))] : [];
+    for (const [items, target, available, content] of [[generic, genericHours, suppliedGeneric, "일반 비호출 음원·특징 자료"], [korean, koreanHours, suppliedKorean, "한국어 대화·낭독 등 음성"]]) {
+      if (target > available) items.push(source("추가 자료", `직접 준비할 ${content}`, hours(target - available), (target - available) * 3600));
+    }
+    const noise = [];
+    if (asset("fma")) noise.push(source("FMA", "음악 120곡 · 곡당 30초", "약 1시간", 3600, asset("fma"), bundleSize(["fma", "fma_metadata"])));
+    if (asset("zeroth")) noise.push(source("Zeroth Korean", "학습용 한국어 낭독 재사용", hours(suppliedKorean), suppliedKorean * 3600, asset("zeroth")));
+    if (asset("dns_fan")) noise.push(source("DNS-Challenge", "팬 작동 소리", "10초", 10, asset("dns_fan")));
+    if (asset("audioset")) noise.push(source("AudioSet", "여러 종류의 일반 오디오", "1묶음", null, asset("audioset"), bundleSize(["audioset", "audioset_segments", "audioset_ontology"])));
+    const mit = asset("mit_rir") || recipe.additional_download;
+    const training = [
+      { id: "positive", name: "호출어 음성", description: "호출어만 말한 합성 음성", amount: count(originals), sources: [source("Qwen TTS", "호출어만 말한 음성", count(originals), originals)] },
+      { id: "hard", name: "유사어 음성", description: "호출어로 오인할 수 있는 다른 단어·표현", amount: count(recipe.hard_originals ?? 0), sources: [source("Qwen TTS", "헷갈리기 쉬운 단어·표현을 합성한 음성", count(recipe.hard_originals ?? 0), recipe.hard_originals ?? 0)] },
+      { id: "generic", name: "일반 비호출 자료", description: "일반 음성 · 음악 · 환경음", amount: hours(genericHours), sources: generic },
+      { id: "korean", name: "한국어 비호출 자료", description: koreanHours > suppliedKorean ? "한국어 대화 · 낭독 등 음성" : "한국어 낭독 음성", amount: hours(koreanHours), sources: korean },
+      { id: "noise", name: "소음 증강 음원", description: "일반 오디오 · 음악 · 팬 소음 · 한국어 음성", amount: `${number(noise.length)}종`, sources: noise },
+      { id: "rir", name: "잔향 자료", description: "공간의 울림을 재현하는 파일", amount: mit ? count(mit.files ?? mit.file_count) : "0개", sources: mit ? [source("MIT RIR", "공간의 울림 특성", count(mit.files ?? mit.file_count), mit.files ?? mit.file_count, mit)] : [] }
+    ];
+    const isEvaluation = item => ["validation", "development"].includes(item.split) || /held_out|evaluation|validation/.test(item.role || "");
+    const knownTrain = new Set(["generic", "zeroth", "fma", "audioset", "dns_fan", "mit_rir"]);
+    for (const item of sources.filter(item => !isEvaluation(item) && item.role !== "provider_metadata" && !knownTrain.has(item.id))) {
+      training.push({ id: `extra-${training.length}`, name: item.display_name || item.name || item.id || "공개 자료", description: item.description || "추가 학습 자료", amount: fallback(item).amount, sources: [fallback(item)] });
+    }
+    const buckets = policy.negative_hours_by_bucket || {};
+    const evalSources = [...sources.filter(isEvaluation), ...(recipe.evaluation_sources || [])]
+      .filter(item => policy.id !== "common_development_v4" || item.id === "openslr28_common_rir_v1" || Object.keys(buckets).some(key => item.id === `common_30h_${key}`));
+    const bucketRecord = key => evalSources.find(item => item.id === `common_30h_${key}` || item.dataset_id === key);
+    const bucketHours = key => buckets[key] ?? bucketRecord(key)?.target_hours ?? 0;
+    const bucketLabels = { korean_conversation: "대화", korean_interview: "인터뷰", korean_read: "낭독", other_speech: "다른 언어", music: "음악", environment: "환경음", electronic: "전자음" };
+    const content = keys => keys.filter(key => bucketHours(key) > 0).map(key => `${bucketLabels[key]} ${hours(bucketHours(key))}`).join(" · ");
+    const groupSource = (name, keys, description = content(keys)) => {
+      const records = keys.map(bucketRecord).filter(Boolean), total = keys.reduce((sum, key) => sum + bucketHours(key), 0);
+      // Bucket records can point to the same archive; its size is never additive.
+      const knownSizes = records.map(size).filter(Number.isFinite);
+      return source(name, description, hours(total), total * 3600, records[0], knownSizes.length ? Math.max(...knownSizes) : undefined);
+    };
+    const generalKeys = ["other_speech", "music", "environment", "electronic"], koreanKeys = ["korean_conversation", "korean_interview", "korean_read"];
+    const evaluation = [];
+    const validationOriginals = recipe.validation_originals ?? policy.validation_originals;
+    const references = recipe.validation_references ?? policy.validation_references;
+    if (validationOriginals !== undefined) evaluation.push({ id: "positive", name: "호출어 음성", description: `${number(references)}가지 음색 계열의 단독 호출`, amount: count(validationOriginals), sources: [source("Qwen TTS", `${number(references)}가지 음색 계열로 말한 호출어`, count(validationOriginals), validationOriginals)] });
+    if (Object.keys(buckets).length) {
+      const general = [groupSource("MUSAN", ["other_speech", "music"]), groupSource("FSD50K", ["environment", "electronic"])].filter(item => item.rank > 0);
+      const speech = [groupSource("Seoul Corpus", ["korean_conversation", "korean_interview"]), groupSource("Zeroth Korean", ["korean_read"], "한국어 낭독 음성")].filter(item => item.rank > 0);
+      const totalHours = Object.values(buckets).reduce((sum, value) => sum + value, 0);
+      evaluation.push(
+        { id: "generic", name: "일반 비호출 자료", description: content(generalKeys), amount: hours(generalKeys.reduce((sum, key) => sum + bucketHours(key), 0)), sources: general },
+        { id: "korean", name: "한국어 비호출 자료", description: content(koreanKeys), amount: hours(koreanKeys.reduce((sum, key) => sum + bucketHours(key), 0)), sources: speech },
+        { id: "noise", name: "소음 증강 음원", description: "위 평가용 비호출 음원을 호출어에 섞어 사용", amount: hours(totalHours), sources: [...general, ...speech] }
+      );
+    }
+    // Older policies retain their supplemental sources; v4 filters them above.
+    for (const item of evalSources.filter(item => item.id !== "openslr28_common_rir_v1" && (!Object.keys(buckets).length || !item.id?.startsWith("common_30h_")))) {
+      evaluation.push({ id: `extra-${evaluation.length}`, name: fallback(item).name, description: fallback(item).content, amount: fallback(item).amount, sources: [fallback(item)] });
+    }
+    const rir = evalSources.find(item => item.id === "openslr28_common_rir_v1");
+    if (rir) {
+      const description = `가상 공간 ${number(rir.simulated_room_count ?? rir.room_count ?? policy.rir_rooms)}개 · 중간/강한 울림`;
+      evaluation.push({ id: "rir", name: "잔향 자료", description, amount: count(rir.file_count), sources: [source("RIRS_NOISES", description, count(rir.file_count), rir.file_count, rir)] });
+    }
+    return { training, evaluation, policy };
+  }
+  let activeMaterial = null;
   function renderRecipe() {
     const recipe = recipes.find(item => item.id === selectedPreset);
     if (!recipe) return;
-    $("recipe-description").textContent = recipe.data_description || "다운로드 항목과 이용 조건을 확인하세요. 실제 준비량은 확보·검사한 자료를 기준으로 기록합니다.";
-    const download = bytes(recipe.download_bytes ?? recipe.known_download_bytes);
-    $("download-size").textContent = download ? `알려진 다운로드 ${download}` : "용량은 자료 확인 후 표시";
-    const sourceNames = { generic: "openWakeWord 일반 비호출 특징", zeroth: "Zeroth 한국어 음성", audioset: "AudioSet 일부", fma: "FMA 음악 일부", mit_rir: "MIT 공간 울림", dns_fan: "DNS 팬 소음", dns_door: "DNS 문 소리", electronic_validation: "별도 전자음 시험 자료" };
-    const roleNames = { generic_features: "일반 비호출", korean_negative: "한국어 비호출", noise_train: "소음 증강", noise_music_train: "음악 증강", room_impulse_response: "잔향 증강", environment_smoke: "환경음", held_out_electronic_smoke: "전자음", held_out_evaluation_noise: "시험용 배경 음원", held_out_evaluation_material: "시험용 원본", held_out_korean_speech: "겹치는 한국어 음성" };
-    const sources = recipe.sources || [...(recipe.assets || []).filter(source => source.role !== "provider_metadata"), ...(recipe.additional_download ? [{ ...recipe.additional_download, role: "room_impulse_response" }] : [])];
-    const evaluation = source => ["validation", "development"].includes(source.split) || /held_out|evaluation|validation/.test(source.role || "");
-    const trainingSources = sources.filter(source => !evaluation(source));
-    const policy = recipe.evaluation_policy;
-    const strictCommon = policy?.id === "common_development_v4";
-    const commonBuckets = policy?.negative_hours_by_bucket || {};
-    const evaluationSources = [...sources.filter(evaluation), ...(recipe.evaluation_sources || []).map(source => ({ role: "held_out_evaluation_noise", ...source }))]
-      .filter(source => !strictCommon || source.id === "openslr28_common_rir_v1" || Object.keys(commonBuckets).some(key => source.id === `common_30h_${key}`));
-    const sourceRow = source => {
-      const row = element("div", undefined, "source-row"), info = element("div");
-      const href = webUrl(source.url || source.source_url);
-      const title = element(href ? "a" : "span", source.display_name || source.name || sourceNames[source.id] || source.id || source.dataset_id || "공개 자료");
-      if (href) { title.href = href; title.target = "_blank"; title.rel = "noopener"; }
-      info.append(title);
-      if (source.description) info.append(element("div", source.description, "source-detail"));
-      if (source.type_count !== undefined || source.file_count !== undefined) info.append(element("div", [source.type_count === undefined ? "" : `종류 ${number(source.type_count)}종`, source.file_count === undefined ? "" : `음원 ${number(source.file_count)}개`].filter(Boolean).join(" · "), "source-detail"));
-      const typeNames = backgroundTypeNames(source);
-      if (typeNames.length) {
-        info.append(element("div", typeNames.slice(0, 8).join(" · ") + (typeNames.length > 8 ? ` · 외 ${number(typeNames.length - 8)}종` : ""), "source-detail source-types"));
-        if (typeNames.length > 8) {
-          const more = element("details", undefined, "source-detail");
-          more.append(element("summary", `나머지 ${number(typeNames.length - 8)}종 보기`), element("p", typeNames.slice(8).join(" · ")));
-          info.append(more);
-        }
-      }
-      if (source.usage_description) info.append(element("div", source.usage_description, "source-detail"));
-      const details = [source.target_hours === undefined ? (source.hours === undefined ? "" : `${number(source.hours)}시간`) : `준비할 원본 ${number(source.target_hours)}시간`, bytes(source.bytes ?? source.size_bytes ?? source.totalbytes ?? source.total_bytes), source.license].filter(Boolean);
-      const meta = element("div", details.join(" · "), "source-meta");
-      if (Array.isArray(source.individual_licenses) && source.individual_licenses.length) {
-        const licenses = element("details"); licenses.append(element("summary", "개별 음원 이용 조건"));
-        for (const item of source.individual_licenses) {
-          const line = element("div");
-          if (typeof item === "string") line.textContent = item;
-          else {
-            const original = webUrl(item.source_url), name = item.display_name || item.name || item.id || "원출처";
-            const link = element(original ? "a" : "span", name);
-            if (original) { link.href = original; link.target = "_blank"; link.rel = "noopener"; }
-            line.append(link);
-            if (item.license) line.append(element("span", " · " + item.license));
-          }
-          licenses.append(line);
-        }
-        meta.append(licenses);
-      }
-      const role = source.id === "dns_fan" && source.split === "train" ? "환경음 증강" : roleNames[source.role] || source.role || "학습 자료";
-      row.append(element("div", role, "source-role"), info, meta); return row;
-    };
-    const groups = [];
-    if (trainingSources.length) { const group = element("section"); group.append(element("h3", "학습용 자료"), ...trainingSources.map(sourceRow)); groups.push(group); }
-    if (evaluationSources.length) {
-      const group = element("section", undefined, "evaluation-sources");
-      group.append(element("h3", "성능 평가용 배경 음원"), element("p", "호출어와 섞어 소음 속 감지율을, 배경만 재생해 오호출을 확인합니다. 이 자료는 학습에 넣지 않습니다.", "hint"), ...evaluationSources.map(sourceRow));
-      if (["common_development_v1", "common_development_v2", "common_development_v3", "common_development_v4"].includes(policy?.id)) {
-        group.append(element("p", `세 학습 규모 모두 같은 공통 평가를 사용합니다. 평가용 합성 음색 ${number(policy.validation_references)}개 · 호출어 ${number(policy.validation_originals)}개 · Clean 및 SNR ${policy.snrs.map(number).join("/")} dB · 총 ${number(policy.positive_sessions)}개 시험 오디오를 준비합니다. 학습용 호출어 수와 별개입니다.`, "hint common-evaluation"));
-        if (["common_development_v2", "common_development_v3", "common_development_v4"].includes(policy.id)) {
-          const labels = {korean_conversation:"한국어 대화",korean_interview:"인터뷰",korean_read:"낭독",other_speech:"다른 언어",music:"음악",environment:"환경음",electronic:"전자음"};
-          const buckets = Object.keys(commonBuckets).length ? commonBuckets : {korean_conversation:10,korean_interview:5,korean_read:3,other_speech:4,music:3,environment:4,electronic:1};
-          const hours = Object.values(buckets).reduce((sum, value) => sum + value, 0);
-          group.append(element("p", `비호출 기준 ${number(hours)}시간: ${Object.entries(buckets).map(([key, value]) => `${labels[key] || key} ${number(value)}h`).join(" · ")}. 잔향 없음 ${number(policy.dry_positive_sessions)}회와 일반·강한 울림 ${number(policy.reverb_positive_sessions)}회를 합쳐 시험합니다. 공간은 시뮬레이션 ${number(policy.rir_rooms)}개이며, 자료 준비 후 대표 구간을 확인합니다.`, "hint common-evaluation"));
-          group.append(element("p", `음색·스타일을 고르게 뽑은 같은 원본 ${number(policy.reverb_originals)}개를 두 잔향 강도에 사용합니다. 대응하는 잔향 없는 조건은 기본 ${number(policy.dry_positive_sessions)}회에 포함됩니다. 목록과 seed를 고정해 모든 모델에 재사용하며, 대표 원본 수가 검증된 최적값이라는 뜻은 아닙니다.`, "hint common-evaluation"));
-          if (strictCommon) group.append(element("p", "위 일곱 범주의 기본 자료를 호출어 혼합과 연속 오호출 시험에 사용합니다. 기존 193개 배경과 별도 낭독 예약분은 새 평가에서 제외합니다. 오호출 시험 초기화로 빠지는 시간은 같은 목록의 미사용 원음으로 필요한 만큼 보충합니다. 기본량·보충량·채점 가능한 시간을 구분하며, 보충 원음은 호출어 혼합에 넣지 않습니다.", "hint common-evaluation"));
-        }
-      }
-      group.append(element("p", "표시된 항목은 준비 예정 자료입니다. 실제 사용한 종류·음원 수·비호출 평가 시간은 검수와 채점 후 표시합니다. 공통 개발 평가와 독립 Final 평가는 분리하며, Final은 학습·공통 평가에서 쓰지 않은 음원·잔향·음색으로 모델과 감지 설정 확정 후에만 진행합니다. 짧은 배경 세트만으로 장시간 오호출 검증이 완료되지는 않습니다.", "hint evaluation-scope"));
-      groups.push(group);
-    }
-    replace($("source-preview"), groups);
-    if (!groups.length) $("source-preview").append(element("p", "자료 목록은 준비 과정에서 확인합니다. 필요한 입력이나 이용 동의가 있으면 작업을 멈추고 안내합니다.", "hint"));
     const placeholders = { "adv-originals": recipe.originals ?? recipe.positive_originals, "adv-rounds": recipe.rounds ?? recipe.augmentation_rounds, "adv-updates": recipe.updates, "adv-generic": recipe.generic_hours, "adv-korean": recipe.korean_hours };
     for (const [id, value] of Object.entries(placeholders)) $(id).placeholder = value === undefined ? "규모 기본값" : String(value);
-    const workspace = bytes(recipe.estimated_workspace_bytes);
-    const notes = [recipe.note || "이미 준비된 자료는 검증 후 재사용합니다."];
-    if (recipe.known_download_bytes !== undefined) notes.push("같은 압축 파일은 공유하며 총량에 한 번만 계산합니다. Qwen 음성 생성 모델과 학습용 MIT 잔향의 추가 다운로드는 별도입니다.");
-    if (workspace) notes.push(`자료 준비 공간 추정 ${workspace}.`);
-    if (recipe.shortages?.length) notes.push("선택한 규모에 필요한 비호출 자료를 모두 자동 확보하지는 않습니다. 자동 준비분 이후 추가 자료가 필요한 지점에서 안내하고 멈춥니다.");
-    $("recipe-note").textContent = notes.join(" ");
+    const groups = materialGroups(recipe), sections = [], openId = activeMaterial?.id;
+    activeMaterial = null;
+    const show = (entry, open) => { entry.panel.hidden = !open; entry.button.setAttribute("aria-expanded", String(open)); };
+    for (const [key, label] of [["training", "학습용 자료"], ["evaluation", "성능 평가용 자료"]]) {
+      const items = groups[key];
+      if (!items.length) continue;
+      const section = element("section"), heading = element("div", undefined, "materials-heading"), title = element("h3", label);
+      title.id = `materials-${key}-title`; section.setAttribute("aria-labelledby", title.id); heading.append(title);
+      if (key === "evaluation") heading.append(element("span", "공통 평가"));
+      const list = element("ul", undefined, "materials-list");
+      for (const item of items) {
+        const id = `materials-${key}-${item.id}`, row = element("li", undefined, "material"), button = element("button", undefined, "material-button");
+        button.type = "button"; button.setAttribute("aria-expanded", "false"); button.setAttribute("aria-controls", `${id}-sources`);
+        button.setAttribute("aria-labelledby", `${id}-name`); button.setAttribute("aria-describedby", `${id}-description ${id}-amount`);
+        const text = element("span"), name = element("span", item.name, "material-name"), description = element("span", item.description, "material-description"), amount = element("span", item.amount, "material-amount");
+        name.id = `${id}-name`; description.id = `${id}-description`; amount.id = `${id}-amount`; text.append(name, description);
+        const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg"), path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        icon.setAttribute("class", "chevron"); icon.setAttribute("viewBox", "0 0 24 24"); icon.setAttribute("aria-hidden", "true"); icon.setAttribute("focusable", "false");
+        for (const [key, value] of Object.entries({ d: "m6 9 6 6 6-6", fill: "none", stroke: "currentColor", "stroke-width": "1.8", "stroke-linecap": "round", "stroke-linejoin": "round" })) path.setAttribute(key, value);
+        icon.append(path); button.append(text, amount, icon);
+        const panel = element("div", undefined, "source-panel"); panel.id = `${id}-sources`; panel.hidden = true;
+        panel.setAttribute("role", "region"); panel.setAttribute("aria-label", `${label} · ${item.name} 출처`);
+        const sources = element("ul", undefined, "source-list");
+        const ordered = item.sources.map((source, index) => ({ ...source, index })).sort((a, b) => a.rank == null ? (b.rank == null ? a.index - b.index : 1) : b.rank == null ? -1 : b.rank - a.rank || a.index - b.index);
+        for (const source of ordered) {
+          const row = element("li", undefined, "source-item"), text = element("span"), quantity = element("span", source.amount, "source-quantity");
+          const href = webUrl(source.url), name = element(href ? "a" : "span", source.name, "source-name");
+          if (href) { name.href = href; name.target = "_blank"; name.rel = "noopener"; }
+          text.append(name, element("span", source.content, "source-content"));
+          const size = originalSize(source.bytes);
+          if (size) quantity.append(element("span", `원본 ${size}`, "file-size"));
+          row.append(text, quantity); sources.append(row);
+        }
+        panel.append(sources); row.append(button, panel); list.append(row);
+        const current = { id, button, panel };
+        if (id === openId) { show(current, true); activeMaterial = current; }
+        button.addEventListener("click", () => { const open = panel.hidden; if (activeMaterial) show(activeMaterial, false); show(current, open); activeMaterial = open ? current : null; });
+      }
+      section.append(heading, list);
+      if (key === "evaluation") {
+        const summary = element("div", undefined, "materials-summary"), policy = groups.policy;
+        const totalHours = Object.values(policy.negative_hours_by_bucket || {}).reduce((sum, value) => sum + value, 0);
+        if (policy.positive_sessions !== undefined) { const line = element("span", "호출 시험"); line.append(element("strong", `${number(policy.positive_sessions)}회`)); summary.append(line); }
+        if (totalHours) { const line = element("span", "비호출 시험"); line.append(element("strong", `${number(totalHours)}시간 이상`)); summary.append(line); }
+        if (summary.children.length) section.append(summary);
+      }
+      sections.push(section);
+    }
+    replace($("source-preview"), sections);
   }
   function renderSystem() {
     const system = snapshot.system || {};
@@ -495,6 +557,7 @@
   }
   async function boot() {
     $("create-form").addEventListener("submit", create);
+    for (const id of ["adv-originals", "adv-generic", "adv-korean"]) $(id).addEventListener("input", renderRecipe);
     $("input-form").addEventListener("submit", submitInput);
     $("material-mode").addEventListener("change", () => renderInputMode(selectedProject()));
     $("source-dataset").addEventListener("change", () => { const pool = { zeroth: "korean_negative", audioset: "noise", fma: "noise", mit_rir: "rir" }[$("source-dataset").value]; if (pool) $("source-pool").value = pool; renderInputMode(selectedProject()); });

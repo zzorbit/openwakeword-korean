@@ -9,7 +9,7 @@ const flush = async () => { for (let index = 0; index < 12; index++) await new P
 const tests = [];
 async function test(name, action) { await action(); tests.push(name); }
 
-function browser({ noBoot = false, initialState, recipeError = false, recipeOverrides = {} } = {}) {
+function browser({ noBoot = false, initialState, recipeError = false, recipeOverrides = {}, recipeList } = {}) {
   const elements = new Map(), calls = [], intervals = [];
   class Element {
     constructor(tag = "div") { this.tagName = tag; this.value = ""; this.textContent = ""; this.children = []; this.handlers = {}; this.attributes = {}; this.hidden = false; this.disabled = false; this.open = false; this.srcWrites = 0; }
@@ -23,9 +23,9 @@ function browser({ noBoot = false, initialState, recipeError = false, recipeOver
   }
   for (const match of html.matchAll(/id="([^"]+)"/g)) elements.set(match[1], new Element());
   const state = { value: initialState || { projects: [], token: "local-token", workspace: "F:\\test" } };
-  const doc = { hidden: false, getElementById: id => elements.get(id), createElement: tag => new Element(tag), addEventListener() {} };
+  const doc = { hidden: false, getElementById: id => elements.get(id), createElement: tag => new Element(tag), createElementNS: (_namespace, tag) => new Element(tag), addEventListener() {} };
   const json = (body, status = 200) => ({ ok: status < 400, status, text: async () => JSON.stringify(body) });
-  const presets = [{ id: "check", label: "동작 확인용", originals: 1000, rounds: 1, updates: 10000, sources: [{ name: "<img src=x onerror=bad()>", role: "비호출 자료", url: "javascript:alert(1)", bytes: 1024 }], ...recipeOverrides }, { id: "trial", originals: 20000, rounds: 3, updates: 20000 }];
+  const presets = recipeList || [{ id: "check", label: "동작 확인용", originals: 1000, rounds: 1, updates: 10000, sources: [{ name: "<img src=x onerror=bad()>", role: "비호출 자료", url: "javascript:alert(1)", bytes: 1024 }], ...recipeOverrides }, { id: "trial", originals: 20000, rounds: 3, updates: 20000 }];
   const fetch = async (url, options) => {
     calls.push({ url, options });
     if (url === "/api/state") return json(state.value);
@@ -44,6 +44,46 @@ function browser({ noBoot = false, initialState, recipeError = false, recipeOver
   context.window = context; context.location = new URL("http://127.0.0.1:8800/"); context.KOWW_STUDIO_TEST = noBoot; context.addEventListener = () => {};
   vm.runInContext(script, context);
   return { elements, calls, state, intervals, helpers: context.KowwStudio, click: id => elements.get(id).handlers.click(), submit: id => elements.get(id).handlers.submit({ preventDefault() {} }), tick: async () => { for (const tick of intervals) await tick(); } };
+}
+
+const descendants = node => [node, ...(node.children || []).flatMap(descendants)];
+const withClass = (node, name) => descendants(node).filter(item => (item.className || "").split(/\s+/).includes(name));
+const textOf = node => [node.textContent || "", ...(node.children || []).map(textOf)].join(" ").trim();
+const materialRows = group => withClass(group, "material");
+const material = (group, name) => materialRows(group).find(row => withClass(row, "material-name")[0]?.textContent === name);
+const sourceEntries = row => withClass(row, "source-item");
+
+function commonRecipe(overrides = {}) {
+  const catalog = JSON.parse(fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources/evaluation_materials_v1.json"), "utf8"));
+  const archives = Object.fromEntries(catalog.archives.map(row => [row.id, row]));
+  const buckets = { korean_conversation: 10, korean_interview: 5, korean_read: 3, other_speech: 4, music: 3, environment: 4, electronic: 1 };
+  const evaluation_sources = Object.entries(buckets).map(([key, target_hours]) => ({
+    id: `common_30h_${key}`, dataset_id: key, name: key, role: "held_out_evaluation_material", split: "validation", target_hours,
+    source_url: catalog.buckets[key].source_url, description: catalog.buckets[key].description,
+    total_bytes: catalog.buckets[key].archives.reduce((sum, id) => sum + archives[id].size_bytes, 0), shared_archive_bytes_not_additive: true
+  }));
+  evaluation_sources.push({ id: "openslr28_common_rir_v1", name: "공통 평가용 공간 울림", file_count: 80, room_count: 20, simulated_room_count: 20, size_bytes: 1311166223 });
+  return {
+    id: "check", label: "동작 확인용", originals: 1000, rounds: 1, updates: 10000, hard_originals: 100,
+    generic_hours: 2000, korean_hours: 1, train_references: 4,
+    automatic_target_hours: { generic_nominal: 2000, korean_train: 1 },
+    assets: [
+      { id: "generic", role: "generic_features", size_bytes: 17280000128 },
+      { id: "zeroth", role: "korean_negative", size_bytes: 10339720618 },
+      { id: "audioset", role: "noise_train", size_bytes: 968540160 },
+      { id: "audioset_segments", role: "provider_metadata", size_bytes: 1211931 },
+      { id: "audioset_ontology", role: "provider_metadata", size_bytes: 342780 },
+      { id: "fma", role: "noise_music_train", size_bytes: 7679594875 },
+      { id: "fma_metadata", role: "provider_metadata", size_bytes: 358412441 },
+      { id: "dns_fan", role: "environment_smoke", split: "train", size_bytes: 320044 }
+    ],
+    additional_download: { id: "mit_rir", files: 271, size_bytes: null },
+    evaluation_policy: { id: "common_development_v4", validation_references: 30, validation_originals: 5000,
+      snrs: [20, 15, 10, 5, 0], positive_sessions: 112000, dry_positive_sessions: 80000,
+      reverb_originals: 1000, reverb_positive_sessions: 32000, rir_rooms: 20, negative_hours_by_bucket: buckets },
+    evaluation_sources, common_evaluation_catalog: catalog, known_download_bytes: 48123456789,
+    ...overrides
+  };
 }
 
 (async () => {
@@ -69,95 +109,164 @@ function browser({ noBoot = false, initialState, recipeError = false, recipeOver
     assert.equal(helpers.localUrl("https://example.org/tracker"), ""); assert.equal(helpers.localUrl("javascript:alert(1)"), "");
     assert.equal(helpers.webUrl("javascript:alert(1)"), ""); assert.equal(helpers.webUrl("https://example.org/data"), "https://example.org/data");
   });
-  await test("initial load only checks state/recipes; source labels stay text and creation enables after recipes", async () => {
+  await test("initial load checks state/recipes only and untrusted source labels remain text", async () => {
     const b = browser(); await flush();
     assert.deepEqual(b.calls.map(call => call.url), ["/api/state", "/api/recipes"]);
     assert.equal(b.elements.get("create").disabled, false);
-    const source = b.elements.get("source-preview").children[0].children[1].children[1].children[0];
-    assert.equal(source.tagName, "span"); assert.equal(source.textContent, "<img src=x onerror=bad()>");
+    const preview = b.elements.get("source-preview");
+    const label = descendants(preview).find(node => node.textContent === "<img src=x onerror=bad()>");
+    assert.ok(label); assert.notEqual(label.tagName, "a");
+    assert.equal(descendants(preview).some(node => node.tagName === "img"), false);
   });
-  await test("training sources and independent evaluation summaries are clearly separated", async () => {
-    const b = browser({ recipeOverrides: { sources: [{ id: "generic", role: "generic_features", name: "일반 특징" }, { id: "dns_fan", role: "environment_smoke", split: "train" }], evaluation_sources: [{ dataset_id: "esc50_held_out_v2", name: "다양한 환경 소음", source_url: "https://example.org/noise", file_count: 24, type_count: 12, total_bytes: 1024, license: "CC-BY-NC-3.0", individual_licenses: ["CC0-1.0"] }] } }); await flush();
-    const groups = b.elements.get("source-preview").children;
-    assert.equal(groups.length, 2); assert.equal(groups[0].children[0].textContent, "학습용 자료");
-    assert.equal(groups[1].children[0].textContent, "성능 평가용 배경 음원");
-    assert.match(groups[1].children[1].textContent, /호출어와 섞어.*배경만 재생해.*학습에 넣지 않습니다/);
-    assert.equal(groups[0].children[2].children[0].textContent, "환경음 증강");
-    const evaluation = groups[1].children[2];
-    assert.equal(evaluation.children[1].children[0].textContent, "다양한 환경 소음");
-    assert.equal(evaluation.children[0].textContent, "시험용 배경 음원");
-    assert.equal(evaluation.children[1].children[1].textContent, "종류 12종 · 음원 24개");
-    assert.match(evaluation.children[2].textContent, /1 KiB.*CC-BY-NC-3.0/);
-    assert.equal(evaluation.children[2].children[0].children[0].textContent, "개별 음원 이용 조건");
-    assert.match(groups[1].children.at(-1).textContent, /준비 예정.*실제 사용한 종류/);
-    assert.match(groups[1].children.at(-1).textContent, /개발 평가.*Final/);
+  await test("materials use the approved list hierarchy with short consistent titles", async () => {
+    const b = browser({ recipeList: [commonRecipe()] }); await flush();
+    const preview = b.elements.get("source-preview"), groups = preview.children;
+    assert.equal(groups.length, 2);
+    assert.equal(descendants(groups[0]).find(node => node.tagName === "h3").textContent, "학습용 자료");
+    assert.equal(descendants(groups[1]).find(node => node.tagName === "h3").textContent, "성능 평가용 자료");
+    assert.deepEqual(materialRows(groups[0]).map(row => withClass(row, "material-name")[0].textContent),
+      ["호출어 음성", "유사어 음성", "일반 비호출 자료", "한국어 비호출 자료", "소음 증강 음원", "잔향 자료"]);
+    assert.deepEqual(materialRows(groups[1]).map(row => withClass(row, "material-name")[0].textContent),
+      ["호출어 음성", "일반 비호출 자료", "한국어 비호출 자료", "소음 증강 음원", "잔향 자료"]);
+    for (const row of materialRows(preview)) {
+      assert.ok(withClass(row, "material-description")[0].textContent.trim());
+      assert.ok(withClass(row, "material-amount")[0].textContent.trim());
+      assert.equal(withClass(row, "source-panel")[0].hidden, true);
+      for (const source of sourceEntries(row)) {
+        assert.ok(withClass(source, "source-name")[0].textContent.trim());
+        assert.ok(withClass(source, "source-content")[0].textContent.trim());
+      }
+    }
+    const all = textOf(preview);
+    for (const removed of ["각 항목을 눌러", "준비 예정 내역", "유형별 시간은 제공자가 공개하지 않음", "원본 음원은 포함하지 않음", "추가 준비량 없음", "합성 음색 4계열, WAV 크기는 생성 후 확인"]) assert.equal(all.includes(removed), false, removed);
+    assert.equal(descendants(preview).some(node => ["table", "select"].includes(node.tagName)), false);
   });
-  await test("evaluation descriptions distinguish Korean field speech from read speech without inventing counts", async () => {
-    const b = browser({ recipeOverrides: { sources: [], evaluation_sources: [
-      { id: "field", role: "held_out_korean_speech", name: "한국어 현장 대화·안내방송", description: "원출처에서 한국어로 설명된 현장 음원입니다. 검수 후 사용합니다.", file_count: 6, type_count: 5, eval_types: ["korean_market_conversation", "korean_transit_announcement"], usage_description: "호출어 혼합과 배경 단독 시험" },
-      { id: "read", role: "held_out_korean_speech", name: "Zeroth 한국어 낭독 · 별도 화자", description: "학습용과 다른 화자를 분리합니다.", eval_types: ["korean_read_speech"] }
-    ] } }); await flush();
-    const group = b.elements.get("source-preview").children[0], field = group.children[2], read = group.children[3];
-    assert.equal(field.children[0].textContent, "겹치는 한국어 음성");
-    assert.equal(field.children[1].children[0].textContent, "한국어 현장 대화·안내방송");
-    assert.equal(field.children[1].children[1].textContent, "원출처에서 한국어로 설명된 현장 음원입니다. 검수 후 사용합니다.");
-    assert.equal(field.children[1].children[2].textContent, "종류 5종 · 음원 6개");
-    assert.equal(field.children[1].children[3].textContent, "시장 대화 · 교통 안내방송");
-    assert.equal(field.children[1].children[4].textContent, "호출어 혼합과 배경 단독 시험");
-    assert.equal(read.children[1].children[2].textContent, "한국어 낭독");
-    assert.equal(read.children[2].textContent, "");
-    assert.equal(read.children[1].children.some(child => /음원.*개/.test(child.textContent)), false);
+  await test("one accessible material disclosure stays open across both groups", async () => {
+    const b = browser({ recipeList: [commonRecipe()] }); await flush();
+    const rows = materialRows(b.elements.get("source-preview"));
+    assert.equal(rows.length, 11);
+    const button = row => withClass(row, "material-button")[0], panel = row => withClass(row, "source-panel")[0];
+    for (const row of rows) {
+      const current = button(row);
+      assert.equal(current.tagName, "button"); assert.equal(current.type, "button");
+      assert.equal(current.getAttribute("aria-controls"), panel(row).id);
+      assert.equal(panel(row).getAttribute("role"), "region");
+      current.handlers.click();
+      assert.equal(current.getAttribute("aria-expanded"), "true");
+      assert.equal(panel(row).hidden, false);
+      assert.equal(rows.filter(item => !panel(item).hidden).length, 1);
+      for (const other of rows.filter(item => item !== row)) assert.equal(button(other).getAttribute("aria-expanded"), "false");
+    }
+    button(rows.at(-1)).handlers.click();
+    assert.equal(rows.filter(row => !panel(row).hidden).length, 0);
+    assert.equal(button(rows.at(-1)).getAttribute("aria-expanded"), "false");
   });
-  await test("all training budgets advertise one shared full evaluation independently from training amount", async () => {
-    const policy = { id: "common_development_v1", validation_references: 10, validation_originals: 5000, snrs: [20, 15, 10, 5, 0], positive_sessions: 80000 };
-    const b = browser({ recipeOverrides: { evaluation_policy: policy, evaluation_sources: [{ name: "공통 배경 음원", file_count: 200 }] } }); await flush();
+  await test("selected scale and advanced targets update counts without claiming automatic supply", async () => {
+    const specs = [
+      ["check", 1000, 100, 2000, 1],
+      ["trial", 20000, 1000, 2000, 2000 / 3],
+      ["production", 100000, 2000, 7500, 2500]
+    ];
+    const recipes = specs.map(([id, originals, hard_originals, generic_hours, korean_hours]) => commonRecipe({ id, originals, hard_originals, generic_hours, korean_hours }));
+    const b = browser({ recipeList: recipes }); await flush();
+    const amount = (group, name) => withClass(material(group, name), "material-amount")[0].textContent;
+    for (let index = 0; index < specs.length; index++) {
+      const radio = descendants(b.elements.get("presets").children[index]).find(node => node.tagName === "input");
+      radio.handlers.change();
+      const groups = b.elements.get("source-preview").children;
+      assert.equal(amount(groups[0], "호출어 음성"), specs[index][1].toLocaleString("ko-KR") + "개");
+      assert.equal(amount(groups[0], "유사어 음성"), specs[index][2].toLocaleString("ko-KR") + "개");
+      assert.equal(amount(groups[0], "일반 비호출 자료"), specs[index][3].toLocaleString("ko-KR") + "시간");
+      assert.equal(amount(groups[0], "한국어 비호출 자료"), specs[index][4].toLocaleString("ko-KR") + "시간");
+      assert.equal(amount(groups[1], "호출어 음성"), "5,000개");
+      assert.equal(amount(groups[1], "일반 비호출 자료"), "12시간");
+      assert.equal(amount(groups[1], "한국어 비호출 자료"), "18시간");
+      const genericSources = textOf(withClass(material(groups[0], "일반 비호출 자료"), "source-panel")[0]);
+      const koreanSources = textOf(withClass(material(groups[0], "한국어 비호출 자료"), "source-panel")[0]);
+      assert.match(genericSources, /2,000시간/);
+      assert.match(koreanSources, /1시간/);
+      if (index === 2) {
+        assert.equal(genericSources.includes("7,500시간"), false);
+        assert.equal(koreanSources.includes("2,500시간"), false);
+        assert.match(genericSources, /추가 자료.*5,500시간/);
+        assert.match(koreanSources, /추가 자료.*2,499시간/);
+      }
+    }
+    b.elements.get("adv-originals").value = "4321";
+    b.elements.get("adv-originals").handlers.input();
+    b.elements.get("adv-generic").value = "3210";
+    b.elements.get("adv-generic").handlers.input();
+    b.elements.get("adv-korean").value = "12";
+    b.elements.get("adv-korean").handlers.input();
+    let training = b.elements.get("source-preview").children[0];
+    assert.equal(amount(training, "호출어 음성"), "4,321개");
+    assert.equal(amount(training, "일반 비호출 자료"), "3,210시간");
+    assert.equal(amount(training, "한국어 비호출 자료"), "12시간");
+    for (const id of ["adv-originals", "adv-generic", "adv-korean"]) { b.elements.get(id).value = ""; b.elements.get(id).handlers.input(); }
+    training = b.elements.get("source-preview").children[0];
+    assert.equal(amount(training, "호출어 음성"), "100,000개");
+    assert.equal(amount(training, "일반 비호출 자료"), "7,500시간");
+  });
+  await test("common evaluation groups each real source once and keeps archive bytes with quantity", async () => {
+    const b = browser({ recipeList: [commonRecipe()] }); await flush();
     const group = b.elements.get("source-preview").children[1];
-    const notice = group.children.find(child => child.className?.includes("common-evaluation"));
-    assert.match(notice.textContent, /세 학습 규모 모두 같은 공통 평가/);
-    assert.match(notice.textContent, /5,000개.*20\/15\/10\/5\/0.*80,000개/);
-    assert.match(group.children.at(-1).textContent, /학습·공통 평가에서 쓰지 않은.*확정 후/);
-    assert.match(group.children.at(-1).textContent, /장시간 오호출 검증/);
+    const generic = material(group, "일반 비호출 자료"), korean = material(group, "한국어 비호출 자료"), noise = material(group, "소음 증강 음원");
+    assert.equal(sourceEntries(generic).length, 2);
+    assert.equal(sourceEntries(korean).length, 2);
+    assert.equal(sourceEntries(noise).length, 4);
+    const names = sourceEntries(noise).map(row => withClass(row, "source-name")[0].textContent);
+    assert.equal(new Set(names).size, 4);
+    const quantities = sourceEntries(noise).map(row => withClass(row, "source-quantity")[0]);
+    assert.deepEqual(quantities.map(node => node.textContent), ["15시간", "7시간", "5시간", "3시간"]);
+    for (const quantity of quantities) assert.equal(withClass(quantity, "file-size").length, 1);
+    assert.match(textOf(korean), /대화 10시간.*인터뷰 5시간|인터뷰 5시간.*대화 10시간/);
+    assert.match(textOf(korean), /낭독 3시간/);
+    assert.equal(withClass(korean, "file-size").filter(node => node.textContent.includes("2.59 GB")).length, 1);
+    assert.equal(textOf(korean).includes("5.18 GB"), false);
+    assert.match(textOf(noise), /30시간/);
   });
-  await test("versioned reverb summaries use each policy count and retain historical totals", async () => {
-    for (const [version, originals, reverb, total] of [[2, 625, 20000, 100000], [3, 1000, 32000, 112000], [4, 1000, 32000, 112000]]) {
-      const policy = { id: `common_development_v${version}`, validation_references: 30, validation_originals: 5000, snrs: [20, 15, 10, 5, 0], positive_sessions: total, dry_positive_sessions: 80000, reverb_originals: originals, reverb_positive_sessions: reverb, rir_rooms: 20, negative_hours_by_bucket: {korean_conversation:10,korean_interview:5,korean_read:3,other_speech:4,music:3,environment:4,electronic:1} };
-      const b = browser({ recipeOverrides: { evaluation_policy: policy, evaluation_sources: [{ id: "common_30h_environment", name: "공통 배경 음원" }] } }); await flush();
-      const group = b.elements.get("source-preview").children[1];
-      const notices = group.children.filter(child => child.className?.includes("common-evaluation"));
-      assert.equal(notices.length, version === 4 ? 4 : 3);
-      assert.match(notices[0].textContent, new RegExp(`총 ${total.toLocaleString("ko-KR")}개`));
-      assert.match(notices[1].textContent, new RegExp(`잔향 없음 80,000회와 일반·강한 울림 ${reverb.toLocaleString("ko-KR")}회`));
-      assert.match(notices[2].textContent, new RegExp(`같은 원본 ${originals.toLocaleString("ko-KR")}개를 두 잔향 강도`));
-      assert.match(notices[2].textContent, /목록과 seed를 고정.*최적값이라는 뜻은 아닙니다/);
+  await test("training augmentation uses real source budgets and does not invent missing durations", async () => {
+    const b = browser({ recipeList: [commonRecipe()] }); await flush();
+    const group = b.elements.get("source-preview").children[0], rows = sourceEntries(material(group, "소음 증강 음원"));
+    assert.equal(rows.length, 4);
+    const audio = rows.find(row => /AudioSet/.test(withClass(row, "source-name")[0].textContent));
+    assert.ok(audio); assert.match(withClass(audio, "source-quantity")[0].textContent, /묶음/);
+    assert.equal(/시간|분|초/.test(withClass(audio, "source-quantity")[0].textContent), false);
+    assert.match(withClass(audio, "file-size")[0].textContent, /970\.1 MB/);
+    const music = rows.find(row => /FMA/.test(withClass(row, "source-name")[0].textContent));
+    assert.match(textOf(music), /1시간/); assert.match(textOf(music), /120/);
+    assert.match(withClass(music, "file-size")[0].textContent, /8\.04 GB/);
+    const fan = rows.find(row => /DNS/.test(withClass(row, "source-name")[0].textContent));
+    assert.match(textOf(fan), /10초/);
+    const rir = material(group, "잔향 자료"); assert.match(textOf(rir), /271개/);
+    assert.equal(withClass(rir, "file-size").length, 0);
+  });
+  await test("versioned policy summaries retain historical evaluation totals and available sources", async () => {
+    for (const [version, total] of [[1, 80000], [2, 100000], [3, 112000], [4, 112000]]) {
+      const recipe = commonRecipe();
+      recipe.evaluation_policy.id = `common_development_v${version}`;
+      recipe.evaluation_policy.positive_sessions = total;
+      recipe.evaluation_policy.reverb_originals = version === 2 ? 625 : 1000;
+      recipe.evaluation_sources.push({ id: "old_extra", name: "기존 독립 배경", role: "held_out_evaluation_noise", file_count: 193 });
+      const b = browser({ recipeList: [recipe] }); await flush();
+      const group = b.elements.get("source-preview").children[1], all = textOf(group);
+      assert.match(all, new RegExp(total.toLocaleString("ko-KR") + "회"));
+      if (version < 4) assert.match(all, /기존 독립 배경/);
+      else assert.equal(all.includes("기존 독립 배경"), false);
+      if (total !== 112000) assert.equal(all.includes("112,000회"), false);
     }
   });
-  await test("v4 shows only canonical seven buckets and RIR, with core and startup time distinguished", async () => {
-    const buckets = {korean_conversation:10,korean_interview:5,korean_read:3,other_speech:4,music:3,environment:4,electronic:1};
-    const policy = {id:"common_development_v4",negative_hours_by_bucket:buckets,validation_references:30,validation_originals:5000,snrs:[20,15,10,5,0],positive_sessions:112000,dry_positive_sessions:80000,reverb_originals:1000,reverb_positive_sessions:32000,rir_rooms:20};
-    const b = browser({recipeOverrides: {evaluation_policy:policy,
-      sources:[{id:"generic",name:"일반 비호출",role:"generic_features"},{id:"zeroth_validation_reserve",name:"이전 낭독 예약분",role:"held_out_korean_speech"}],
-      evaluation_sources:[...Object.entries(buckets).map(([id,target_hours])=>({id:`common_30h_${id}`,name:id,target_hours})),{id:"openslr28_common_rir_v1",name:"공통 평가용 공간 울림",file_count:80},{id:"legacy193",name:"이전 보조 배경",file_count:193}]}}); await flush();
-    const groups = b.elements.get("source-preview").children;
-    assert.equal(groups.length, 2);
-    const rows = groups[1].children.filter(child => child.className === "source-row");
-    assert.equal(rows.length, 8);
-    assert.deepEqual(rows.map(row => row.children[1].children[0].textContent), [...Object.keys(buckets),"공통 평가용 공간 울림"]);
-    assert.equal(rows.some(row=>/이전/.test(row.children[1].children[0].textContent)),false);
-    const notices = groups[1].children.filter(child=>child.className?.includes("common-evaluation"));
-    assert.match(notices[1].textContent,/비호출 기준 30시간.*한국어 대화 10h.*낭독 3h.*전자음 1h/);
-    assert.match(notices[3].textContent,/기존 193개.*제외.*미사용 원음.*보충/);
-    assert.match(notices[3].textContent,/기본량·보충량·채점 가능한 시간.*호출어 혼합에 넣지 않습니다/);
-  });
-  await test("large background-type lists show eight examples and fold the remaining types", async () => {
-    const types = ["rain", "wind", "dog", "cat", "coughing", "laughing", "clapping", "snoring", "music_jazz", "music_techno", "music_hiphop"];
-    const b = browser({ recipeOverrides: { sources: [], evaluation_sources: [{ name: "공통 평가 자료", eval_types: types }] } }); await flush();
-    const info = b.elements.get("source-preview").children[0].children[2].children[1];
-    const preview = info.children.find(child => child.className?.includes("source-types"));
-    assert.match(preview.textContent, /비 · 바람 · 개 짖음.*외 3종/);
-    assert.equal(preview.textContent.includes("재즈"), false);
-    const folded = info.children.find(child => child.tagName === "details");
-    assert.equal(folded.children[0].textContent, "나머지 3종 보기");
-    assert.equal(folded.children[1].textContent, "재즈 · 테크노 · 힙합");
+  await test("partial and unknown metadata stays explicit without invented time, counts or bytes", async () => {
+    const b = browser({ recipeOverrides: { originals: undefined, hard_originals: undefined, sources: [], evaluation_sources: [
+      { id: "custom", name: "직접 연결한 자료", role: "held_out_evaluation_noise", description: "다른 조건의 독립 자료", source_url: "javascript:alert(1)" }
+    ] } }); await flush();
+    const preview = b.elements.get("source-preview"), all = textOf(preview);
+    assert.match(all, /직접 연결한 자료/);
+    assert.equal(/NaN|undefined|Infinity/.test(all), false);
+    const row = withClass(preview, "source-item").find(item => /직접 연결한 자료/.test(textOf(item)));
+    assert.ok(row); assert.equal(withClass(row, "file-size").length, 0);
+    assert.equal(/0시간|0개|0 B/.test(textOf(row)), false);
+    assert.equal(descendants(row).some(node => node.tagName === "a"), false);
   });
   await test("result view shows measured scope and missing coverage without implying Final approval", async () => {
     const project = { id: "bora", wakeword: "보라야", status: "completed", results: { url: "/results/bora/", scope: "비호출 실측 0.25시간 · 독립 최종 평가 미완료", common_evaluation_assessment: { coverage_targets_passed: false, shortages: ["연속 비호출 평가 0.25/20시간", "평가 음색 계열 2/10개"] } } };

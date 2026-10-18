@@ -1,0 +1,56 @@
+{
+  "version": "0.7.3",
+  "date": "2026-10-19",
+  "scope": "Material preview UI integration; bounded related workflow regression and installed HTTP assets. Not a new population performance evaluation.",
+  "related_source_tests": {
+    "passed": 160,
+    "failures": 0,
+    "errors": 0,
+    "warnings": 7
+  },
+  "javascript_tests": {
+    "studio": 22,
+    "microphone": 14,
+    "failed": 0
+  },
+  "installed_wheel_http": {
+    "version": "0.7.3",
+    "installed_import_verified": true,
+    "wheel_installed_and_http_assets_match_source": true,
+    "ui_sha256": {
+      "korean_openwakeword/resources/studio.html": "10818cd3c38fa08e6bfd1a4a1fcb1c53d464ad12026cdbcf30f5ce19c3e1e319",
+      "korean_openwakeword/resources/studio.js": "3279617adee68a7b4849ebc005ee2b064ed4f1e801a95b69e704593b639a335d",
+      "korean_openwakeword/resources/studio.css": "144f8c4e58136efb29bf1e8f78fb539b3140dc78827a4add9bac6147ae266eca"
+    },
+    "three_real_presets_verified": true,
+    "common_policy": "common_development_v4",
+    "common_positive_sessions": 112000,
+    "common_negative_hours": 30,
+    "training_or_download_started": false,
+    "new_content_approval": false,
+    "Final_accessed": false
+  },
+  "real_browser": {
+    "passed": true,
+    "desktop_width": 1280,
+    "narrow_width": 390,
+    "horizontal_overflow": false,
+    "outer_and_inner_quantity_alignment": true,
+    "global_single_open_accordion": true,
+    "keyboard_enter": true,
+    "three_budget_amounts_and_source_shortages": true,
+    "console_errors": 0,
+    "temporary_viewport_reset": true
+  },
+  "preserved": [
+    "training settings",
+    "evaluation policies v1-v4",
+    "sample weights and audio",
+    "existing approvals",
+    "independent Final lock"
+  ],
+  "formal_training_started": false,
+  "new_content_approved": false,
+  "large_dataset_downloaded": false,
+  "user_independent_installation_modified": false
+}
