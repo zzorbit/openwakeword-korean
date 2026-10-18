@@ -30,7 +30,7 @@ _PRESETS = {
 }
 
 
-def common_evaluation_policy(version=3):
+def common_evaluation_policy(version=4):
     """One declared Development protocol, independent of the training budget.
 
     These are test coverage targets, not a claim that background-only hours or
@@ -46,7 +46,7 @@ def common_evaluation_policy(version=3):
             "scope": "Shared across training budgets; Final remains a separate locked holdout"}
     if version == 1:
         return previous
-    if version not in (2, 3):
+    if version not in (2, 3, 4):
         raise ValueError("Unsupported common evaluation policy")
     expanded = {**previous, "id": "common_development_v2", "validation_references": 30,
             "positive_sessions": 100000, "dry_positive_sessions": 80000,
@@ -61,9 +61,15 @@ def common_evaluation_policy(version=3):
         return expanded
     # New workflows use more representative calls for each RIR group. The
     # earlier 100k protocol remains byte-for-byte reproducible through v2.
-    return {**expanded, "id": "common_development_v3", "positive_sessions": 112000,
+    representative = {**expanded, "id": "common_development_v3", "positive_sessions": 112000,
             "reverb_originals": 1000, "reverb_positive_sessions": 32000,
             "reverb_selection": "metadata_axes"}
+    if version == 3:
+        return representative
+    # The 30h benchmark is one corpus, not an addition to the legacy 193
+    # clips or training-source Validation reserves. Keep old contracts intact.
+    return {**representative, "id": "common_development_v4",
+            "evaluation_materials_recipe": 6, "evaluation_source_scope": "common_30h_only"}
 
 _STAGES = (
     ("frontend", "환경 점검 · 공통 음성 처리 모델", "task"),
@@ -116,7 +122,8 @@ def _validate_settings(settings):
         raise ValueError("The synthetic family bank has 100 Train and up to 30 Validation candidates")
     policy = settings.get("evaluation_policy")
     if policy is not None:
-        versions = {"common_development_v1": 1, "common_development_v2": 2, "common_development_v3": 3}
+        versions = {"common_development_v1": 1, "common_development_v2": 2,
+                    "common_development_v3": 3, "common_development_v4": 4}
         version = versions.get(policy.get("id")) if isinstance(policy, dict) else None
         if version is None:
             raise ValueError("지원하지 않는 공통 평가 설정입니다. 저장된 실험 설정을 임의로 변경하지 마세요.")
@@ -690,7 +697,8 @@ def run_stage(project, workspace, settings, stage_id, context=None):
                 if settings["evaluation_policy"].get("reverb_selection"):
                     pair_settings["reverb_selection"] = settings["evaluation_policy"]["reverb_selection"]
                 from .evaluation_materials import evaluation_material_coverage
-                material_coverage = evaluation_material_coverage(negative_rows)
+                material_coverage = evaluation_material_coverage(negative_rows,
+                    **({"strict_common_pool": True} if settings["evaluation_policy"].get("evaluation_materials_recipe") == 6 else {}))
                 if not material_coverage["target_met"]:
                     raise ValueError("공통 평가 자료가 부족합니다: " + str(material_coverage["shortages"]))
         recipe = evaluation_recipe(project, **pair_settings)

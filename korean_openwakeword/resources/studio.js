@@ -164,7 +164,11 @@
     const sources = recipe.sources || [...(recipe.assets || []).filter(source => source.role !== "provider_metadata"), ...(recipe.additional_download ? [{ ...recipe.additional_download, role: "room_impulse_response" }] : [])];
     const evaluation = source => ["validation", "development"].includes(source.split) || /held_out|evaluation|validation/.test(source.role || "");
     const trainingSources = sources.filter(source => !evaluation(source));
-    const evaluationSources = [...sources.filter(evaluation), ...(recipe.evaluation_sources || []).map(source => ({ role: "held_out_evaluation_noise", ...source }))];
+    const policy = recipe.evaluation_policy;
+    const strictCommon = policy?.id === "common_development_v4";
+    const commonBuckets = policy?.negative_hours_by_bucket || {};
+    const evaluationSources = [...sources.filter(evaluation), ...(recipe.evaluation_sources || []).map(source => ({ role: "held_out_evaluation_noise", ...source }))]
+      .filter(source => !strictCommon || source.id === "openslr28_common_rir_v1" || Object.keys(commonBuckets).some(key => source.id === `common_30h_${key}`));
     const sourceRow = source => {
       const row = element("div", undefined, "source-row"), info = element("div");
       const href = webUrl(source.url || source.source_url);
@@ -209,12 +213,15 @@
     if (evaluationSources.length) {
       const group = element("section", undefined, "evaluation-sources");
       group.append(element("h3", "성능 평가용 배경 음원"), element("p", "호출어와 섞어 소음 속 감지율을, 배경만 재생해 오호출을 확인합니다. 이 자료는 학습에 넣지 않습니다.", "hint"), ...evaluationSources.map(sourceRow));
-      const policy = recipe.evaluation_policy;
-      if (["common_development_v1", "common_development_v2", "common_development_v3"].includes(policy?.id)) {
+      if (["common_development_v1", "common_development_v2", "common_development_v3", "common_development_v4"].includes(policy?.id)) {
         group.append(element("p", `세 학습 규모 모두 같은 공통 평가를 사용합니다. 평가용 합성 음색 ${number(policy.validation_references)}개 · 호출어 ${number(policy.validation_originals)}개 · Clean 및 SNR ${policy.snrs.map(number).join("/")} dB · 총 ${number(policy.positive_sessions)}개 시험 오디오를 준비합니다. 학습용 호출어 수와 별개입니다.`, "hint common-evaluation"));
-        if (["common_development_v2", "common_development_v3"].includes(policy.id)) {
-          group.append(element("p", `비호출 원본 30시간: 한국어 대화 10h · 인터뷰 5h · 낭독 3h · 다른 언어 4h · 음악 3h · 환경음 4h · 전자음 1h. 잔향 없음 ${number(policy.dry_positive_sessions)}회와 일반·강한 울림 ${number(policy.reverb_positive_sessions)}회를 합쳐 시험합니다. 공간은 시뮬레이션 ${number(policy.rir_rooms)}개이며, 자료 준비 후 대표 구간을 확인합니다.`, "hint common-evaluation"));
+        if (["common_development_v2", "common_development_v3", "common_development_v4"].includes(policy.id)) {
+          const labels = {korean_conversation:"한국어 대화",korean_interview:"인터뷰",korean_read:"낭독",other_speech:"다른 언어",music:"음악",environment:"환경음",electronic:"전자음"};
+          const buckets = Object.keys(commonBuckets).length ? commonBuckets : {korean_conversation:10,korean_interview:5,korean_read:3,other_speech:4,music:3,environment:4,electronic:1};
+          const hours = Object.values(buckets).reduce((sum, value) => sum + value, 0);
+          group.append(element("p", `비호출 기준 ${number(hours)}시간: ${Object.entries(buckets).map(([key, value]) => `${labels[key] || key} ${number(value)}h`).join(" · ")}. 잔향 없음 ${number(policy.dry_positive_sessions)}회와 일반·강한 울림 ${number(policy.reverb_positive_sessions)}회를 합쳐 시험합니다. 공간은 시뮬레이션 ${number(policy.rir_rooms)}개이며, 자료 준비 후 대표 구간을 확인합니다.`, "hint common-evaluation"));
           group.append(element("p", `음색·스타일을 고르게 뽑은 같은 원본 ${number(policy.reverb_originals)}개를 두 잔향 강도에 사용합니다. 대응하는 잔향 없는 조건은 기본 ${number(policy.dry_positive_sessions)}회에 포함됩니다. 목록과 seed를 고정해 모든 모델에 재사용하며, 대표 원본 수가 검증된 최적값이라는 뜻은 아닙니다.`, "hint common-evaluation"));
+          if (strictCommon) group.append(element("p", "위 일곱 범주의 기본 자료를 호출어 혼합과 연속 오호출 시험에 사용합니다. 기존 193개 배경과 별도 낭독 예약분은 새 평가에서 제외합니다. 오호출 시험 초기화로 빠지는 시간은 같은 목록의 미사용 원음으로 필요한 만큼 보충합니다. 기본량·보충량·채점 가능한 시간을 구분하며, 보충 원음은 호출어 혼합에 넣지 않습니다.", "hint common-evaluation"));
         }
       }
       group.append(element("p", "표시된 항목은 준비 예정 자료입니다. 실제 사용한 종류·음원 수·비호출 평가 시간은 검수와 채점 후 표시합니다. 공통 개발 평가와 독립 Final 평가는 분리하며, Final은 학습·공통 평가에서 쓰지 않은 음원·잔향·음색으로 모델과 감지 설정 확정 후에만 진행합니다. 짧은 배경 세트만으로 장시간 오호출 검증이 완료되지는 않습니다.", "hint evaluation-scope"));
@@ -275,7 +282,16 @@
       const names = {korean_conversation:"한국어 대화",korean_interview:"한국어 인터뷰",korean_read:"한국어 낭독",other_speech:"다른 언어",music:"음악",environment:"환경음",electronic:"전자음"};
       const targets = materials.candidate?.target_hours_by_bucket || materials.admitted?.target_hours_by_bucket || {};
       $("material-coverage-note").textContent = materials.scope;
-      replace($("material-coverage-list"), Object.entries(targets).map(([key,target]) => element("li", `${names[key]||key}: 기술 검사 ${(materials.candidate?.actual_hours_by_bucket?.[key]||0).toFixed(2)}h · 검수 승인 ${(materials.admitted?.actual_hours_by_bucket?.[key]||0).toFixed(2)}h / ${number(target)}h`)));
+      const candidate = materials.candidate?.core_coverage || materials.candidate;
+      const admitted = materials.admitted?.core_coverage || materials.admitted;
+      const lines = Object.entries(targets).map(([key,target]) => element("li", `${names[key]||key}: 기술 검사 ${(candidate?.actual_hours_by_bucket?.[key]||0).toFixed(2)}h · 검수 승인 ${(admitted?.actual_hours_by_bucket?.[key]||0).toFixed(2)}h / ${number(target)}h`));
+      for (const [stage, label] of [["candidate", "기술 검사"], ["admitted", "검수 승인"]]) {
+        const duration = materials.duration?.[stage];
+        if (!duration) continue;
+        const measured = (value, factor, unit) => Number.isFinite(value) ? `${(value * factor).toFixed(3)}${unit}` : "확인 전";
+        lines.push(element("li", `${label}: 기본 ${measured(duration.core_hours, 1, "h")} · 초기화 보충 ${measured(duration.initialization_margin_hours, 60, "분")} · 채점 가능 ${measured(duration.eligible_hours, 1, "h")}`, "material-duration"));
+      }
+      replace($("material-coverage-list"), lines);
     }
   }
   function frameSource(frame, url) {

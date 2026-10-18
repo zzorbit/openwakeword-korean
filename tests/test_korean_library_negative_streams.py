@@ -6,7 +6,7 @@ import pytest
 import soundfile as sf
 
 from korean_openwakeword.common import digest, read_json, write_json
-from korean_openwakeword.negative_streams import pack_negative_streams
+from korean_openwakeword.negative_streams import pack_negative_streams, negative_scoring_budget
 from korean_openwakeword.project import create_project
 from korean_openwakeword.source_identity import partition_keys
 
@@ -161,3 +161,42 @@ def test_complete_wav_without_its_last_stream_journal_recovers_without_changing_
     second = pack_negative_streams(project, rows, output, seconds=1)
     assert second == first and digest(source["path"]) == source["sha256"]
     assert path.is_file() and not list((output / "audio").glob("*.part"))
+
+
+def test_default_runtime_budget_excludes_two_second_warmup_and_partial_frames(tmp_path):
+    project, rows, _ = fixture_rows(tmp_path, lengths=(1.005, 1.005, 1.005))
+    for row in rows:
+        row.update(source_pool_scope="common_30h_only", evaluation_source_scope="common_30h_only",
+            evaluation_material_catalog_id="fixture_catalog", normalized_frames=round(row["duration_s"] * 16000),
+            positive_mix_eligible=True, evaluation_initialization_margin=False)
+    budget = negative_scoring_budget(rows)
+    assert budget["stream_count"] == 1
+    assert budget["raw_seconds"] == pytest.approx(3.015)
+    assert budget["eligible_seconds"] == pytest.approx(.96)
+    assert budget["warmup_excluded_seconds"] == 2
+    assert budget["partial_frame_excluded_seconds"] == pytest.approx(.055)
+    actual = pack_negative_streams(project, rows, project.parent / "reports/unified", strict_common_pool=True)
+    assert actual["duration_budget"]["eligible_seconds"] == budget["eligible_seconds"]
+    assert actual["core_source_seconds"] == pytest.approx(3.015)
+    assert actual["initialization_margin_seconds"] == 0
+    assert actual["unchanged_supplemental_recordings"] == 0
+    rows[0].pop("source_pool_scope")
+    with pytest.raises(ValueError, match="pinned seven-bucket"):
+        pack_negative_streams(project, rows, project.parent / "reports/forbidden", strict_common_pool=True)
+
+
+def test_thirty_raw_hours_of_short_recordings_need_real_initialization_margin():
+    # Metadata-only: 3,600 independent short recordings, not an artificial
+    # 30-hour WAV or repeated audio pretending to create exposure.
+    rows = [{"canonical_recording_id": f"original:{i:04d}", "canonical_source_id": f"source:{i:04d}",
+             "sha256": f"{i:064x}", "eval_bucket": "environment", "category": "environment",
+             "normalized_frames": 30 * 16000, "duration_s": 30} for i in range(3600)]
+    raw = negative_scoring_budget(rows)
+    assert raw["raw_seconds"] == 108000 and raw["stream_count"] == 180
+    assert raw["eligible_seconds"] == 108000 - 360
+    extra = {**rows[0], "canonical_recording_id": "unused:new", "canonical_source_id": "unused:new",
+             "sha256": "f" * 64, "normalized_frames": round(362.08 * 16000), "duration_s": 362.08}
+    result = negative_scoring_budget(rows + [extra])
+    assert result["stream_count"] == 181
+    assert result["eligible_seconds"] >= 108000
+    assert result["raw_seconds"] - result["eligible_seconds"] == pytest.approx(362)

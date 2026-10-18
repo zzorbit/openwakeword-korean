@@ -89,7 +89,7 @@ def test_new_protocol_only_changes_the_approved_rir_subset_and_keeps_historical_
     from korean_openwakeword.common import identity
     from korean_openwakeword.studio_steps import workflow_plan
     old = common_evaluation_policy(2)
-    current = common_evaluation_policy()
+    current = common_evaluation_policy(3)
     assert old["id"] == "common_development_v2"
     assert (old["positive_sessions"], old["reverb_originals"], old["reverb_positive_sessions"]) == (100000, 625, 20000)
     assert current["id"] == "common_development_v3"
@@ -104,7 +104,7 @@ def test_new_protocol_only_changes_the_approved_rir_subset_and_keeps_historical_
     # their recorded contract, rather than silently gaining the new budget.
     assert identity(common_evaluation_policy(1)) == "cf2223feb7e8301f2e9b89c82f0d85dabd6455c528c8e262f990f5f65e7957e8"
     assert identity(old) == "b7cbaf6670eca4de1b21f8db3bc1d0f03e8aee6b27acc6e2eae6826efca4da29"
-    for version in (1, 2, 3):
+    for version in (1, 2, 3, 4):
         settings = preset_settings()
         policy = common_evaluation_policy(version)
         settings.update(evaluation_policy=policy, **{key: policy[key] for key in
@@ -116,7 +116,7 @@ def test_new_protocol_only_changes_the_approved_rir_subset_and_keeps_historical_
     assert common_evaluation_policy(1)["positive_sessions"] == 80000
 
 
-@pytest.mark.parametrize("version", [0, 4, "3", None])
+@pytest.mark.parametrize("version", [0, 5, "3", None])
 def test_unknown_policy_versions_are_rejected(version):
     with pytest.raises(ValueError, match="Unsupported"):
         common_evaluation_policy(version)
@@ -154,7 +154,8 @@ def _full_rir_coverage(tmp_path, monkeypatch, *, reverb_count=1000, mutation=Non
                                    noise_eval_type=("music_" if category == "music" else category + "_") + str(slot % (30 if category == "environment" else 6)))
                     yield mutation(row) if mutation else row
     material_calls = []
-    def material_coverage(rows):
+    def material_coverage(rows, strict_common_pool=False):
+        assert strict_common_pool is False  # This fixture exercises preserved v2/v3.
         material_calls.append(list(rows))
         return {"target_met": True, "shortages": []}
     monkeypatch.setattr(coverage_module, "iter_rows", lambda path: generate())

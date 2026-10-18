@@ -1,0 +1,403 @@
+{
+  "version": "0.7.2",
+  "date": "2026-10-18",
+  "scope": "Installed library regression, source routing, metadata duration planning and bounded PCM tests; not full corpus preparation or population performance.",
+  "installed_wheel_tests": {
+    "tests": 827,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 1,
+    "passed": 826,
+    "legacy_parity_deselected": 5,
+    "payload_matches_installed": true
+  },
+  "browser_tests": {
+    "studio": 21,
+    "microphone": 14
+  },
+  "http_checks": {
+    "installed_version": "0.7.2",
+    "http_checks_passed": true,
+    "same_policy_all_three_budgets": true,
+    "policy": {
+      "id": "common_development_v4",
+      "label": "공통 성능 평가",
+      "validation_references": 30,
+      "validation_originals": 5000,
+      "noise_sections": 1,
+      "snrs": [
+        20,
+        15,
+        10,
+        5,
+        0
+      ],
+      "noise_selection": "balanced_sources",
+      "positive_sessions": 112000,
+      "development_negative_target_hours": [
+        30,
+        30
+      ],
+      "independent_final_negative_min_hours": 100,
+      "scope": "Shared across training budgets; Final remains a separate locked holdout",
+      "dry_positive_sessions": 80000,
+      "reverb_originals": 1000,
+      "reverb_groups": [
+        "moderate",
+        "strong"
+      ],
+      "reverb_positive_sessions": 32000,
+      "negative_hours_by_bucket": {
+        "korean_conversation": 10,
+        "korean_interview": 5,
+        "korean_read": 3,
+        "other_speech": 4,
+        "music": 3,
+        "environment": 4,
+        "electronic": 1
+      },
+      "evaluation_materials_recipe": 6,
+      "rir_rooms": 20,
+      "rir_files": 80,
+      "evaluation_workers": "auto",
+      "reverb_selection": "metadata_axes",
+      "evaluation_source_scope": "common_30h_only"
+    },
+    "only_seven_common_background_buckets_and_rir_exposed": true,
+    "evaluation_source_ids": [
+      "common_30h_electronic",
+      "common_30h_environment",
+      "common_30h_korean_conversation",
+      "common_30h_korean_interview",
+      "common_30h_korean_read",
+      "common_30h_music",
+      "common_30h_other_speech",
+      "openslr28_common_rir_v1"
+    ],
+    "legacy_193_or_extra_reserve_exposed": false,
+    "fresh_project_validation_families": 30,
+    "new_audio_generated": 0,
+    "training_started": false,
+    "independent_Final_accessed": false,
+    "user_C_installation_modified": false
+  },
+  "protocol_checks": {
+    "kind": "unified_common_corpus_protocol_audit_v1",
+    "passed": true,
+    "metadata_only": true,
+    "no_audio_download_or_generation": true,
+    "historical_policy_values_exact": {
+      "1": true,
+      "2": true,
+      "3": true
+    },
+    "historical_v3_recipe_still_contains_its_original_reserve": true,
+    "new_policy": {
+      "id": "common_development_v4",
+      "label": "공통 성능 평가",
+      "validation_references": 30,
+      "validation_originals": 5000,
+      "noise_sections": 1,
+      "snrs": [
+        20,
+        15,
+        10,
+        5,
+        0
+      ],
+      "noise_selection": "balanced_sources",
+      "positive_sessions": 112000,
+      "development_negative_target_hours": [
+        30,
+        30
+      ],
+      "independent_final_negative_min_hours": 100,
+      "scope": "Shared across training budgets; Final remains a separate locked holdout",
+      "dry_positive_sessions": 80000,
+      "reverb_originals": 1000,
+      "reverb_groups": [
+        "moderate",
+        "strong"
+      ],
+      "reverb_positive_sessions": 32000,
+      "negative_hours_by_bucket": {
+        "korean_conversation": 10,
+        "korean_interview": 5,
+        "korean_read": 3,
+        "other_speech": 4,
+        "music": 3,
+        "environment": 4,
+        "electronic": 1
+      },
+      "evaluation_materials_recipe": 6,
+      "rir_rooms": 20,
+      "rir_files": 80,
+      "evaluation_workers": "auto",
+      "reverb_selection": "metadata_axes",
+      "evaluation_source_scope": "common_30h_only"
+    },
+    "new_policy_sha256": "ccfb9bfb2c33b317a67b88d55f4bb5e5f5a8e0994a21b50a99ac3f03a1e5f8da",
+    "recipes": {
+      "check": {
+        "evaluation_source_ids": [
+          "common_30h_korean_conversation",
+          "common_30h_korean_interview",
+          "common_30h_korean_read",
+          "common_30h_other_speech",
+          "common_30h_music",
+          "common_30h_environment",
+          "common_30h_electronic",
+          "openslr28_common_rir_v1"
+        ],
+        "known_download_bytes": 57881260265
+      },
+      "trial": {
+        "evaluation_source_ids": [
+          "common_30h_korean_conversation",
+          "common_30h_korean_interview",
+          "common_30h_korean_read",
+          "common_30h_other_speech",
+          "common_30h_music",
+          "common_30h_environment",
+          "common_30h_electronic",
+          "openslr28_common_rir_v1"
+        ],
+        "known_download_bytes": 57881260265
+      },
+      "production": {
+        "evaluation_source_ids": [
+          "common_30h_korean_conversation",
+          "common_30h_korean_interview",
+          "common_30h_korean_read",
+          "common_30h_other_speech",
+          "common_30h_music",
+          "common_30h_environment",
+          "common_30h_electronic",
+          "openslr28_common_rir_v1"
+        ],
+        "known_download_bytes": 57881260265
+      }
+    },
+    "training_budgets_batch_runtime_and_model_weights_unchanged": true,
+    "source_catalogs_preserved_sha256": {
+      "korean_openwakeword/project.py": "a2882a69b1d184ebdc1f7bbd915e6eb816b91ed314b4f2fe51b16fdb469f9332",
+      "korean_openwakeword/train.py": "8c56e65f376b59429a111f2cea7cce37dc70a7033761ad7081970ce1eeccb8cc",
+      "korean_openwakeword/evaluate.py": "3fcf738bd0ef66a0e313b8a6952d7e91ef6a7a9ab1a0f28e50842f58dc91d2b2",
+      "korean_openwakeword/paired.py": "539ba57243300a274f3658fe5df6031eb802bd1b4ddcae2d73f329fe8c0edf05",
+      "korean_openwakeword/resources/default_profile.json": "ef860204b730869d7d3a3dc82e65d9edf2971fa9ecb41a98814ae4dc0d7e8de4",
+      "korean_openwakeword/resources/evaluation_materials_v1.json": "bb1bafebf884a17c997505618bec33579d4f6d55afb4e9c8e36fac992acefb3e",
+      "korean_openwakeword/resources/evaluation_backgrounds_v4.json": "b60e072e553dd1d96dd7dee4a13da9578d2e46a9a3fb56e75483888fe49d6b61",
+      "korean_openwakeword/resources/evaluation_rirs_v1.json": "ec18d0f91bcf04821e894305a180bb029572c31a877e22e9f5dd69bdf3f30b02"
+    },
+    "new_listening_or_admission_claimed": 0,
+    "independent_Final_accessed": false,
+    "user_C_installation_modified": false
+  },
+  "independent_audit": {
+    "kind": "unified_common_corpus_independent_audit_v1",
+    "passed": true,
+    "created_at": "2026-10-18T03:14:55.104195+00:00",
+    "scope": "Independent read-only code/provenance/metadata audit; not full corpus preparation or model evaluation",
+    "historical_policy_values_exact": {
+      "1": true,
+      "2": true,
+      "3": true
+    },
+    "boundary_review": {
+      "preview_and_download": "New recipe 6 lists only seven common buckets and held-out RIR; legacy catalog downloads excluded",
+      "preparation_and_review": "Recipe 6 bypasses supplemental preparation; v6 source scope, exact source/preview hashes and explicit human review remain required",
+      "admission_and_connection": "Old training-source reserves are never appended; legacy admissions cannot fill unified pool; runtime-specific eligible duration checked before connection",
+      "positive_mixtures": "Exactly core sources with positive_mix_eligible=true; initialization margin excluded",
+      "continuous_negative": "Same core plus genuine unused pinned-catalog originals only; strict packing rejects legacy passthrough, overlapping/repeated source intervals, RIR and unapproved audio",
+      "reporting": "Core bucket totals, initialization margin and scored-duration budget are separate in JSON and Studio UI; real measured hours remain model report evidence",
+      "compatibility": "Old v1/v2/v3 values, model weights, runtime and completed receipts preserved"
+    },
+    "pinned_capacity_metadata": {
+      "catalog_id": "common_evaluation_30h_materials_v1",
+      "music_recordings": 140,
+      "seconds_per_selected_recording": 108,
+      "available_music_seconds": 15120,
+      "core_music_seconds": 10800,
+      "unused_distinct_music_recordings": 40,
+      "unused_music_seconds": 4320,
+      "minimum_original_duration_s": 117.890625,
+      "all_140_pinned_sha256_match_existing_actual_inventory": true,
+      "all_140_source_sha256_unique": true,
+      "all_existing_inventory_clip_fractions_below_1_percent": true,
+      "archive_sha256": [
+        "86d1061c7e15b5c9e906777685c519701df51bfde3001e1070dcc9ffac955ee1"
+      ],
+      "scope": "Existing actual-header/QC inventory reused for capacity feasibility; future known-Train exclusions, per-interval QC and human admission can reduce usable duration and must report shortage; no claim of newly approved 72 minutes"
+    },
+    "metadata_only_duration_probe": {
+      "input": "3600 distinct metadata fixture records of 30s each; no fixture WAV written",
+      "core": {
+        "packing_seconds": 600,
+        "warmup_s": 2,
+        "frame_samples": 1280,
+        "sample_rate": 16000,
+        "tail_policy": "drop_partial_frame",
+        "stream_count": 180,
+        "raw_seconds": 108000.0,
+        "processed_seconds": 108000.0,
+        "warmup_excluded_seconds": 360.0,
+        "partial_frame_excluded_seconds": 0.0,
+        "eligible_seconds": 107640.0,
+        "eligible_hours": 29.9,
+        "scope": "Planned exact WAV frame exposure; model scoring remains a separate operation"
+      },
+      "with_real_length_metadata_margin": {
+        "packing_seconds": 600,
+        "warmup_s": 2,
+        "frame_samples": 1280,
+        "sample_rate": 16000,
+        "tail_policy": "drop_partial_frame",
+        "stream_count": 181,
+        "raw_seconds": 108362.08,
+        "processed_seconds": 108362.08,
+        "warmup_excluded_seconds": 362.0,
+        "partial_frame_excluded_seconds": 0.0,
+        "eligible_seconds": 108000.08,
+        "eligible_hours": 30.000022222222224,
+        "scope": "Planned exact WAV frame exposure; model scoring remains a separate operation"
+      },
+      "default_runtime_matches_worker_report_formula": true,
+      "tail_policy": "drop_partial_frame",
+      "warmup_seconds": 2,
+      "unchanged_scoring_definition": true
+    },
+    "resolved_findings": [
+      {
+        "issue": "Admission used wrong eligible duration key and defaults",
+        "resolution": "Uses eligible_seconds and config runtime warmup/frame_samples"
+      },
+      {
+        "issue": "GUI quota entries mixed core and initialization margin",
+        "resolution": "Core-only per-bucket display plus separate core/margin/eligible lines; candidate budget propagated from preparation receipt"
+      }
+    ],
+    "resume_policy": "Immutable incomplete input receipt remains an explicit shortage; retry requires revised pinned corpus, Train partition or duration policy, preserving previous evidence",
+    "source_checksums": {
+      "studio_data.py": "1322a9c3a4e3dc08651b9d3b7bf97520d01a7e46b2b10f44c7170973226a1cd8",
+      "studio_evaluation_data.py": "19f0dfef56956929b09039e39af8645dcb39b5d3e32c906e818dd78274184ef8",
+      "studio.py": "d9d2cf2eaf9f99fa0b59321e6a68617b40b3f06bdb90778ea30bd745b12ad1d6",
+      "negative_streams.py": "854d1f5703798afa3dd55670e243ecf23b142019c011a9936dac60f2196285e0",
+      "evaluation_materials.py": "ca72526cf0aa60154f25f4a7bdc5266d5438a19338a670469d16bc9df5171689",
+      "evaluation_coverage.py": "93b3297b65991211261bfe7fa47e8a801f9ae74f115a9322ffe9caa821ec5018",
+      "resources/studio.js": "b845d38490970308dc60735c640843a0c217035d626dd86a0c053941cc08c155"
+    },
+    "new_audio_downloads": 0,
+    "new_audio_generation": 0,
+    "new_human_listening_or_admission": 0,
+    "new_training_runs": 0,
+    "full_30h_preparation_executed": false,
+    "full_112000_model_evaluation_executed": false,
+    "Final_accessed": false,
+    "user_independent_installation_modified": false,
+    "unresolved_findings": []
+  },
+  "new_protocol": {
+    "id": "common_development_v4",
+    "source_scope": "common_30h_only",
+    "core_background_hours": 30,
+    "source_bucket_hours": {
+      "korean_conversation": 10,
+      "korean_interview": 5,
+      "korean_read": 3,
+      "other_speech": 4,
+      "music": 3,
+      "environment": 4,
+      "electronic": 1
+    },
+    "legacy_supplemental_or_train_reserves_appended": false,
+    "initialization_margin": "Only genuine unused recordings from the same pinned seven-bucket corpus, computed using exact runtime packing; continuous Negative only.",
+    "minimum_eligible_negative_hours": 30,
+    "positive_sessions": 112000
+  },
+  "preserved": [
+    "frozen v1/v2/v3 policies, source files and receipts",
+    "training budgets, batch, classifier weights and example audio",
+    "positive trial counts, SNR, RIR and frozen deterministic voice/style selection",
+    "independent Final lock"
+  ],
+  "production_models_trained": 0,
+  "full_30h_corpus_prepared_or_admitted": false,
+  "full_112000_session_scoring_run": false,
+  "new_human_listening_or_admission": 0,
+  "user_C_installation_modified": false,
+  "package_implementation_sha256": {
+    "korean_openwakeword/__init__.py": "46d34999e5d987d9c06b55ce53733968004c0d1e3bc358b39edd0171e401678f",
+    "korean_openwakeword/__main__.py": "6d8b7d7846a845059d7a3107143f11131f63c5511d669b44085b15ec5e3d2279",
+    "korean_openwakeword/assets.py": "db2d19e2c87b480d9efd80e9b461f47120b4d516c321efd2e5d58dda14b4cfc3",
+    "korean_openwakeword/audio.py": "2b4b7b1a0f188ead63275362310d89c026ec1fa36e320bbdca6351e496e2ac06",
+    "korean_openwakeword/benchmark.py": "b829149e4251d658966601728db4b8577d62d9212c6234844fd5bd978ed96120",
+    "korean_openwakeword/bundle.py": "5b7f18590ecbcefcee87c86cad807f68ead60108428ee9bc3d2ddc53980e489a",
+    "korean_openwakeword/cli.py": "d1a79d18bc8fd86d79c76f590624bc624e8350a06929e969c848621cc5f30207",
+    "korean_openwakeword/common.py": "4e3ce8399198889d5addad7ca5fb343f7f3c19dc41f54f07d08841f7ea34eea2",
+    "korean_openwakeword/data.py": "e59a74bb23126da657f611c9950bd02c787759a17704ea4d7b87dd29bf6b53d4",
+    "korean_openwakeword/demo.py": "7feb062e8169efb0e00b9d7b33ca25df9acae008aa9cd9f3c801b354ef9b40b5",
+    "korean_openwakeword/downloads.py": "9abd3f5a4e663aad9a445ba9957aa5206b2317c6eb6f00f4489dd824c3401c20",
+    "korean_openwakeword/evaluate.py": "3fcf738bd0ef66a0e313b8a6952d7e91ef6a7a9ab1a0f28e50842f58dc91d2b2",
+    "korean_openwakeword/evaluation_coverage.py": "93b3297b65991211261bfe7fa47e8a801f9ae74f115a9322ffe9caa821ec5018",
+    "korean_openwakeword/evaluation_materials.py": "ca72526cf0aa60154f25f4a7bdc5266d5438a19338a670469d16bc9df5171689",
+    "korean_openwakeword/evaluation_rir.py": "aa34be6682f2971a60f15c532d7a396b74cd3269028a827ddd3095272ae22ba6",
+    "korean_openwakeword/evaluation_workers.py": "40fcb965e7fb37d82fa7e4938470ba657521754711f6a40b4892f2e9add94f04",
+    "korean_openwakeword/events.py": "e5f6eefccd1cfb86696cf4df67b19089ecbedeec60731a100a2a57e871cfdf67",
+    "korean_openwakeword/features.py": "2788dcf7acf38e0cd050b5caac704aa4b2aab209d050c3ee87f0ab6506080464",
+    "korean_openwakeword/final_integrity.py": "12091715b9b34980bca5ae1a7569adae66b26cf9acc991355a73b8fadbc5500d",
+    "korean_openwakeword/frontend.py": "80dbd4e00b3bfc28b33602b97a7013fcf5b1eff8ec8c0e1babda01bca6433835",
+    "korean_openwakeword/hard_phrase_policy.py": "91585708904e8809388447a3857b9121407804762a0f480a66c4210fbde4a356",
+    "korean_openwakeword/hard_tts.py": "4a8c077430606d82780c853398f63df58988e2e8be9393a475344f0c6f2c17fc",
+    "korean_openwakeword/microphone.py": "96a23e9e9eec89dcb731742e89a9786c2d57b665d431000c86a8144d468d0bd5",
+    "korean_openwakeword/negative_streams.py": "854d1f5703798afa3dd55670e243ecf23b142019c011a9936dac60f2196285e0",
+    "korean_openwakeword/paired.py": "539ba57243300a274f3658fe5df6031eb802bd1b4ddcae2d73f329fe8c0edf05",
+    "korean_openwakeword/pool_review.py": "6867fe3ef930af1b6b20dcce83562acbe1d35b0fbe3944bbb781ca3917624c26",
+    "korean_openwakeword/preparation.py": "efd306f33d44aff4efa2a2f80e80038e5954d3305ce89c0f3929a3637bb2f276",
+    "korean_openwakeword/project.py": "a2882a69b1d184ebdc1f7bbd915e6eb816b91ed314b4f2fe51b16fdb469f9332",
+    "korean_openwakeword/provider_index.py": "fd6c0bb09ad72a2c26c80390674ac9e911563c015f4ba7010bf143bb33979ddf",
+    "korean_openwakeword/reference_bank.py": "a1a0bb8a7ea97fcf841b69cf5279fb221860d88f8b5d0d7835a7e933b9ca82a8",
+    "korean_openwakeword/resources/default_profile.json": "ef860204b730869d7d3a3dc82e65d9edf2971fa9ecb41a98814ae4dc0d7e8de4",
+    "korean_openwakeword/resources/evaluation_backgrounds_v4.json": "b60e072e553dd1d96dd7dee4a13da9578d2e46a9a3fb56e75483888fe49d6b61",
+    "korean_openwakeword/resources/evaluation_materials_v1.json": "bb1bafebf884a17c997505618bec33579d4f6d55afb4e9c8e36fac992acefb3e",
+    "korean_openwakeword/resources/evaluation_noise_v2.json": "c15e701929e0658917f2d96bb5c37e154243ad1ea140fe1784e10108cde7d31f",
+    "korean_openwakeword/resources/evaluation_noise_v3.json": "210d99b66ce8b660ada7f7fdcb2193cf1b4c128527a566dd59263d076c81e54f",
+    "korean_openwakeword/resources/evaluation_rirs_v1.json": "ec18d0f91bcf04821e894305a180bb029572c31a877e22e9f5dd69bdf3f30b02",
+    "korean_openwakeword/resources/faster_qwen3_tts_UPSTREAM.json": "a5edfb06f36f1ee7b0681b50214fb06999859a58bc2b50c1470354a8a338d1aa",
+    "korean_openwakeword/resources/microphone.css": "b50ff05a781dd28891f6bd22d37c1f871769793cd0351132fb007606edc0404b",
+    "korean_openwakeword/resources/microphone.html": "91d2e6a08489110314407726eb3df149a907b352ba59a662776855d8283e77da",
+    "korean_openwakeword/resources/microphone.js": "2dd541f66f3b12174c3339ebfb9366d5ccc94a28f16681ca65a5efe985651765",
+    "korean_openwakeword/resources/microphone_worklet.js": "2d53d7c06e15c6355c3a5a8167583e414653daa35465e50209a9c447aa0b6c48",
+    "korean_openwakeword/resources/public_datasets.json": "2d219fe505c58ff437f834d931bf9e3df0bbacb3539560a8af91b7bc7b7db2e6",
+    "korean_openwakeword/resources/results.css": "2b854a1272fbe544df4fc0376bdb865502c669c94b8303f117cd2927cf9f668e",
+    "korean_openwakeword/resources/results.html": "fffe595737dc31cb15a93fc4ec244102402e2c50105bd4ba69f61f1eb208e598",
+    "korean_openwakeword/resources/results.js": "3065af07b35ccf0932c1c8aa7f10769263964185ae8beb81175c7d7db9b36458",
+    "korean_openwakeword/resources/results_scope.js": "ab20ec8c52504eda4a5d0ec21ed193da85fe7071e5f0ae96374fb2a47b37f586",
+    "korean_openwakeword/resources/review.html": "420021f46786d419d7fb3243b6a3766ab1dc200ba7cc916240d1e57935f05cf7",
+    "korean_openwakeword/resources/sample_chunsik/audio_manifest.json": "13ac46b06b551333954948e9ebee5d2832c823c9f4f841b0e66077ee396b4842",
+    "korean_openwakeword/resources/sample_chunsik/AUDIO_SOURCES.json": "4214c47ad7b94190f6cc9efd761516fee05e7813b663413bdfbcbdc8e7c8ba9d",
+    "korean_openwakeword/resources/sample_chunsik/manifest.json": "cbeecd64d438916538b132ad77fb2bc06d5ca55b380527cd1c53e4e793aa3961",
+    "korean_openwakeword/resources/studio.css": "0517f2192f38bc5b79472ccf310366d2039ca5fe2fdf1fc16b45e67f575398f3",
+    "korean_openwakeword/resources/studio.html": "eff8cdc96e20a381bf2e40433d6916b4b54f7517138f61a34121fc9629d766c1",
+    "korean_openwakeword/resources/studio.js": "b845d38490970308dc60735c640843a0c217035d626dd86a0c053941cc08c155",
+    "korean_openwakeword/review.py": "30b0022804fa08e5225a1e0e224ded8453971eeaef84eff9f3f22d43def1ed30",
+    "korean_openwakeword/runtime.py": "0825f263334cfcdc19f1ecd3f95f41e3c611218795fec4f27513b0857814d5ca",
+    "korean_openwakeword/selection.py": "163bd91dbebbd386f9c9e6b9438b46c61a143239b0f86505bb0263c1a5b00603",
+    "korean_openwakeword/setup.py": "6e2e994826f14400d7402d15b9c579c3443bb6877264f0a940abdd445b2b3e5f",
+    "korean_openwakeword/site.py": "e9d4b484b46722023b4e33de08ea74e09e172b990aa4d93931566c6207f69381",
+    "korean_openwakeword/source_identity.py": "cee22f8d8b11d4f97269db197de348651ccdc79169bfda299c716fbe745ce1dd",
+    "korean_openwakeword/storage.py": "8210ec288d49d0451d87ccfd5e3a3777609ed6dbfbdac7dbce80ff29368b565b",
+    "korean_openwakeword/streaming.py": "0df46381db3e17608a142da4c05c1bbb2e6c8577b83cd198efe347a05c2d4a6f",
+    "korean_openwakeword/studio.py": "d9d2cf2eaf9f99fa0b59321e6a68617b40b3f06bdb90778ea30bd745b12ad1d6",
+    "korean_openwakeword/studio_data.py": "1322a9c3a4e3dc08651b9d3b7bf97520d01a7e46b2b10f44c7170973226a1cd8",
+    "korean_openwakeword/studio_evaluation_data.py": "19f0dfef56956929b09039e39af8645dcb39b5d3e32c906e818dd78274184ef8",
+    "korean_openwakeword/studio_steps.py": "f14d9c5ffc141387e042523ec66d60b8df263231034ee1849b02b97ccced5be2",
+    "korean_openwakeword/studio_worker.py": "c1720a811cc9000a0340fa9665c03022494a715a8c0a4476352bc1b803f5bc58",
+    "korean_openwakeword/train.py": "8c56e65f376b59429a111f2cea7cce37dc70a7033761ad7081970ce1eeccb8cc",
+    "korean_openwakeword/tts.py": "5fe03bdde49e5b062e22bddeeb625c1d387758d123fbfd25cd4e2ae48713a46a",
+    "korean_openwakeword/tts_cuda_graph.py": "5e16cb2a1433eaea6bbaef5c99d5fd42e0225b9e81cee5f04404e65b368e7996",
+    "korean_openwakeword/tts_cuda_predictor.py": "66d3955250a882bfd31917e3546ecae66c11d6765e83b9fd3ee2f3adb69fe3ab",
+    "korean_openwakeword/tts_cuda_sampling.py": "fb66181a8db91076346adf7b0e6d0f2c06c339365d5c466bf056fcb28ac837ed",
+    "korean_openwakeword/tts_runtime.py": "75cf8c9fe6d676aeb53962feec5528e199c8a634a95051b42e3421b115bbf0e6",
+    "korean_openwakeword/tune.py": "4b7dc1cfc090d4e5372b6afbf794867d50ae4b42e914cd9d9b2579f8500dafa7"
+  }
+}

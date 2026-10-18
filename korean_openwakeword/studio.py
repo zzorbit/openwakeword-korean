@@ -696,6 +696,20 @@ class StudioManager:
         if candidate_coverage or admitted_coverage:
             view["evaluation_materials"] = {"candidate": candidate_coverage, "admitted": admitted_coverage,
                 "scope": "원본 고유 시간 · 다운로드/기술 검사와 대표 검수 승인은 별도 · 실제 채점 시간은 결과에서 확인"}
+            if (state.get("settings", {}).get("evaluation_policy") or {}).get("id") == "common_development_v4":
+                def duration_view(coverage, budget):
+                    if not coverage:
+                        return None
+                    budget = budget or {}
+                    eligible = budget.get("eligible_hours")
+                    if eligible is None and budget.get("eligible_seconds") is not None:
+                        eligible = budget["eligible_seconds"] / 3600
+                    return {"core_hours": (coverage.get("core_coverage") or {}).get("actual_total_hours"),
+                            "initialization_margin_hours": coverage.get("initialization_margin_hours"),
+                            "eligible_hours": eligible}
+                view["evaluation_materials"]["duration"] = {
+                    "candidate": duration_view(candidate_coverage, downloaded.get("negative_duration_budget")),
+                    "admitted": duration_view(admitted_coverage, connected.get("negative_duration_budget"))}
         if reviews:
             r = reviews[0]
             view["review"] = {"queue_id": r["id"], "title": r.get("title", "음원 확인"),

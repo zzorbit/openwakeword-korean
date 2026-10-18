@@ -100,9 +100,12 @@ def material_recipe(preset="check", workspace=None, evaluation_policy=None):
         asset["local_path"] = str(path) if path else None
         asset["availability"] = "cached_requires_integrity_check" if path and path.is_file() else "download_required"
     from .studio_evaluation_data import evaluation_catalog, evaluation_preview
-    evaluation = evaluation_catalog()
+    strict_common = bool(evaluation_policy and evaluation_policy.get("evaluation_materials_recipe") == 6)
+    # Recipe 6 starts from the common corpus itself. The historical 193 clips
+    # and Zeroth reserve preview remain available only to their old recipes.
+    evaluation = {"recipe_version": 6, "assets": [], "size_bytes": 0} if strict_common else evaluation_catalog()
     result = {"schema_version": 1, "recipe_version": evaluation["recipe_version"], "preset": preset, "assets": assets,
-            "evaluation_assets": evaluation["assets"], "evaluation_sources": evaluation_preview(),
+            "evaluation_assets": evaluation["assets"], "evaluation_sources": [] if strict_common else evaluation_preview(),
             "evaluation_download_bytes": evaluation["size_bytes"],
             "known_download_bytes": sum(a["size_bytes"] for a in assets) + evaluation["size_bytes"],
             "additional_download": {"id": "mit_rir", "source_url": f"https://huggingface.co/datasets/davidscripka/MIT_environmental_impulse_responses/tree/{MIT_REV}/16khz",
@@ -121,20 +124,24 @@ def material_recipe(preset="check", workspace=None, evaluation_policy=None):
                 "Held-out Development adds environmental sounds, music/electronic sounds, Korean field speech/announcements and reserved Korean read speech; the small curated set does not prove broad population performance.",
                 "Downloads and technical QC are not human listening, admission, or Final evaluation approval."],
             "human_review_required": True, "Final_accessed": False}
-    if evaluation_policy and evaluation_policy.get("evaluation_materials_recipe") == 5:
+    if evaluation_policy and evaluation_policy.get("evaluation_materials_recipe") in (5, 6):
         from .evaluation_materials import evaluation_material_catalog, evaluation_material_preview
         from .evaluation_rir import common_rir_preview, common_rir_catalog
         common = evaluation_material_catalog()
         shared_hashes = {a["sha256"] for a in assets if a.get("sha256")}
         extra_download = sum(a["size_bytes"] for a in common["archives"] if a.get("sha256") not in shared_hashes)
         extra_download += common_rir_catalog()["archive"]["size_bytes"]
-        result.update(recipe_version=5, evaluation_materials_policy=evaluation_policy,
-                      evaluation_sources=evaluation_material_preview() + evaluation_preview() + [common_rir_preview()],
+        result.update(recipe_version=evaluation_policy["evaluation_materials_recipe"], evaluation_materials_policy=evaluation_policy,
+                      evaluation_sources=evaluation_material_preview() + ([] if strict_common else evaluation_preview()) + [common_rir_preview()],
                       common_evaluation_catalog=common,
                       evaluation_download_bytes=evaluation["size_bytes"] + extra_download,
                       known_download_bytes=result["known_download_bytes"] + extra_download,
                       estimated_workspace_bytes=110 * 1024**3)
         result["limitations"].append("30h means unique prepared original audio, not repeated mixtures or approved listening; missing buckets block the common evaluation.")
+        if strict_common:
+            result["evaluation_source_scope"] = "common_30h_only"
+            result["limitations"] = [text for text in result["limitations"] if "reserved Korean read speech" not in text]
+            result["limitations"].append("Only the common corpus and its held-out RIRs enter this benchmark; legacy supplemental clips and training-source reserves are excluded.")
     return result
 
 
@@ -419,7 +426,7 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
     workspace.mkdir(parents=True, exist_ok=True)
     # A minimum preflight before any download; actual per-file checks also run.
     missing = sum(a["size_bytes"] for a in recipe["assets"] if a["availability"] == "download_required")
-    if recipe.get("recipe_version") == 5:
+    if recipe.get("recipe_version") in (5, 6):
         from .evaluation_rir import common_rir_catalog
         shared_pins = {a["sha256"] for a in recipe["assets"] if a.get("sha256")}
         for asset in recipe["common_evaluation_catalog"]["archives"]:
@@ -435,7 +442,7 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
         raise ValueError("Not enough selected-workspace space for the displayed data recipe and preparation")
     assets = {a["id"]: a for a in recipe["assets"]}
     legacy_extra = root / ".studio/materials/extra_source_index.jsonl"
-    if legacy_extra.exists() and any(r.get("canonical_source_id") in ("freesound:102956", "freesound:13613") for r in read_rows(legacy_extra)):
+    if recipe.get("recipe_version") != 6 and legacy_extra.exists() and any(r.get("canonical_source_id") in ("freesound:102956", "freesound:13613") for r in read_rows(legacy_extra)):
         assets.update({a["id"]: a for a in _official_assets() if a["id"] in ("dns_door", "electronic_validation")})
     paths = {key: _download(asset, downloads, progress) for key, asset in assets.items()}
     extract_archive(paths["zeroth"], shared / "zeroth")
@@ -492,7 +499,8 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
         queues.append({"id": "materials_" + name, "kind": "content", "queue": record["artifacts"]["representative_queue"]["path"],
                        "pool_manifest": record["artifacts"]["source_manifest"]["path"], "preparation": preparation,
                        "pools": source["pools"], "label": name + " 대표 음원 확인"})
-        reserves.extend(read_rows(record["artifacts"]["validation_reserve"]["path"]))
+        if recipe.get("recipe_version") != 6:
+            reserves.extend(read_rows(record["artifacts"]["validation_reserve"]["path"]))
         preparations.append({"id": name, "preparation": binding, "train_hours": record["train_hours"],
                              "validation_hours": record["validation_hours"], "target_met": record["target_met"]})
     validation = _write_rows(stage / "noise_validation.jsonl", [r for r in reserves if r["category"] != "rir"])
@@ -528,8 +536,10 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
     legacy_result = stage / "preparation_result.json"
     if not legacy_result.exists():
         write_json(legacy_result, result)
-    if evaluation_policy and evaluation_policy.get("evaluation_materials_recipe") == 5:
+    if evaluation_policy and evaluation_policy.get("evaluation_materials_recipe") in (5, 6):
         result["evaluation_materials_policy"] = evaluation_policy
+    if recipe.get("recipe_version") == 6:
+        result["evaluation_source_scope"] = "common_30h_only"
     return ensure_evaluation_materials(project_path, workspace, result, progress)
 
 
@@ -539,7 +549,11 @@ def ensure_evaluation_materials(project, workspace, prepared, progress=None):
     from .studio_evaluation_data import prepare_evaluation_materials, prepare_common_evaluation_materials
     root, _ = load_project(project)
     result = deepcopy(prepared)
-    expanded = result.get("evaluation_materials_policy", {}).get("evaluation_materials_recipe") == 5
+    if result.get("recipe_version") == 6 and (
+            result.get("evaluation_materials_policy", {}).get("evaluation_materials_recipe") != 6
+            or result.get("evaluation_source_scope") != "common_30h_only"):
+        raise ValueError("Unified common evaluation preparation lost its source-pool binding")
+    expanded = result.get("evaluation_materials_policy", {}).get("evaluation_materials_recipe") in (5, 6)
     evaluation = (prepare_common_evaluation_materials if expanded else prepare_evaluation_materials)(project, workspace, result, progress)
     binding = evaluation["preparation"]
     version = evaluation["recipe_version"]
@@ -562,6 +576,10 @@ def ensure_evaluation_materials(project, workspace, prepared, progress=None):
     if expanded:
         result["evaluation_material_coverage"] = evaluation["material_coverage"]
         result["evaluation_rir_coverage"] = evaluation["rir_coverage"]
+    if version == 6:
+        result["evaluation_source_scope"] = evaluation["evaluation_source_scope"]
+        result["negative_duration_budget"] = evaluation.get("negative_duration_budget")
+        descriptor["evaluation_source_scope"] = evaluation["evaluation_source_scope"]
     path = Path(binding["path"]).parent / f"preparation_result_v{version}.json"
     if not path.exists():
         write_json(path, result)
@@ -640,6 +658,14 @@ def admit_materials(project_path, prepared, answers_by_preparation=None, *, admi
     """Consume actual saved review answers and connect their exact admitted pools."""
     from .preparation import apply_prepared_review, connect_materials
     root, config = load_project(project_path)
+    strict_common = prepared.get("recipe_version") == 6
+    if strict_common:
+        if (prepared.get("evaluation_source_scope") != "common_30h_only"
+                or prepared.get("evaluation_materials_policy", {}).get("evaluation_materials_recipe") != 6):
+            raise ValueError("Common evaluation preparation pool scope changed")
+        if ((root / "final_lock.json").exists() or any((root / "features").rglob("contract.json"))
+                or any((root / "runs").rglob("contract.json"))):
+            raise ValueError("Existing evaluation/training inputs are frozen; use a new experiment for the unified common corpus")
     answers = answers_by_preparation or {}
     receipts, all_pools, evaluation_rows, evaluation_admissions = [], set(), [], []
     for queue in prepared.get("review_queues", []):
@@ -650,6 +676,12 @@ def admit_materials(project_path, prepared, answers_by_preparation=None, *, admi
             answer = bound_file(root, answer)
         if queue.get("evaluation_only"):
             from .studio_evaluation_data import admit_evaluation_review
+            if strict_common:
+                evaluation_preparation = read_json(resolved(root, queue["preparation"]))
+                if (evaluation_preparation.get("recipe_version") != 6
+                        or evaluation_preparation.get("evaluation_source_scope") != "common_30h_only"
+                        or queue.get("evaluation_source_scope") != "common_30h_only"):
+                    raise ValueError("Legacy evaluation admissions cannot fill the unified common corpus")
             evaluation = admit_evaluation_review(project_path, queue, answer, prepared)
             evaluation_rows.extend(evaluation["rows"])
             evaluation_admissions.append(evaluation["admission"])
@@ -703,11 +735,21 @@ def admit_materials(project_path, prepared, answers_by_preparation=None, *, admi
         shortages.append(f"Active Generic feature cache covers {generic_available:g}h, below selected {generic_target:g}h; additional raw Generic admissions require a separately rebuilt feature cache, not addition to the legacy 2,000h file")
     if "korean_negative" in all_pools and durations["korean_negative"] + 1e-9 < korean_target:
         shortages.append(f"Korean unique admitted Train duration {durations['korean_negative']:g}h is below selected {korean_target:g}h")
-    material_coverage = None
-    if prepared.get("recipe_version") == 5:
+    material_coverage = duration_budget = None
+    if prepared.get("recipe_version") in (5, 6):
         from .evaluation_materials import evaluation_material_coverage
-        material_coverage = evaluation_material_coverage(r for r in evaluation_rows if r["category"] != "rir")
+        if strict_common:
+            from .studio_evaluation_data import assert_common_source_scope
+            assert_common_source_scope(evaluation_rows)
+        material_coverage = evaluation_material_coverage((r for r in evaluation_rows if r["category"] != "rir"),
+            **({"strict_common_pool": True} if strict_common else {}))
         shortages.extend(material_coverage["shortages"])
+        if strict_common:
+            from .negative_streams import negative_scoring_budget
+            duration_budget = negative_scoring_budget([r for r in evaluation_rows if r["category"] != "rir"],
+                warmup_s=config["runtime"]["warmup_s"], frame_samples=config["runtime"]["frame_samples"])
+            if duration_budget["eligible_seconds"] + .001 < 30 * 3600:
+                shortages.append("공통 평가의 실제 채점 예정 시간이 30시간보다 짧습니다. 초기화 여유분의 검수 결과를 확인하세요.")
         admitted_rirs = [r for r in evaluation_rows if r["category"] == "rir"]
         if len(admitted_rirs) < 80 or len({r["canonical_room_id"] for r in admitted_rirs}) < 20:
             shortages.append("공통 평가 잔향 자료 부족: 대표 검수에서 폐기된 묶음을 확인하세요.")
@@ -717,6 +759,7 @@ def admit_materials(project_path, prepared, answers_by_preparation=None, *, admi
         return {"state": "awaiting_additional_materials", "admissions": receipts, "pools_ready": [],
                 "shortages": shortages, "admitted_unique_hours": durations,
                 "evaluation_material_coverage": material_coverage,
+                **({"negative_duration_budget": duration_budget} if strict_common else {}),
                 "generic_publisher_nominal_hours": nominal, "Final_accessed": False}
     connection = connect_materials(project_path, admissions=receipts, pools=sorted(all_pools))
     # All source reserves remain separate, including added datasets.  They
@@ -725,7 +768,7 @@ def admit_materials(project_path, prepared, answers_by_preparation=None, *, admi
     reserve_bindings = []
     evaluation_ids = {r.get(key) for r in evaluation_rows if r["category"] != "rir"
                       for key in ("canonical_source_id", "canonical_recording_id") if r.get(key)}
-    for receipt in receipts:
+    for receipt in (() if strict_common else receipts):
         record_path = bound_file(root, receipt) if isinstance(receipt, dict) else resolved(root, receipt)
         record = read_json(record_path)
         binding = record["evaluation_reserve"]
@@ -751,13 +794,16 @@ def admit_materials(project_path, prepared, answers_by_preparation=None, *, admi
             seen.add(key)
     stage = root / ".studio" / "materials"
     reserve_key = identity(sorted(reserve_bindings + evaluation_admissions, key=lambda x: x["path"]))[:16]
-    validation = _write_rows(stage / ("noise_validation_" + reserve_key + ".jsonl"), reserves)
+    mixture_rows = ([r for r in reserves if r.get("positive_mix_eligible") is not False]
+                    if strict_common else reserves)
+    validation = _write_rows(stage / ("noise_validation_" + reserve_key + ".jsonl"), mixture_rows)
     negative_rows = [{**r, "kind": "negative", "calls": []} for r in reserves]
     negative_streams = None
-    if prepared.get("recipe_version") == 5:
+    if prepared.get("recipe_version") in (5, 6):
         from .negative_streams import pack_negative_streams
         negative_streams = pack_negative_streams(project_path, negative_rows,
-                                                 stage / ("negative_streams_" + reserve_key))
+                                                 stage / ("negative_streams_" + reserve_key),
+                                                 **({"strict_common_pool": True} if strict_common else {}))
         negative_rows = negative_streams["rows"]
     negative = _write_rows(stage / ("negative_validation_" + reserve_key + ".jsonl"),
                            negative_rows)
@@ -770,10 +816,10 @@ def admit_materials(project_path, prepared, answers_by_preparation=None, *, admi
         config["manifests"]["noise_validation"] = relative
         destination = resolved(root, relative)
         config_changed = True
-    _write_rows(destination, reserves)
+    _write_rows(destination, mixture_rows)
     rir_manifest = None
     if rir_rows:
-        relative = "data/materials/validation_rir_v5_" + reserve_key + ".jsonl"
+        relative = f"data/materials/validation_rir_v{prepared.get('recipe_version', 5)}_" + reserve_key + ".jsonl"
         rir_manifest = _write_rows(resolved(root, relative), rir_rows)
         config["manifests"]["rir_validation"] = relative
         config_changed = True
@@ -793,7 +839,9 @@ def admit_materials(project_path, prepared, answers_by_preparation=None, *, admi
             "validation_noise_manifest": validation,
             "validation_rir_manifest": rir_manifest,
             "evaluation_material_coverage": material_coverage,
+            **({"negative_duration_budget": duration_budget} if strict_common else {}),
             "evaluation_noise_admissions": evaluation_admissions,
             "evaluation_noise_recipe_version": prepared.get("recipe_version", 2) if evaluation_rows else 1,
+            **({"evaluation_source_scope": "common_30h_only"} if strict_common else {}),
             "admitted_unique_hours": durations, "generic_publisher_nominal_hours": nominal,
             "shortages": shortages, "Final_accessed": False}

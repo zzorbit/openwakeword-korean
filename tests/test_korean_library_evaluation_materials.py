@@ -190,3 +190,101 @@ def test_actual_small_preparation_reports_shortage_and_resumes_without_admitting
     assert again["resumed"] is True and again["source_rows"] == first["source_rows"]
     Path(again["source_rows"][0]["path"]).write_bytes(b"changed")
     with pytest.raises(ValueError): module.prepare_common_sources(project, tmp_path / "workspace")
+
+
+def test_unified_pool_adds_only_genuine_same_catalog_context_and_keeps_legacy_separate(tmp_path, monkeypatch):
+    from korean_openwakeword.project import create_project
+    from korean_openwakeword.negative_streams import negative_scoring_budget
+    project = create_project(tmp_path / "word", "보라야", "bora")
+    # Small real WAVs exercise the exact two-second runtime exclusion without
+    # downloading a corpus or claiming that these fixture files were heard.
+    monkeypatch.setattr(module, "BUCKET_HOURS", {key: 3/3600 for key in module.BUCKET_HOURS})
+    rows = []
+    for index, bucket in enumerate(module.BUCKET_HOURS):
+        source = tmp_path / (bucket + ".wav")
+        sf.write(source, np.random.default_rng(index).normal(0, .03, 3 * 16000), 16000, subtype="PCM_16")
+        rows.append({"original_path": str(source), "canonical_source_id": "fixture:"+bucket,
+            "canonical_recording_id": "fixture:"+bucket, "eval_bucket": bucket,
+            "eval_type": bucket, "category": "environment", "selection_duration_s": 3,
+            "license": "fixture", "source_url": "https://example.org/fixture"})
+    extra = tmp_path / "unused_same_corpus.wav"
+    sf.write(extra, np.random.default_rng(100).normal(0, .03, 30 * 16000), 16000, subtype="PCM_16")
+    rows.append({**rows[-1], "original_path": str(extra), "canonical_source_id": "fixture:unused",
+                 "canonical_recording_id": "fixture:unused", "selection_duration_s": 30})
+    monkeypatch.setattr(module, "evaluation_material_catalog", lambda: {"archives": [], "known_download_bytes": 0,
+        "working_bytes": 0, "target_hours_by_bucket": module.BUCKET_HOURS, "limitations": ["fixture"]})
+    monkeypatch.setattr(module, "_known_train", lambda *a: [])
+    monkeypatch.setattr(module, "_candidate_rows", lambda *a: rows)
+    legacy = module.prepare_common_sources(project, tmp_path / "workspace")
+    strict = module.prepare_common_sources(project, tmp_path / "workspace", strict_common_pool=True)
+    assert legacy["request"] != strict["request"] and len(legacy["source_rows"]) == 7
+    assert len(strict["source_rows"]) == 8 and strict["target_met"]
+    assert strict["source_pool_scope"] == "common_30h_only"
+    assert strict["core_source_seconds"] == 21
+    assert strict["initialization_margin_seconds"] > 0
+    assert strict["duration_budget"]["eligible_seconds"] >= 21
+    assert strict["duration_budget"]["eligible_seconds"] == negative_scoring_budget(strict["source_rows"])["eligible_seconds"]
+    positive = [row for row in strict["source_rows"] if row["positive_mix_eligible"]]
+    margin = [row for row in strict["source_rows"] if row["evaluation_initialization_margin"]]
+    assert len(positive) == 7 and len(margin) == 1
+    assert margin[0]["canonical_recording_id"] == "fixture:unused"
+    assert all(row["evaluation_content_approved"] is False for row in strict["source_rows"])
+    coverage = module.evaluation_material_coverage(strict["source_rows"], strict_common_pool=True)
+    assert coverage["core_coverage"]["actual_total_hours"] == pytest.approx(21/3600)
+    assert coverage["initialization_margin_hours"] == pytest.approx(strict["initialization_margin_seconds"]/3600)
+    again = module.prepare_common_sources(project, tmp_path / "workspace", strict_common_pool=True)
+    assert again["resumed"] and again["source_rows"] == strict["source_rows"]
+    with pytest.raises(ValueError, match="outside its pinned"):
+        module.evaluation_material_coverage(strict["source_rows"] + [{"duration_s": 100000}], strict_common_pool=True)
+
+
+def test_unified_coverage_does_not_use_margin_to_fill_missing_core_quota():
+    row = {"eval_bucket": "music", "canonical_recording_id": "unused:music", "source_start_s": 0,
+           "source_end_s": 3 * 3600, "source_pool_scope": "common_30h_only",
+           "evaluation_material_catalog_id": "fixture", "positive_mix_eligible": False,
+           "evaluation_initialization_margin": True}
+    coverage = module.evaluation_material_coverage([row], strict_common_pool=True)
+    assert coverage["actual_hours_by_bucket"]["music"] == 3
+    assert coverage["core_coverage"]["actual_hours_by_bucket"]["music"] == 0
+    assert not coverage["target_met"]
+
+
+def test_unified_assessment_rejects_legacy_audio_even_with_thirty_reported_hours(tmp_path):
+    import json
+    from korean_openwakeword.evaluation_coverage import assess_common_evaluation
+    from korean_openwakeword.studio_steps import common_evaluation_policy
+    path = tmp_path / "legacy_negative_fixture.jsonl"
+    path.write_text(json.dumps({"sample_id": "old_diagnostic", "kind": "negative", "category": "environment",
+        "canonical_recording_id": "old:193", "duration_s": 30 * 3600}) + "\n", encoding="utf-8")
+    result = assess_common_evaluation(common_evaluation_policy(4),
+        {"models": [{"negative": {"hours": 30}}]}, path, {"fixture": True})
+    assert not result["negative_materials"]["target_met"]
+    assert any("outside its pinned" in reason for reason in result["shortages"])
+
+
+def test_unified_core_quotas_use_original_time_not_resampling_ceiling(tmp_path, monkeypatch):
+    from korean_openwakeword.project import create_project
+    project = create_project(tmp_path / "word", "보라야", "bora")
+    target_s = 20.0024
+    monkeypatch.setattr(module, "BUCKET_HOURS", {"environment": target_s/3600})
+    rows = []
+    for i in range(24):
+        source = tmp_path / f"source_{i:02d}.wav"
+        # Each conversion rounds up more than the source interval. Twenty
+        # such normalized clips exceed the quota while original time does not.
+        sf.write(source, np.random.default_rng(i).normal(0, .03, 44103), 44100, subtype="PCM_16")
+        rows.append({"original_path": str(source), "canonical_source_id": f"fixture:{i}",
+            "canonical_recording_id": f"fixture:{i}", "eval_bucket": "environment",
+            "eval_type": "fixture_environment", "category": "environment", "selection_duration_s": 44103/44100,
+            "license": "fixture", "source_url": "https://example.org/fixture"})
+    monkeypatch.setattr(module, "evaluation_material_catalog", lambda: {"archives": [], "known_download_bytes": 0,
+        "working_bytes": 0, "target_hours_by_bucket": module.BUCKET_HOURS, "limitations": ["fixture"]})
+    monkeypatch.setattr(module, "_known_train", lambda *a: [])
+    monkeypatch.setattr(module, "_candidate_rows", lambda *a: rows)
+    result = module.prepare_common_sources(project, tmp_path / "workspace", strict_common_pool=True)
+    core = [row for row in result["source_rows"] if row["positive_mix_eligible"]]
+    assert len(core) == 21
+    original_seconds = sum(row["source_end_s"] - row["source_start_s"] for row in core)
+    assert original_seconds + .001 >= target_s
+    assert result["core_coverage"]["target_met"] and result["target_met"]
+    assert result["duration_budget"]["eligible_seconds"] >= target_s

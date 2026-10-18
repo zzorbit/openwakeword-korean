@@ -52,7 +52,7 @@ def evaluation_material_preview():
             for key, hours in BUCKET_HOURS.items()]
 
 
-def evaluation_material_coverage(rows):
+def evaluation_material_coverage(rows, strict_common_pool=False):
     """Count each original interval once, and refuse cross-bucket reuse."""
     def original_rows(items, parents=(), inherited_bucket=None):
         for row in items:
@@ -71,10 +71,16 @@ def evaluation_material_coverage(rows):
                 # extra evaluation exposure. Only stream wrappers are unrolled.
                 yield row
 
+    originals = list(original_rows(rows))
     grouped = defaultdict(list)
     original_aliases = {}
-    for row in original_rows(rows):
+    for row in originals:
         bucket = row.get("eval_bucket")
+        if strict_common_pool and (bucket not in BUCKET_HOURS
+                or row.get("source_pool_scope") != "common_30h_only"
+                or not row.get("evaluation_material_catalog_id")
+                or row.get("positive_mix_eligible") is not (not row.get("evaluation_initialization_margin", False))):
+            raise ValueError("Unified common evaluation contains material outside its pinned seven-bucket corpus")
         if bucket not in BUCKET_HOURS:
             continue  # The old diagnostic catalog is supplementary, not quota.
         source = row.get("canonical_recording_id") or row.get("canonical_source_id")
@@ -105,10 +111,17 @@ def evaluation_material_coverage(rows):
     actual = {key: totals[key] / 3600 for key in BUCKET_HOURS}
     shortages = [f"{BUCKET_LABELS[key]}: 실제 {actual[key]:.3f}시간 / 필요 {hours}시간"
                  for key, hours in BUCKET_HOURS.items() if totals[key] + .001 < hours * 3600]
-    return {"target_hours_by_bucket": BUCKET_HOURS.copy(), "actual_hours_by_bucket": actual,
+    result = {"target_hours_by_bucket": BUCKET_HOURS.copy(), "actual_hours_by_bucket": actual,
             "unique_recordings_by_bucket": dict(counts), "actual_total_hours": sum(actual.values()),
             "target_total_hours": 30, "target_met": not shortages, "shortages": shortages,
             "duration_scope": "unique original recording intervals; no loops or model-count multiplication"}
+    if strict_common_pool:
+        core = evaluation_material_coverage(row for row in originals
+                                           if not row.get("evaluation_initialization_margin", False))
+        result.update(source_pool_scope="common_30h_only", core_coverage=core,
+            initialization_margin_hours=max(0, result["actual_total_hours"] - core["actual_total_hours"]),
+            target_met=core["target_met"], shortages=core["shortages"])
+    return result
 
 
 def _safe_member(name):
@@ -370,7 +383,7 @@ def _known_train(project, prepared):
     return list(_known_train(project, prepared or {}))
 
 
-def prepare_common_sources(project, workspace, prepared=None, progress=None):
+def prepare_common_sources(project, workspace, prepared=None, progress=None, strict_common_pool=False):
     """Prepare actual, fixed 30-hour technical candidates; resume by hashes.
 
     Review and admission are owned by the surrounding Studio review workflow.
@@ -387,6 +400,12 @@ def prepare_common_sources(project, workspace, prepared=None, progress=None):
     stage.mkdir(parents=True, exist_ok=True)
     known = _known_train(project, prepared)
     request = {"catalog_id": catalog_id, "known_train": identity(known)}
+    if strict_common_pool:
+        request.update(source_pool_scope="common_30h_only", duration_policy={
+            "packing_seconds": 600, "warmup_s": config["runtime"]["warmup_s"],
+            "frame_samples": config["runtime"]["frame_samples"],
+            "target_eligible_seconds": sum(BUCKET_HOURS.values()) * 3600,
+            "margin_source": "unused_recordings_from_this_same_pinned_catalog_only"})
     output = stage / ("selection_" + identity(request)[:16])
     output.mkdir(parents=True, exist_ok=True)
     receipt_path = output / "preparation.json"
@@ -406,17 +425,15 @@ def prepare_common_sources(project, workspace, prepared=None, progress=None):
         candidates = _candidate_rows(catalog, paths, stage, project, workspace, known, progress)
         used = set()
         seconds = Counter()
-        for candidate in candidates:
+
+        def prepare_candidate(candidate, count, margin=False):
             bucket = candidate["eval_bucket"]
-            if seconds[bucket] + .001 >= BUCKET_HOURS[bucket] * 3600: continue
             original = Path(candidate["original_path"])
             source = candidate["canonical_recording_id"]
-            # A single parent recording stays in one purpose bucket. Parts of
-            # the same interview may contribute disjoint contiguous intervals.
-            ownership = next((b for s, b in used if s == source), None)
-            if ownership and ownership != bucket: continue
-            count = min(candidate["selection_duration_s"], BUCKET_HOURS[bucket] * 3600 - seconds[bucket])
-            token = identity({"candidate": candidate, "seconds": count})[:24]
+            payload = {"candidate": candidate, "seconds": count}
+            if strict_common_pool:
+                payload.update(source_pool_scope="common_30h_only", initialization_margin=margin)
+            token = identity(payload)[:24]
             check = output / "checks" / (token + ".json")
             if check.exists():
                 row = read_json(check); bound_file(root, row)
@@ -427,7 +444,7 @@ def prepare_common_sources(project, workspace, prepared=None, progress=None):
                     normalized = _normalize(original, destination, candidate.get("selection_start_s", 0), count)
                 except ValueError as exc:
                     failures.append({"source": source, "bucket": bucket, "reason": str(exc)})
-                    continue
+                    return None
                 from .studio_evaluation_data import _pcm_hash
                 pcm, frames = _pcm_hash(destination)
                 row = {**candidate, **normalized, "path": str(destination), "sha256": digest(destination),
@@ -436,15 +453,87 @@ def prepare_common_sources(project, workspace, prepared=None, progress=None):
                     "technical_pass": True, "provenance": "public_dataset", "training_admitted": False,
                     "evaluation_only": True, "evaluation_content_approved": False,
                     "individual_human_listening": False, "pcm_hash_scope": "exact_full_source_16khz_mono_pcm16"}
+                if strict_common_pool:
+                    row.update(source_pool_scope="common_30h_only", evaluation_source_scope="common_30h_only",
+                        evaluation_material_catalog_id=catalog_id, positive_mix_eligible=not margin,
+                        evaluation_initialization_margin=margin)
                 write_json(check, row)
-            rows.append(row); seconds[bucket] += row["duration_s"]; used.add((source, bucket))
+            return row
+
+        for candidate in candidates:
+            bucket = candidate["eval_bucket"]
+            if seconds[bucket] + .001 >= BUCKET_HOURS[bucket] * 3600: continue
+            source = candidate["canonical_recording_id"]
+            # A single parent recording stays in one purpose bucket. Parts of
+            # the same interview may contribute disjoint contiguous intervals.
+            ownership = next((b for s, b in used if s == source), None)
+            if ownership and ownership != bucket: continue
+            count = min(candidate["selection_duration_s"], BUCKET_HOURS[bucket] * 3600 - seconds[bucket])
+            row = prepare_candidate(candidate, count)
+            if row is None: continue
+            if strict_common_pool and any(existing["original_sha256"] == row["original_sha256"]
+                                          for existing in rows):
+                failures.append({"source": source, "bucket": bucket, "reason": "Duplicate original recording bytes"})
+                continue
+            rows.append(row)
+            seconds[bucket] += row["source_end_s"] - row["source_start_s"] if strict_common_pool else row["duration_s"]
+            used.add((source, bucket))
             _emit(progress, "공통 평가 원본 준비 · " + BUCKET_LABELS[bucket], seconds[bucket], BUCKET_HOURS[bucket] * 3600, "seconds")
-        coverage = evaluation_material_coverage(rows)
+        core_coverage = evaluation_material_coverage(rows)
+        duration_budget = None
+        if strict_common_pool and core_coverage["target_met"]:
+            from .negative_streams import negative_scoring_budget
+            duration_policy = request["duration_policy"]
+            def budget():
+                return negative_scoring_budget(rows, duration_policy["packing_seconds"],
+                    duration_policy["warmup_s"], duration_policy["frame_samples"])
+            duration_budget = budget()
+            target = duration_policy["target_eligible_seconds"]
+            # Thirty raw hours alone cannot provide thirty scored hours: each
+            # independently reset stream excludes real initialization context.
+            # Add only previously unused original intervals from this same
+            # catalog, never legacy supplements, silence, loops or exposure
+            # multipliers. The exact pack plan determines when to stop.
+            for candidate in candidates:
+                if duration_budget["eligible_seconds"] + 1e-6 >= target: break
+                source = candidate["canonical_recording_id"]
+                if any(s == source for s, _ in used): continue
+                deficit = target - duration_budget["eligible_seconds"]
+                count = min(candidate["selection_duration_s"], deficit + duration_policy["warmup_s"]
+                            + duration_policy["frame_samples"] / 16000)
+                row = prepare_candidate(candidate, count, margin=True)
+                if row is None: continue
+                if any(existing["original_sha256"] == row["original_sha256"] for existing in rows):
+                    failures.append({"source": source, "bucket": candidate["eval_bucket"],
+                                     "reason": "Duplicate original recording bytes cannot supply initialization margin"})
+                    continue
+                rows.append(row); used.add((source, candidate["eval_bucket"]))
+                duration_budget = budget()
+                _emit(progress, "공통 평가 초기화 여유 구간 준비", duration_budget["eligible_seconds"], target, "seconds")
+        coverage = evaluation_material_coverage(rows, strict_common_pool=strict_common_pool)
+        shortages = list(core_coverage["shortages"])
+        if strict_common_pool and (duration_budget is None
+                or duration_budget["eligible_seconds"] + 1e-6 < request["duration_policy"]["target_eligible_seconds"]):
+            shortages.append("동일 공통 평가 자료의 초기화·마지막 불완전 프레임 제외 후 유효 비호출 시간이 30시간에 미달")
         receipt = {"kind": "common_evaluation_materials_v1", "request": request, "catalog_id": catalog_id,
-            "source_rows": rows, "coverage": coverage, "target_met": coverage["target_met"],
-            "shortages": coverage["shortages"], "source_count": len(rows), "failures": failures,
+            "source_rows": rows, "coverage": coverage, "target_met": not shortages,
+            "shortages": shortages, "source_count": len(rows), "failures": failures,
             "human_listened_count": 0, "training_admitted": False, "evaluation_only": True,
             "Final_accessed": False, "created_at": now(), "limitations": catalog["limitations"]}
+        if strict_common_pool:
+            receipt.update(kind="common_evaluation_materials_v2", source_pool_scope="common_30h_only",
+                core_coverage=core_coverage, duration_budget=duration_budget,
+                core_unique_original_seconds=core_coverage["actual_total_hours"] * 3600,
+                unique_original_seconds=coverage["actual_total_hours"] * 3600,
+                core_source_seconds=sum(row["duration_s"] for row in rows
+                    if not row.get("evaluation_initialization_margin", False)),
+                initialization_margin_seconds=sum(row["duration_s"] for row in rows
+                    if row.get("evaluation_initialization_margin", False)),
+                margin_scope="Real previously unused original intervals from the same seven-bucket corpus; "
+                             "continuous Negative only, excluded from Positive background mixtures")
+            if shortages:
+                receipt["retry_policy"] = "Insufficient immutable inputs remain a shortage, not an approval. " \
+                    "Retry with a revised pinned corpus, Train partition or duration policy; preserve this receipt."
         _write_rows(output / "sources.jsonl", rows); write_json(receipt_path, receipt)
         return {**receipt, "resumed": False}
 

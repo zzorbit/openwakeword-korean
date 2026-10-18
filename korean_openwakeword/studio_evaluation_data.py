@@ -192,10 +192,27 @@ def _source_identity(row):
 
 
 def _supported_preparation(receipt, wakeword):
-    return (receipt.get("kind") in tuple(f"studio_evaluation_noise_preparation_v{v}" for v in (2, 3, 4, 5))
-            and receipt.get("recipe_version") in (2, 3, 4, 5) and receipt.get("wakeword") == wakeword
+    return (receipt.get("kind") in tuple(f"studio_evaluation_noise_preparation_v{v}" for v in (2, 3, 4, 5, 6))
+            and receipt.get("recipe_version") in (2, 3, 4, 5, 6) and receipt.get("wakeword") == wakeword
             and receipt.get("evaluation_only") is True and receipt.get("training_admitted") is False
-            and receipt.get("intended_use") == "held_out_development_noise")
+            and receipt.get("intended_use") == "held_out_development_noise"
+            and (receipt.get("recipe_version") != 6
+                 or (receipt.get("evaluation_source_scope") == "common_30h_only"
+                     and receipt.get("kind") == "studio_evaluation_noise_preparation_v6"
+                     and not receipt.get("inherited_admissions"))))
+
+
+def assert_common_source_scope(rows):
+    """Recipe 6 binds one source pool; no legacy reserves can be appended."""
+    from .evaluation_materials import BUCKET_HOURS
+    for row in rows:
+        if row.get("evaluation_source_scope") != "common_30h_only":
+            raise ValueError("Common evaluation source pool scope changed")
+        if row.get("category") == "rir":
+            if not row.get("canonical_room_id"):
+                raise ValueError("Common evaluation RIRs require real room lineage")
+        elif row.get("eval_bucket") not in BUCKET_HOURS:
+            raise ValueError("Legacy supplemental or training-reserve audio is outside the common evaluation pool")
 
 
 def _validated_decisions(root, config, receipt, answer_path, seen=()):
@@ -205,13 +222,15 @@ def _validated_decisions(root, config, receipt, answer_path, seen=()):
     source = bound_file(root, receipt["artifacts"]["source_manifest"])
     preview = bound_file(root, receipt["artifacts"]["representative_queue"])
     rows, previews = read_rows(source), read_rows(preview)
+    if receipt.get("recipe_version") == 6:
+        assert_common_source_scope(rows)
     inherited = {}
     for binding in receipt.get("inherited_admissions", []):
         path = bound_file(root, binding)
         if str(path) in seen:
             raise ValueError("Cyclic evaluation review inheritance")
         record = read_json(path)
-        if (record.get("kind") not in tuple(f"studio_evaluation_noise_admission_v{v}" for v in (2, 3, 4, 5))
+        if (record.get("kind") not in tuple(f"studio_evaluation_noise_admission_v{v}" for v in (2, 3, 4, 5, 6))
                 or record.get("state") != "accepted_for_evaluation" or record.get("evaluation_only") is not True
                 or record.get("training_admitted") is not False or record.get("wakeword") != config["wakeword"]
                 or record.get("intended_use") != "held_out_development_noise" or record.get("content_review") != "accepted"):
@@ -255,7 +274,7 @@ def _validated_decisions(root, config, receipt, answer_path, seen=()):
         bound_file(root, row["reviewed_source"])
         checked[key] = {**decisions[row["sample_id"]],
                         "review_scope": row.get("review_excerpt", {"scope": "full_source"})}
-    if receipt.get("recipe_version") == 5:
+    if receipt.get("recipe_version") in (5, 6):
         # Consent covers the frozen group; only the actual previews are heard.
         groups = receipt.get("representative_groups", {})
         actual_groups = defaultdict(list)
@@ -429,29 +448,40 @@ def prepare_common_evaluation_materials(project, workspace, prepared, progress=N
     from .evaluation_rir import prepare_common_rirs, render_rir_review_previews, common_rir_catalog
     from .studio_data import _write_rows, _emit
     root, config = load_project(project)
+    version = prepared.get("evaluation_materials_policy", {}).get("evaluation_materials_recipe", 5)
+    if version not in (5, 6):
+        raise ValueError("Unsupported common evaluation material recipe")
+    strict_common = version == 6
     if (root / "final_lock.json").exists() or any((root / "features").rglob("contract.json")) or any((root / "runs").rglob("contract.json")):
         raise ValueError("Use a new experiment for the expanded common evaluation")
-    catalog_id = identity([evaluation_material_catalog(), common_rir_catalog(), evaluation_catalog()])[:16]
-    output = root / ".studio" / "materials" / ("evaluation_v5_" + catalog_id)
+    catalogs = [evaluation_material_catalog(), common_rir_catalog()]
+    catalog_id = identity(catalogs + ([{"evaluation_source_scope": "common_30h_only"}] if strict_common else [evaluation_catalog()]))[:16]
+    output = root / ".studio" / "materials" / (f"evaluation_v{version}_" + catalog_id)
     output.mkdir(parents=True, exist_ok=True)
     path = output / "preparation.json"
     if path.exists():
         receipt = read_json(path)
-        if receipt["catalog_id"] != catalog_id or receipt["wakeword"] != config["wakeword"]:
+        if (receipt["catalog_id"] != catalog_id or receipt["wakeword"] != config["wakeword"]
+                or receipt.get("recipe_version") != version
+                or (strict_common and receipt.get("evaluation_source_scope") != "common_30h_only")):
             raise ValueError("Frozen common evaluation catalog differs")
         for binding in receipt["artifacts"].values():
             bound_file(root, binding)
-        for row in read_rows(receipt["artifacts"]["source_manifest"]["path"]):
+        stored_rows = read_rows(receipt["artifacts"]["source_manifest"]["path"])
+        if strict_common:
+            assert_common_source_scope(stored_rows)
+        for row in stored_rows:
             bound_file(root, row)
         return {**receipt, "preparation": {"path": str(path), "sha256": digest(path)}, "resumed": True}
-    supplemental = prepare_evaluation_materials(project, workspace, prepared, progress)
-    common = prepare_common_sources(project, workspace, prepared, progress)
+    supplemental = None if strict_common else prepare_evaluation_materials(project, workspace, prepared, progress)
+    common = (prepare_common_sources(project, workspace, prepared, progress, strict_common_pool=True)
+              if strict_common else prepare_common_sources(project, workspace, prepared, progress))
     if not common["target_met"]:
         raise ValueError("공통 평가 원본 부족: " + str(common["shortages"]))
     rir = prepare_common_rirs(project, output / "rir",
         cache_directory=Path(workspace).resolve() / "shared" / "downloads" / "common_rir",
         log=lambda value: _emit(progress, value, 0, 1, "steps"))
-    raw = read_rows(supplemental["artifacts"]["source_manifest"]["path"]) + common["source_rows"]
+    raw = ([] if strict_common else read_rows(supplemental["artifacts"]["source_manifest"]["path"])) + common["source_rows"]
     audit = assert_held_out(project, raw, prepared)
     # RIRs are filters, never continuous Negative or additive noise.
     for row in rir["source_rows"]:
@@ -468,6 +498,8 @@ def prepare_common_evaluation_materials(project, workspace, prepared, progress=N
         group_id = "group_" + identity(key)[:16]
         row = {**row, "review_group_id": group_id, "evaluation_only": True,
                "training_admitted": False, "individual_human_listening": False}
+        if strict_common:
+            row["evaluation_source_scope"] = "common_30h_only"
         rows.append(row)
         groups[group_id].append(row)
     previews, specs = [], {}
@@ -494,7 +526,9 @@ def prepare_common_evaluation_materials(project, workspace, prepared, progress=N
                            "preview_ids": [r["sample_id"] for r in items]}
     sources = _write_rows(output / "evaluation_sources.jsonl", rows)
     queue = _write_rows(output / "representatives.jsonl", previews)
-    receipt = {"kind": "studio_evaluation_noise_preparation_v5", "recipe_version": 5,
+    if strict_common:
+        assert_common_source_scope(rows)
+    receipt = {"kind": f"studio_evaluation_noise_preparation_v{version}", "recipe_version": version,
         "catalog_id": catalog_id, "wakeword": config["wakeword"], "state": "awaiting_human_review",
         "evaluation_only": True, "training_admitted": False, "intended_use": "held_out_development_noise",
         "artifacts": {"source_manifest": sources, "representative_queue": queue},
@@ -502,6 +536,9 @@ def prepare_common_evaluation_materials(project, workspace, prepared, progress=N
         "representative_groups": specs, "material_coverage": common["coverage"], "rir_coverage": rir["coverage"],
         "human_listened_count": 0, "pending_review_source_count": len(previews),
         "individual_listening_claimed": False, "split_audit": audit, "Final_accessed": False, "created_at": now()}
+    if strict_common:
+        receipt["evaluation_source_scope"] = "common_30h_only"
+        receipt["negative_duration_budget"] = common.get("duration_budget")
     write_json(path, receipt)
     return {**receipt, "preparation": {"path": str(path), "sha256": digest(path)}, "resumed": False}
 
@@ -511,6 +548,9 @@ def admit_evaluation_review(project, queue, answer, prepared):
     root, config = load_project(project)
     prep_path = resolved(root, queue["preparation"])
     receipt = read_json(prep_path)
+    if prepared.get("recipe_version") == 6 and (
+            receipt.get("recipe_version") != 6 or queue.get("evaluation_source_scope") != "common_30h_only"):
+        raise ValueError("Legacy evaluation admission is outside the common corpus scope")
     if (not _supported_preparation(receipt, config["wakeword"])
             or queue.get("evaluation_only") is not True or queue.get("pools") != []):
         raise ValueError("Evaluation-only preparation/queue scope is required")
@@ -533,7 +573,7 @@ def admit_evaluation_review(project, queue, answer, prepared):
         "representative_queue": receipt["artifacts"]["representative_queue"],
         "accepted_source_sha256": sorted(accepted), "human_listened_count": (
             sum(a.get("listened") is True for a in read_json(answer_path)["decisions"].values())
-            if receipt["recipe_version"] == 5 and answer_path else sum(a.get("listened") is True for a in decisions.values())),
+            if receipt["recipe_version"] in (5, 6) and answer_path else sum(a.get("listened") is True for a in decisions.values())),
         "inherited_admissions": receipt.get("inherited_admissions", []),
         "kept_count": len(kept), "discarded_count": len(rows) - len(kept), "split_audit_scope": audit["scope"],
         "category_counts": dict(Counter(r["category"] for r in kept)),
@@ -541,6 +581,8 @@ def admit_evaluation_review(project, queue, answer, prepared):
         "missing_eval_types": sorted({r["eval_type"] for r in rows} - {r["eval_type"] for r in kept}),
         "generic_precomputed_original_mapping_available": False,
         "Final_accessed": False}
+    if version == 6:
+        record["evaluation_source_scope"] = receipt["evaluation_source_scope"]
     path = prep_path.parent / "admissions" / (identity(record) + ".json")
     if path.exists():
         if read_json(path) != record:

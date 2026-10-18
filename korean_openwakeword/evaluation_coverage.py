@@ -15,7 +15,7 @@ def assess_common_evaluation(policy, report, manifest, noise_coverage):
     coverage = read_json(noise_coverage) if isinstance(noise_coverage, (str, Path)) else noise_coverage
     originals, dry_originals, families, conditions = set(), set(), set(), Counter()
     reverb_conditions, reverb_originals, reverb_sources, reverb_rooms = Counter(), {}, {}, {}
-    paired_cells = {} if policy.get("id") == "common_development_v3" else None
+    paired_cells = {} if policy.get("id") in ("common_development_v3", "common_development_v4") else None
     measured = {key: {"sources": set(), "types": set(), "music_sources": set()} for key in
                 ("environment", "music", "competing_speech")}
     for row in iter_rows(manifest):
@@ -78,12 +78,12 @@ def assess_common_evaluation(policy, report, manifest, noise_coverage):
                                        ("잔향 공간", actual_rooms, policy.get("rir_rooms", policy.get("rir_min_rooms", 20)))):
             if actual < minimum:
                 shortages.append(f"{label} {actual}/{minimum}개")
-        if policy.get("id") in ("common_development_v2", "common_development_v3"):
+        if policy.get("id") in ("common_development_v2", "common_development_v3", "common_development_v4"):
             for group in policy.get("reverb_groups", ("moderate", "strong")):
                 minimum = policy.get("rir_rooms", 20) // 2
                 if len(reverb_rooms.get(group, set())) < minimum:
                     shortages.append(f"잔향 {group} 공간 {len(reverb_rooms.get(group, set()))}/{minimum}개")
-        if policy.get("id") == "common_development_v3":
+        if policy.get("id") in ("common_development_v3", "common_development_v4"):
             selected = [reverb_originals.get(group, set()) for group in policy["reverb_groups"]]
             if selected and any(values != selected[0] for values in selected[1:]):
                 shortages.append("일반·강한 잔향 시험에 서로 다른 호출어 원본이 사용됨")
@@ -110,9 +110,16 @@ def assess_common_evaluation(policy, report, manifest, noise_coverage):
     if minimum_hours is None or minimum_hours < target_hours:
         shortages.append(f"연속 비호출 평가 {minimum_hours if minimum_hours is not None else '미측정'}/{target_hours}시간")
     negative_materials = None
-    if policy.get("id") in ("common_development_v2", "common_development_v3"):
+    if policy.get("id") in ("common_development_v2", "common_development_v3", "common_development_v4"):
         from .evaluation_materials import evaluation_material_coverage
-        negative_materials = evaluation_material_coverage(row for row in iter_rows(manifest) if row.get("kind") == "negative")
+        try:
+            negative_rows = (row for row in iter_rows(manifest) if row.get("kind") == "negative")
+            negative_materials = evaluation_material_coverage(negative_rows, strict_common_pool=True) \
+                if policy.get("id") == "common_development_v4" else evaluation_material_coverage(negative_rows)
+        except ValueError as exc:
+            if policy.get("id") != "common_development_v4":
+                raise
+            negative_materials = {"target_met": False, "shortages": [str(exc)]}
         # The material helper owns interval union/source deduplication; neither
         # per-model replay nor looping a short recording creates new coverage.
         if not negative_materials.get("targets_met", negative_materials.get("target_met", False)):

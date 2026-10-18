@@ -119,17 +119,34 @@ function browser({ noBoot = false, initialState, recipeError = false, recipeOver
     assert.match(group.children.at(-1).textContent, /장시간 오호출 검증/);
   });
   await test("versioned reverb summaries use each policy count and retain historical totals", async () => {
-    for (const [version, originals, reverb, total] of [[2, 625, 20000, 100000], [3, 1000, 32000, 112000]]) {
-      const policy = { id: `common_development_v${version}`, validation_references: 30, validation_originals: 5000, snrs: [20, 15, 10, 5, 0], positive_sessions: total, dry_positive_sessions: 80000, reverb_originals: originals, reverb_positive_sessions: reverb, rir_rooms: 20 };
-      const b = browser({ recipeOverrides: { evaluation_policy: policy, evaluation_sources: [{ name: "공통 배경 음원" }] } }); await flush();
+    for (const [version, originals, reverb, total] of [[2, 625, 20000, 100000], [3, 1000, 32000, 112000], [4, 1000, 32000, 112000]]) {
+      const policy = { id: `common_development_v${version}`, validation_references: 30, validation_originals: 5000, snrs: [20, 15, 10, 5, 0], positive_sessions: total, dry_positive_sessions: 80000, reverb_originals: originals, reverb_positive_sessions: reverb, rir_rooms: 20, negative_hours_by_bucket: {korean_conversation:10,korean_interview:5,korean_read:3,other_speech:4,music:3,environment:4,electronic:1} };
+      const b = browser({ recipeOverrides: { evaluation_policy: policy, evaluation_sources: [{ id: "common_30h_environment", name: "공통 배경 음원" }] } }); await flush();
       const group = b.elements.get("source-preview").children[1];
       const notices = group.children.filter(child => child.className?.includes("common-evaluation"));
-      assert.equal(notices.length, 3);
+      assert.equal(notices.length, version === 4 ? 4 : 3);
       assert.match(notices[0].textContent, new RegExp(`총 ${total.toLocaleString("ko-KR")}개`));
       assert.match(notices[1].textContent, new RegExp(`잔향 없음 80,000회와 일반·강한 울림 ${reverb.toLocaleString("ko-KR")}회`));
       assert.match(notices[2].textContent, new RegExp(`같은 원본 ${originals.toLocaleString("ko-KR")}개를 두 잔향 강도`));
       assert.match(notices[2].textContent, /목록과 seed를 고정.*최적값이라는 뜻은 아닙니다/);
     }
+  });
+  await test("v4 shows only canonical seven buckets and RIR, with core and startup time distinguished", async () => {
+    const buckets = {korean_conversation:10,korean_interview:5,korean_read:3,other_speech:4,music:3,environment:4,electronic:1};
+    const policy = {id:"common_development_v4",negative_hours_by_bucket:buckets,validation_references:30,validation_originals:5000,snrs:[20,15,10,5,0],positive_sessions:112000,dry_positive_sessions:80000,reverb_originals:1000,reverb_positive_sessions:32000,rir_rooms:20};
+    const b = browser({recipeOverrides: {evaluation_policy:policy,
+      sources:[{id:"generic",name:"일반 비호출",role:"generic_features"},{id:"zeroth_validation_reserve",name:"이전 낭독 예약분",role:"held_out_korean_speech"}],
+      evaluation_sources:[...Object.entries(buckets).map(([id,target_hours])=>({id:`common_30h_${id}`,name:id,target_hours})),{id:"openslr28_common_rir_v1",name:"공통 평가용 공간 울림",file_count:80},{id:"legacy193",name:"이전 보조 배경",file_count:193}]}}); await flush();
+    const groups = b.elements.get("source-preview").children;
+    assert.equal(groups.length, 2);
+    const rows = groups[1].children.filter(child => child.className === "source-row");
+    assert.equal(rows.length, 8);
+    assert.deepEqual(rows.map(row => row.children[1].children[0].textContent), [...Object.keys(buckets),"공통 평가용 공간 울림"]);
+    assert.equal(rows.some(row=>/이전/.test(row.children[1].children[0].textContent)),false);
+    const notices = groups[1].children.filter(child=>child.className?.includes("common-evaluation"));
+    assert.match(notices[1].textContent,/비호출 기준 30시간.*한국어 대화 10h.*낭독 3h.*전자음 1h/);
+    assert.match(notices[3].textContent,/기존 193개.*제외.*미사용 원음.*보충/);
+    assert.match(notices[3].textContent,/기본량·보충량·채점 가능한 시간.*호출어 혼합에 넣지 않습니다/);
   });
   await test("large background-type lists show eight examples and fold the remaining types", async () => {
     const types = ["rain", "wind", "dog", "cat", "coughing", "laughing", "clapping", "snoring", "music_jazz", "music_techno", "music_hiphop"];
@@ -149,6 +166,29 @@ function browser({ noBoot = false, initialState, recipeError = false, recipeOver
     assert.equal(b.elements.get("evaluation-coverage").hidden, false);
     assert.match(b.elements.get("evaluation-coverage-summary").textContent, /미충족.*2개/);
     assert.equal(b.elements.get("evaluation-shortages").children.length, 2);
+  });
+  await test("v4 material progress separates core quotas, startup margin and eligible time without inventing admission", async () => {
+    const project = {id:"bora",wakeword:"보라야",status:"waiting_review",stage:"data_download",evaluation_materials:{
+      candidate:{target_hours_by_bucket:{korean_read:3},actual_hours_by_bucket:{korean_read:3.08},core_coverage:{actual_hours_by_bucket:{korean_read:3}}},
+      admitted:{target_hours_by_bucket:{korean_read:3},actual_hours_by_bucket:{korean_read:3.08},core_coverage:{actual_hours_by_bucket:{korean_read:3}}},
+      duration:{candidate:{core_hours:30,initialization_margin_hours:.08,eligible_hours:30.01},admitted:{core_hours:30,initialization_margin_hours:.08,eligible_hours:30.01}},scope:"기본·보충·채점 가능 시간 구분"}};
+    const b = browser({initialState:{projects:[project],active_project_id:"bora"}}); await flush();
+    const lines = b.elements.get("material-coverage-list").children;
+    assert.equal(lines[0].textContent,"한국어 낭독: 기술 검사 3.00h · 검수 승인 3.00h / 3h");
+    assert.match(lines[1].textContent,/기술 검사: 기본 30.000h · 초기화 보충 4.800분 · 채점 가능 30.010h/);
+    assert.match(lines[2].textContent,/검수 승인: 기본 30.000h · 초기화 보충 4.800분 · 채점 가능 30.010h/);
+    project.evaluation_materials.admitted = undefined;
+    project.evaluation_materials.duration = {candidate:{core_hours:30,initialization_margin_hours:.08}};
+    await b.tick();
+    const waiting = b.elements.get("material-coverage-list").children;
+    assert.equal(waiting.length,2);
+    assert.match(waiting[1].textContent,/기술 검사: 기본 30.000h.*채점 가능 확인 전/);
+    assert.equal(waiting.some(line=>line.className === "material-duration" && /검수 승인/.test(line.textContent)),false);
+    project.evaluation_materials = {candidate:{target_hours_by_bucket:{korean_read:3},actual_hours_by_bucket:{korean_read:3.08}},scope:"기존 v3 결과"};
+    await b.tick();
+    const legacy = b.elements.get("material-coverage-list").children;
+    assert.equal(legacy.length,1);
+    assert.match(legacy[0].textContent,/기술 검사 3.08h/);
   });
   await test("create-and-start needs one form submission and sends the local token", async () => {
     const b = browser(); await flush(); b.elements.get("wakeword").value = "보라야";

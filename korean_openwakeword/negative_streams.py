@@ -20,6 +20,48 @@ from .source_identity import component_lineage
 from .storage import project_storage
 
 
+def negative_scoring_budget(rows, seconds=600, warmup_s=2, frame_samples=1280):
+    """Exact duration after the same whole-recording packing and runtime rules.
+
+    This is a metadata-only plan, not a claim that a model has scored the WAVs.
+    The stream renderer verifies its frame counts independently before exposure
+    can be reported as actual measured False Activation time.
+    """
+    if (type(seconds) not in (int, float) or not math.isfinite(seconds) or seconds <= 0
+            or type(warmup_s) not in (int, float) or not math.isfinite(warmup_s) or warmup_s < 0
+            or type(frame_samples) is not int or frame_samples <= 0):
+        raise ValueError("Invalid continuous evaluation duration policy")
+    buckets = defaultdict(lambda: defaultdict(list))
+    for row in rows:
+        if not row.get("eval_bucket"):
+            raise ValueError("Duration planning accepts only identified common evaluation buckets")
+        raw_frames = row.get("normalized_frames")
+        if raw_frames is None:
+            raw_frames = round(float(row["duration_s"]) * 16000)
+        start = round(float(row.get("start_s", 0)) * 16000)
+        end = round(float(row.get("end_s", raw_frames / 16000)) * 16000)
+        if type(raw_frames) is not int or not 0 <= start < end <= raw_frames:
+            raise ValueError("Duration planning needs exact nonempty normalized frame intervals")
+        parent = row.get("canonical_recording_id") or row.get("canonical_source_id")
+        if not parent:
+            raise ValueError("Duration planning needs original recording identity")
+        buckets[row["eval_bucket"]][parent].append({"row": row, "start": start,
+            "frames": end - start})
+    plans = _plans(buckets, seconds)
+    counts = [sum(item["frames"] for item in sources) for _, sources in plans]
+    raw_seconds = sum(counts) / 16000
+    processed_seconds = sum(count // frame_samples * frame_samples for count in counts) / 16000
+    eligible_seconds = sum(max(0, count // frame_samples * frame_samples / 16000 - warmup_s)
+                           for count in counts)
+    return {"packing_seconds": seconds, "warmup_s": warmup_s, "frame_samples": frame_samples,
+        "sample_rate": 16000, "tail_policy": "drop_partial_frame", "stream_count": len(counts),
+        "raw_seconds": raw_seconds, "processed_seconds": processed_seconds,
+        "warmup_excluded_seconds": processed_seconds - eligible_seconds,
+        "partial_frame_excluded_seconds": raw_seconds - processed_seconds,
+        "eligible_seconds": eligible_seconds, "eligible_hours": eligible_seconds / 3600,
+        "scope": "Planned exact WAV frame exposure; model scoring remains a separate operation"}
+
+
 def _inventory(root, rows, wakeword):
     buckets, passthrough, hashes, intervals = defaultdict(lambda: defaultdict(list)), [], {}, defaultdict(list)
     admissions, seen_audio, recording_buckets = {}, set(), {}
@@ -182,7 +224,7 @@ def _render(root, output, recipe_sha, number, bucket, sources):
 
 
 @project_storage
-def pack_negative_streams(project, rows, output, seconds=600):
+def pack_negative_streams(project, rows, output, seconds=600, strict_common_pool=False):
     """Return exact longer Negative WAVs plus unchanged supplemental recordings.
 
     Only rows with eval_bucket are packed. A >seconds original is one standalone
@@ -195,6 +237,12 @@ def pack_negative_streams(project, rows, output, seconds=600):
     rows = list(rows)
     if not rows:
         raise ValueError("No held-out Negative source recordings are connected")
+    if strict_common_pool:
+        from .evaluation_materials import BUCKET_HOURS
+        if any(row.get("eval_bucket") not in BUCKET_HOURS
+               or row.get("source_pool_scope") != "common_30h_only"
+               or not row.get("evaluation_material_catalog_id") for row in rows):
+            raise ValueError("Unified common evaluation accepts only its pinned seven-bucket corpus")
     buckets, passthrough = _inventory(root, rows, config["wakeword"])
     plans = _plans(buckets, seconds)
     recipe = {"kind": "negative_stream_recipe_v1", "seconds": seconds,
@@ -202,6 +250,9 @@ def pack_negative_streams(project, rows, output, seconds=600):
         "ordering": "eval_bucket_then_canonical_parent_then_original_interval_v1",
         "transform": "exact_pcm16_concat_no_padding_no_repeat_no_resampling_no_gain",
         "original_split_policy": "never_split_one_recording_across_streams"}
+    if strict_common_pool:
+        recipe.update(kind="negative_stream_recipe_v2", source_pool_scope="common_30h_only",
+            runtime_duration_policy={key: config["runtime"][key] for key in ("warmup_s", "frame_samples")})
     output = Path(output).resolve()
     if any(part.lower() == ".codex" for part in output.parts):
         raise ValueError("Bulk evaluation streams must not be stored inside .codex")
@@ -233,6 +284,24 @@ def pack_negative_streams(project, rows, output, seconds=600):
             "packed_seconds": sum(row["duration_s"] for row in result_rows if row.get("evaluation_stream_components")),
             "human_listening_added": 0, "Final_accessed": False,
             "scope": "Exact contiguous source PCM, not new original hours; actual scored negative hours exclude per-stream runtime warmup"}
+        if strict_common_pool:
+            from .evaluation_materials import evaluation_material_coverage
+            budget = negative_scoring_budget(rows, seconds, config["runtime"]["warmup_s"],
+                                             config["runtime"]["frame_samples"])
+            actual_frames = [row["normalized_frames"] for row in result_rows]
+            actual_eligible = sum(max(0, count // config["runtime"]["frame_samples"]
+                * config["runtime"]["frame_samples"] / 16000 - config["runtime"]["warmup_s"])
+                for count in actual_frames)
+            if (len(result_rows) != budget["stream_count"]
+                    or abs(actual_eligible - budget["eligible_seconds"]) > 1e-6):
+                raise ValueError("Rendered continuous evaluation duration differs from its exact packing budget")
+            receipt.update(kind="negative_stream_preparation_v2", source_pool_scope="common_30h_only",
+                duration_budget={**budget, "scope": "Verified persisted WAV frame exposure; not a model scoring result"},
+                material_coverage=evaluation_material_coverage(rows, strict_common_pool=True),
+                core_source_seconds=sum(row["duration_s"] for row in rows
+                    if not row.get("evaluation_initialization_margin", False)),
+                initialization_margin_seconds=sum(row["duration_s"] for row in rows
+                    if row.get("evaluation_initialization_margin", False)))
         receipt_path = output / "receipt.json"
         if receipt_path.exists() and read_json(receipt_path) != receipt:
             raise ValueError("Completed continuous evaluation receipt changed")

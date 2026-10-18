@@ -64,7 +64,7 @@ koww benchmark --output projects/bora/reports/cpu_gpu.json
 
 처음에는 Qwen TTS로 참조 음성을 만듭니다. 이 가이드의 프로젝트는 학습용100개·공통 개발용30개·최종 평가용10개의 음색 후보를 분리합니다. `init --validation-voices 30`이 개발용 수량을 정하며 웹의 공통 평가도30계열을 사용합니다. 후보 개수만으로 실제 음색 다양성이 보장되지는 않으므로 자연스러운 한국어인지, 지나치게 비슷한 음색이 반복되는지 들어봅니다.
 
-빠른 명령 기능 시험이라면 학습용 `references`에 `--limit 4`, 개발용 명령에 `--limit 2`를 붙여 소수 음색으로 실행할 수 있습니다. **웹의 공통 평가 v3는 학습 규모와 관계없이 개발용30계열을 따로 준비**하며, 소수 음색 시험을 공통 평가 완료로 기록하지 않습니다.
+빠른 명령 기능 시험이라면 학습용 `references`에 `--limit 4`, 개발용 명령에 `--limit 2`를 붙여 소수 음색으로 실행할 수 있습니다. **웹의 공통 평가 v4는 학습 규모와 관계없이 개발용30계열을 따로 준비**하며, 소수 음색 시험을 공통 평가 완료로 기록하지 않습니다.
 
 학습용 참조를 생성하고 검수 화면을 엽니다.
 
@@ -196,10 +196,10 @@ koww package --project projects/bora/project.json --run projects/bora/runs/selec
 개발용 호출어와 배경음이 준비되면 같은 호출에 같은 소음 구간을 섞어 평가 오디오를 만듭니다.
 
 ```powershell
-koww prepare-eval --project projects/bora/project.json --output projects/bora/data/eval/paired_v3 --split validation --originals 5000 --noise-sections 1 --noise-selection balanced_sources --reverb-originals 1000 --reverb-selection metadata_axes
+koww prepare-eval --project projects/bora/project.json --output projects/bora/data/eval/paired_v4 --split validation --originals 5000 --noise-sections 1 --noise-selection balanced_sources --reverb-originals 1000 --reverb-selection metadata_axes
 ```
 
-공통 평가 v3는30음색·호출 원본5,000개, 비호출30시간을 [평가 자료 기준](DATASETS.md#성능-평가용-배경-음원)에 따라 준비합니다. 잔향을 추가하지 않은 Clean와 세 배경범주×SNR20·15·10·5·0dB의80,000회에, 고르게 고른1,000개 원본의 일반·강한 잔향32,000회를 더해 **112,000개 WAV**를 만듭니다. 두 잔향 강도에 같은1,000개를 쓰며, 대응하는 잔향 없는 조건은 기본80,000회에 포함됩니다. 대표 원본 수는 시험 비용과 다양성을 고려한 선택입니다. `rir_validation`에는 학습과 분리한 가상 공간20개·RIR80개가 필요합니다. SNR이 낮을수록 소음이 강하며, 같은 원본의 배경·구간은 SNR별로 고정합니다. 비교할 모든 모델에 같은 평가 WAV·목록을 재사용하세요. 기존 v1/v2 프로젝트나 완료 결과는 자동 변경하지 않습니다. [저장 공간](STORAGE_POLICY.md)도 확인합니다.
+공통 평가 v4는30음색·호출 원본5,000개, 비호출30시간을 [평가 자료 기준](DATASETS.md#성능-평가용-배경-음원)에 따라 준비합니다. 잔향을 추가하지 않은 Clean와 세 배경범주×SNR20·15·10·5·0dB의80,000회에, 고르게 고른1,000개 원본의 일반·강한 잔향32,000회를 더해 **112,000개 WAV**를 만듭니다. 두 잔향 강도에 같은1,000개를 쓰며, 대응하는 잔향 없는 조건은 기본80,000회에 포함됩니다. 대표 원본 수는 시험 비용과 다양성을 고려한 선택입니다. `rir_validation`에는 학습과 분리한 가상 공간20개·RIR80개가 필요합니다. SNR이 낮을수록 소음이 강하며, 같은 원본의 배경·구간은 SNR별로 고정합니다. 비교할 모든 모델에 같은 평가 WAV·목록을 재사용하세요. 기존 v1/v2/v3 프로젝트나 완료 결과는 자동 변경하지 않습니다. [저장 공간](STORAGE_POLICY.md)도 확인합니다.
 
 기존 Clean·소음 조건 표는 **잔향 추가 없는 기본80,000회**를 기준으로 유지합니다. 잔향 결과는 별도 표에 실제 표본 수와 함께 표시하므로 새로운 잔향 시험이 기존 성능 기준을 바꾸지 않습니다.
 
@@ -211,7 +211,7 @@ koww prepare-eval --project projects/bora/project.json --output projects/bora/da
 
 빠른 기능 시험은 아래 `evaluate`의 저장까지 확인하고 마칠 수 있습니다. 전체 공통 평가와 감지 설정 선택은 정해진 표본으로 진행하며 독립 최종 평가는8단계에서 따로 수행합니다. 짧은 결과를 오호출 목표 통과나 최종 성능으로 표시하지 않습니다.
 
-출력의 `manifest.jsonl`에 준비·승인한 **고유 비호출30시간**의 목록을 합쳐 `data/eval/development.jsonl`을 만듭니다. 이는 호출어와 섞은 원본 배경 자체를 시험하는 것으로 자료 시간을 이중 계산하지 않습니다. 웹은 같은 평가 준비 절차를 연결하며, 실제 길이가 부족하면 표시합니다. 다운로드한 분량과 검수 승인·실제 채점한 시간을 구분하고, 짧은 음원을 반복해 시간을 채우지 마세요. [평가 목록 작성법](DATA_FORMAT.md#평가-자료-목록)에 형식과 합치는 예시가 있습니다.
+출력의 `manifest.jsonl`에 준비·승인한 **일곱 범주·고유 비호출30시간**의 목록을 합쳐 `data/eval/development.jsonl`을 만듭니다. 같은 기본 원본을 호출어 혼합과 배경 단독 시험에 사용하며 자료 시간을 이중 계산하지 않습니다. 기존193개 배경과 별도 낭독 예약분은 새 공통 평가에 연결하지 않습니다. 오호출 시험 초기화로 제외되는 시간은 같은 자료 목록의 미사용 원음으로 필요한 만큼 보충하며, 호출어 혼합에는 추가하지 않습니다. 기본30시간·보충량·검수 승인·실제 채점 가능한 시간을 구분하고, 짧은 음원을 반복해 시간을 채우지 마세요. 웹은 같은 준비 절차를 연결하며 부족분을 표시합니다. [평가 목록 작성법](DATA_FORMAT.md#평가-자료-목록)에 형식과 합치는 예시가 있습니다.
 
 ```powershell
 koww evaluate --project projects/bora/project.json --bundle projects/bora/models/candidate_selected --manifest projects/bora/data/eval/development.jsonl --output projects/bora/reports/dev_selected --workers auto
