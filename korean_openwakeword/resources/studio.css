@@ -3,9 +3,9 @@
   font-family:Inter,"Noto Sans KR","Malgun Gothic",system-ui,sans-serif;
   color:var(--fg);background:var(--canvas);font-synthesis:none;font-size:15px;line-height:1.65;
   --canvas:#0d1117;--surface:#151b23;--control:#212830;--hover:#2a313c;
-  --fg:#f0f6fc;--muted:#9198a1;--border:#3d444d;--line:#262e38;
+  --fg:#c9d1d9;--muted:#b1bac4;--border:#3d444d;--line:#262e38;
   --blue:#4493f8;--focus:#1f6feb;--green:#3fb950;--amber:#d29922;--danger:#f85149;
-  --primary:#238636;--primary-hover:#1f7a34;--on-solid:#ffffff;
+  --primary:#1f7330;--primary-hover:#196c2e;--on-solid:#dce4ec;
   --accent-muted:#1f6feb1f;--info-border:#1f6feb66;
   --success-bg:#14251b;--warning-bg:#2b2416;--danger-bg:#301b22;--danger-border:#f8514966;
   --shadow:#01040933;
@@ -173,7 +173,7 @@ h1{font-size:28px}
 
 .material-name{display:block;font-size:15px;font-weight:700;line-height:1.5;min-width:0;overflow-wrap:anywhere}
 
-.material-description{display:block;font-size:13px;line-height:1.65;color:var(--muted);margin:0;min-width:0;word-break:keep-all;overflow-wrap:anywhere}
+.material-description{display:block;font-size:14px;line-height:1.65;color:var(--muted);margin:0;min-width:0;word-break:keep-all;overflow-wrap:anywhere}
 
 .material-amount{font-size:19px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap;letter-spacing:-.35px}
 
@@ -197,7 +197,7 @@ h1{font-size:28px}
 
 a.source-name:hover{text-decoration:underline}
 
-.source-content{display:block;margin:0;min-width:0;color:var(--muted);font-size:13px;line-height:1.65;word-break:keep-all;overflow-wrap:anywhere}
+.source-content{display:block;margin:0;min-width:0;color:var(--muted);font-size:14px;line-height:1.65;word-break:keep-all;overflow-wrap:anywhere}
 
 .source-quantity{color:var(--fg);font-size:15px;font-weight:650;line-height:1.5;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 
@@ -218,7 +218,7 @@ a.source-name:hover{text-decoration:underline}
 
 @media(max-width:440px){.material-button{gap:10px;grid-template-columns:minmax(0,1fr) auto 12px}
 .material-copy{grid-template-columns:minmax(0,.8fr) minmax(0,1.2fr);gap:10px}
-.material-description{font-size:12px}
+.material-description{font-size:13px}
 .material-amount{font-size:15px}
 .chevron{width:12px;height:12px}
 .source-panel{padding:0 22px 8px 12px}
