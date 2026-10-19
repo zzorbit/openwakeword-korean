@@ -100,19 +100,6 @@ for key, asset in dataset_catalog()["assets"].items():
 
 [고정 버전의 소음 폴더](https://github.com/microsoft/DNS-Challenge/tree/70f19285c36cca4df2338f9248775ddc50980c6b/datasets/noise)에서 필요한 자료를 선택합니다. 같은 종류의 긴 녹음만 추가해 시간을 채우지 않습니다. 원출처·원본 ID·이용조건도 보존하세요.
 
-아래는 다운로드 방법을 확인할 수 있는 짧은 팬 소음 예시입니다. 이 한 파일만으로 소음 자료 준비가 끝나는 것은 아닙니다.
-
-```python
-from korean_openwakeword.downloads import download_checked
-
-download_checked(
-    "https://media.githubusercontent.com/media/microsoft/DNS-Challenge/70f19285c36cca4df2338f9248775ddc50980c6b/datasets/noise/fan_Freesound_validated_100355_0.wav",
-    "shared/dns/fan_100355.wav",
-    "a3d2ede479606cae392b5332973ed1a1a6e9f0d4176e030bb22920379e3cd5ba",
-    320044,
-)
-```
-
 음성이 포함된 간섭은 한국어 자료를 우선 사용합니다. 일반 환경음에는 언어 기준을 적용하지 않습니다.
 
 ## 성능 평가용 배경 음원

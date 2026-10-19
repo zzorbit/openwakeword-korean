@@ -92,9 +92,9 @@ def _preset(preset):
 def material_recipe(preset="check", workspace=None, evaluation_policy=None):
     """Preview known downloads and limits without accessing network or audio."""
     preset = _preset(preset)
-    # v1's door/alarm smoke files remain available for immutable old receipts;
-    # fresh recipes use the independent, varied v2 evaluation catalog instead.
-    assets = [a for a in _official_assets() if a["id"] not in ("dns_door", "electronic_validation")]
+    # Keep smoke pins available for historical receipts, but never request the
+    # standalone fan in a new training recipe. AudioSet remains unfiltered.
+    assets = [a for a in _official_assets() if a["id"] not in ("dns_fan", "dns_door", "electronic_validation")]
     for asset in assets:
         path = _cached_asset(asset, Path(workspace).resolve() / "shared" / "downloads") if workspace else None
         asset["local_path"] = str(path) if path else None
@@ -454,10 +454,13 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
     stage = root / ".studio" / "materials"
     stage.mkdir(parents=True, exist_ok=True)
 
-    extra = shared / "check_noise"
-    extra.mkdir(parents=True, exist_ok=True)
+    # The old shared/check_noise directory can still contain the retired fan.
+    # Never scan or rewrite it. Only historical evaluation-only sources need
+    # this separate directory; fresh recipes have no extra smoke source at all.
+    extra = shared / "legacy_evaluation_smoke"
     extra_rows = []
-    for key in (key for key in ("dns_fan", "dns_door", "electronic_validation") if key in assets):
+    for key in (key for key in ("dns_door", "electronic_validation") if key in assets):
+        extra.mkdir(parents=True, exist_ok=True)
         asset, original = assets[key], paths[key]
         destination = extra / asset["filename"]
         if destination.exists() and digest(destination) != digest(original):
@@ -471,8 +474,6 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
             "language": "unknown", "speech": None if key == "electronic_validation" else False,
             "speech_presence": "unknown" if key == "electronic_validation" else "declared",
             "category_basis": "ESC-50 electronic alarm (music/electronic evaluation category)" if key == "electronic_validation" else "Pinned DNS Freesound environmental source metadata"})
-    extra_index = stage / "extra_source_index.jsonl"
-    _write_rows(extra_index, extra_rows)
     sources = [
         {"id": "zeroth", "directory": shared / "zeroth", "adapter": "zeroth", "license": assets["zeroth"]["license"],
          "source_url": "https://www.openslr.org/40/", "target_hours": 1, "validation_fraction": .1, "pools": ["korean_negative", "noise"]},
@@ -480,8 +481,12 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
          "ontology": paths["audioset_ontology"], "validation_fraction": 0, "pools": ["noise"]},
         {"id": "fma", "directory": shared / "fma_1h", "adapter": "fma", "metadata": tracks, "validation_fraction": 0, "pools": ["noise"]},
         {"id": "mit_rir", "directory": mit, "adapter": "mit_rir", "validation_fraction": 0, "pools": ["rir"]},
-        {"id": "check_noise", "directory": extra, "index": extra_index, "validation_fraction": 0, "pools": ["noise"]},
     ]
+    if extra_rows:
+        extra_index = stage / "legacy_evaluation_source_index.jsonl"
+        _write_rows(extra_index, extra_rows)
+        sources.append({"id": "legacy_evaluation_smoke", "directory": extra,
+                        "index": extra_index, "validation_fraction": 0, "pools": ["noise"]})
     queues, reserves, preparations = [], [], []
     for order, source in enumerate(sources):
         name = source["id"]

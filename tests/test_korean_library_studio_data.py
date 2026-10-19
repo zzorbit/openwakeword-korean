@@ -28,6 +28,10 @@ def test_recipe_is_offline_pinned_and_reports_real_scale(monkeypatch, tmp_path):
     assert module.material_recipe("full")["shortages"]
     assert not plan["shortages"]
     assert plan["additional_download"]["license"].startswith("Unknown")
+    for preset in ("check", "test", "full"):
+        assets = {asset["id"]: asset for asset in module.material_recipe(preset)["assets"]}
+        assert "dns_fan" not in assets
+        assert assets["audioset"]["sha256"] == "9ab88550e77c8289acf71d19ae3f254fadad16f3cea305ef08a16949a928acf9"
     with pytest.raises(ValueError):
         module.material_recipe("giant")
 
@@ -286,7 +290,11 @@ def test_full_preparation_recipe_uses_real_qc_and_never_auto_approves(tmp_path, 
     for asset in assets:
         asset.update(size_bytes=paths[asset["id"]].stat().st_size, license="fixture only")
     monkeypatch.setattr(module, "_official_assets", lambda: assets)
-    monkeypatch.setattr(module, "_download", lambda asset, directory, progress=None: paths[asset["id"]])
+    requested_assets = []
+    def download(asset, directory, progress=None):
+        requested_assets.append(asset["id"])
+        return paths[asset["id"]]
+    monkeypatch.setattr(module, "_download", download)
     def mit(shared, progress=None):
         directory = shared / "mit_fixture"
         directory.mkdir(parents=True, exist_ok=True)
@@ -300,14 +308,28 @@ def test_full_preparation_recipe_uses_real_qc_and_never_auto_approves(tmp_path, 
         write_json(Path(output) / "metadata.json", meta)
         return meta
     monkeypatch.setattr(generic, "import_generic", fake_import)
-    result = module.prepare_materials(project, tmp_path / "workspace")
-    assert len(result["review_queues"]) == 5
+    workspace = tmp_path / "workspace"
+    stale_fan = workspace / "shared/check_noise/fan_Freesound_validated_100355_0.wav"
+    stale_fan.parent.mkdir(parents=True)
+    stale_fan.write_bytes(wav_bytes(555))
+    legacy_index = project.parent / ".studio/materials/extra_source_index.jsonl"
+    legacy_index.parent.mkdir(parents=True)
+    legacy_content = '{"canonical_source_id":"freesound:100355"}\n'
+    legacy_index.write_text(legacy_content, encoding="utf-8")
+    old_fan_hash = digest(stale_fan)
+    result = module.prepare_materials(project, workspace)
+    assert len(result["review_queues"]) == 4
+    assert "dns_fan" not in requested_assets
+    assert {row["id"] for row in result["preparations"]} == {"zeroth", "audioset", "fma", "mit_rir"}
+    assert digest(stale_fan) == old_fan_hash
+    assert legacy_index.read_text(encoding="utf-8") == legacy_content
     assert result["human_listened_count"] == 0 and result["training_admitted"] is False
     assert result["generic_feature_import"]["imported"]
     assert result["shortages"]  # Tiny fixture is truthfully below the 1h quota.
     validation = read_rows(result["validation_noise_manifest"]["path"])
     assert {r["category"] for r in validation} == {"competing_speech"}
     train = [row for queue in result["review_queues"] for row in read_rows(queue["pool_manifest"])]
+    assert all(row["canonical_source_id"] != "freesound:100355" for row in train)
     assert {r["canonical_source_id"] for r in train}.isdisjoint(r["canonical_source_id"] for r in validation)
     assert not read_rows(project.parent / load_project(project)[1]["manifests"]["noise"])
     assert all(not r["calls"] and r["kind"] == "negative" for r in read_rows(result["negative_validation_manifest"]["path"]))

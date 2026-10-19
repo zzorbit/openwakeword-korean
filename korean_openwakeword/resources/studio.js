@@ -189,7 +189,6 @@
     const noise = [];
     if (asset("fma")) noise.push(source("FMA", "음악 120곡 · 곡당 30초", "약 1시간", 3600, asset("fma"), bundleSize(["fma", "fma_metadata"])));
     if (asset("zeroth")) noise.push(source("Zeroth Korean", "학습용 한국어 낭독 재사용", hours(suppliedKorean), suppliedKorean * 3600, asset("zeroth")));
-    if (asset("dns_fan")) noise.push(source("DNS-Challenge", "팬 작동 소리", "10초", 10, asset("dns_fan")));
     if (asset("audioset")) noise.push(source("AudioSet", "여러 종류의 일반 오디오", "1묶음", null, asset("audioset"), bundleSize(["audioset", "audioset_segments", "audioset_ontology"])));
     const mit = asset("mit_rir") || recipe.additional_download;
     const training = [
@@ -197,12 +196,14 @@
       { id: "hard", name: "유사어 음성", description: "호출어로 오인할 수 있는 다른 단어·표현", amount: count(recipe.hard_originals ?? 0), sources: [source("Qwen TTS", "헷갈리기 쉬운 단어·표현을 합성한 음성", count(recipe.hard_originals ?? 0), recipe.hard_originals ?? 0)] },
       { id: "generic", name: "일반 비호출 자료", description: "일반 음성 · 음악 · 환경음", amount: hours(genericHours), sources: generic },
       { id: "korean", name: "한국어 비호출 자료", description: koreanHours > suppliedKorean ? "한국어 대화 · 낭독 등 음성" : "한국어 낭독 음성", amount: hours(koreanHours), sources: korean },
-      { id: "noise", name: "소음 증강 음원", description: "일반 오디오 · 음악 · 팬 소음 · 한국어 음성", amount: `${number(noise.length)}종`, sources: noise },
+      { id: "noise", name: "소음 증강 음원", description: "일반 오디오 · 음악 · 한국어 음성", amount: `${number(noise.length)}종`, sources: noise },
       { id: "rir", name: "잔향 자료", description: "공간의 울림을 재현하는 파일", amount: mit ? count(mit.files ?? mit.file_count) : "0개", sources: mit ? [source("MIT RIR", "공간의 울림 특성", count(mit.files ?? mit.file_count), mit.files ?? mit.file_count, mit)] : [] }
     ];
     const isEvaluation = item => ["validation", "development"].includes(item.split) || /held_out|evaluation|validation/.test(item.role || "");
-    const knownTrain = new Set(["generic", "zeroth", "fma", "audioset", "dns_fan", "mit_rir"]);
-    for (const item of sources.filter(item => !isEvaluation(item) && item.role !== "provider_metadata" && !knownTrain.has(item.id))) {
+    const knownTrain = new Set(["generic", "zeroth", "fma", "audioset", "mit_rir"]);
+    // Old preview payloads may still contain this retired standalone test clip.
+    const retiredTrain = new Set(["dns_fan"]);
+    for (const item of sources.filter(item => !isEvaluation(item) && item.role !== "provider_metadata" && !knownTrain.has(item.id) && !retiredTrain.has(item.id))) {
       training.push({ id: `extra-${training.length}`, name: item.display_name || item.name || item.id || "공개 자료", description: item.description || "추가 학습 자료", amount: fallback(item).amount, sources: [fallback(item)] });
     }
     const buckets = policy.negative_hours_by_bucket || {};

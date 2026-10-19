@@ -91,8 +91,7 @@ function commonRecipe(overrides = {}) {
       { id: "audioset_segments", role: "provider_metadata", size_bytes: 1211931 },
       { id: "audioset_ontology", role: "provider_metadata", size_bytes: 342780 },
       { id: "fma", role: "noise_music_train", size_bytes: 7679594875 },
-      { id: "fma_metadata", role: "provider_metadata", size_bytes: 358412441 },
-      { id: "dns_fan", role: "environment_smoke", split: "train", size_bytes: 320044 }
+      { id: "fma_metadata", role: "provider_metadata", size_bytes: 358412441 }
     ],
     additional_download: { id: "mit_rir", files: 271, size_bytes: null },
     evaluation_policy: { id: "common_development_v4", validation_references: 30, validation_originals: 5000,
@@ -254,7 +253,7 @@ function commonRecipe(overrides = {}) {
   await test("training augmentation uses real source budgets and does not invent missing durations", async () => {
     const b = browser({ recipeList: [commonRecipe()] }); await flush();
     const group = b.elements.get("source-preview").children[0], rows = sourceEntries(material(group, "소음 증강 음원"));
-    assert.equal(rows.length, 4);
+    assert.equal(rows.length, 3);
     const audio = rows.find(row => /AudioSet/.test(withClass(row, "source-name")[0].textContent));
     assert.ok(audio); assert.match(withClass(audio, "source-quantity")[0].textContent, /묶음/);
     assert.equal(/시간|분|초/.test(withClass(audio, "source-quantity")[0].textContent), false);
@@ -262,10 +261,21 @@ function commonRecipe(overrides = {}) {
     const music = rows.find(row => /FMA/.test(withClass(row, "source-name")[0].textContent));
     assert.match(textOf(music), /1시간/); assert.match(textOf(music), /120/);
     assert.match(withClass(music, "file-size")[0].textContent, /8\.04 GB/);
-    const fan = rows.find(row => /DNS/.test(withClass(row, "source-name")[0].textContent));
-    assert.match(textOf(fan), /10초/);
+    assert.equal(/DNS|팬 작동 소리|팬 소음/.test(textOf(group)), false);
+    assert.equal(withClass(material(group, "소음 증강 음원"), "material-amount")[0].textContent, "3종");
     const rir = material(group, "잔향 자료"); assert.match(textOf(rir), /271개/);
     assert.equal(withClass(rir, "file-size").length, 0);
+  });
+  await test("retired fan test clips stay hidden in legacy preview payloads", async () => {
+    for (const collection of ["assets", "sources"]) {
+      const recipe = commonRecipe();
+      recipe[collection] = [...recipe.assets, { id: "dns_fan", name: "DNS-Challenge", description: "팬 작동 소리", role: "environment_smoke", split: "train", size_bytes: 320044 }];
+      const b = browser({ recipeList: [recipe] }); await flush();
+      const group = b.elements.get("source-preview").children[0];
+      assert.equal(withClass(material(group, "소음 증강 음원"), "material-amount")[0].textContent, "3종");
+      assert.equal(/dns_fan|DNS|팬 작동 소리|팬 소음/.test(textOf(group)), false);
+      assert.equal(sourceEntries(material(group, "소음 증강 음원")).some(row => /AudioSet/.test(textOf(row))), true);
+    }
   });
   await test("versioned policy summaries retain historical evaluation totals and available sources", async () => {
     for (const [version, total] of [[1, 80000], [2, 100000], [3, 112000], [4, 112000]]) {
