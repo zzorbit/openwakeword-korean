@@ -1,5 +1,19 @@
 <!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>한국어 호출어 검수</title>
-<style>body{font-family:system-ui,"Malgun Gothic",sans-serif;background:#f4f6fa;color:#24334c;margin:0}main{max-width:880px;margin:40px auto;padding:25px;background:white;border-radius:15px}p{line-height:1.7;color:#52617b}button,select{font:inherit;padding:12px 17px;border:1px solid #cbd6e6;border-radius:8px;background:white;cursor:pointer;margin:5px}button:first-child{background:#295cc1;color:white}audio{width:100%;margin:15px 0}li{margin:8px 0}.buttons{display:flex;flex-wrap:wrap}#state{font-weight:700;color:#295cc1}</style>
+<style>
+:root{color-scheme:dark;--canvas:#0d1117;--surface:#151b23;--control:#212830;--border:#3d444d;--line:#212830;--fg:#f0f6fc;--muted:#9198a1;--blue:#4493f8;--focus:#1f6feb;--green:#3fb950;--amber:#d29922;--danger:#f85149;--primary:#238636;--primary-hover:#1f7a34;font-family:system-ui,"Malgun Gothic",sans-serif;color:var(--fg);background:var(--canvas)}
+body{margin:0}main{max-width:880px;margin:40px auto;padding:25px;background:var(--surface);border:1px solid var(--border);border-radius:15px}
+p{line-height:1.7;color:var(--muted)}
+button,select{font:inherit;padding:12px 17px;border:1px solid var(--border);border-radius:8px;background:var(--control);color:var(--fg);cursor:pointer;margin:5px}
+button:hover:not(:disabled){background:var(--border)}
+#start,#save{background:var(--primary);border-color:var(--primary);color:#fff}
+#start:hover:not(:disabled),#save:hover:not(:disabled){background:var(--primary-hover);border-color:var(--primary-hover)}
+button:disabled{opacity:.5;cursor:default}
+button:focus-visible,select:focus-visible,input:focus-visible,a:focus-visible,audio:focus-visible{outline:3px solid var(--focus);outline-offset:3px}
+input::placeholder,textarea::placeholder{color:var(--muted);opacity:1}input{accent-color:var(--primary)}
+option{background:var(--control);color:var(--fg)}a{color:var(--blue)}
+audio{width:100%;margin:15px 0}li{margin:8px 0}.buttons{display:flex;flex-wrap:wrap}#state{font-weight:700;color:var(--blue)}
+hr{border:0;border-top:1px solid var(--border);margin:22px 0}
+</style>
 <main><h1>오디오 검수</h1><p id="purpose"></p><ul id="criteria"><li><b>보존:</b> 기대 문장이 명확하고, 다른 말·문제 소리가 없습니다.</li><li><b>폐기 / 재검수:</b> 발음이 틀리거나 다른 말이 들리거나 판단이 어렵습니다.</li></ul><p>끝까지 들으면 자동으로 보존됩니다. 문제가 있는 번호만 바꾸세요.</p>
 <div class="buttons"><button id="start">연속 듣기 시작</button><button id="pause">일시정지</button><button id="keep">보존</button><button id="discard">폐기</button><button id="review">재검수</button></div>
 <h2 id="title"></h2><p id="expected"></p><p id="instruction"></p><audio id="audio" controls></audio><p id="state"></p><div class="buttons"><button id="prev">이전</button><button id="next">다음</button><select id="items"></select></div>
