@@ -264,7 +264,7 @@
         const id = `materials-${key}-${item.id}`, row = element("li", undefined, "material"), button = element("button", undefined, "material-button");
         button.type = "button"; button.setAttribute("aria-expanded", "false"); button.setAttribute("aria-controls", `${id}-sources`);
         button.setAttribute("aria-labelledby", `${id}-name`); button.setAttribute("aria-describedby", `${id}-description ${id}-amount`);
-        const text = element("span"), name = element("span", item.name, "material-name"), description = element("span", item.description, "material-description"), amount = element("span", item.amount, "material-amount");
+        const text = element("span", undefined, "material-copy"), name = element("span", item.name, "material-name"), description = element("span", item.description, "material-description"), amount = element("span", item.amount, "material-amount");
         name.id = `${id}-name`; description.id = `${id}-description`; amount.id = `${id}-amount`; text.append(name, description);
         const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg"), path = document.createElementNS("http://www.w3.org/2000/svg", "path");
         icon.setAttribute("class", "chevron"); icon.setAttribute("viewBox", "0 0 24 24"); icon.setAttribute("aria-hidden", "true"); icon.setAttribute("focusable", "false");
