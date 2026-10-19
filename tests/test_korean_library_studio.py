@@ -380,7 +380,7 @@ def http_server(manager):
 
 def test_http_static_ui_state_and_bound_random_port_are_usable(manager, http_server):
     assert http_server.server.server_address[0] == "127.0.0.1"
-    for route, marker in (("/", "한국어 호출어 학습"), ("/studio.js", "KowwStudio"), ("/studio.css", ".topbar")):
+    for route, marker in (("/", "한국어 호출어 학습"), ("/studio.js", "KowwStudio"), ("/studio.css", ".project-switch")):
         status, content, headers = http_server(route)
         assert status == 200 and marker in content.decode()
         assert headers["X-Frame-Options"] == "SAMEORIGIN" and headers["Cache-Control"] == "no-store"

@@ -413,8 +413,10 @@ function commonRecipe(overrides = {}) {
   await test("switching to new setup releases embedded audio and missing recipes never enables creation", async () => {
     const project = { id: "bora", wakeword: "보라야", status: "waiting_review", review: { queue_id: "pilot", url: "/review/?project=bora&queue=pilot" } };
     const b = browser({ initialState: { projects: [project] } }); await flush(); await b.click("new-project");
+    assert.equal(b.elements.get("project-switch").hidden, false);
     assert.equal(b.elements.get("setup").hidden, false); assert.equal(b.elements.get("review-frame").getAttribute("src"), null);
     const failed = browser({ recipeError: true }); await flush();
+    assert.equal(failed.elements.get("project-switch").hidden, true);
     assert.equal(failed.elements.get("create").disabled, true); assert.match(failed.elements.get("message").textContent, /recipe failure/);
   });
   console.log(`Studio UI: ${tests.length} tests passed`);

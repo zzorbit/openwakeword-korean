@@ -10,11 +10,8 @@
   <script src="/studio.js" defer></script>
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand"><span class="brand-mark" aria-hidden="true">K</span><span>Korean openWakeWord<small>한국어 호출어 학습</small></span></div>
-    <div class="project-switch"><label class="sr-only" for="project-select">프로젝트</label><select id="project-select" hidden></select><button id="new-project" class="quiet" type="button" hidden>새 호출어</button><span class="local-badge">이 컴퓨터에서 실행</span></div>
-  </header>
   <main>
+    <div id="project-switch" class="project-switch" hidden><label class="sr-only" for="project-select">프로젝트</label><select id="project-select" hidden></select><button id="new-project" class="quiet" type="button" hidden>새 호출어</button></div>
     <div id="connection" class="notice error" role="alert" hidden></div>
     <div id="message" class="notice" role="status" hidden></div>
     <section id="setup" class="setup">

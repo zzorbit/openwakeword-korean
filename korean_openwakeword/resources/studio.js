@@ -313,6 +313,7 @@
     replace(selector, projects.map(project => { const option = element("option", project.wakeword || project.id); option.value = project.id; return option; }));
     if (newProject) { const option = element("option", "새 프로젝트"); option.value = ""; selector.append(option); selector.value = ""; }
     else selector.value = selectedId;
+    $("project-switch").hidden = !projects.length;
     selector.hidden = !projects.length; $("new-project").hidden = !projects.length;
     selector.disabled = busy; $("new-project").disabled = busy;
   }
