@@ -193,7 +193,7 @@
     if (asset("audioset")) noise.push(source("AudioSet", "여러 종류의 일반 오디오", "1묶음", null, asset("audioset"), bundleSize(["audioset", "audioset_segments", "audioset_ontology"])));
     const mit = asset("mit_rir") || recipe.additional_download;
     const training = [
-      { id: "positive", name: "호출어 음성", description: "호출어만 말한 합성 음성", amount: count(originals), sources: [source("Qwen TTS", "호출어만 말한 음성", count(originals), originals)] },
+      { id: "positive", name: "호출어 음성", description: "호출어 합성 음성", amount: count(originals), sources: [source("Qwen TTS", "호출어만 말한 음성", count(originals), originals)] },
       { id: "hard", name: "유사어 음성", description: "호출어로 오인할 수 있는 다른 단어·표현", amount: count(recipe.hard_originals ?? 0), sources: [source("Qwen TTS", "헷갈리기 쉬운 단어·표현을 합성한 음성", count(recipe.hard_originals ?? 0), recipe.hard_originals ?? 0)] },
       { id: "generic", name: "일반 비호출 자료", description: "일반 음성 · 음악 · 환경음", amount: hours(genericHours), sources: generic },
       { id: "korean", name: "한국어 비호출 자료", description: koreanHours > suppliedKorean ? "한국어 대화 · 낭독 등 음성" : "한국어 낭독 음성", amount: hours(koreanHours), sources: korean },
@@ -275,7 +275,7 @@
         const sources = element("ul", undefined, "source-list");
         const ordered = item.sources.map((source, index) => ({ ...source, index })).sort((a, b) => a.rank == null ? (b.rank == null ? a.index - b.index : 1) : b.rank == null ? -1 : b.rank - a.rank || a.index - b.index);
         for (const source of ordered) {
-          const row = element("li", undefined, "source-item"), text = element("span"), quantity = element("span", source.amount, "source-quantity");
+          const row = element("li", undefined, "source-item"), text = element("span", undefined, "source-copy"), quantity = element("span", source.amount, "source-quantity");
           const href = webUrl(source.url), name = element(href ? "a" : "span", source.name, "source-name");
           if (href) { name.href = href; name.target = "_blank"; name.rel = "noopener"; }
           text.append(name, element("span", source.content, "source-content"));
