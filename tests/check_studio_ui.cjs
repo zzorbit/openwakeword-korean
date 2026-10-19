@@ -52,25 +52,22 @@ const textOf = node => [node.textContent || "", ...(node.children || []).map(tex
 const materialRows = group => withClass(group, "material");
 const material = (group, name) => materialRows(group).find(row => withClass(row, "material-name")[0]?.textContent === name);
 const sourceEntries = row => withClass(row, "source-item");
-function assertMaterialsVisible(node) {
+function assertMaterialDisclosures(node) {
   const rows = materialRows(node);
   assert.ok(rows.length);
   for (const row of rows) {
-    const header = withClass(row, "material-header")[0], panel = withClass(row, "source-panel")[0];
-    assert.ok(header); assert.equal(header.tagName, "div");
-    assert.equal(row.hidden, false); assert.equal(panel.hidden, false);
-    assert.equal(panel.getAttribute("role"), "group");
+    const button = withClass(row, "material-button")[0], panel = withClass(row, "source-panel")[0];
+    assert.ok(button); assert.equal(button.tagName, "button"); assert.equal(button.type, "button");
+    assert.equal(button.getAttribute("aria-controls"), panel.id);
+    assert.equal(button.getAttribute("aria-expanded"), String(!panel.hidden));
+    assert.equal(typeof button.handlers.click, "function");
+    assert.equal(row.hidden, false);
+    assert.equal(panel.getAttribute("role"), "region");
     assert.ok(panel.getAttribute("aria-label"));
-    for (const child of descendants(row)) {
-      assert.equal(child.getAttribute("aria-expanded"), null);
-      assert.equal(child.getAttribute("aria-controls"), null);
-      assert.notEqual(child.getAttribute("role"), "button");
-      assert.equal(child.handlers.click, undefined);
-      assert.equal(["button", "details", "summary"].includes(child.tagName), false);
-    }
+    assert.equal(descendants(row).filter(child => child.tagName === "button").length, 1);
+    assert.equal(descendants(row).some(child => ["details", "summary"].includes(child.tagName)), false);
   }
-  assert.equal(withClass(node, "material-button").length, 0);
-  assert.equal(withClass(node, "chevron").length, 0);
+  assert.ok(rows.filter(row => !withClass(row, "source-panel")[0].hidden).length <= 1);
 }
 
 function commonRecipe(overrides = {}) {
@@ -151,7 +148,7 @@ function commonRecipe(overrides = {}) {
     for (const row of materialRows(preview)) {
       assert.ok(withClass(row, "material-description")[0].textContent.trim());
       assert.ok(withClass(row, "material-amount")[0].textContent.trim());
-      assert.equal(withClass(row, "source-panel")[0].hidden, false);
+      assert.equal(withClass(row, "source-panel")[0].hidden, true);
       for (const source of sourceEntries(row)) {
         assert.ok(withClass(source, "source-name")[0].textContent.trim());
         assert.ok(withClass(source, "source-content")[0].textContent.trim());
@@ -161,14 +158,31 @@ function commonRecipe(overrides = {}) {
     for (const removed of ["각 항목을 눌러", "준비 예정 내역", "유형별 시간은 제공자가 공개하지 않음", "원본 음원은 포함하지 않음", "추가 준비량 없음", "합성 음색 4계열, WAV 크기는 생성 후 확인"]) assert.equal(all.includes(removed), false, removed);
     assert.equal(descendants(preview).some(node => ["table", "select"].includes(node.tagName)), false);
   });
-  await test("all material sources stay visible without disclosure buttons or hidden controls", async () => {
+  await test("one accessible material disclosure stays open across both groups and rerenders", async () => {
     const b = browser({ recipeList: [commonRecipe()] }); await flush();
     const preview = b.elements.get("source-preview"), rows = materialRows(preview);
     assert.equal(rows.length, 11);
-    assertMaterialsVisible(preview);
-    assert.equal(withClass(preview, "source-panel").filter(panel => !panel.hidden).length, 11);
+    assertMaterialDisclosures(preview);
+    const button = row => withClass(row, "material-button")[0], panel = row => withClass(row, "source-panel")[0];
+    assert.equal(rows.filter(row => !panel(row).hidden).length, 0);
+    for (const row of rows) {
+      button(row).handlers.click();
+      assert.equal(button(row).getAttribute("aria-expanded"), "true");
+      assert.equal(panel(row).hidden, false);
+      assert.equal(rows.filter(item => !panel(item).hidden).length, 1);
+      assertMaterialDisclosures(preview);
+    }
     await b.tick();
-    assertMaterialsVisible(b.elements.get("source-preview"));
+    assertMaterialDisclosures(b.elements.get("source-preview"));
+    b.elements.get("adv-originals").value = "1234";
+    b.elements.get("adv-originals").handlers.input();
+    const rerendered = b.elements.get("source-preview");
+    assertMaterialDisclosures(rerendered);
+    const open = materialRows(rerendered).filter(row => !panel(row).hidden);
+    assert.equal(open.length, 1);
+    assert.equal(panel(open[0]).id, panel(rows.at(-1)).id);
+    button(open[0]).handlers.click();
+    assert.equal(materialRows(rerendered).filter(row => !panel(row).hidden).length, 0);
   });
   await test("selected scale and advanced targets update counts without claiming automatic supply", async () => {
     const specs = [
@@ -183,7 +197,7 @@ function commonRecipe(overrides = {}) {
       const radio = descendants(b.elements.get("presets").children[index]).find(node => node.tagName === "input");
       radio.handlers.change();
       const groups = b.elements.get("source-preview").children;
-      assertMaterialsVisible(b.elements.get("source-preview"));
+      assertMaterialDisclosures(b.elements.get("source-preview"));
       assert.equal(amount(groups[0], "호출어 음성"), specs[index][1].toLocaleString("ko-KR") + "개");
       assert.equal(amount(groups[0], "유사어 음성"), specs[index][2].toLocaleString("ko-KR") + "개");
       assert.equal(amount(groups[0], "일반 비호출 자료"), specs[index][3].toLocaleString("ko-KR") + "시간");
@@ -209,13 +223,13 @@ function commonRecipe(overrides = {}) {
     b.elements.get("adv-korean").value = "12";
     b.elements.get("adv-korean").handlers.input();
     let training = b.elements.get("source-preview").children[0];
-    assertMaterialsVisible(b.elements.get("source-preview"));
+    assertMaterialDisclosures(b.elements.get("source-preview"));
     assert.equal(amount(training, "호출어 음성"), "4,321개");
     assert.equal(amount(training, "일반 비호출 자료"), "3,210시간");
     assert.equal(amount(training, "한국어 비호출 자료"), "12시간");
     for (const id of ["adv-originals", "adv-generic", "adv-korean"]) { b.elements.get(id).value = ""; b.elements.get(id).handlers.input(); }
     training = b.elements.get("source-preview").children[0];
-    assertMaterialsVisible(b.elements.get("source-preview"));
+    assertMaterialDisclosures(b.elements.get("source-preview"));
     assert.equal(amount(training, "호출어 음성"), "100,000개");
     assert.equal(amount(training, "일반 비호출 자료"), "7,500시간");
   });
