@@ -244,15 +244,12 @@
     }
     return { training, evaluation, policy };
   }
-  let activeMaterial = null;
   function renderRecipe() {
     const recipe = recipes.find(item => item.id === selectedPreset);
     if (!recipe) return;
     const placeholders = { "adv-originals": recipe.originals ?? recipe.positive_originals, "adv-rounds": recipe.rounds ?? recipe.augmentation_rounds, "adv-updates": recipe.updates, "adv-generic": recipe.generic_hours, "adv-korean": recipe.korean_hours };
     for (const [id, value] of Object.entries(placeholders)) $(id).placeholder = value === undefined ? "규모 기본값" : String(value);
-    const groups = materialGroups(recipe), sections = [], openId = activeMaterial?.id;
-    activeMaterial = null;
-    const show = (entry, open) => { entry.panel.hidden = !open; entry.button.setAttribute("aria-expanded", String(open)); };
+    const groups = materialGroups(recipe), sections = [];
     for (const [key, label] of [["training", "학습용 자료"], ["evaluation", "성능 평가용 자료"]]) {
       const items = groups[key];
       if (!items.length) continue;
@@ -261,17 +258,12 @@
       if (key === "evaluation") heading.append(element("span", "공통 평가"));
       const list = element("ul", undefined, "materials-list");
       for (const item of items) {
-        const id = `materials-${key}-${item.id}`, row = element("li", undefined, "material"), button = element("button", undefined, "material-button");
-        button.type = "button"; button.setAttribute("aria-expanded", "false"); button.setAttribute("aria-controls", `${id}-sources`);
-        button.setAttribute("aria-labelledby", `${id}-name`); button.setAttribute("aria-describedby", `${id}-description ${id}-amount`);
+        const id = `materials-${key}-${item.id}`, row = element("li", undefined, "material"), header = element("div", undefined, "material-header");
         const text = element("span", undefined, "material-copy"), name = element("span", item.name, "material-name"), description = element("span", item.description, "material-description"), amount = element("span", item.amount, "material-amount");
         name.id = `${id}-name`; description.id = `${id}-description`; amount.id = `${id}-amount`; text.append(name, description);
-        const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg"), path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-        icon.setAttribute("class", "chevron"); icon.setAttribute("viewBox", "0 0 24 24"); icon.setAttribute("aria-hidden", "true"); icon.setAttribute("focusable", "false");
-        for (const [key, value] of Object.entries({ d: "m6 9 6 6 6-6", fill: "none", stroke: "currentColor", "stroke-width": "1.8", "stroke-linecap": "round", "stroke-linejoin": "round" })) path.setAttribute(key, value);
-        icon.append(path); button.append(text, amount, icon);
-        const panel = element("div", undefined, "source-panel"); panel.id = `${id}-sources`; panel.hidden = true;
-        panel.setAttribute("role", "region"); panel.setAttribute("aria-label", `${label} · ${item.name} 출처`);
+        header.append(text, amount);
+        const panel = element("div", undefined, "source-panel"); panel.id = `${id}-sources`;
+        panel.setAttribute("role", "group"); panel.setAttribute("aria-label", `${label} · ${item.name} 출처`);
         const sources = element("ul", undefined, "source-list");
         const ordered = item.sources.map((source, index) => ({ ...source, index })).sort((a, b) => a.rank == null ? (b.rank == null ? a.index - b.index : 1) : b.rank == null ? -1 : b.rank - a.rank || a.index - b.index);
         for (const source of ordered) {
@@ -283,10 +275,7 @@
           if (size) quantity.append(element("span", `원본 ${size}`, "file-size"));
           row.append(text, quantity); sources.append(row);
         }
-        panel.append(sources); row.append(button, panel); list.append(row);
-        const current = { id, button, panel };
-        if (id === openId) { show(current, true); activeMaterial = current; }
-        button.addEventListener("click", () => { const open = panel.hidden; if (activeMaterial) show(activeMaterial, false); show(current, open); activeMaterial = open ? current : null; });
+        panel.append(sources); row.append(header, panel); list.append(row);
       }
       section.append(heading, list);
       if (key === "evaluation") {
