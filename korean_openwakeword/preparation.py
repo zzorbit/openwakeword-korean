@@ -24,9 +24,9 @@ from .pool_review import _technical_check, approve_pool
 from .project import load_project
 from .streaming import manifest_index
 
-SUPPORTED_AUDIO = frozenset({".wav", ".flac", ".ogg", ".mp3", ".aiff", ".aif", ".au"})
+SUPPORTED_AUDIO = frozenset({".wav", ".flac", ".ogg", ".opus", ".mp3", ".aiff", ".aif", ".au"})
 TRAIN_POOLS = frozenset({"generic_negative", "korean_negative", "noise", "rir"})
-_IDENTITIES = ("canonical_source_id", "canonical_recording_id", "canonical_speaker_id", "canonical_room_id")
+_IDENTITIES = ("canonical_source_id", "canonical_recording_id", "canonical_speaker_id", "canonical_room_id", "canonical_book_id")
 
 
 def _binding(path):
@@ -478,6 +478,12 @@ def create_source_index(input_directory, *, output, dataset="manifest", metadata
                          source_url=source_url, license=license)
         rows = prepared["rows"]
         provider_details = {key: value for key, value in prepared.items() if key != "rows"}
+    elif dataset in ("mls", "yodas2"):
+        from .source_waveform_index import build_waveform_index
+        prepared = build_waveform_index(directory, dataset=dataset, metadata=metadata,
+            dataset_id=dataset_id, source_url=source_url, license=license)
+        rows = prepared["rows"]
+        provider_details = {key: value for key, value in prepared.items() if key != "rows"}
     elif dataset == "manifest":
         if metadata is None:
             raise ValueError("Provider manifest/receipt is required")
@@ -507,7 +513,7 @@ def create_source_index(input_directory, *, output, dataset="manifest", metadata
                 entry.setdefault("canonical_source_id", "fma:track:" + str(record["track_id"]))
             rows.append(entry)
     else:
-        raise ValueError("Source index adapter must be zeroth, manifest, audioset, fma or mit_rir")
+        raise ValueError("Source index adapter must be zeroth, manifest, audioset, fma, mit_rir, mls or yodas2")
     if not rows or {r["path"] for r in rows} != {p.relative_to(directory).as_posix() for p in paths}:
         raise ValueError("Provider metadata must cover every discovered audio file exactly")
     if len({r["path"] for r in rows}) != len(rows):
@@ -517,25 +523,51 @@ def create_source_index(input_directory, *, output, dataset="manifest", metadata
             "provider_metadata_used": True, "independent_STT_runs": 0}
 
 
-def _fixed_windows(rows):
+def _window_metadata(row, source_manifest=None):
+    """Keep provider detail once per recording, not once per two-second draw.
+
+    Existing adapters keep their immutable manifest representation. New long
+    speech adapters retain their full transcript and provider bindings in the
+    hash-bound source manifest; window rows retain identities and admission.
+    """
+    if row.get("provider_index_adapter") not in ("mls", "yodas2"):
+        return row
+    detail_keys = ("text", "transcript", "provider_utterances", "provider_metadata_bindings")
+    detail = {key: row[key] for key in detail_keys if key in row}
+    compact = {key: value for key, value in row.items() if key not in detail}
+    compact["source_metadata"] = {"source_sample_id": row["sample_id"],
+                                  "detail_sha256": identity(detail)}
+    if source_manifest is not None:
+        compact["source_metadata"]["manifest"] = source_manifest
+    return compact
+
+
+def _fixed_windows(rows, source_manifest=None):
     for row in rows:
         start, end = _source_interval(row)
+        compact = _window_metadata(row, source_manifest)
         for index in range(ceil((end - start) / 2)):
             a = start + index * 2
-            yield {**row, "sample_id": row["sample_id"] + f"_window{index:06d}",
+            yield {**compact, "sample_id": row["sample_id"] + f"_window{index:06d}",
                    "start_s": a, "end_s": min(end, a + 2),
                    "window_policy": "fixed_2s_no_audio_copy"}
 
 
-def _manifest_rows(pool, rows):
-    return _fixed_windows(rows) if pool in ("generic_negative", "korean_negative") else iter(rows)
+def _manifest_rows(pool, rows, source_manifest=None):
+    return _fixed_windows(rows, source_manifest) if pool in ("generic_negative", "korean_negative") else iter(rows)
 
 
 def _manifest_bytes(pool, rows):
     import json
-    return sum((len(json.dumps(row, ensure_ascii=False, allow_nan=False).encode("utf-8")) + 256)
-               * (ceil((_source_interval(row)[1] - _source_interval(row)[0]) / 2)
-                  if pool in ("generic_negative", "korean_negative") else 1) for row in rows)
+    windowed = pool in ("generic_negative", "korean_negative")
+    total = 0
+    for row in rows:
+        size = len(json.dumps(_window_metadata(row) if windowed else row,
+                              ensure_ascii=False, allow_nan=False).encode("utf-8")) + 512
+        total += size * (ceil((_source_interval(row)[1] - _source_interval(row)[0]) / 2) if windowed else 1)
+        if windowed and row.get("provider_index_adapter") in ("mls", "yodas2"):
+            total += len(json.dumps(row, ensure_ascii=False, allow_nan=False).encode("utf-8")) + 1
+    return total
 
 
 def _rir_demonstration(output, source):
@@ -897,7 +929,7 @@ def apply_prepared_review(project, *, preparation, answers=None, output=None,
             original_manifest = output / (pool + "_sources.jsonl")
             _publish_rows(original_manifest, admitted)
             source_outputs[pool] = _binding(original_manifest)
-            _publish_rows(path, _manifest_rows(pool, admitted))
+            _publish_rows(path, _manifest_rows(pool, admitted, source_outputs[pool]))
             outputs[pool] = _binding(path)
         result = {"kind": "prepared_public_audio_admission_v1", "state": "accepted", "request": request,
                   "admission": admission, "manifests": outputs, "source_manifests": source_outputs, "connected": False,
@@ -986,7 +1018,12 @@ def connect_materials(project, *, admissions, pools, output=None):
         _own_output(directory, "request.json", request)
         for pool, rows in merged.items():
             path = directory / (pool + ".jsonl")
-            _publish_rows(path, _manifest_rows(pool, rows))
+            source_binding = None
+            if any(row.get("provider_index_adapter") in ("mls", "yodas2") for row in rows):
+                sources_path = directory / (pool + "_sources.jsonl")
+                _publish_rows(sources_path, rows)
+                source_binding = _binding(sources_path)
+            _publish_rows(path, _manifest_rows(pool, rows, source_binding))
             staged[pool] = _binding(path)
     receipt_path = directory / "connection.json"
     with writer_lock(root / "data"):

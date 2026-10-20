@@ -13,8 +13,8 @@ def setup_arguments(a):
     basic.add_argument("--originals", type=int, help="증강 전 Positive TTS 원본 수; 시작값 100000")
     basic.add_argument("--rounds", type=int, choices=(1, 3, 5), help="원본당 증강 횟수; 시작값 5")
     basic.add_argument("--updates", type=int, help="모델 한 개의 optimizer update 수; 시작값 100000")
-    basic.add_argument("--generic-hours", type=float, help="일반 비호출 자료 목표 시간; 시작값 7500")
-    basic.add_argument("--korean-hours", type=float, help="한국어 비호출 자료 목표 시간; 시작값 2500")
+    basic.add_argument("--generic-hours", type=float, help="일반 비호출 자료 목표 시간; 시작값 7000")
+    basic.add_argument("--korean-hours", type=float, help="한국어 비호출 자료 목표 시간; 시작값 3000")
     basic.add_argument("--noise-hours", type=float, help="환경소음 증강 재료 목표 시간; 시작값 30, 다양성도 별도 확인")
     mode = basic.add_mutually_exclusive_group()
     mode.add_argument("--interactive", dest="interactive", action="store_true", help="작업량 선택 화면 열기")
@@ -86,6 +86,17 @@ def parser():
     a = sub.add_parser("download-generic", help="검증된 공개 Generic feature 다운로드 (~17.28GB)")
     a.add_argument("--output", type=Path, required=True)
     sub.add_parser("datasets", help="춘식아에 사용한 공개 자료의 출처·고정 버전·용량 확인")
+    a = sub.add_parser("negative-plan", help="상용 비호출의 종류별 준비 목표와 실제 공개 출처 확인 (다운로드 없음)")
+    a.add_argument("--generic-hours", type=float, default=7000)
+    a.add_argument("--korean-hours", type=float, default=3000)
+    a = sub.add_parser("download-source", help="상용 비호출의 원본 묶음 선택·용량 확인·다운로드 (검수·시간 집계 별도)")
+    a.add_argument("--source", choices=("audioset_unbalanced", "mls", "yodas2", "fma_large"), required=True)
+    a.add_argument("--parts", nargs="+", help="AudioSet/YODAS 묶음 번호 또는 MLS 화자·책 묶음 ID")
+    a.add_argument("--language", help="MLS의 제공자 언어명: german, french, spanish 등")
+    a.add_argument("--subset", help="YODAS2의 제공자 분할명: ko000, en000 등")
+    a.add_argument("--output", type=Path, help="원본과 완료 기록을 보존할 폴더")
+    a.add_argument("--max-download-gib", type=float, help="실제 다운로드에 허용할 최대 GiB; 생략하면 메타데이터만 확인")
+    a.add_argument("--metadata-only", action="store_true", help="명시한 용량 안에서 제공자 설명·시간·전사만 받고 원본 오디오는 받지 않음")
     a = sub.add_parser("download-data", help="고정 SHA256 공개 자료 다운로드·중단 재개 (내용 승인 별도)")
     a.add_argument("--dataset", required=True); a.add_argument("--output", type=Path, required=True)
     a = sub.add_parser("import-generic", help="전체 공개 Generic feature를 외부 경로로 재사용")
@@ -94,7 +105,7 @@ def parser():
     a = sub.add_parser("index-data", help="공급자 메타데이터로 음원별 출처·화자 목록 만들기 (STT 없음)")
     a.add_argument("--input", type=Path, required=True)
     a.add_argument("--output", type=Path, required=True)
-    a.add_argument("--dataset", choices=("zeroth", "manifest", "audioset", "fma", "mit_rir"), default="manifest")
+    a.add_argument("--dataset", choices=("zeroth", "manifest", "audioset", "fma", "mit_rir", "mls", "yodas2"), default="manifest")
     a.add_argument("--metadata", type=Path)
     a.add_argument("--ontology", type=Path, help="AudioSet의 제공자 ontology.json")
     a.add_argument("--room-metadata", type=Path, help="제공자가 명시한 RIR 파일별 공간 목록")
@@ -211,6 +222,35 @@ def dispatch(a):
     if a.command == "datasets":
         from .downloads import dataset_catalog
         return dataset_catalog()
+    if a.command == "negative-plan":
+        from .commercial_sources import commercial_negative_plan
+        return commercial_negative_plan(a.generic_hours, a.korean_hours)
+    if a.command == "download-source":
+        from .commercial_sources import resolve_commercial_source, download_commercial_source
+        import math
+        if a.max_download_gib is not None:
+            if (not math.isfinite(a.max_download_gib) or a.max_download_gib <= 0
+                    or not math.isfinite(a.max_download_gib * 1024**3) or not a.output):
+                raise ValueError("다운로드하려면 양수 --max-download-gib와 --output을 지정하세요.")
+        elif a.output is not None or a.metadata_only:
+            raise ValueError("--output에 다운로드하려면 최대 용량 --max-download-gib도 지정하세요.")
+        parts = a.parts or (["large"] if a.source == "fma_large" else [])
+        if a.source in ("audioset_unbalanced", "yodas2"):
+            try:
+                parts = [int(value) for value in parts]
+            except ValueError as error:
+                raise ValueError("AudioSet·YODAS2 묶음 번호는 정수여야 합니다.") from error
+        selection = {"parts": parts}
+        if a.language:
+            selection["language"] = a.language
+        if a.subset:
+            selection["subset"] = a.subset
+        record = resolve_commercial_source(a.source, selection=selection)
+        if a.max_download_gib is None:
+            return record
+        return download_commercial_source(record, a.output,
+            max_download_bytes=int(a.max_download_gib * 1024**3),
+            **({"metadata_only": True} if a.metadata_only else {}))
     if a.command == "download-data":
         from .downloads import download_dataset
         return download_dataset(a.dataset, a.output)

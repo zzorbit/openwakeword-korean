@@ -13,6 +13,7 @@ def partition_keys(row):
                         ("recording", recording), ("family", row.get("voice_family_id")),
                         ("speaker", row.get("canonical_speaker_id")),
                         ("room", row.get("canonical_room_id")),
+                        ("book", row.get("canonical_book_id")),
                         ("artist", row.get("canonical_artist_id"))):
         if value:
             yield kind, value
@@ -34,6 +35,7 @@ def partition_keys(row):
                         ("component_voice_family_ids", "family"),
                         ("canonical_speaker_ids", "speaker"),
                         ("canonical_artist_ids", "artist"),
+                        ("component_book_ids", "book"),
                         ("component_room_ids", "room")):
         for value in row.get(field, []):
             if value:
@@ -48,7 +50,7 @@ def component_lineage(row, role):
     keys = ("canonical_source_id", "source_id", "canonical_recording_id", "parent_source_id",
             "sha256", "original_sha256", "normalized_pcm_sha256", "normalized_frames",
             "voice_family_id", "canonical_speaker_id", "canonical_speaker_ids",
-            "canonical_artist_id", "canonical_artist_ids", "canonical_room_id",
+            "canonical_artist_id", "canonical_artist_ids", "canonical_room_id", "canonical_book_id",
             "provenance", "human_reference_used", "source_url", "original_source_url", "license",
             "path", "split", "language", "dataset_id", "eval_type", "category", "speech", "speaker_id")
     return {"role": role, **{key: row[key] for key in keys if key in row}}

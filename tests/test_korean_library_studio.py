@@ -94,7 +94,7 @@ def reference_queue(manager, project_id, *, kind="references"):
 
 @pytest.mark.parametrize("preset,originals,rounds,updates,korean", [
     ("check", 1000, 1, 10000, 1), ("trial", 20000, 3, 50000, 2000 / 3),
-    ("production", 100000, 5, 100000, 2500)])
+    ("production", 100000, 5, 100000, 3000)])
 def test_create_presets_only_configure_without_work(manager, preset, originals, rounds, updates, korean):
     view = create(manager, preset=preset)
     state = manager._load(view["id"])

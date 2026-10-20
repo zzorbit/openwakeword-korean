@@ -25,6 +25,8 @@
 - 증강 입력: [MUSAN](https://www.openslr.org/17/), [DNS-Challenge](https://github.com/microsoft/DNS-Challenge), [RIRS_NOISES](https://www.openslr.org/28/). corpus 설명과 각 원출처 notice를 함께 보존하며 모두 한 가지 라이선스로 간주하지 않는다.
 - 춘식아의 세 CNN 판별기는 이 프로젝트에서 학습한 모델이다. 코드 Apache 조건만으로 원시 공개 데이터와 학습 모델의 모든 상업 이용 조건이 해결되었다고 주장하지 않는다. 출처별 조건을 유지하며 공개 배포/상업 적용 시 별도 모델 조건을 확인한다. [모델 카드](korean_openwakeword/resources/sample_chunsik/MODEL_CARD.md)에 성능 범위와 재현을 명시한다.
 
+- 새 상용 규모의 원본 확보 경로: [AudioSet 공개 원본 배포](https://huggingface.co/datasets/agkphysics/AudioSet), [Meta Multilingual LibriSpeech](https://huggingface.co/datasets/facebook/multilingual_librispeech), [ESPnet YODAS2](https://huggingface.co/datasets/espnet/yodas2), [FMA](https://github.com/mdeff/fma). MLS는 CC BY 4.0, YODAS2는 CC BY 3.0으로 제공된다. AudioSet 배포자의 표기가 개별 원본 영상의 모든 권리를 증명하지는 않으며 FMA 음원 조건은 곡마다 다르다. 선택한 고정 버전·메타데이터·파일별 조건은 다운로드 기록에 보존하며 원본을 이 라이브러리에 동봉하지 않는다.
+
 ## 동봉 Development 오디오
 
 소규모 재현 WAV와 파생 noisy WAV만 동봉한다. 전부 `audio_manifest.json`의 SHA로 채점·청취에 동일하게 사용한다. 일부 음원은 **비상업 조건**이 있으므로 wheel 전체를 일괄 상업 이용 가능 음원 묶음으로 취급하지 않는다. attribution metadata는 예시 모델 폴더의 `AUDIO_SOURCES.json`에 있다.

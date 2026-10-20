@@ -181,10 +181,26 @@
     };
     const suppliedGeneric = recipe.automatic_target_hours?.generic_nominal ?? asset("generic")?.hours ?? 0;
     const suppliedKorean = recipe.automatic_target_hours?.korean_train ?? asset("zeroth")?.hours ?? 0;
-    const generic = asset("generic") ? [source("openWakeWord", "일반 음성·음악·환경음의 특징 데이터", hours(suppliedGeneric), suppliedGeneric * 3600, asset("generic"))] : [];
-    const korean = asset("zeroth") ? [source("Zeroth Korean", "한국어 낭독 음성", hours(suppliedKorean), suppliedKorean * 3600, asset("zeroth"))] : [];
-    for (const [items, target, available, content] of [[generic, genericHours, suppliedGeneric, "일반 비호출 음원·특징 자료"], [korean, koreanHours, suppliedKorean, "한국어 대화·낭독 등 음성"]]) {
-      if (target > available) items.push(source("추가 자료", `직접 준비할 ${content}`, hours(target - available), (target - available) * 3600));
+    const negativePlan = recipe.training_negative_plan;
+    const hasNegativePlan = negativePlan?.id === "commercial_negative_v1" && negativePlan.version === 1 && Array.isArray(negativePlan.components);
+    const plannedSources = (pool, target) => {
+      const components = negativePlan.components.filter(item => item.pool === pool && Number.isFinite(item.target_hours) && item.target_hours > 0);
+      const total = components.reduce((sum, item) => sum + item.target_hours, 0);
+      return components.map(item => {
+        const records = Array.isArray(item.sources) ? item.sources : [];
+        const amount = item.target_hours * target / total;
+        const name = records.map(record => record.name).filter(Boolean).join(" · ") || item.name;
+        const content = [...new Set([item.name, item.description].filter(Boolean))].join(" · ");
+        return source(name, content, `준비 목표 ${hours(amount)}`, amount * 3600, records.length === 1 ? records[0] : undefined);
+      });
+    };
+    // Planned raw-audio hours never add the opaque legacy 2,000h feature file.
+    const generic = hasNegativePlan ? plannedSources("generic_negative", genericHours) : asset("generic") ? [source("openWakeWord", "일반 음성·음악·환경음의 특징 데이터", hours(suppliedGeneric), suppliedGeneric * 3600, asset("generic"))] : [];
+    const korean = hasNegativePlan ? plannedSources("korean_negative", koreanHours) : asset("zeroth") ? [source("Zeroth Korean", "한국어 낭독 음성", hours(suppliedKorean), suppliedKorean * 3600, asset("zeroth"))] : [];
+    if (!hasNegativePlan) {
+      for (const [items, target, available, content] of [[generic, genericHours, suppliedGeneric, "일반 비호출 음원·특징 자료"], [korean, koreanHours, suppliedKorean, "한국어 대화·낭독 등 음성"]]) {
+        if (target > available) items.push(source("추가 자료", `직접 준비할 ${content}`, hours(target - available), (target - available) * 3600));
+      }
     }
     const reuseNegativeWaveforms = recipe.noise_material_policy === "reuse_negative_waveforms";
     const noise = reuseNegativeWaveforms ? [
@@ -201,7 +217,7 @@
       { id: "positive", name: "호출어 음성", description: "호출어 합성 음성", amount: count(originals), sources: [source("Qwen TTS", "호출어만 말한 음성", count(originals), originals)] },
       { id: "hard", name: "유사어 음성", description: "호출어로 오인할 수 있는 다른 단어·표현", amount: count(recipe.hard_originals ?? 0), sources: [source("Qwen TTS", "헷갈리기 쉬운 단어·표현을 합성한 음성", count(recipe.hard_originals ?? 0), recipe.hard_originals ?? 0)] },
       { id: "generic", name: "일반 비호출 자료", description: "일반 음성 · 음악 · 환경음", amount: hours(genericHours), sources: generic },
-      { id: "korean", name: "한국어 비호출 자료", description: koreanHours > suppliedKorean ? "한국어 대화 · 낭독 등 음성" : "한국어 낭독 음성", amount: hours(koreanHours), sources: korean },
+      { id: "korean", name: "한국어 비호출 자료", description: hasNegativePlan || koreanHours > suppliedKorean ? "한국어 대화 · 낭독 등 음성" : "한국어 낭독 음성", amount: hours(koreanHours), sources: korean },
       { id: "noise", name: "소음 증강 음원", description: reuseNegativeWaveforms ? "학습용 비호출 원본 음원 재사용" : "일반 오디오 · 음악 · 한국어 음성", amount: reuseNegativeWaveforms ? "재사용" : `${number(noise.length)}종`, sources: noise },
       { id: "rir", name: "잔향 자료", description: "공간의 울림을 재현하는 파일", amount: mit ? count(mit.files ?? mit.file_count) : "0개", sources: mit ? [source("MIT RIR", "공간의 울림 특성", count(mit.files ?? mit.file_count), mit.files ?? mit.file_count, mit)] : [] }
     ];
@@ -405,9 +421,10 @@
       $("material-mode").value = "source";
       const source = input.source || {};
       $("source-directory").value = source.directory || ""; $("source-dataset").value = source.dataset || "zeroth";
-      $("source-pool").value = source.pool || input.pool || "korean_negative";
+      $("source-pool").value = source.pool || input.pool || ({ mls: "generic_negative", yodas2: "korean_negative" }[$("source-dataset").value]) || "korean_negative";
       $("source-hours").value = String(source.hours ?? input.remaining_hours ?? input.required_hours ?? input.target_hours ?? "");
       for (const [id, key] of [["source-metadata", "metadata"], ["source-url", "source_url"], ["source-license", "license"]]) $(id).value = source[key] || "";
+      $("source-metadata-details").open = ["mls", "yodas2"].includes($("source-dataset").value);
       inputIdentity = identity;
     }
     renderInputMode(project);
@@ -417,11 +434,15 @@
     const material = project?.input?.kind === "material_admissions";
     const source = material && $("material-mode").value === "source";
     const rir = source && $("source-pool").value === "rir";
+    const downloadReceipt = source && ["mls", "yodas2"].includes($("source-dataset").value);
     $("material-controls").hidden = !material; $("source-fields").hidden = !source;
     $("source-directory").required = source;
     $("source-hours").required = source && !rir;
     $("source-hours-label").hidden = rir;
     $("source-rir-note").hidden = !rir;
+    $("source-format-note").hidden = !downloadReceipt;
+    $("source-metadata").required = downloadReceipt;
+    $("source-metadata").placeholder = downloadReceipt ? "download_receipt.json 경로" : "해당 자료의 목록 파일";
     if (!material) return;
     $("input-label").hidden = source; $("input-value").hidden = source; $("input-value").required = !source;
     $("input-hint").hidden = source;
@@ -549,6 +570,7 @@
         if (!Number.isFinite(source.hours) || source.hours <= 0) { message("준비할 시간을 확인하세요.", true); return; }
       }
       for (const [id, key] of [["source-metadata", "metadata"], ["source-url", "source_url"], ["source-license", "license"]]) { const value = $(id).value.trim(); if (value) source[key] = value; }
+      if (["mls", "yodas2"].includes(source.dataset) && !source.metadata) { message("메타데이터에 download_receipt.json 경로를 입력하세요.", true); return; }
       body = { source };
     }
     busy = true; message(""); render();
@@ -568,7 +590,13 @@
     for (const id of ["adv-originals", "adv-generic", "adv-korean"]) $(id).addEventListener("input", renderRecipe);
     $("input-form").addEventListener("submit", submitInput);
     $("material-mode").addEventListener("change", () => renderInputMode(selectedProject()));
-    $("source-dataset").addEventListener("change", () => { const pool = { zeroth: "korean_negative", audioset: "noise", fma: "noise", mit_rir: "rir" }[$("source-dataset").value]; if (pool) $("source-pool").value = pool; renderInputMode(selectedProject()); });
+    $("source-dataset").addEventListener("change", () => {
+      const dataset = $("source-dataset").value;
+      const pool = { zeroth: "korean_negative", audioset: "noise", mls: "generic_negative", yodas2: "korean_negative", fma: "noise", mit_rir: "rir" }[dataset];
+      if (pool) $("source-pool").value = pool;
+      if (["mls", "yodas2"].includes(dataset)) $("source-metadata-details").open = true;
+      renderInputMode(selectedProject());
+    });
     $("source-pool").addEventListener("change", () => renderInputMode(selectedProject()));
     $("project-select").addEventListener("change", () => { selectedId = $("project-select").value; newProject = !selectedId; message(""); render(); });
     $("new-project").addEventListener("click", () => { newProject = true; message(""); render(); $("wakeword").focus(); });

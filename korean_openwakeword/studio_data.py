@@ -28,7 +28,7 @@ AS_REV = "5a2fa42a1506470d275a47ff8e1fdac5b364e6ef"
 MIT_REV = "b824a1ef2821f112fda0b9cb26e4278c62b425bb"
 FMA_REV = "607364e7d8263f890d23c838802f29637600611f"
 DNS_REV = "70f19285c36cca4df2338f9248775ddc50980c6b"
-_AUDIO = {".wav", ".flac", ".mp3", ".ogg", ".aif", ".aiff", ".au"}
+_AUDIO = {".wav", ".flac", ".mp3", ".ogg", ".opus", ".aif", ".aiff", ".au"}
 
 
 def _official_assets():
@@ -137,6 +137,9 @@ def material_recipe(preset="check", workspace=None, evaluation_policy=None, nois
             "Training noise reuses reviewed Train waveform sources admitted as Generic/Korean Negative; the feature-only Generic file cannot be mixed as audio.",
             "This download still supplies only nominal 2,000h Generic features and 1h Korean Train. Additional reviewed raw Negative sources must meet the selected hours and existing noise-category coverage; they are not automatically downloaded.",
             "MIT rooms retain conservative Train-only groups; no invented room independence."])
+        if preset == "full":
+            from .commercial_sources import commercial_negative_plan
+            result["training_negative_plan"] = commercial_negative_plan()
     if evaluation_policy and evaluation_policy.get("evaluation_materials_recipe") in (5, 6):
         from .evaluation_materials import evaluation_material_catalog, evaluation_material_preview
         from .evaluation_rir import common_rir_preview, common_rir_catalog
@@ -622,7 +625,7 @@ def prepare_additional_materials(project_path, workspace, source, *, noise_mater
         raise ValueError("Additional material must describe one public corpus folder")
     source = dict(source)
     dataset, pool = source.get("dataset", "manifest"), source.get("pool")
-    if dataset not in ("zeroth", "manifest", "audioset", "fma", "mit_rir"):
+    if dataset not in ("zeroth", "manifest", "audioset", "fma", "mit_rir", "mls", "yodas2"):
         raise ValueError("Choose an existing public-data adapter")
     if pool not in ("generic_negative", "korean_negative", "noise", "rir"):
         raise ValueError("Additional pool must be generic_negative, korean_negative, noise or rir")
@@ -644,7 +647,7 @@ def prepare_additional_materials(project_path, workspace, source, *, noise_mater
         if source.get(key):
             source[key] = str(resolved(workspace, Path(source[key]).expanduser()))
     metadata = source.get("metadata")
-    if dataset in ("manifest", "audioset", "fma") and not metadata:
+    if dataset in ("manifest", "audioset", "fma", "mls", "yodas2") and not metadata:
         raise ValueError("This adapter requires the original provider metadata file")
     if dataset == "audioset" and not source.get("ontology"):
         raise ValueError("AudioSet also requires its original ontology JSON")

@@ -25,7 +25,7 @@ _PRESETS = {
               "generic_hours": 2000, "korean_hours": 2000 / 3, "train_references": 20,
               "hard_originals": 1000, "functional_check_only": False, "noise_material_policy": "official_example"},
     "production": {"title": "상용 모델용", "originals": 100000, "rounds": 5, "updates": 100000,
-              "generic_hours": 7500, "korean_hours": 2500, "train_references": 100,
+              "generic_hours": 7000, "korean_hours": 3000, "train_references": 100,
               "hard_originals": 2000, "functional_check_only": False, "noise_material_policy": "reuse_negative_waveforms"},
 }
 

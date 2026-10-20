@@ -85,6 +85,42 @@ def test_target_is_whole_sources_not_duplication_and_reports_shortfall(material)
     assert receipt["train_source_count"] == 4
 
 
+def test_long_speech_transcript_is_bound_once_not_copied_to_every_window(material):
+    project, folder, options = material
+    text = "일반적인 다른 이야기입니다. " * 2000
+    index = folder.parent / "long_speech_index.jsonl"
+    for n, path in enumerate(sorted(folder.iterdir())):
+        sf.write(path, np.random.default_rng(n).normal(0, .04, 24000 * 30), 24000, subtype="PCM_16")
+    _rows(index, [{"path": path.name, "provider_index_adapter": "yodas2",
+                   "canonical_speaker_id": f"fixture_speaker:{n}",
+                   "category": "competing_speech", "speech": True, "language": "Korean",
+                   "transcript_origin": "provider_metadata_not_STT", "text": text,
+                   "provider_utterances": [{"text": text, "start_s": 0, "end_s": 30}],
+                   "provider_metadata_bindings": []} for n, path in enumerate(sorted(folder.iterdir()))])
+    receipt = prepare_public_audio(project, **{**options, "source_index": index})
+    answers, _ = _answers(project, receipt)
+    result = apply_prepared_review(project, preparation=receipt["preparation"], answers=answers,
+                                   pools=("korean_negative",), connect=True)
+    source_binding = result["source_manifests"]["korean_negative"]
+    sources = read_rows(source_binding["path"])
+    window_path = Path(result["manifests"]["korean_negative"]["path"])
+    windows = read_rows(window_path)
+    assert len(sources) == 4 and len(windows) == 60
+    assert all(row["text"] == text and row["provider_utterances"] for row in sources)
+    assert all("text" not in row and "provider_utterances" not in row for row in windows)
+    assert all(row["source_metadata"]["manifest"] == source_binding for row in windows)
+    assert {row["source_metadata"]["source_sample_id"] for row in windows} == {row["sample_id"] for row in sources}
+    assert sum(row["end_s"] - row["start_s"] for row in windows) == pytest.approx(120)
+    assert window_path.stat().st_size < Path(source_binding["path"]).stat().st_size
+    assert receipt["provider_transcript_screened_sources"] == 5
+    assert receipt["independent_STT_runs"] == 0
+    connected = read_rows(result["connection"]["manifests"]["korean_negative"]["path"])
+    reference = connected[0]["source_metadata"]["manifest"]
+    assert digest(reference["path"]) == reference["sha256"]
+    assert read_rows(reference["path"])[0]["text"] == text
+    assert audit_project(project)["passed"]
+
+
 @pytest.mark.parametrize("change", ["source", "settings"])
 def test_resume_refuses_changed_inputs_or_settings(material, change):
     project, folder, options = material

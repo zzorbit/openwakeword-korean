@@ -102,6 +102,27 @@ function commonRecipe(overrides = {}) {
   };
 }
 
+function commercialRecipe() {
+  const component = (id, pool, name, description, target_hours, sourceName, source_url) => ({
+    id, pool, name, description, target_hours,
+    sources: [{ id, name: sourceName, source_url, availability: "public_source_requires_preparation" }]
+  });
+  return commonRecipe({
+    id: "production", generic_hours: 7000, korean_hours: 3000,
+    noise_material_policy: "reuse_negative_waveforms",
+    training_negative_plan: {
+      id: "commercial_negative_v1", version: 1, generic_hours: 7000, korean_hours: 3000, total_hours: 10000,
+      components: [
+        component("mixed", "generic_negative", "생활·환경 혼합 음원", "말소리·음악·환경음", 3200, "AudioSet", "https://research.google.com/audioset/"),
+        component("multilingual", "generic_negative", "다국어 발화", "여러 언어의 낭독 음성", 2600, "MLS", "https://www.openslr.org/94/"),
+        component("web_speech", "generic_negative", "대화·해설 음성", "한국어 외 언어의 웹 음성", 900, "YODAS2", "https://huggingface.co/datasets/espnet/yodas2"),
+        component("music", "generic_negative", "음악", "이용조건을 확인한 음원", 300, "FMA", "https://github.com/mdeff/fma"),
+        component("korean_web", "korean_negative", "한국어 웹 음성", "대화·해설·강의·낭독", 3000, "YODAS2 한국어", "https://huggingface.co/datasets/espnet/yodas2")
+      ]
+    }
+  });
+}
+
 (async () => {
   await test("budget request preserves selected values and does not invent overrides", () => {
     const { helpers } = browser({ noBoot: true });
@@ -231,6 +252,41 @@ function commonRecipe(overrides = {}) {
     assertMaterialDisclosures(b.elements.get("source-preview"));
     assert.equal(amount(training, "호출어 음성"), "100,000개");
     assert.equal(amount(training, "일반 비호출 자료"), "7,500시간");
+  });
+  await test("commercial raw-source plan shows separate preparation targets without adding legacy features", async () => {
+    const b = browser({ recipeList: [commercialRecipe()] }); await flush();
+    const preview = b.elements.get("source-preview"), training = preview.children[0];
+    assertMaterialDisclosures(preview);
+    const generic = material(training, "일반 비호출 자료"), korean = material(training, "한국어 비호출 자료");
+    assert.equal(withClass(generic, "material-amount")[0].textContent, "7,000시간");
+    assert.equal(withClass(korean, "material-amount")[0].textContent, "3,000시간");
+    assert.deepEqual(sourceEntries(generic).map(row => withClass(row, "source-name")[0].textContent), ["AudioSet", "MLS", "YODAS2", "FMA"]);
+    assert.deepEqual(sourceEntries(generic).map(row => withClass(row, "source-quantity")[0].textContent), ["준비 목표 3,200시간", "준비 목표 2,600시간", "준비 목표 900시간", "준비 목표 300시간"]);
+    assert.deepEqual(sourceEntries(korean).map(row => withClass(row, "source-name")[0].textContent), ["YODAS2 한국어"]);
+    assert.equal(withClass(sourceEntries(korean)[0], "source-quantity")[0].textContent, "준비 목표 3,000시간");
+    for (const row of [...sourceEntries(generic), ...sourceEntries(korean)]) {
+      const name = withClass(row, "source-name")[0];
+      assert.equal(name.tagName, "a"); assert.match(name.href, /^https:\/\//);
+      assert.equal(withClass(row, "file-size").length, 0);
+    }
+    for (const excluded of ["openWakeWord", "Zeroth", "2,000시간", "추가 자료", "준비 완료"]) assert.equal(textOf(generic).includes(excluded) || textOf(korean).includes(excluded), false, excluded);
+    assert.match(textOf(korean), /대화·해설·강의·낭독/);
+    assert.equal(withClass(material(training, "소음 증강 음원"), "material-amount")[0].textContent, "재사용");
+    assert.equal(withClass(material(preview.children[1], "일반 비호출 자료"), "material-amount")[0].textContent, "12시간");
+  });
+  await test("commercial component targets follow custom pool hours while keeping the same source plan", async () => {
+    const b = browser({ recipeList: [commercialRecipe()] }); await flush();
+    b.elements.get("adv-generic").value = "3500"; b.elements.get("adv-generic").handlers.input();
+    b.elements.get("adv-korean").value = "1500"; b.elements.get("adv-korean").handlers.input();
+    const training = b.elements.get("source-preview").children[0];
+    const generic = material(training, "일반 비호출 자료"), korean = material(training, "한국어 비호출 자료");
+    assert.equal(withClass(generic, "material-amount")[0].textContent, "3,500시간");
+    assert.deepEqual(sourceEntries(generic).map(row => withClass(row, "source-quantity")[0].textContent), ["준비 목표 1,600시간", "준비 목표 1,300시간", "준비 목표 450시간", "준비 목표 150시간"]);
+    assert.equal(withClass(sourceEntries(korean)[0], "source-quantity")[0].textContent, "준비 목표 1,500시간");
+    for (const id of ["adv-generic", "adv-korean"]) { b.elements.get(id).value = ""; b.elements.get(id).handlers.input(); }
+    const restored = b.elements.get("source-preview").children[0];
+    assert.equal(withClass(material(restored, "일반 비호출 자료"), "material-amount")[0].textContent, "7,000시간");
+    assert.equal(withClass(material(restored, "한국어 비호출 자료"), "material-amount")[0].textContent, "3,000시간");
   });
   await test("common evaluation groups each real source once and keeps archive bytes with quantity", async () => {
     const b = browser({ recipeList: [commonRecipe()] }); await flush();
@@ -434,6 +490,45 @@ function commonRecipe(overrides = {}) {
     b.elements.get("input-value").value = "F:\\admitted\\receipt.json";
     await b.submit("input-form"); request = b.calls.filter(call => call.url.endsWith("/input")).at(-1);
     assert.deepEqual(JSON.parse(request.options.body), { admissions: ["F:\\admitted\\receipt.json"] });
+  });
+  await test("MLS and YODAS2 raw sources require their download receipt and select the expected default pool", async () => {
+    for (const [dataset, pool] of [["mls", "generic_negative"], ["yodas2", "korean_negative"]]) {
+      assert.ok(html.includes(`value="${dataset}"`));
+      const project = { id: "bora", wakeword: "보라야", status: "waiting_input", input: { kind: "material_admissions", remaining_hours: 12 } };
+      const b = browser({ initialState: { projects: [project] } }); await flush();
+      b.elements.get("source-dataset").value = dataset; b.elements.get("source-dataset").handlers.change();
+      b.elements.get("source-directory").value = "F:\\public-data\\audio";
+      assert.equal(b.elements.get("source-pool").value, pool);
+      assert.equal(b.elements.get("source-format-note").hidden, false);
+      assert.equal(b.elements.get("source-metadata-details").open, true);
+      assert.equal(b.elements.get("source-metadata").required, true);
+      assert.equal(b.elements.get("source-metadata").placeholder, "download_receipt.json 경로");
+      await b.submit("input-form");
+      assert.equal(b.calls.some(call => call.url.endsWith("/input")), false);
+      assert.match(b.elements.get("message").textContent, /download_receipt\.json/);
+      b.elements.get("source-metadata").value = "F:\\public-data\\download_receipt.json";
+      await b.submit("input-form");
+      const request = b.calls.filter(call => call.url.endsWith("/input")).at(-1);
+      assert.deepEqual(JSON.parse(request.options.body), { source: { directory: "F:\\public-data\\audio", dataset, pool, hours: 12, metadata: "F:\\public-data\\download_receipt.json" } });
+    }
+  });
+  await test("prefilled raw formats keep an explicit pool and metadata while legacy lists stay optional", async () => {
+    const project = { id: "bora", wakeword: "보라야", status: "waiting_input", input: { kind: "material_admissions", source: { dataset: "mls", directory: "F:\\mls", hours: 2, metadata: "F:\\mls\\download_receipt.json" } } };
+    const b = browser({ initialState: { projects: [project] } }); await flush();
+    assert.equal(b.elements.get("source-pool").value, "generic_negative");
+    assert.equal(b.elements.get("source-metadata-details").open, true);
+    assert.equal(b.elements.get("source-metadata").value, "F:\\mls\\download_receipt.json");
+    b.elements.get("source-dataset").value = "yodas2"; b.elements.get("source-dataset").handlers.change();
+    b.elements.get("source-pool").value = "generic_negative"; b.elements.get("source-pool").handlers.change();
+    await b.submit("input-form");
+    const request = b.calls.filter(call => call.url.endsWith("/input")).at(-1);
+    assert.equal(JSON.parse(request.options.body).source.pool, "generic_negative");
+    b.elements.get("source-dataset").value = "manifest"; b.elements.get("source-dataset").handlers.change();
+    assert.equal(b.elements.get("source-format-note").hidden, true);
+    assert.equal(b.elements.get("source-metadata").required, false);
+    assert.equal(b.elements.get("source-metadata").placeholder, "해당 자료의 목록 파일");
+    b.elements.get("material-mode").value = "admissions"; b.elements.get("material-mode").handlers.change();
+    assert.equal(b.elements.get("source-metadata").required, false);
   });
   await test("RIR preparation uses the whole pool without an invented hour budget; changes apply immediately", async () => {
     const project = { id: "bora", wakeword: "보라야", status: "waiting_input", input: { kind: "material_admissions" } };

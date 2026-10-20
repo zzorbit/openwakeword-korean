@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "version": "0.8.0",
+  "checked_at": "2026-10-20T19:18:26.757412+00:00",
+  "scope": "Source plan, defaults, explicit source-part downloads, waveform indexing and portable regressions; not full corpus acquisition or new model performance.",
+  "python_tests": {
+    "passed": 905,
+    "skipped": 1,
+    "deselected": 5,
+    "failures": 0,
+    "errors": 0,
+    "elapsed_seconds": 301.322
+  },
+  "javascript_tests": {
+    "studio": 28,
+    "microphone": 14
+  },
+  "commercial_plan": {
+    "generic_hours": 7000,
+    "korean_hours": 3000,
+    "components_hours": [
+      3200,
+      2600,
+      900,
+      300,
+      3000
+    ],
+    "source_ids": [
+      "audioset_unbalanced",
+      "mls",
+      "yodas2",
+      "fma_large",
+      "yodas2"
+    ],
+    "batch": {
+      "generic_negative": 768,
+      "korean_negative": 256,
+      "positive": 100,
+      "hard_negative": 100
+    },
+    "hours_are_preparation_targets": true
+  },
+  "historical_projects_changed": false,
+  "check_and_trial_presets_changed": false,
+  "real_downloads": {
+    "mls_audio_archive_and_metadata_bytes": 161129556,
+    "mls_flac_files": 30,
+    "mls_audio_seconds": 459.32,
+    "yodas2_metadata_only_bytes": 766550,
+    "yodas2_audio_downloaded": false,
+    "source_audio_content_admitted": false
+  },
+  "actual_mls_preparation": {
+    "state": "awaiting_human_review",
+    "source_files": 30,
+    "source_seconds": 459.32,
+    "independent_STT_runs": 0
+  },
+  "actual_yodas2_probe": {
+    "scope": "Provider metadata only with mocked audio facts; no waveform/header/PCM verification",
+    "videos": 89,
+    "out_of_bounds_videos": 8,
+    "out_of_bounds_utterances": 9,
+    "missing_transcript_videos": 2,
+    "timestamps_modified": false
+  },
+  "wheel": {
+    "version": "0.8.0",
+    "separate_target_install_verified": true,
+    "dependencies_reused_from_verification_environment": true,
+    "new_default_targets_verified": true,
+    "actual_mls_index_count": 30
+  },
+  "live_browser": {
+    "commercial_7000_3000_and_sources_verified": true,
+    "single_open_accordion_verified": true,
+    "verification_server_stopped": true
+  },
+  "formal_training_started": false,
+  "new_model_performance_evaluated": false,
+  "full_10000h_automatic_acquisition_completed": false,
+  "Final_accessed": false,
+  "limitations": [
+    "Source availability is not proof of all original audio rights.",
+    "YODAS2 does not supply verified per-video genre, speaker or channel identities.",
+    "MLS/FMA may share original books/music with MUSAN evaluation; cross-corpus aliases and near-duplicates require checking before independent performance claims.",
+    "The 2,000h legacy feature file cannot be added to raw hours without overlap evidence.",
+    "Pinned AudioSet raw archives for the proposed mixed quota may require about 1.6TB before conversions/features."
+  ],
+  "code_resource_sha256": {
+    "korean_openwakeword/__init__.py": "486703a820cfddd860c6455c2f2e9c2478f2e2d37442d039e3f90360082efd54",
+    "korean_openwakeword/cli.py": "16443b367f7a42ca06b21a433696c68b086085e824dbd2c19e26bb9f046929bd",
+    "korean_openwakeword/studio_data.py": "50e8cc06883005050360e99f9938e2b772ce2bb357b6a1382ad39863f25bf6c5",
+    "korean_openwakeword/studio_steps.py": "ebfb1fab7b9586b41148bdcb91f974c732380f8b509370f57b32c2034c0814fb",
+    "korean_openwakeword/preparation.py": "9fa644cf9db68566bcb008cef3a6829d17835b877c034ece70bf77da410add4c",
+    "korean_openwakeword/source_identity.py": "8f89f6349488d18128db45f90bac1b20c94aeaeda8f82644ecea616652581eee",
+    "korean_openwakeword/commercial_sources.py": "c2fba33d22c32f6c53fa56c928b17654073696f25b8ba6bcb5e7c3686f953c11",
+    "korean_openwakeword/source_waveform_index.py": "1b9c4a676e3088aabbbfa4f7abe9efeff0c640822238aa814e1bbf50eea5ca56",
+    "korean_openwakeword/resources/default_profile.json": "60f4c681d711e5c38e346e84b61348131579fcb5210dbe404f063d7130a4345e",
+    "korean_openwakeword/resources/studio.js": "4e658513d709f2a8b8a5a553434612d21382dbee06f33fe00f382bc67030970e",
+    "korean_openwakeword/resources/studio.html": "059665930d7074922661f846cf0421e32401b87d70fa739fabed528c2304c584"
+  }
+}
