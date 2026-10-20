@@ -65,7 +65,7 @@ def test_plan_scales_pools_without_changing_batch_or_supply():
     assert plan["generic_hours"] == 7000
     assert plan["korean_hours"] == 3000
     assert plan["total_hours"] == 10000
-    assert (plan["id"], plan["version"]) == ("commercial_negative_v2", 2)
+    assert (plan["id"], plan["version"]) == ("commercial_negative_v3", 3)
     assert sum(c["target_hours"] for c in plan["components"] if c["pool"] == "generic_negative") == 7000
     assert [c["target_hours"] for c in plan["components"]] == [3000, 3000, 1000, 3000]
     assert [c["sources"][0]["id"] for c in plan["components"]] == ["audioset_unbalanced", "mls", "fma_full", "yodas2"]

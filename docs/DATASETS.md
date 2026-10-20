@@ -41,7 +41,7 @@
 
 - **AudioSet:** 실제 오디오를 내려받아 비호출 학습과 소음 증강에 재사용합니다. Google의 목록·라벨과 공개 원본 배포를 함께 확인하고 개별 원출처 조건도 보존합니다. 동작 확인용의 `bal_train09.tar` 하나와 상용 3,000시간을 혼동하지 않습니다.
 - **MLS:** 여러 언어·화자·책의 낭독 음성을 고르게 선택합니다. 공식 Hugging Face의 화자·책별 묶음을 선택할 수 있으며, 선택 시간과 실제 다운로드 용량은 구분합니다.
-- **FMA full:** 전체 길이의 원곡을 제공하며 후보 분량은 1,000시간을 넘습니다. 곡별 이용조건·중복·실제 파형 길이를 확인해 1,000시간을 선택합니다. FMA large의 30초 음원 약 888시간이나 small의 1시간을 반복해 목표를 채우지 않습니다.
+- **FMA full:** 곡 목록을 먼저 고정하고 필요한 원곡만 선택 다운로드합니다. 원본 MP3를 재인코딩하지 않으며 곡별 검증과 이어받기를 지원합니다. FMA large의 30초 음원 약 888시간이나 small의 1시간을 반복해 목표를 채우지 않습니다.
 - **YODAS2:** 한국어 비호출 3,000시간에 사용합니다. 대화·해설·강의·낭독의 내용 다양성을 확인하되 메타데이터에 없는 장르별 시간이나 화자 정보를 만들어 넣지 않습니다. YODAS와 YODAS2는 같은 자료의 파생본이므로 고유 시간을 중복 집계하지 않습니다.
 
 AIHub의 대화·방송 음원은 구조화된 자료를 추가하고 싶을 때 선택할 수 있지만 계정과 데이터별 다운로드 승인이 필요합니다. 기본 공개 다운로드가 끝난 것으로 표시하지 않습니다. 기존 openWakeWord 2,000시간 특징도 원본 대응표가 없어 새 일반 원본과 단순 합산하지 않습니다.
@@ -64,7 +64,6 @@ koww negative-plan
 koww download-source --source yodas2 --subset ko000 --parts 0
 koww download-source --source mls --language german --parts 10087_10388_000
 koww download-source --source audioset_unbalanced --parts 0
-koww download-source --source fma_full --parts full
 ```
 
 확인한 묶음을 받으려면 저장 폴더와 허용할 최대 GiB를 지정합니다. 아래 예시는 YODAS2 한국어 첫 묶음만 선택하며, 3,000시간 전체를 받는 명령이 아닙니다.
@@ -73,19 +72,35 @@ koww download-source --source fma_full --parts full
 koww download-source --source yodas2 --subset ko000 --parts 0 --output shared/sources/yodas2_ko000_0 --max-download-gib 2
 ```
 
-FMA full은 전체 원곡 압축파일을 받습니다. 아래 명령은 음악 1,000시간만 골라 받는 명령이 아니라 **원본 전체와 메타데이터를 다운로드**하는 명령입니다. 원본 ZIP은 **943,642,698,636 bytes(약 879GiB)**이며 메타데이터와 압축 해제·변환 공간은 별도입니다.
+### FMA full에서 필요한 곡만 받기
+
+먼저 곡 목록과 메타데이터를 소량 받아 **1,000시간의 선곡과 예상 용량을 고정**합니다. 이 단계에서는 음악 원본을 받지 않습니다.
 
 ```powershell
-koww download-source --source fma_full --parts full --output shared/sources/fma_full --max-download-gib 900
+koww download-fma --output shared/sources/fma_full_1000h --hours 1000 --plan-only
 ```
 
-원본 없이 설명·시간·제공 전사만 확인하려면 같은 명령에 `--metadata-only`를 추가합니다. 파일 크기와 제공자 해시를 검사하고 중단된 다운로드를 재개합니다. 다운로드 receipt의 준비·승인 시간은 0이며, 실제 시간은 별도 전처리와 검수 후 집계합니다. 용량 상한이나 여유 공간이 부족하면 받기 전에 중단합니다.
+예상 용량을 확인한 뒤 `--plan-only`를 최대 다운로드 용량으로 바꿉니다. 아래 150GiB는 사용자가 허용할 상한이며, 실제 용량은 선곡에 따라 달라집니다.
+
+```powershell
+koww download-fma --output shared/sources/fma_full_1000h --hours 1000 --max-download-gib 150
+```
+
+같은 명령을 다시 실행하면 고정된 곡 목록으로 이어받습니다. 완료 곡은 해시를 확인해 재사용하고, 중단된 곡은 남은 부분부터 받습니다. 파일의 음질·길이를 바꾸지 않으며 목표 시간은 마지막 원곡 길이만큼 초과할 수 있습니다. 공간이나 용량 상한이 부족하면 중단하고 전체 ZIP으로 자동 전환하지 않습니다.
+
+기본 선곡은 알려진 CC 이용조건 중 변경금지(ND)·미확인 조건을 제외합니다. 비상업(NC)·동일조건변경허락(SA)은 원문 조건을 보존하므로 상업 이용 가능성을 보장하지 않습니다. 상업 이용 후보만 고르려면 두 명령에 모두 `--license-policy commercial-only`를 추가하세요. seed·정책·목표 시간·제외 목록을 바꾸려면 새 출력 폴더를 사용합니다.
+
+곡별 **크기·ZIP CRC32**를 검사하고 추출 MP3의 **SHA-256**을 기록합니다. 이는 부분 다운로드 검증이며 전체 ZIP의 공식 SHA1 검증을 완료했다는 뜻은 아닙니다. URL·전체 크기·ETag·파일 목록 해시·선곡·곡별 완료 기록을 함께 보존합니다.
+
+`download-source --source fma_full`도 기본적으로 선택 다운로드를 사용합니다. 전체 원본 ZIP이 필요한 경우에만 `--whole-archive`를 명시합니다. 전체 ZIP은 약 879GiB이므로 일반적인 1,000시간 준비에는 필요하지 않습니다.
+
+다른 출처의 설명·시간·제공 전사만 확인하려면 `download-source`에 `--metadata-only`를 추가합니다. 다운로드 기록의 준비·승인 시간은 0이며, 실제 시간은 별도 전처리와 검수 후 집계합니다.
 
 MLS·YODAS2는 원본 묶음을 푼 폴더와 `download_receipt.json`을 웹 화면의 **추가 음원 준비**에 지정할 수 있습니다. 자료 형식은 각각 **MLS 원본 음원**, **YODAS2 원본 음원**을 선택합니다. CLI에서는 `index-data --dataset mls` 또는 `--dataset yodas2`의 `--metadata`에 같은 receipt를 지정합니다. 제공자 전사·시간·원본 ID를 사용하며 새 STT를 실행하지 않습니다.
 
-FMA full은 원본 ZIP과 메타데이터 ZIP을 각각 푼 뒤 웹의 **추가 음원 준비**에서 **FMA 음악**을 선택합니다. 원본 폴더와 제공자의 `fma_metadata/tracks.csv`를 지정하고 **일반 비호출 1,000시간**으로 준비합니다. CLI는 `index-data --dataset fma`와 같은 CSV를 사용합니다. 기존 small·large와 full에 같은 곡이 있으면 동일한 원본 ID로 관리해 시간을 중복 합산하지 않습니다.
+FMA 선택 다운로드가 끝나면 웹의 **추가 음원 준비**에서 **FMA 음악**을 선택합니다. 원본 폴더는 출력 폴더의 `audio`, 메타데이터는 `metadata/tracks.csv`를 지정하고 **일반 비호출 1,000시간**으로 준비합니다. CLI는 `index-data --dataset fma`와 같은 CSV를 사용합니다. 기존 small·large와 full에 같은 곡이 있으면 동일한 원본 ID로 관리해 시간을 중복 합산하지 않습니다.
 
-이 기능은 선택한 원본의 다운로드·준비 경로입니다. 자료 목표 10,000시간 전체의 자동 확보·내용 승인까지 완료됐다는 뜻은 아닙니다. AudioSet·FMA full의 원본뿐 아니라 압축 해제본·변환본·특징도 보존할 저장 공간을 먼저 확인하세요.
+이 기능은 선택한 원본의 다운로드·준비 경로입니다. 자료 목표 10,000시간 전체의 자동 확보·내용 승인까지 완료됐다는 뜻은 아닙니다. 내려받을 원본·변환본·특징을 보존할 저장 공간을 먼저 확인하세요.
 
 ## 공식 자동 학습 예제의 증강 재료
 

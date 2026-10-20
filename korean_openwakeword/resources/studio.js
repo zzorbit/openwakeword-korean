@@ -183,7 +183,8 @@
     const suppliedKorean = recipe.automatic_target_hours?.korean_train ?? asset("zeroth")?.hours ?? 0;
     const negativePlan = recipe.training_negative_plan;
     const hasNegativePlan = ((negativePlan?.id === "commercial_negative_v1" && negativePlan.version === 1)
-      || (negativePlan?.id === "commercial_negative_v2" && negativePlan.version === 2)) && Array.isArray(negativePlan.components);
+      || (negativePlan?.id === "commercial_negative_v2" && negativePlan.version === 2)
+      || (negativePlan?.id === "commercial_negative_v3" && negativePlan.version === 3)) && Array.isArray(negativePlan.components);
     const plannedSources = (pool, target) => {
       const components = negativePlan.components.filter(item => item.pool === pool && Number.isFinite(item.target_hours) && item.target_hours > 0);
       const total = components.reduce((sum, item) => sum + item.target_hours, 0);
@@ -191,7 +192,9 @@
         const records = Array.isArray(item.sources) ? item.sources : [];
         const amount = item.target_hours * target / total;
         const name = records.map(record => record.name).filter(Boolean).join(" · ") || item.name;
-        const content = [...new Set([item.name, item.description].filter(Boolean))].join(" · ");
+        const selectiveMusic = negativePlan.version === 3 && records.some(record => record.id === "fma_full" && record.download_mode === "selective");
+        const content = selectiveMusic ? "필요한 원곡만 선택 다운로드 · 원본 MP3 보존"
+          : [...new Set([item.name, item.description].filter(Boolean))].join(" · ");
         return source(name, content, `준비 목표 ${hours(amount)}`, amount * 3600, records.length === 1 ? records[0] : undefined);
       });
     };

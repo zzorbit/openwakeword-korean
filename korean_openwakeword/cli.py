@@ -97,6 +97,19 @@ def parser():
     a.add_argument("--output", type=Path, help="원본과 완료 기록을 보존할 폴더")
     a.add_argument("--max-download-gib", type=float, help="실제 다운로드에 허용할 최대 GiB; 생략하면 메타데이터만 확인")
     a.add_argument("--metadata-only", action="store_true", help="명시한 용량 안에서 제공자 설명·시간·전사만 받고 원본 오디오는 받지 않음")
+    a.add_argument("--whole-archive", action="store_true", help="FMA full 전체 ZIP을 명시적으로 선택; 기본은 필요한 원곡만 다운로드")
+    a.add_argument("--hours", type=float, default=1000, help="FMA full 선택 다운로드 목표 시간; 기본 1000")
+    a.add_argument("--seed", type=int, default=20261021)
+    a.add_argument("--license-policy", choices=("allow-derivatives", "commercial-only"), default="allow-derivatives")
+    a.add_argument("--exclude", type=Path, help="추가로 제외할 FMA 곡·음악가·원출처 목록 JSON")
+    a = sub.add_parser("download-fma", help="FMA full에서 필요한 원곡만 선택·검증·이어받기 (재인코딩 없음)")
+    a.add_argument("--output", type=Path, required=True)
+    a.add_argument("--hours", type=float, default=1000)
+    a.add_argument("--seed", type=int, default=20261021)
+    a.add_argument("--plan-only", action="store_true", help="목록·메타데이터만 받고 고정 선곡·예상 용량 저장; 원곡 다운로드 없음")
+    a.add_argument("--max-download-gib", type=float, help="실제 다운로드의 최대 GiB; 원곡을 받으려면 필수")
+    a.add_argument("--license-policy", choices=("allow-derivatives", "commercial-only"), default="allow-derivatives")
+    a.add_argument("--exclude", type=Path, help="추가로 제외할 FMA 곡·음악가·원출처 목록 JSON")
     a = sub.add_parser("download-data", help="고정 SHA256 공개 자료 다운로드·중단 재개 (내용 승인 별도)")
     a.add_argument("--dataset", required=True); a.add_argument("--output", type=Path, required=True)
     a = sub.add_parser("import-generic", help="전체 공개 Generic feature를 외부 경로로 재사용")
@@ -225,6 +238,15 @@ def dispatch(a):
     if a.command == "negative-plan":
         from .commercial_sources import commercial_negative_plan
         return commercial_negative_plan(a.generic_hours, a.korean_hours)
+    if a.command == "download-fma":
+        from .fma_download import download_fma
+        import math
+        if a.max_download_gib is not None and (not math.isfinite(a.max_download_gib)
+                or a.max_download_gib <= 0 or not math.isfinite(a.max_download_gib * 1024**3)):
+            raise ValueError("--max-download-gib must be positive and finite")
+        return download_fma(a.output, hours=a.hours, seed=a.seed, plan_only=a.plan_only,
+            max_download_bytes=int(a.max_download_gib * 1024**3) if a.max_download_gib is not None else None,
+            license_policy=a.license_policy, exclusions=a.exclude)
     if a.command == "download-source":
         from .commercial_sources import resolve_commercial_source, download_commercial_source
         import math
@@ -234,6 +256,20 @@ def dispatch(a):
                 raise ValueError("다운로드하려면 양수 --max-download-gib와 --output을 지정하세요.")
         elif a.output is not None or a.metadata_only:
             raise ValueError("--output에 다운로드하려면 최대 용량 --max-download-gib도 지정하세요.")
+        if a.whole_archive and a.source != "fma_full":
+            raise ValueError("--whole-archive is only for the explicit FMA full ZIP")
+        selective_fma = a.source == "fma_full" and not a.whole_archive and not a.metadata_only and a.parts != ["metadata"]
+        if selective_fma:
+            if a.parts not in (None, ["full"]):
+                raise ValueError("FMA full uses full/metadata; do not mix archive variants")
+            if a.max_download_gib is None:
+                return {"source": "fma_full", "download_mode": "selective", "target_hours": a.hours,
+                    "next": "download-fma --output <folder> --hours <hours> --plan-only",
+                    "audio_download_started": False, "content_approved": False}
+            from .fma_download import download_fma
+            return download_fma(a.output, hours=a.hours, seed=a.seed,
+                max_download_bytes=int(a.max_download_gib * 1024**3),
+                license_policy=a.license_policy, exclusions=a.exclude)
         default_fma_part = {"fma_large": "large", "fma_full": "full"}.get(a.source)
         parts = a.parts or ([default_fma_part] if default_fma_part else [])
         if a.source in ("audioset_unbalanced", "yodas2"):

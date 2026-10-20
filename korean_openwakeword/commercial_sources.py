@@ -92,13 +92,17 @@ def commercial_negative_plan(generic_hours=7000, korean_hours=3000):
     components = []
     for key, pool, name, baseline, provider in specs:
         source = _PROVIDERS[provider]
-        components.append({"id": key, "pool": pool, "name": name,
+        component = {"id": key, "pool": pool, "name": name,
             "description": source["description"],
             "target_hours": baseline * (generic_hours if pool == "generic_negative" else korean_hours)
                             / (7000 if pool == "generic_negative" else 3000),
             "sources": [{"id": provider, "name": source["name"], "source_url": source["source_url"],
-                "availability": "public_source_requires_preparation", "description": source["description"]}]})
-    return {"id": "commercial_negative_v2", "version": 2,
+                "availability": "public_source_requires_preparation", "description": source["description"]}]}
+        if provider == "fma_full":
+            component["description"] = "필요한 원곡만 선택 다운로드 · 원본 MP3 보존"
+            component["sources"][0].update(download_mode="selective", description=component["description"])
+        components.append(component)
+    return {"id": "commercial_negative_v3", "version": 3,
         "generic_hours": generic_hours, "korean_hours": korean_hours,
         "total_hours": generic_hours + korean_hours, "components": components,
         "scope": "Preparation targets, not downloaded, verified, listened or admitted hours.",

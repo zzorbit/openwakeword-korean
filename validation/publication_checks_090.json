@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "version": "0.9.0",
+  "checked_at": "2026-10-20T21:24:17.725766+00:00",
+  "scope": "Selective original FMA MP3 transfer, frozen playlist, verified interrupted-song resume, portable CLI and web resources. Not acquisition or approval of all target hours.",
+  "python_tests": {
+    "passed": 303,
+    "skipped": 1,
+    "failures": 0,
+    "errors": 0,
+    "elapsed_seconds": 51.437,
+    "scope": "range_zip/fma_selection/fma_download/commercial_integration/commercial_sources/provider_index/studio_data/studio_steps/studio"
+  },
+  "studio_js_tests": 32,
+  "separate_wheel_install": {
+    "state": "passed",
+    "version": "0.9.0",
+    "loaded_from_separate_target": true,
+    "dependencies_reused_from_verification_environment": true,
+    "plan_id": "commercial_negative_v3",
+    "component_hours": [
+      3000.0,
+      3000.0,
+      1000.0,
+      3000.0
+    ],
+    "default_fma_selective": true,
+    "explicit_whole_archive_route_preserved": true,
+    "actual_original_reuse_verified": true,
+    "complete_receipt_unchanged": true,
+    "http_html_and_selective_js_verified": true,
+    "resource_sha256": {
+      "fma_download.py": "e4a42236476078b4039d16b456f6e68cb80426106e15c5942b79277d353ec3ba",
+      "fma_selection.py": "4d0d529f8e1fe7d6e90b03dd9b77a3d896b52245aabdbc28c3c1375ec1da2caf",
+      "range_zip.py": "23241dd06de7a11f96ac7d29ed1451cc22709d3fb48980447ad0921172b78edc",
+      "resources/studio.js": "8f38fa69a32ea91cc97be757dcde11096b127ad7d2653067fcb218fd633ff376"
+    },
+    "formal_training_started": false,
+    "full_1000h_download_started": false
+  },
+  "actual_original": {
+    "track_id": 84042,
+    "original_bytes": 5880088,
+    "audio_header_seconds": 144.9033560090703,
+    "sha256": "99af4c3873a672656f14c47ace9bf5fa92eca2ddfc68b3ac725d69684edc29ad",
+    "crc32_verified": true,
+    "audio_reencoded": false,
+    "source_indexed_with_provider_metadata": true,
+    "training_admitted": false
+  },
+  "actual_resume": {
+    "interrupted_after_committed_bytes": 1048576,
+    "original_compressed_bytes": 5357303,
+    "first_run_network_bytes": 9678053,
+    "resumed_run_network_bytes": 12938204,
+    "same_original_sha256": "99af4c3873a672656f14c47ace9bf5fa92eca2ddfc68b3ac725d69684edc29ad",
+    "crc32_verified": true,
+    "audio_reencoded": false
+  },
+  "completed_track_reuse": {
+    "verified": true,
+    "complete_receipt_unchanged": true,
+    "audio_payload_requested_again": false,
+    "source_directory_rechecked": true
+  },
+  "actual_1000h_plan": {
+    "selected_tracks": 13333,
+    "selected_provider_hours": 1000.0672222222222,
+    "main_song_payload_bytes": 115973598577,
+    "main_song_payload_gib": 108.00883041415364,
+    "reserve_tracks": 648,
+    "reserve_payload_bytes": 5718028993,
+    "maximum_main_and_reserve_with_header_allowance_bytes": 122607886386,
+    "audio_download_started": false
+  },
+  "live_browser_verified": true,
+  "verification_server_stopped": true,
+  "batch_changed": false,
+  "smaller_presets_changed": false,
+  "old_project_or_completed_receipts_rewritten": false,
+  "formal_training_started": false,
+  "full_1000h_acquisition_completed": false,
+  "full_10000h_acquisition_completed": false,
+  "content_admitted": false,
+  "Final_accessed": false,
+  "whole_archive_sha1_verified": false,
+  "code_resource_sha256": {
+    "README.md": "4d41a3f15e3d7e4185b6e8df83dfeacfcc4233cabafe3f426c347d95d5a76917",
+    "plan.md": "1867a69f1cddcf748bb7fa6be7203c436013bf796af4ed6b2dafd4368c8ff68e",
+    "CHANGELOG.md": "e8bda944bffae316273dda8577c649380a1a1f40e7c806d2ec82a6331dc67cbc",
+    "pyproject.toml": "b12af502d7bba3b309e4b12236eb11e0d27ac624e7228fa345e507b90699674f",
+    "docs/DATASETS.md": "07abdb1d179ec64102ebfbc7499e27fb4e41c8e4ad28f6ab30d85d657ea9d514",
+    "docs/LIBRARY_GUIDE.md": "ad85a03ab16361627d175f1deb1c30bd76cb651943b56e626552fa0e6063108c",
+    "docs/WEB_GUIDE.md": "a371622ab083ca26177babda251191a803c0ac665c83887dd844062e9ec8729d",
+    "korean_openwakeword/__init__.py": "9b45a0b5dfb91c20c92fd890bf1d40ea9f60bf85beca2454ba4f18257a888b9f",
+    "korean_openwakeword/cli.py": "83c0a9b58a1a75c391c61c214973ea6a5b032bf819d45e490a666aeae03c0d8c",
+    "korean_openwakeword/commercial_sources.py": "7f52d803bd455b9025353b91d34da4ca39c8476754d858a2744ab3b826b81172",
+    "korean_openwakeword/fma_download.py": "e4a42236476078b4039d16b456f6e68cb80426106e15c5942b79277d353ec3ba",
+    "korean_openwakeword/fma_selection.py": "4d0d529f8e1fe7d6e90b03dd9b77a3d896b52245aabdbc28c3c1375ec1da2caf",
+    "korean_openwakeword/range_zip.py": "23241dd06de7a11f96ac7d29ed1451cc22709d3fb48980447ad0921172b78edc",
+    "korean_openwakeword/resources/studio.js": "8f38fa69a32ea91cc97be757dcde11096b127ad7d2653067fcb218fd633ff376",
+    "tests/check_studio_ui.cjs": "95e04bfcc9b8a150fdf7a4bb527f79c9c8deaf726696fe8b079b1c7abbc53aff",
+    "tests/test_korean_library_commercial_integration.py": "abb596e9e4bc8cdb04d431655f9331014de73f83b3aa7485333e5c16ceb04c7e",
+    "tests/test_korean_library_commercial_sources.py": "d427222bf6389be15c0cac15d73d6d8a160db67f941253d683e4145b2c1daf77",
+    "tests/test_korean_library_fma_download.py": "4d24ef66a3556755f3ae7aa52e0b59eedc3a56e158b8ab424e609341010679f9",
+    "tests/test_korean_library_fma_selection.py": "c43d068f8673e2ea63a0c33fd85182f135bd815622cbcf6308080e8ab02b7082",
+    "tests/test_korean_library_range_zip.py": "4b2f417b13a0950b2308188d01c9dd860527aaed4e59bd164d02a0abe98038f4",
+    "docs/VALIDATION.md": "6f2c87ffa39d07b8e4b7eabc86c8426d186c90c20f206ce5d510d6bccff0b87b"
+  },
+  "wheel_sha256": "16eab776d1858bb7996a71a686156c4675ff3ab1726ab846c4e578d96f62566f",
+  "limitations": [
+    "Song CRC32 and local SHA256 verify selected originals; they do not verify the publisher whole-archive SHA1.",
+    "Metadata hours are used for deterministic selection. Download completion requires actual audio-header hours and may use fixed reserves.",
+    "Default allow-derivatives retains declared NC/SA terms and is not blanket commercial permission.",
+    "Known evaluation aliases are excluded; unresolved cross-corpus identities and acoustic duplicates still need checking before admission.",
+    "The complete 1,000h corpus and complete 10,000h source plan were not downloaded or admitted."
+  ]
+}

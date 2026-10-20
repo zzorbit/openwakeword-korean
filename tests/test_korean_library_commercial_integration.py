@@ -18,7 +18,7 @@ def test_studio_api_exposes_the_same_new_plan_as_cli_and_preserves_smaller_prese
     assert production["training_negative_plan"] == plan
     assert (production["generic_hours"], production["korean_hours"]) == (7000, 3000)
     assert sum(row["target_hours"] for row in plan["components"]) == 10000
-    assert plan["id"] == "commercial_negative_v2" and plan["version"] == 2
+    assert plan["id"] == "commercial_negative_v3" and plan["version"] == 3
     assert [row["target_hours"] for row in plan["components"]] == [3000, 3000, 1000, 3000]
     assert [row["sources"][0]["id"] for row in plan["components"]] == ["audioset_unbalanced", "mls", "fma_full", "yodas2"]
     assert (recipes["check"]["generic_hours"], recipes["check"]["korean_hours"]) == (2000, 1)
@@ -97,7 +97,8 @@ def test_fma_cli_selects_the_requested_original_variant_without_a_download(monke
         return {"kind": "preview", "content_approved": False}
     monkeypatch.setattr(sources, "resolve_commercial_source", resolve)
     monkeypatch.setattr(sources, "download_commercial_source", lambda *a, **k: pytest.fail("preview downloaded audio"))
-    result = dispatch(parser().parse_args(["download-source", "--source", source_id]))
+    result = dispatch(parser().parse_args(["download-source", "--source", source_id,
+        *(["--whole-archive"] if source_id == "fma_full" else [])]))
     assert captured == {"source_id": source_id, "selection": {"parts": [expected_part]}}
     assert not result["content_approved"]
 
@@ -115,8 +116,38 @@ def test_fma_full_cli_uses_real_download_route_with_the_explicit_budget(monkeypa
     monkeypatch.setattr(sources, "resolve_commercial_source", resolve)
     monkeypatch.setattr(sources, "download_commercial_source", download)
     result = dispatch(parser().parse_args(["download-source", "--source", "fma_full", "--parts", "full",
-        "--output", str(tmp_path), "--max-download-gib", "900"]))
+        "--whole-archive", "--output", str(tmp_path), "--max-download-gib", "900"]))
     assert result["state"] == "downloaded" and not result["content_approved"]
+
+
+def test_fma_full_cli_defaults_to_selected_tracks_not_the_whole_archive(monkeypatch, tmp_path):
+    from korean_openwakeword import commercial_sources, fma_download
+    monkeypatch.setattr(commercial_sources, "resolve_commercial_source", lambda *a, **k: pytest.fail("whole archive resolver called"))
+    seen = {}
+    def download(output, **kwargs):
+        seen.update(output=output, **kwargs)
+        return {"mode": "selective_original_mp3", "content_approved": False}
+    monkeypatch.setattr(fma_download, "download_fma", download)
+    preview = dispatch(parser().parse_args(["download-source", "--source", "fma_full"]))
+    assert preview["download_mode"] == "selective" and not seen
+    result = dispatch(parser().parse_args(["download-source", "--source", "fma_full", "--output", str(tmp_path),
+        "--max-download-gib", "150"]))
+    assert seen["max_download_bytes"] == 150 * 1024**3 and seen["hours"] == 1000
+    assert result["mode"] == "selective_original_mp3"
+
+
+def test_selective_fma_cli_preserves_plan_only_and_policy_choices(monkeypatch, tmp_path):
+    from korean_openwakeword import fma_download
+    captured = {}
+    def download(output, **kwargs):
+        captured.update(output=output, **kwargs)
+        return {"state": "planned", "audio_download_started": False}
+    monkeypatch.setattr(fma_download, "download_fma", download)
+    result = dispatch(parser().parse_args(["download-fma", "--output", str(tmp_path), "--hours", "0.1",
+        "--plan-only", "--license-policy", "commercial-only"]))
+    assert captured["hours"] == .1 and captured["plan_only"] is True
+    assert captured["max_download_bytes"] is None and captured["license_policy"] == "commercial-only"
+    assert result["audio_download_started"] is False
 
 
 def test_fma_full_preparation_counts_actual_long_track_and_preserves_original(tmp_path):

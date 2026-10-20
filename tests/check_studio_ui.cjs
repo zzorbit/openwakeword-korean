@@ -139,6 +139,14 @@ function commercialRecipeV2() {
   return recipe;
 }
 
+function commercialRecipeV3() {
+  const recipe = commercialRecipeV2();
+  recipe.training_negative_plan.id = "commercial_negative_v3";
+  recipe.training_negative_plan.version = 3;
+  recipe.training_negative_plan.components.find(item => item.id === "music").sources[0].download_mode = "selective";
+  return recipe;
+}
+
 (async () => {
   await test("budget request preserves selected values and does not invent overrides", () => {
     const { helpers } = browser({ noBoot: true });
@@ -330,6 +338,29 @@ function commercialRecipeV2() {
     training = b.elements.get("source-preview").children[0];
     assert.deepEqual(sourceEntries(material(training, "일반 비호출 자료")).map(row => withClass(row, "source-quantity")[0].textContent), ["준비 목표 3,000시간", "준비 목표 3,000시간", "준비 목표 1,000시간"]);
     assert.equal(withClass(material(training, "한국어 비호출 자료"), "material-amount")[0].textContent, "3,000시간");
+  });
+  await test("commercial v3 describes selective original MP3 downloads without changing the data budget", async () => {
+    const b = browser({ recipeList: [commercialRecipeV3()] }); await flush();
+    const preview = b.elements.get("source-preview"), training = preview.children[0];
+    assertMaterialDisclosures(preview);
+    const generic = material(training, "일반 비호출 자료"), korean = material(training, "한국어 비호출 자료");
+    assert.deepEqual(sourceEntries(generic).map(row => withClass(row, "source-name")[0].textContent), ["AudioSet", "MLS", "FMA full"]);
+    assert.deepEqual(sourceEntries(generic).map(row => withClass(row, "source-quantity")[0].textContent), ["준비 목표 3,000시간", "준비 목표 3,000시간", "준비 목표 1,000시간"]);
+    assert.match(textOf(sourceEntries(generic)[2]), /필요한 원곡만 선택 다운로드.*원본 MP3 보존/);
+    for (const text of ["879", "900 GiB", "준비 완료", "원곡 길이의 음악 음원"]) assert.equal(textOf(sourceEntries(generic)[2]).includes(text), false, text);
+    assert.equal(withClass(korean, "material-amount")[0].textContent, "3,000시간");
+    assert.equal(withClass(material(training, "소음 증강 음원"), "material-amount")[0].textContent, "재사용");
+  });
+  await test("commercial v3 keeps selective download wording while custom hours are changed and restored", async () => {
+    const b = browser({ recipeList: [commercialRecipeV3()] }); await flush();
+    b.elements.get("adv-generic").value = "3500"; b.elements.get("adv-generic").handlers.input();
+    const music = sourceEntries(material(b.elements.get("source-preview").children[0], "일반 비호출 자료"))[2];
+    assert.equal(withClass(music, "source-quantity")[0].textContent, "준비 목표 500시간");
+    assert.match(textOf(music), /선택 다운로드.*원본 MP3 보존/);
+    b.elements.get("adv-generic").value = ""; b.elements.get("adv-generic").handlers.input();
+    const restored = sourceEntries(material(b.elements.get("source-preview").children[0], "일반 비호출 자료"))[2];
+    assert.equal(withClass(restored, "source-quantity")[0].textContent, "준비 목표 1,000시간");
+    assert.match(textOf(restored), /선택 다운로드.*원본 MP3 보존/);
   });
   await test("common evaluation groups each real source once and keeps archive bytes with quantity", async () => {
     const b = browser({ recipeList: [commonRecipe()] }); await flush();
