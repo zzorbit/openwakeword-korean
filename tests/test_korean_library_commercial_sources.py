@@ -65,12 +65,14 @@ def test_plan_scales_pools_without_changing_batch_or_supply():
     assert plan["generic_hours"] == 7000
     assert plan["korean_hours"] == 3000
     assert plan["total_hours"] == 10000
+    assert (plan["id"], plan["version"]) == ("commercial_negative_v2", 2)
     assert sum(c["target_hours"] for c in plan["components"] if c["pool"] == "generic_negative") == 7000
-    assert [c["target_hours"] for c in plan["components"]] == [3200, 2600, 900, 300, 3000]
+    assert [c["target_hours"] for c in plan["components"]] == [3000, 3000, 1000, 3000]
+    assert [c["sources"][0]["id"] for c in plan["components"]] == ["audioset_unbalanced", "mls", "fma_full", "yodas2"]
     assert plan["content_approved"] is False
     assert plan["batch_changed"] is False
     scaled = sources.commercial_negative_plan(3500, 1)
-    assert [c["target_hours"] for c in scaled["components"]] == [1600, 1300, 450, 150, 1]
+    assert [c["target_hours"] for c in scaled["components"]] == [1500, 1500, 500, 1]
 
 
 @pytest.mark.parametrize("bad", [0, -1, float("nan"), float("inf"), True, "7000"])
@@ -81,7 +83,7 @@ def test_invalid_hour_budgets_rejected(bad):
 
 def test_catalog_has_public_origins_but_no_preparation_claim():
     catalog = sources.commercial_source_catalog()
-    assert {s["id"] for s in catalog["sources"]} == {"audioset_unbalanced", "mls", "yodas2", "fma_large"}
+    assert {s["id"] for s in catalog["sources"]} == {"audioset_unbalanced", "mls", "yodas2", "fma_large", "fma_full"}
     assert all(s["availability"] == "public_source_requires_preparation" for s in catalog["sources"])
     assert not any(s["content_approved"] for s in catalog["sources"])
 
@@ -150,6 +152,7 @@ def test_publisher_inventory_rejects_repeated_paths():
     ("mls", {"language": "english", "parts": ["1_2_0"]}),
     ("mls", {"language": "german", "parts": ["../../elsewhere"]}),
     ("fma_large", {"parts": ["all"]}),
+    ("fma_large", {"parts": ["full"]}), ("fma_full", {"parts": ["large"]}),
 ])
 def test_source_resolution_needs_valid_explicit_parts(source_id, selection):
     with pytest.raises(ValueError):
@@ -162,6 +165,45 @@ def test_fma_keeps_original_publisher_sha1_and_large_archive_size():
     assert record["assets"][0]["sha1"] == "497109f4dd721066b5ce5e5f250ec604dc78939e"
     assert record["metadata_assets"][0]["filename"] == "fma_metadata.zip"
     assert sources._validate_resolution(record)
+
+
+def test_full_route_pins_original_archive_without_substituting_the_large_subset():
+    record = sources.resolve_commercial_source("fma_full", selection={"parts": ["full"]})
+    asset = record["assets"][0]
+    assert asset["path"] == "fma_full.zip"
+    assert asset["source_url"] == "https://os.unil.cloud.switch.ch/fma/fma_full.zip"
+    assert asset["size_bytes"] == 943642698636
+    assert asset["sha1"] == "0f0ace23fbe9ba30ecb7e95f763e435ea802b8ab"
+    assert asset["checksum_algorithm"] == "sha1"
+    assert record["metadata_assets"][0]["filename"] == "fma_metadata.zip"
+    assert record["total_bytes"] == 944001111077
+    assert record["admitted_hours"] == record["prepared_hours"] == 0
+    assert sources._validate_resolution(record)
+
+
+@pytest.mark.parametrize("mutation", ["variant", "missing_audio", "missing_metadata", "checksum_algorithm"])
+def test_fma_full_resolution_rejects_variant_and_file_coverage_tampering(mutation):
+    record = sources.resolve_commercial_source("fma_full", selection={"parts": ["full"]})
+    if mutation == "variant":
+        record["selection"]["parts"] = ["large"]
+    elif mutation == "missing_audio":
+        record["assets"] = []
+    elif mutation == "missing_metadata":
+        record["metadata_assets"] = []
+    else:
+        record["assets"][0].update(checksum_algorithm="sha256", sha256="0" * 64)
+    record["total_bytes"] = sum(a["size_bytes"] for a in record["assets"] + record["metadata_assets"])
+    reseal(record)
+    with pytest.raises(ValueError, match="FMA"):
+        sources._validate_resolution(record)
+
+
+def test_full_archive_small_budget_is_refused_before_network_or_output_creation(tmp_path):
+    record = sources.resolve_commercial_source("fma_full", selection={"parts": ["full"]})
+    destination = tmp_path / "not_created"
+    with pytest.raises(ValueError, match="exceed max_download_bytes"):
+        sources.download_commercial_source(record, destination, max_download_bytes=2 * 1024**3)
+    assert not destination.exists()
 
 
 def test_download_rejects_budget_before_any_network_or_directory_creation(tmp_path):
@@ -250,10 +292,12 @@ class BytesResponse:
         pass
 
 
-def test_original_fma_sha1_downloader_returns_receipts_and_resumes(monkeypatch, tmp_path):
+@pytest.mark.parametrize("source_id,part", [("fma_large", "large"), ("fma_full", "full")])
+def test_original_fma_sha1_downloader_returns_receipts_and_resumes(monkeypatch, tmp_path, source_id, part):
     content = b"audio"
     sha1 = hashlib.sha1(content).hexdigest()
-    monkeypatch.setattr(sources, "_FMA_FILES", {"fma_large.zip": (5, sha1), "fma_metadata.zip": (5, sha1)})
+    filename = source_id + ".zip"
+    monkeypatch.setattr(sources, "_FMA_FILES", {filename: (5, sha1), "fma_metadata.zip": (5, sha1)})
     from korean_openwakeword import studio_data
     calls = []
 
@@ -265,13 +309,13 @@ def test_original_fma_sha1_downloader_returns_receipts_and_resumes(monkeypatch, 
         return BytesResponse(content)
 
     monkeypatch.setattr(studio_data.requests, "get", get)
-    (tmp_path / "fma_large.zip.part").write_bytes(b"au")
-    record = sources.resolve_commercial_source("fma_large", selection={"parts": ["large"]})
+    (tmp_path / (filename + ".part")).write_bytes(b"au")
+    record = sources.resolve_commercial_source(source_id, selection={"parts": [part]})
     receipt = sources.download_commercial_source(record, tmp_path, max_download_bytes=10)
     assert receipt["bytes"] == 10
     assert len(receipt["files"]) == 2
     assert all(row["verified_upstream_algorithm"] == "sha1" for row in receipt["files"])
-    assert (tmp_path / "fma_large.zip").read_bytes() == content
+    assert (tmp_path / filename).read_bytes() == content
     assert receipt["content_approved"] is False
     assert calls[0]["Range"] == "bytes=2-"
     assert (tmp_path / "download_receipt.json").exists()
@@ -279,6 +323,27 @@ def test_original_fma_sha1_downloader_returns_receipts_and_resumes(monkeypatch, 
     assert sources.download_commercial_source(record, tmp_path, max_download_bytes=10) == receipt
     assert (tmp_path / "download_receipt.json").read_bytes() == original_receipt
     assert len(calls) == 2
+
+
+def test_fma_full_metadata_only_never_requests_the_near_terabyte_archive(monkeypatch, tmp_path):
+    from korean_openwakeword import studio_data
+    content = b"audio"
+    sha1 = hashlib.sha1(content).hexdigest()
+    monkeypatch.setattr(sources, "_FMA_FILES", {"fma_full.zip": (943642698636, "0f0ace23fbe9ba30ecb7e95f763e435ea802b8ab"),
+                                              "fma_metadata.zip": (5, sha1)})
+    calls = []
+    def get(url, **kwargs):
+        calls.append(url)
+        assert url.endswith("/fma_metadata.zip")
+        return BytesResponse(content)
+    monkeypatch.setattr(studio_data.requests, "get", get)
+    record = sources.resolve_commercial_source("fma_full", selection={"parts": ["full"]})
+    receipt = sources.download_commercial_source(record, tmp_path, max_download_bytes=5, metadata_only=True)
+    assert len(calls) == 1
+    assert receipt["bytes"] == 5
+    assert receipt["state"] == "metadata_downloaded" and receipt["downloaded_audio_files"] == 0
+    assert not (tmp_path / "fma_full.zip").exists()
+    assert not receipt["content_approved"]
 
 
 def test_git_blob_readme_checksum_is_verified(monkeypatch, tmp_path):

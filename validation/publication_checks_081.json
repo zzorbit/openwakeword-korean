@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "version": "0.8.1",
+  "checked_at": "2026-10-20T20:35:12.995626+00:00",
+  "scope": "Changed source plan, FMA full download route, long-track preparation, portable CLI and browser regressions. Not a full corpus download or new performance evaluation.",
+  "python_tests": {
+    "passed": 173,
+    "skipped": 1,
+    "failures": 0,
+    "errors": 0,
+    "elapsed_seconds": 38.124,
+    "scope": "commercial_sources/commercial_integration/studio_data/provider_index/studio_steps/source_waveform_index"
+  },
+  "studio_js_tests": 30,
+  "separate_wheel_install": {
+    "state": "passed",
+    "version": "0.8.1",
+    "plan_id": "commercial_negative_v2",
+    "component_hours": [
+      3000.0,
+      3000.0,
+      1000.0,
+      3000.0
+    ],
+    "batch": {
+      "generic_negative": 768,
+      "korean_negative": 256,
+      "positive": 100,
+      "hard_negative": 100
+    },
+    "fma_full_archive_bytes": 943642698636,
+    "fma_full_sha1": "0f0ace23fbe9ba30ecb7e95f763e435ea802b8ab",
+    "old_fma_large_route_verified": true,
+    "training_started": false,
+    "audio_download_started": false,
+    "dependencies_reused_from_verification_environment": true
+  },
+  "source_plan": {
+    "id": "commercial_negative_v2",
+    "generic_hours": 7000,
+    "korean_hours": 3000,
+    "components": [
+      {
+        "source": "audioset_unbalanced",
+        "pool": "generic_negative",
+        "target_hours": 3000
+      },
+      {
+        "source": "mls",
+        "pool": "generic_negative",
+        "target_hours": 3000
+      },
+      {
+        "source": "fma_full",
+        "pool": "generic_negative",
+        "target_hours": 1000
+      },
+      {
+        "source": "yodas2",
+        "pool": "korean_negative",
+        "target_hours": 3000
+      }
+    ]
+  },
+  "fma_full_live_probe": {
+    "url": "https://os.unil.cloud.switch.ch/fma/fma_full.zip",
+    "head_status": 200,
+    "range_status": 206,
+    "probe_bytes": 65536,
+    "zip_local_header": "504b0304",
+    "probe_sha256": "dd90f8a0c3ae725840a657bc70c822213c654b157385491b87563ddbabbd45d4",
+    "full_archive_downloaded": false,
+    "full_archive_hash_verified": false,
+    "checksum_source": "https://raw.githubusercontent.com/mdeff/fma/607364e7d8263f890d23c838802f29637600611f/README.md",
+    "official_sha1": "0f0ace23fbe9ba30ecb7e95f763e435ea802b8ab",
+    "official_readme_sha1_present": true
+  },
+  "fma_full_archive_bytes": 943642698636,
+  "fma_full_with_metadata_bytes": 944001111077,
+  "long_track_functional_fixture_seconds": 45,
+  "live_browser_verified": true,
+  "verification_server_stopped": true,
+  "batch_changed": false,
+  "smaller_presets_changed": false,
+  "old_project_or_completed_receipts_rewritten": false,
+  "formal_training_started": false,
+  "full_10000h_acquisition_completed": false,
+  "content_admitted": false,
+  "Final_accessed": false,
+  "code_resource_sha256": {
+    "korean_openwakeword/__init__.py": "4da8967db5a7e4a48e312e7d703f4cb794577fe49ccdeff80df6ebb21272cafe",
+    "korean_openwakeword/cli.py": "4a4080cbaf7f94baa07b1a08f76a0a9674bff03d53e00c8f0474ce898b1caf61",
+    "korean_openwakeword/commercial_sources.py": "0e3291206f5d317495cc5e6d0cb4f4a0edff0fe4dde464dbb801be1afdcccb22",
+    "korean_openwakeword/resources/studio.js": "e13a616a922dfcc626465e151cb7d66dd961a3451f93e8eb41832eeeab76b63c"
+  },
+  "limitations": [
+    "The official archive is downloaded in full; the 1,000h music quota is selected during preparation, not by this archive downloader.",
+    "Original audio usage conditions and cross-corpus overlap still need checking before corpus admission.",
+    "The public-source route is not automatic selection and acquisition of all 10,000 hours."
+  ]
+}

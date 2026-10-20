@@ -123,6 +123,22 @@ function commercialRecipe() {
   });
 }
 
+function commercialRecipeV2() {
+  const recipe = commercialRecipe();
+  recipe.training_negative_plan.id = "commercial_negative_v2";
+  recipe.training_negative_plan.version = 2;
+  recipe.training_negative_plan.components = recipe.training_negative_plan.components.filter(item => item.id !== "web_speech");
+  const [mixed, multilingual, music] = recipe.training_negative_plan.components;
+  mixed.target_hours = 3000;
+  multilingual.target_hours = 3000;
+  music.target_hours = 1000;
+  music.name = "음악·보컬·연주곡";
+  music.description = "원곡 길이의 음악 음원";
+  music.sources[0].id = "fma_full";
+  music.sources[0].name = "FMA full";
+  return recipe;
+}
+
 (async () => {
   await test("budget request preserves selected values and does not invent overrides", () => {
     const { helpers } = browser({ noBoot: true });
@@ -287,6 +303,33 @@ function commercialRecipe() {
     const restored = b.elements.get("source-preview").children[0];
     assert.equal(withClass(material(restored, "일반 비호출 자료"), "material-amount")[0].textContent, "7,000시간");
     assert.equal(withClass(material(restored, "한국어 비호출 자료"), "material-amount")[0].textContent, "3,000시간");
+  });
+  await test("commercial v2 shows AudioSet, MLS and full-length FMA without foreign web speech or legacy feature hours", async () => {
+    const b = browser({ recipeList: [commercialRecipeV2()] }); await flush();
+    const preview = b.elements.get("source-preview"), training = preview.children[0];
+    assertMaterialDisclosures(preview);
+    const generic = material(training, "일반 비호출 자료"), korean = material(training, "한국어 비호출 자료");
+    assert.equal(withClass(generic, "material-amount")[0].textContent, "7,000시간");
+    assert.equal(withClass(korean, "material-amount")[0].textContent, "3,000시간");
+    assert.deepEqual(sourceEntries(generic).map(row => withClass(row, "source-name")[0].textContent), ["AudioSet", "MLS", "FMA full"]);
+    assert.deepEqual(sourceEntries(generic).map(row => withClass(row, "source-quantity")[0].textContent), ["준비 목표 3,000시간", "준비 목표 3,000시간", "준비 목표 1,000시간"]);
+    assert.deepEqual(sourceEntries(korean).map(row => withClass(row, "source-name")[0].textContent), ["YODAS2 한국어"]);
+    assert.match(textOf(sourceEntries(generic)[2]), /원곡 길이의 음악 음원/);
+    for (const excluded of ["YODAS2", "900시간", "300시간", "30초", "openWakeWord", "준비 완료"]) assert.equal(textOf(generic).includes(excluded), false, excluded);
+    assert.equal(withClass(material(training, "소음 증강 음원"), "material-amount")[0].textContent, "재사용");
+    assert.equal(withClass(material(preview.children[1], "소음 증강 음원"), "material-amount")[0].textContent, "30시간");
+  });
+  await test("commercial v2 scales its three Generic sources independently of the Korean pool", async () => {
+    const b = browser({ recipeList: [commercialRecipeV2()] }); await flush();
+    b.elements.get("adv-generic").value = "3500"; b.elements.get("adv-generic").handlers.input();
+    b.elements.get("adv-korean").value = "1500"; b.elements.get("adv-korean").handlers.input();
+    let training = b.elements.get("source-preview").children[0];
+    assert.deepEqual(sourceEntries(material(training, "일반 비호출 자료")).map(row => withClass(row, "source-quantity")[0].textContent), ["준비 목표 1,500시간", "준비 목표 1,500시간", "준비 목표 500시간"]);
+    assert.equal(withClass(sourceEntries(material(training, "한국어 비호출 자료"))[0], "source-quantity")[0].textContent, "준비 목표 1,500시간");
+    for (const id of ["adv-generic", "adv-korean"]) { b.elements.get(id).value = ""; b.elements.get(id).handlers.input(); }
+    training = b.elements.get("source-preview").children[0];
+    assert.deepEqual(sourceEntries(material(training, "일반 비호출 자료")).map(row => withClass(row, "source-quantity")[0].textContent), ["준비 목표 3,000시간", "준비 목표 3,000시간", "준비 목표 1,000시간"]);
+    assert.equal(withClass(material(training, "한국어 비호출 자료"), "material-amount")[0].textContent, "3,000시간");
   });
   await test("common evaluation groups each real source once and keeps archive bytes with quantity", async () => {
     const b = browser({ recipeList: [commonRecipe()] }); await flush();

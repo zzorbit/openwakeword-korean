@@ -15,7 +15,7 @@
 | 용도 | 공개 자료 | 참고할 점 |
 | --- | --- | --- |
 | 동작 확인용·시험 모델용의 일반 비호출 특징 | [openWakeWord features](https://huggingface.co/datasets/davidscripka/openwakeword_features) | 제공자가 미리 계산한 숫자 배열. 명목 약 2,000시간이며 원본 WAV와 행별 출처는 없음 |
-| 상용 모델용의 일반 비호출 원본 | AudioSet·MLS·YODAS2·FMA | 아래 구성으로 원본 7,000시간을 준비. 실제 확보량과 부족분은 별도 확인 |
+| 상용 모델용의 일반 비호출 원본 | AudioSet·MLS·FMA full | 아래 구성으로 원본 7,000시간을 준비. 실제 확보량과 부족분은 별도 확인 |
 | 한국어 비호출 음성 | [YODAS2](https://huggingface.co/datasets/espnet/yodas2), [YODAS](https://huggingface.co/datasets/espnet/yodas), [Zeroth Korean](https://www.openslr.org/40/) | 한국어 음성 콘텐츠. 작은 단계는 Zeroth로 시작하며 상용 목표는 YODAS2 중심 |
 | 환경음·음악 | [DNS-Challenge](https://github.com/microsoft/DNS-Challenge), [MUSAN](https://www.openslr.org/17/) | 종류가 다양한 자료를 선택. 음악과 환경소음 시간은 따로 기록 |
 | 잔향(RIR) | [RIRS_NOISES](https://www.openslr.org/28/) | 공간의 울림을 재현. 잔향 파일 길이를 환경소음 시간으로 계산하지 않음 |
@@ -29,10 +29,9 @@
 
 | 풀 | 자료 종류 | 목표 분량 | 실제 확보할 출처 |
 | --- | --- | ---: | --- |
-| 일반 | 생활·환경 혼합 음원 | 3,200시간 | [AudioSet 고정 공개 원본 배포](https://huggingface.co/datasets/agkphysics/AudioSet/tree/5a2fa42a1506470d275a47ff8e1fdac5b364e6ef/data)의 unbalanced 자료 |
-| 일반 | 다국어 낭독·일반 발화 | 2,600시간 | [MLS 공식 원본](https://www.openslr.org/94/), [공식 Hugging Face 배포](https://huggingface.co/datasets/facebook/multilingual_librispeech) |
-| 일반 | 다른 언어 웹 콘텐츠의 연속 음성 | 900시간 | [YODAS2](https://huggingface.co/datasets/espnet/yodas2)의 영어·프랑스어·독일어 등 |
-| 일반 | 음악·보컬·연주곡 | 300시간 | [FMA large](https://github.com/mdeff/fma)의 30초 음원 중 이용조건을 확인한 곡 |
+| 일반 | 생활·환경·말소리 혼합 음원 | 3,000시간 | [AudioSet 고정 공개 원본 배포](https://huggingface.co/datasets/agkphysics/AudioSet/tree/5a2fa42a1506470d275a47ff8e1fdac5b364e6ef/data)의 unbalanced 자료 |
+| 일반 | 다국어 낭독 음성 | 3,000시간 | [MLS 공식 원본](https://www.openslr.org/94/), [공식 Hugging Face 배포](https://huggingface.co/datasets/facebook/multilingual_librispeech) |
+| 일반 | 음악·보컬·연주곡 | 1,000시간 | [FMA full](https://github.com/mdeff/fma)의 전체 길이 원곡 중 이용조건을 확인한 음원 |
 | 한국어 | 한국어 웹 콘텐츠 음성 | 3,000시간 | [YODAS2](https://huggingface.co/datasets/espnet/yodas2)의 `ko000`·`ko100` 등 한국어 자료 |
 | **합계** | | **10,000시간** | **일반 7,000시간·한국어 3,000시간** |
 
@@ -40,10 +39,10 @@
 
 70:30은 일반·한국어 **풀의 준비 시간 비율**입니다. AudioSet 혼합 음원에는 언어가 확인되지 않은 말소리도 포함되므로, 전체 말소리의 정확한 한국어 비율을 뜻하지는 않습니다.
 
-- **AudioSet:** Google의 목록·라벨과 공개 원본 배포를 함께 확인합니다. 위 고정 버전은 별도 배포자가 제공하는 원본 음원이므로 개별 원출처 조건도 보존합니다. 동작 확인용의 `bal_train09.tar` 하나와 상용 3,200시간을 혼동하지 않습니다.
-- **MLS:** 여러 언어의 원본 낭독·발화를 고르게 선택합니다. 공식 Hugging Face의 화자·책별 묶음을 선택할 수 있으며, 선택 시간과 실제 다운로드 용량은 구분합니다.
-- **YODAS2:** 영상 단위의 연속 오디오와 제공 전사를 사용합니다. 한국어와 다른 언어는 서로 다른 풀로 배정합니다. 대화·해설·강의·낭독의 내용 다양성을 확인하되 메타데이터에 없는 장르별 시간이나 화자 정보를 만들어 넣지 않습니다. YODAS와 YODAS2는 같은 자료의 파생본이므로 고유 시간을 중복 집계하지 않습니다.
-- **FMA:** large의 106,574개·30초 음원은 약 888시간의 후보입니다. 곡별 이용조건과 중복을 확인한 뒤 300시간 충족 여부를 판단합니다. small에서 선택한 1시간을 복제해 상용 목표를 채우지 않습니다.
+- **AudioSet:** 실제 오디오를 내려받아 비호출 학습과 소음 증강에 재사용합니다. Google의 목록·라벨과 공개 원본 배포를 함께 확인하고 개별 원출처 조건도 보존합니다. 동작 확인용의 `bal_train09.tar` 하나와 상용 3,000시간을 혼동하지 않습니다.
+- **MLS:** 여러 언어·화자·책의 낭독 음성을 고르게 선택합니다. 공식 Hugging Face의 화자·책별 묶음을 선택할 수 있으며, 선택 시간과 실제 다운로드 용량은 구분합니다.
+- **FMA full:** 전체 길이의 원곡을 제공하며 후보 분량은 1,000시간을 넘습니다. 곡별 이용조건·중복·실제 파형 길이를 확인해 1,000시간을 선택합니다. FMA large의 30초 음원 약 888시간이나 small의 1시간을 반복해 목표를 채우지 않습니다.
+- **YODAS2:** 한국어 비호출 3,000시간에 사용합니다. 대화·해설·강의·낭독의 내용 다양성을 확인하되 메타데이터에 없는 장르별 시간이나 화자 정보를 만들어 넣지 않습니다. YODAS와 YODAS2는 같은 자료의 파생본이므로 고유 시간을 중복 집계하지 않습니다.
 
 AIHub의 대화·방송 음원은 구조화된 자료를 추가하고 싶을 때 선택할 수 있지만 계정과 데이터별 다운로드 승인이 필요합니다. 기본 공개 다운로드가 끝난 것으로 표시하지 않습니다. 기존 openWakeWord 2,000시간 특징도 원본 대응표가 없어 새 일반 원본과 단순 합산하지 않습니다.
 
@@ -65,7 +64,7 @@ koww negative-plan
 koww download-source --source yodas2 --subset ko000 --parts 0
 koww download-source --source mls --language german --parts 10087_10388_000
 koww download-source --source audioset_unbalanced --parts 0
-koww download-source --source fma_large --parts large
+koww download-source --source fma_full --parts full
 ```
 
 확인한 묶음을 받으려면 저장 폴더와 허용할 최대 GiB를 지정합니다. 아래 예시는 YODAS2 한국어 첫 묶음만 선택하며, 3,000시간 전체를 받는 명령이 아닙니다.
@@ -74,11 +73,19 @@ koww download-source --source fma_large --parts large
 koww download-source --source yodas2 --subset ko000 --parts 0 --output shared/sources/yodas2_ko000_0 --max-download-gib 2
 ```
 
+FMA full은 전체 원곡 압축파일을 받습니다. 아래 명령은 음악 1,000시간만 골라 받는 명령이 아니라 **원본 전체와 메타데이터를 다운로드**하는 명령입니다. 원본 ZIP은 **943,642,698,636 bytes(약 879GiB)**이며 메타데이터와 압축 해제·변환 공간은 별도입니다.
+
+```powershell
+koww download-source --source fma_full --parts full --output shared/sources/fma_full --max-download-gib 900
+```
+
 원본 없이 설명·시간·제공 전사만 확인하려면 같은 명령에 `--metadata-only`를 추가합니다. 파일 크기와 제공자 해시를 검사하고 중단된 다운로드를 재개합니다. 다운로드 receipt의 준비·승인 시간은 0이며, 실제 시간은 별도 전처리와 검수 후 집계합니다. 용량 상한이나 여유 공간이 부족하면 받기 전에 중단합니다.
 
-MLS·YODAS2는 원본 묶음을 푼 폴더와 `download_receipt.json`을 웹 화면의 **추가 음원 준비**에 지정할 수 있습니다. 자료 형식은 각각 **MLS 원본**, **YODAS2 원본**을 선택합니다. CLI에서는 `index-data --dataset mls` 또는 `--dataset yodas2`의 `--metadata`에 같은 receipt를 지정합니다. 제공자 전사·시간·원본 ID를 사용하며 새 STT를 실행하지 않습니다.
+MLS·YODAS2는 원본 묶음을 푼 폴더와 `download_receipt.json`을 웹 화면의 **추가 음원 준비**에 지정할 수 있습니다. 자료 형식은 각각 **MLS 원본 음원**, **YODAS2 원본 음원**을 선택합니다. CLI에서는 `index-data --dataset mls` 또는 `--dataset yodas2`의 `--metadata`에 같은 receipt를 지정합니다. 제공자 전사·시간·원본 ID를 사용하며 새 STT를 실행하지 않습니다.
 
-이 기능은 선택한 원본의 다운로드·준비 경로입니다. 자료 목표 10,000시간 전체의 자동 확보·내용 승인까지 완료됐다는 뜻은 아닙니다. 특히 AudioSet 혼합 3,200시간은 현재 원본 배포 크기를 기준으로 약 1.6TB의 저장 공간이 필요할 수 있으므로, 준비할 원본·변환본·특징을 보존할 공간을 먼저 확인하세요.
+FMA full은 원본 ZIP과 메타데이터 ZIP을 각각 푼 뒤 웹의 **추가 음원 준비**에서 **FMA 음악**을 선택합니다. 원본 폴더와 제공자의 `fma_metadata/tracks.csv`를 지정하고 **일반 비호출 1,000시간**으로 준비합니다. CLI는 `index-data --dataset fma`와 같은 CSV를 사용합니다. 기존 small·large와 full에 같은 곡이 있으면 동일한 원본 ID로 관리해 시간을 중복 합산하지 않습니다.
+
+이 기능은 선택한 원본의 다운로드·준비 경로입니다. 자료 목표 10,000시간 전체의 자동 확보·내용 승인까지 완료됐다는 뜻은 아닙니다. AudioSet·FMA full의 원본뿐 아니라 압축 해제본·변환본·특징도 보존할 저장 공간을 먼저 확인하세요.
 
 ## 공식 자동 학습 예제의 증강 재료
 

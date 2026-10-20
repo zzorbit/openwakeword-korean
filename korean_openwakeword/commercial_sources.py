@@ -45,12 +45,20 @@ _PROVIDERS = {
         "license": "Per-track Creative Commons; metadata/code license is not the audio license",
         "description": "다양한 장르의 30초 음악; 곡별 이용조건 확인 후 선별",
     },
+    "fma_full": {
+        "name": "Free Music Archive full", "revision": "607364e7d8263f890d23c838802f29637600611f",
+        "source_url": "https://github.com/mdeff/fma",
+        "license": "Per-track Creative Commons; metadata/code license is not the audio license",
+        "description": "음악·보컬·연주곡의 전체 길이 원음; 곡별 이용조건 확인 후 선별",
+    },
 }
 _LANGUAGES = {"dutch", "french", "german", "italian", "polish", "portuguese", "spanish"}
 _FMA_FILES = {
     "fma_large.zip": (100306112191, "497109f4dd721066b5ce5e5f250ec604dc78939e"),
+    "fma_full.zip": (943642698636, "0f0ace23fbe9ba30ecb7e95f763e435ea802b8ab"),
     "fma_metadata.zip": (358412441, "f0df49ffe5f2a6008d7dc83c6915b31835dfe733"),
 }
+_FMA_VARIANTS = {"fma_large": ("large", "fma_large.zip"), "fma_full": ("full", "fma_full.zip")}
 
 
 def _hours(value):
@@ -76,10 +84,9 @@ def commercial_negative_plan(generic_hours=7000, korean_hours=3000):
     """Scale each pool independently, leaving the selected training batch unchanged."""
     generic_hours, korean_hours = _hours(generic_hours), _hours(korean_hours)
     specs = (
-        ("mixed", "generic_negative", "생활·환경 혼합 음원", 3200, "audioset_unbalanced"),
-        ("multilingual_read", "generic_negative", "다국어 낭독 음성", 2600, "mls"),
-        ("other_web_speech", "generic_negative", "다른 언어의 웹 음성", 900, "yodas2"),
-        ("music", "generic_negative", "음악·보컬·연주곡", 300, "fma_large"),
+        ("mixed", "generic_negative", "생활·환경·말소리 혼합 음원", 3000, "audioset_unbalanced"),
+        ("multilingual_read", "generic_negative", "다국어 낭독 음성", 3000, "mls"),
+        ("music", "generic_negative", "음악·보컬·연주곡", 1000, "fma_full"),
         ("korean_web_speech", "korean_negative", "한국어 음성", 3000, "yodas2"),
     )
     components = []
@@ -91,7 +98,7 @@ def commercial_negative_plan(generic_hours=7000, korean_hours=3000):
                             / (7000 if pool == "generic_negative" else 3000),
             "sources": [{"id": provider, "name": source["name"], "source_url": source["source_url"],
                 "availability": "public_source_requires_preparation", "description": source["description"]}]})
-    return {"id": "commercial_negative_v1", "version": 1,
+    return {"id": "commercial_negative_v2", "version": 2,
         "generic_hours": generic_hours, "korean_hours": korean_hours,
         "total_hours": generic_hours + korean_hours, "components": components,
         "scope": "Preparation targets, not downloaded, verified, listened or admitted hours.",
@@ -174,7 +181,7 @@ def resolve_commercial_source(source_id, *, selection, session=None):
 
     AudioSet: {"parts": [0]}; MLS: {"language": "german",
     "parts": ["10087_10388_000"]}; YODAS2: {"subset": "ko000",
-    "parts": [0]}; FMA: {"parts": ["large"]} or ["metadata"].
+    "parts": [0]}; FMA large/full: {"parts": ["large"]}/["full"], or ["metadata"].
     """
     if source_id not in _PROVIDERS or not isinstance(selection, dict):
         raise ValueError("Choose a known commercial source and explicit selection")
@@ -212,9 +219,10 @@ def resolve_commercial_source(source_id, *, selection, session=None):
             metadata.extend(_pick(_tree(provider, base + "/" + directory, session),
                                  [f"{base}/{directory}/{p:08d}.{extension}" for p in parts], provider))
     else:
-        if any(p not in ("large", "metadata") for p in parts):
-            raise ValueError("FMA parts must be large and/or metadata")
-        for name in (["fma_large.zip"] if "large" in parts else []):
+        variant, archive = _FMA_VARIANTS[source_id]
+        if any(p not in (variant, "metadata") for p in parts):
+            raise ValueError(f"FMA {variant} parts must be {variant} and/or metadata")
+        for name in ([archive] if variant in parts else []):
             size, checksum = _FMA_FILES[name]
             assets.append({"id": name, "path": name, "filename": name,
                 "source_url": "https://os.unil.cloud.switch.ch/fma/" + name,
@@ -226,7 +234,7 @@ def resolve_commercial_source(source_id, *, selection, session=None):
             "source_url": "https://os.unil.cloud.switch.ch/fma/" + name,
             "size_bytes": size, "checksum_algorithm": "sha1", "sha1": checksum,
             "upstream_revision": provider["revision"], "license": provider["license"]})
-    if source_id != "fma_large":
+    if source_id not in _FMA_VARIANTS:
         metadata += _pick(_tree(provider, "", session), ["README.md"], provider)
     result = {"schema_version": 1, "kind": "commercial_source_resolution_v1", "source_id": source_id,
         "provider": dict(provider), "selection": selection, "assets": assets, "metadata_assets": metadata,
@@ -249,14 +257,25 @@ def _validate_resolution(record):
     all_assets = record.get("assets", []) + record.get("metadata_assets", [])
     if not all_assets or len({a.get("path") for a in all_assets}) != len(all_assets):
         raise ValueError("Resolved files must be nonempty and unique")
+    if record["source_id"] in _FMA_VARIANTS:
+        variant, archive = _FMA_VARIANTS[record["source_id"]]
+        parts = record.get("selection", {}).get("parts")
+        if (not isinstance(parts, list) or not parts or len(set(map(str, parts))) != len(parts)
+                or any(p not in (variant, "metadata") for p in parts)):
+            raise ValueError("FMA selection does not match its pinned variant")
+        expected_audio = [archive] if variant in parts else []
+        if ([a.get("path") for a in record.get("assets", [])] != expected_audio
+                or [a.get("path") for a in record.get("metadata_assets", [])] != ["fma_metadata.zip"]):
+            raise ValueError("FMA source file coverage does not match the selected variant")
     for asset in all_assets:
         path = _safe_relative(asset.get("path"))
-        expected_url = ("https://os.unil.cloud.switch.ch/fma/" + path if record["source_id"] == "fma_large"
+        expected_url = ("https://os.unil.cloud.switch.ch/fma/" + path if record["source_id"] in _FMA_VARIANTS
                         else _resolve_url(provider, path))
         if asset.get("source_url") != expected_url or asset.get("upstream_revision") != provider["revision"]:
             raise ValueError("Asset URL or revision escapes its pinned provider")
-        if record["source_id"] == "fma_large":
-            if path not in _FMA_FILES or (asset.get("size_bytes"), asset.get("sha1")) != _FMA_FILES[path]:
+        if record["source_id"] in _FMA_VARIANTS:
+            if (path not in _FMA_FILES or (asset.get("size_bytes"), asset.get("sha1")) != _FMA_FILES[path]
+                    or asset.get("checksum_algorithm") != "sha1"):
                 raise ValueError("FMA asset differs from original publisher pins")
         size = asset.get("size_bytes")
         if isinstance(size, bool) or not isinstance(size, int) or not 0 < size <= 1024**4:

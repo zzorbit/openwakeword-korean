@@ -182,7 +182,8 @@
     const suppliedGeneric = recipe.automatic_target_hours?.generic_nominal ?? asset("generic")?.hours ?? 0;
     const suppliedKorean = recipe.automatic_target_hours?.korean_train ?? asset("zeroth")?.hours ?? 0;
     const negativePlan = recipe.training_negative_plan;
-    const hasNegativePlan = negativePlan?.id === "commercial_negative_v1" && negativePlan.version === 1 && Array.isArray(negativePlan.components);
+    const hasNegativePlan = ((negativePlan?.id === "commercial_negative_v1" && negativePlan.version === 1)
+      || (negativePlan?.id === "commercial_negative_v2" && negativePlan.version === 2)) && Array.isArray(negativePlan.components);
     const plannedSources = (pool, target) => {
       const components = negativePlan.components.filter(item => item.pool === pool && Number.isFinite(item.target_hours) && item.target_hours > 0);
       const total = components.reduce((sum, item) => sum + item.target_hours, 0);

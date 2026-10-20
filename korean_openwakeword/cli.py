@@ -90,7 +90,7 @@ def parser():
     a.add_argument("--generic-hours", type=float, default=7000)
     a.add_argument("--korean-hours", type=float, default=3000)
     a = sub.add_parser("download-source", help="상용 비호출의 원본 묶음 선택·용량 확인·다운로드 (검수·시간 집계 별도)")
-    a.add_argument("--source", choices=("audioset_unbalanced", "mls", "yodas2", "fma_large"), required=True)
+    a.add_argument("--source", choices=("audioset_unbalanced", "mls", "yodas2", "fma_large", "fma_full"), required=True)
     a.add_argument("--parts", nargs="+", help="AudioSet/YODAS 묶음 번호 또는 MLS 화자·책 묶음 ID")
     a.add_argument("--language", help="MLS의 제공자 언어명: german, french, spanish 등")
     a.add_argument("--subset", help="YODAS2의 제공자 분할명: ko000, en000 등")
@@ -234,7 +234,8 @@ def dispatch(a):
                 raise ValueError("다운로드하려면 양수 --max-download-gib와 --output을 지정하세요.")
         elif a.output is not None or a.metadata_only:
             raise ValueError("--output에 다운로드하려면 최대 용량 --max-download-gib도 지정하세요.")
-        parts = a.parts or (["large"] if a.source == "fma_large" else [])
+        default_fma_part = {"fma_large": "large", "fma_full": "full"}.get(a.source)
+        parts = a.parts or ([default_fma_part] if default_fma_part else [])
         if a.source in ("audioset_unbalanced", "yodas2"):
             try:
                 parts = [int(value) for value in parts]
