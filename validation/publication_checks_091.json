@@ -1,0 +1,183 @@
+{
+  "schema_version": 1,
+  "version": "0.9.1",
+  "checked_at": "2026-10-20T23:41:47.126127+00:00",
+  "scope": "Small FMA metadata-extraction limit fix and accurate documentation of actual automatic material supply. Not new full-scale corpus automation.",
+  "python_tests": {
+    "passed": 28,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "elapsed_seconds": 373.594,
+    "scope": "test_korean_library_studio_data.py including check/test/full tiny fixtures; real publisher CSV byte-size boundary without creating a 260MB fixture"
+  },
+  "cli_check": {
+    "version": "0.9.1",
+    "generic_negative_feature_command_parsed": true,
+    "scale_values_unchanged": true
+  },
+  "fma_metadata": {
+    "official_tracks_csv_bytes": 260414445,
+    "previous_max_bytes": 209715200,
+    "fixed_max_bytes": 536870912,
+    "members": [
+      "fma_metadata/tracks.csv"
+    ],
+    "other_feature_tables_selected": false
+  },
+  "source_header_probes": [
+    {
+      "id": "generic",
+      "url": "https://huggingface.co/datasets/davidscripka/openwakeword_features/resolve/985bf1b47e7f19c07741af82bfe32d5a9dc56096/openwakeword_features_ACAV100M_2000_hrs_16bit.npy",
+      "expected_bytes": 17280000128,
+      "scope": "Headers only; no payload/hash/admission verification",
+      "status": 200,
+      "content_length": "17280000128",
+      "seconds": 1.672000000020489
+    },
+    {
+      "id": "zeroth",
+      "url": "https://www.openslr.org/resources/40/zeroth_korean.tar.gz",
+      "expected_bytes": 10339720618,
+      "scope": "Headers only; no payload/hash/admission verification",
+      "status": 200,
+      "content_length": "10339720618",
+      "seconds": 1.3130000000237487
+    },
+    {
+      "id": "audioset",
+      "url": "https://huggingface.co/datasets/agkphysics/AudioSet/resolve/5a2fa42a1506470d275a47ff8e1fdac5b364e6ef/data/bal_train09.tar",
+      "expected_bytes": 968540160,
+      "scope": "Headers only; no payload/hash/admission verification",
+      "status": 200,
+      "content_length": "968540160",
+      "seconds": 1.6410000000032596
+    },
+    {
+      "id": "audioset_segments",
+      "url": "https://huggingface.co/datasets/agkphysics/AudioSet/resolve/5a2fa42a1506470d275a47ff8e1fdac5b364e6ef/data/balanced_train_segments.csv",
+      "expected_bytes": 1211931,
+      "scope": "Headers only; no payload/hash/admission verification",
+      "status": 200,
+      "content_length": "1211931",
+      "seconds": 1.6570000000065193
+    },
+    {
+      "id": "audioset_ontology",
+      "url": "https://huggingface.co/datasets/agkphysics/AudioSet/resolve/5a2fa42a1506470d275a47ff8e1fdac5b364e6ef/data/ontology.json",
+      "expected_bytes": 342780,
+      "scope": "Headers only; no payload/hash/admission verification",
+      "status": 200,
+      "content_length": null,
+      "seconds": 0.6560000000172295
+    },
+    {
+      "id": "fma",
+      "url": "https://os.unil.cloud.switch.ch/fma/fma_small.zip",
+      "expected_bytes": 7679594875,
+      "scope": "Headers only; no payload/hash/admission verification",
+      "status": 200,
+      "content_length": "7679594875",
+      "seconds": 1.6089999999967404
+    },
+    {
+      "id": "fma_metadata",
+      "url": "https://os.unil.cloud.switch.ch/fma/fma_metadata.zip",
+      "expected_bytes": 358412441,
+      "scope": "Headers only; no payload/hash/admission verification",
+      "status": 200,
+      "content_length": "358412441",
+      "seconds": 1.625
+    },
+    {
+      "id": "musan",
+      "url": "https://www.openslr.org/resources/17/musan.tar.gz",
+      "expected_bytes": 11086114085,
+      "scope": "Headers only; no payload/hash/admission verification",
+      "status": 200,
+      "content_length": "11086114085",
+      "seconds": 1.452999999979511
+    },
+    {
+      "id": "seoul",
+      "url": "https://www.openslr.org/resources/113/sound.tgz",
+      "expected_bytes": 2589900202,
+      "scope": "Headers only; no payload/hash/admission verification",
+      "status": 200,
+      "content_length": "2589900202",
+      "seconds": 1.375
+    },
+    {
+      "id": "fsd_eval",
+      "url": "https://zenodo.org/records/4060432/files/FSD50K.eval_audio.z01?download=1",
+      "expected_bytes": 3221225472,
+      "scope": "Headers only; no payload/hash/admission verification",
+      "status": 200,
+      "content_length": "3221225472",
+      "seconds": 1.375
+    },
+    {
+      "id": "fsd_eval_zip",
+      "url": "https://zenodo.org/records/4060432/files/FSD50K.eval_audio.zip?download=1",
+      "expected_bytes": 3037675767,
+      "scope": "Headers only; no payload/hash/admission verification",
+      "status": 200,
+      "content_length": "3037675767",
+      "seconds": 1.4540000000270084
+    },
+    {
+      "id": "fsd_metadata",
+      "url": "https://zenodo.org/records/4060432/files/FSD50K.metadata.zip?download=1",
+      "expected_bytes": 6700838,
+      "scope": "Headers only; no payload/hash/admission verification",
+      "status": 200,
+      "content_length": "6700838",
+      "seconds": 1.4060000000172295
+    },
+    {
+      "id": "fsd_ground_truth",
+      "url": "https://zenodo.org/records/4060432/files/FSD50K.ground_truth.zip?download=1",
+      "expected_bytes": 334701,
+      "scope": "Headers only; no payload/hash/admission verification",
+      "status": 200,
+      "content_length": "334701",
+      "seconds": 1.3599999999860302
+    },
+    {
+      "id": "rirs_noises.zip",
+      "url": "https://www.openslr.org/resources/28/rirs_noises.zip",
+      "expected_bytes": 1311166223,
+      "scope": "Headers only; no payload/hash/admission verification",
+      "status": 200,
+      "content_length": "1311166223",
+      "seconds": 1.297000000020489
+    }
+  ],
+  "web_automatic_training_negative_hours": {
+    "generic_publisher_nominal_features": 2000,
+    "korean_train_waveforms": 1
+  },
+  "full_scale_web_source_auto_supply_completed": false,
+  "common_30h_full_preparation_completed": false,
+  "common_112000_full_scoring_completed": false,
+  "independent_Final_auto_acquisition_completed": false,
+  "formal_training_started": false,
+  "new_separate_wheel_install_performed": false,
+  "installation_evidence_reused_from": "publication_checks_090.json",
+  "code_document_sha256": {
+    "README.md": "ca7ef05d99fe76cc759d1f10db01735f430cc0bafd141f32ae2a5efd470d587b",
+    "plan.md": "bc8fcaca2cd4086692d3f2cc199e76ef2aca4ac9e3f38bb1726b93445ea64ca0",
+    "CHANGELOG.md": "0ff3019f461753254d46ccdc8d392d69fcd4fb40c3205a8bf827dfa7db605827",
+    "pyproject.toml": "7a6b7a1ebbef25e55c4a7693be6d5c90719cfde2df2ba76d3962f9c796e1c550",
+    "korean_openwakeword/__init__.py": "4efbf40937fac74e346c8d9fc6ef350b63df414b220a9d739031506da4908f76",
+    "korean_openwakeword/studio_data.py": "6472478b1090d3cfb52dcbfaecdae3a017ad315a4b1c4fc3553afb7fedef4769",
+    "tests/test_korean_library_studio_data.py": "71844d48f79d9bd87596b7f734a2b6f891237e8eb580cc6d3eabc66d0492ac32",
+    "docs/VALIDATION.md": "091b45ca956bd2958bf8666e4a7590a1c6eb909e7cb123f38ab14065acdfeef2"
+  },
+  "limitations": [
+    "HTTP 200 headers are not whole-file download or checksum verification.",
+    "Source-specific CLI downloads and target display do not constitute automatic web supply to all selected hour targets.",
+    "User accepted YODAS2 as a source strategy; no assertion that all files were individually heard or admitted.",
+    "No complete corpus download, new model training or Final unlock was performed."
+  ]
+}

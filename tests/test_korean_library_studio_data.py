@@ -239,7 +239,7 @@ def test_admission_reuses_existing_review_pipeline_and_keeps_reserve_out_of_trai
     assert module.admit_materials(project, prepared, {queue["id"]: str(answers)})["connection"]["resumed"]
 
 
-@pytest.mark.parametrize("preset", ["check", "full"])
+@pytest.mark.parametrize("preset", ["check", "test", "full"])
 def test_full_preparation_recipe_uses_real_qc_and_never_auto_approves(tmp_path, monkeypatch, preset):
     """Tiny explicit fixture archives exercise all real provider/prep adapters."""
     project = create_project(tmp_path / "bora", "보라야", "bora")
@@ -288,7 +288,21 @@ def test_full_preparation_recipe_uses_real_qc_and_never_auto_approves(tmp_path, 
         # no claim is made that a WAV header is an actual FMA MP3.
         tracks.append((f"fma_small/000/{n:06d}.mp3", wav_bytes(n + 100, 1600)))
     paths["fma_metadata"] = source / "fma_metadata.zip"
-    _zip(paths["fma_metadata"], [("fma_metadata/tracks.csv", csv_stream.getvalue())])
+    _zip(paths["fma_metadata"], [("fma_metadata/tracks.csv", csv_stream.getvalue()),
+        ("fma_metadata/features.csv", "unselected feature table"),
+        ("fma_metadata/echonest.csv", "unselected feature table")])
+    real_extract = module.extract_archive
+    metadata_extractions = []
+    def extract(archive, output, *, members=None, max_bytes=40 * 1024**3):
+        if Path(archive) == paths["fma_metadata"]:
+            # Regression for the real pinned tracks.csv (260,414,445 bytes):
+            # a 200 MiB budget rejects it before writing. The guard remains
+            # bounded, and no unrelated large metadata tables are selected.
+            assert 260_414_445 <= max_bytes <= 512 * 1024**2
+            assert members == ["fma_metadata/tracks.csv"]
+            metadata_extractions.append(Path(output))
+        return real_extract(archive, output, members=members, max_bytes=max_bytes)
+    monkeypatch.setattr(module, "extract_archive", extract)
     paths["fma"] = source / "fma_small.zip"
     _zip(paths["fma"], tracks)
     for key in ("dns_fan", "dns_door", "electronic_validation"):
@@ -334,6 +348,12 @@ def test_full_preparation_recipe_uses_real_qc_and_never_auto_approves(tmp_path, 
         assert set(requested_assets) == {"generic", "zeroth"}
         assert not (workspace / "shared/audioset").exists()
         assert not (workspace / "shared/fma_1h").exists()
+        assert not metadata_extractions
+    else:
+        assert len(metadata_extractions) == 1
+        assert (workspace / "shared/fma_metadata/fma_metadata/tracks.csv").is_file()
+        assert not (workspace / "shared/fma_metadata/fma_metadata/features.csv").exists()
+        assert not (workspace / "shared/fma_metadata/fma_metadata/echonest.csv").exists()
     assert digest(stale_fan) == old_fan_hash
     assert legacy_index.read_text(encoding="utf-8") == legacy_content
     assert result["human_listened_count"] == 0 and result["training_admitted"] is False

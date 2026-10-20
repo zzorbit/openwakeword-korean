@@ -465,7 +465,10 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
     extract_archive(paths["zeroth"], shared / "zeroth")
     if recipe["noise_material_policy"] == "official_example":
         extract_archive(paths["audioset"], shared / "audioset")
-        extract_archive(paths["fma_metadata"], shared / "fma_metadata", members=["fma_metadata/tracks.csv"], max_bytes=200 * 1024**2)
+        # The publisher's tracks.csv expands to 260,414,445 bytes. Keep a
+        # bounded allowance for that one CSV, excluding the much larger
+        # feature tables that also live in the metadata archive.
+        extract_archive(paths["fma_metadata"], shared / "fma_metadata", members=["fma_metadata/tracks.csv"], max_bytes=512 * 1024**2)
         tracks = shared / "fma_metadata/fma_metadata/tracks.csv"
         _fma_selection(tracks, paths["fma"], shared / "fma_1h")
     mit = _fetch_mit(shared, progress)
