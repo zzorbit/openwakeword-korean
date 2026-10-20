@@ -266,6 +266,38 @@ function commonRecipe(overrides = {}) {
     const rir = material(group, "잔향 자료"); assert.match(textOf(rir), /271개/);
     assert.equal(withClass(rir, "file-size").length, 0);
   });
+  await test("commercial augmentation reuses Negative waveforms without new archives or invented hours", async () => {
+    const recipes = [
+      commonRecipe(),
+      commonRecipe({ id: "full", generic_hours: 7500, korean_hours: 2500, noise_material_policy: "reuse_negative_waveforms" }),
+      commonRecipe({ id: "trial", originals: 20000, rounds: 3 }),
+      commonRecipe({ id: "production", generic_hours: 7500, korean_hours: 2500 })
+    ];
+    const b = browser({ recipeList: recipes }); await flush();
+    const select = index => descendants(b.elements.get("presets").children[index]).find(node => node.tagName === "input").handlers.change();
+    for (const index of [0, 1, 2, 1, 3]) {
+      select(index);
+      const preview = b.elements.get("source-preview"), group = preview.children[0], noise = material(group, "소음 증강 음원");
+      assertMaterialDisclosures(preview);
+      assert.equal(materialRows(group).length, 6);
+      if (index === 1) {
+        assert.equal(withClass(noise, "material-amount")[0].textContent, "재사용");
+        assert.match(withClass(noise, "material-description")[0].textContent, /비호출 원본 음원 재사용/);
+        const rows = sourceEntries(noise);
+        assert.deepEqual(rows.map(row => withClass(row, "source-name")[0].textContent), ["일반 비호출 자료", "한국어 비호출 자료"]);
+        assert.deepEqual(rows.map(row => withClass(row, "source-quantity")[0].textContent), ["원본 재사용", "원본 재사용"]);
+        assert.equal(withClass(noise, "file-size").length, 0);
+        assert.equal(/AudioSet|FMA|시간|GB|MB/.test(textOf(noise)), false);
+        assert.equal(textOf(group).includes("provider_metadata"), false);
+      } else {
+        assert.equal(withClass(noise, "material-amount")[0].textContent, "3종");
+        assert.equal(sourceEntries(noise).length, 3);
+        assert.match(textOf(noise), /AudioSet/);
+        assert.match(textOf(noise), /FMA/);
+      }
+      assert.equal(withClass(material(preview.children[1], "소음 증강 음원"), "material-amount")[0].textContent, "30시간");
+    }
+  });
   await test("retired fan test clips stay hidden in legacy preview payloads", async () => {
     for (const collection of ["assets", "sources"]) {
       const recipe = commonRecipe();

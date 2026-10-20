@@ -29,9 +29,15 @@ def test_recipe_is_offline_pinned_and_reports_real_scale(monkeypatch, tmp_path):
     assert not plan["shortages"]
     assert plan["additional_download"]["license"].startswith("Unknown")
     for preset in ("check", "test", "full"):
-        assets = {asset["id"]: asset for asset in module.material_recipe(preset)["assets"]}
+        selected = module.material_recipe(preset)
+        assets = {asset["id"]: asset for asset in selected["assets"]}
         assert "dns_fan" not in assets
-        assert assets["audioset"]["sha256"] == "9ab88550e77c8289acf71d19ae3f254fadad16f3cea305ef08a16949a928acf9"
+        if preset == "full":
+            assert selected["noise_material_policy"] == "reuse_negative_waveforms"
+            assert set(assets) == {"generic", "zeroth"}
+        else:
+            assert selected["noise_material_policy"] == "official_example"
+            assert assets["audioset"]["sha256"] == "9ab88550e77c8289acf71d19ae3f254fadad16f3cea305ef08a16949a928acf9"
     with pytest.raises(ValueError):
         module.material_recipe("giant")
 
@@ -233,7 +239,8 @@ def test_admission_reuses_existing_review_pipeline_and_keeps_reserve_out_of_trai
     assert module.admit_materials(project, prepared, {queue["id"]: str(answers)})["connection"]["resumed"]
 
 
-def test_full_preparation_recipe_uses_real_qc_and_never_auto_approves(tmp_path, monkeypatch):
+@pytest.mark.parametrize("preset", ["check", "full"])
+def test_full_preparation_recipe_uses_real_qc_and_never_auto_approves(tmp_path, monkeypatch, preset):
     """Tiny explicit fixture archives exercise all real provider/prep adapters."""
     project = create_project(tmp_path / "bora", "보라야", "bora")
     # This legacy-corpus adapter fixture does not download new evaluation media;
@@ -317,10 +324,16 @@ def test_full_preparation_recipe_uses_real_qc_and_never_auto_approves(tmp_path, 
     legacy_content = '{"canonical_source_id":"freesound:100355"}\n'
     legacy_index.write_text(legacy_content, encoding="utf-8")
     old_fan_hash = digest(stale_fan)
-    result = module.prepare_materials(project, workspace)
-    assert len(result["review_queues"]) == 4
+    result = module.prepare_materials(project, workspace, preset=preset)
+    expected = {"zeroth", "mit_rir"} if preset == "full" else {"zeroth", "audioset", "fma", "mit_rir"}
+    assert len(result["review_queues"]) == len(expected)
     assert "dns_fan" not in requested_assets
-    assert {row["id"] for row in result["preparations"]} == {"zeroth", "audioset", "fma", "mit_rir"}
+    assert {row["id"] for row in result["preparations"]} == expected
+    assert result["noise_material_policy"] == ("reuse_negative_waveforms" if preset == "full" else "official_example")
+    if preset == "full":
+        assert set(requested_assets) == {"generic", "zeroth"}
+        assert not (workspace / "shared/audioset").exists()
+        assert not (workspace / "shared/fma_1h").exists()
     assert digest(stale_fan) == old_fan_hash
     assert legacy_index.read_text(encoding="utf-8") == legacy_content
     assert result["human_listened_count"] == 0 and result["training_admitted"] is False
@@ -335,7 +348,8 @@ def test_full_preparation_recipe_uses_real_qc_and_never_auto_approves(tmp_path, 
     assert all(not r["calls"] and r["kind"] == "negative" for r in read_rows(result["negative_validation_manifest"]["path"]))
 
 
-def _additional_fixture(tmp_path, project, name, count, hours):
+def _additional_fixture(tmp_path, project, name, count, hours, *, noise_material_policy=None,
+                        pool="generic_negative", category="environment", speech=False, language="not_applicable"):
     folder = tmp_path / name
     folder.mkdir()
     rows = []
@@ -344,14 +358,14 @@ def _additional_fixture(tmp_path, project, name, count, hours):
         seed = sum(name.encode()) * 100 + i
         sf.write(path, np.random.default_rng(seed).normal(0, .04, 32000), 16000, subtype="PCM_16")
         rows.append({"path": path.name, "dataset_id": name, "canonical_source_id": name + ":" + str(i),
-                     "category": "environment", "speech": False, "language": "not_applicable",
+                     "category": category, "speech": speech, "language": language,
                      "category_basis": "original provider fixture category", "source_url": "https://example.org/" + name,
                      "license": "fixture only"})
     metadata = tmp_path / (name + "_provider.jsonl")
     metadata.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
     return module.prepare_additional_materials(project, tmp_path / "workspace", {
-        "directory": str(folder), "dataset": "manifest", "pool": "generic_negative",
-        "hours": hours, "metadata": str(metadata)})
+        "directory": str(folder), "dataset": "manifest", "pool": pool,
+        "hours": hours, "metadata": str(metadata)}, noise_material_policy=noise_material_policy)
 
 
 def _additional_answers(project, result):
@@ -408,3 +422,73 @@ def test_additional_shortage_does_not_freeze_pools_and_raw_generic_preserves_old
     train = read_rows(root / config["manifests"]["generic_negative"])
     reserve = read_rows(result["negative_validation_manifest"]["path"])
     assert {r["canonical_source_id"] for r in train}.isdisjoint(r["canonical_source_id"] for r in reserve)
+
+
+def test_reused_raw_negative_sources_are_reviewed_for_both_pools_and_keep_reserves_separate(tmp_path):
+    policy = "reuse_negative_waveforms"
+    project = create_project(tmp_path / "word", "보라야", "bora", generic_hours=.002, korean_hours=.001)
+    prepared = {"review_queues": [], "noise_material_policy": policy}
+    answers = {}
+    for name, pool, category, speech, language in (
+            ("environment", "generic_negative", "environment", False, "not_applicable"),
+            ("music", "generic_negative", "music", False, "not_applicable"),
+            ("speech", "korean_negative", "competing_speech", True, "ko")):
+        result = _additional_fixture(tmp_path, project, name, 5, .001, noise_material_policy=policy,
+            pool=pool, category=category, speech=speech, language=language)
+        assert result["review_queue"]["pools"] == [pool, "noise"]
+        assert not result["training_admitted"] and result["human_listened_count"] == 0
+        prepared["review_queues"].append(result["review_queue"])
+        answers.update(_additional_answers(project, result))
+    connection = module.admit_materials(project, prepared, answers)
+    assert connection["state"] == "connected" and not connection["shortages"]
+    root, config = load_project(project)
+    noise = read_rows(root / config["manifests"]["noise"])
+    negatives = [row for pool in ("generic_negative", "korean_negative")
+                 for row in read_rows(root / config["manifests"][pool])]
+    assert {r["sha256"] for r in noise} == {r["sha256"] for r in negatives}
+    assert {r["category"] for r in noise} == {"environment", "music", "competing_speech"}
+    reserve = read_rows(connection["negative_validation_manifest"]["path"])
+    assert {r["canonical_source_id"] for r in noise}.isdisjoint(r["canonical_source_id"] for r in reserve)
+
+
+def test_reuse_does_not_relabel_old_single_pool_receipt_or_freeze_partial_materials(tmp_path):
+    from korean_openwakeword.preparation import apply_prepared_review
+    project = create_project(tmp_path / "word", "보라야", "bora", generic_hours=.001)
+    old = _additional_fixture(tmp_path, project, "legacy", 5, .001)
+    answers = _additional_answers(project, old)
+    admission = apply_prepared_review(project, preparation=old["preparation"],
+        answers=answers[old["review_queue"]["id"]], pools=["generic_negative"], connect=False)
+    before = Path(admission["receipt"]["path"]).read_bytes()
+    result = module.admit_materials(project, {"review_queues": [], "noise_material_policy": "reuse_negative_waveforms"},
+        admissions=[admission["receipt"]])
+    assert result["state"] == "awaiting_additional_materials"
+    assert any("기존 단일 용도 승인" in reason for reason in result["shortages"])
+    assert Path(admission["receipt"]["path"]).read_bytes() == before
+    assert not read_rows(project.parent / read_json(project)["manifests"]["noise"])
+
+
+def test_reuse_requires_existing_noise_categories_before_connecting(tmp_path):
+    project = create_project(tmp_path / "word", "보라야", "bora", generic_hours=.001)
+    source = _additional_fixture(tmp_path, project, "environment", 5, .001,
+                                 noise_material_policy="reuse_negative_waveforms")
+    result = module.admit_materials(project, {"review_queues": [source["review_queue"]],
+        "noise_material_policy": "reuse_negative_waveforms"}, _additional_answers(project, source))
+    assert result["state"] == "awaiting_additional_materials"
+    assert any("music" in reason and "competing_speech" in reason for reason in result["shortages"])
+    assert not read_rows(project.parent / read_json(project)["manifests"]["noise"])
+
+
+def test_reuse_rejects_separate_noise_source_and_feature_only_input(tmp_path):
+    project = create_project(tmp_path / "word", "보라야", "bora")
+    folder = tmp_path / "features"
+    folder.mkdir()
+    np.save(folder / "generic.npy", np.zeros((2, 16, 96), dtype=np.float32))
+    with pytest.raises(ValueError, match="not a separate noise source"):
+        module.prepare_additional_materials(project, tmp_path, {"pool": "noise", "directory": str(folder)},
+            noise_material_policy="reuse_negative_waveforms")
+    metadata = tmp_path / "provider.jsonl"
+    metadata.write_text("", encoding="utf-8")
+    with pytest.raises(ValueError):
+        module.prepare_additional_materials(project, tmp_path, {"pool": "generic_negative", "directory": str(folder),
+            "dataset": "manifest", "metadata": str(metadata), "hours": 1}, noise_material_policy="reuse_negative_waveforms")
+    assert not read_rows(project.parent / read_json(project)["manifests"]["noise"])

@@ -42,6 +42,7 @@ def test_presets_are_explicit_not_changes_to_global_defaults(name, counts):
     settings = steps.preset_settings(name)
     assert tuple(settings[k] for k in ("originals", "rounds", "updates", "generic_hours", "korean_hours")) == counts
     assert settings["batch"] == BATCH and settings["final_locked"]
+    assert settings["noise_material_policy"] == ("reuse_negative_waveforms" if name == "production" else "official_example")
     settings["batch"]["positive"] = -1
     assert steps.preset_settings(name)["batch"]["positive"] == 100
 
@@ -479,7 +480,8 @@ def test_resolved_material_discard_requires_actual_hash_bound_admission(project)
     assert steps._saved_review(root, descriptor, context) is False
 
 
-def test_additional_raw_sources_are_prepared_once_then_reviewed_and_admitted_in_worker(project, monkeypatch):
+@pytest.mark.parametrize("reuse", [False, True])
+def test_additional_raw_sources_are_prepared_once_then_reviewed_and_admitted_in_worker(project, monkeypatch, reuse):
     from korean_openwakeword import studio_data
     root = project.parent
     row = fake_audio(root, "additional_original")
@@ -489,10 +491,10 @@ def test_additional_raw_sources_are_prepared_once_then_reviewed_and_admitted_in_
     preparation = root / ".studio/additional_preparation.json"
     write_json(preparation, {"fixture": "actual provider/preparation API covered in studio_data tests"})
     descriptor = {"id": "extra", "kind": "content", "queue": str(queue), "pool_manifest": str(sources),
-                  "preparation": str(preparation), "pools": ["korean_negative"]}
+                  "preparation": str(preparation), "pools": ["korean_negative", "noise"] if reuse else ["korean_negative"]}
     calls = []
-    def prepare(*args):
-        calls.append(args)
+    def prepare(*args, **kwargs):
+        calls.append((args, kwargs))
         return {"review_queue": descriptor, "preparation": {"path": str(preparation), "sha256": digest(preparation)}}
     admitted = []
     def admit(path, prepared, answers, **kwargs):
@@ -503,9 +505,18 @@ def test_additional_raw_sources_are_prepared_once_then_reviewed_and_admitted_in_
     monkeypatch.setattr(studio_data, "ensure_evaluation_materials", lambda p, w, prepared: prepared, raising=False)
     context = {"results": {"data_download": {"result": {"review_queues": [], "shortages": ["needs Korean"]}}},
                "inputs": {"additional_sources": [{"directory": str(root / "raw"), "dataset": "zeroth", "pool": "korean_negative", "hours": 1}]}}
+    old_cache = root / ".studio" / ("additional_" + identity(context["inputs"]["additional_sources"][0]) + ".json")
+    if reuse:
+        context["results"]["data_download"]["result"]["noise_material_policy"] = "reuse_negative_waveforms"
+        write_json(old_cache, {"source": context["inputs"]["additional_sources"][0],
+                              "result": {"review_queue": {**descriptor, "pools": ["korean_negative"]}}})
+        before = old_cache.read_bytes()
     pending = run(project, "data_connect", context)
     assert pending["state"] == "waiting_review" and pending["reviews"][0]["id"] == "extra"
     assert len(calls) == 1 and not admitted
+    assert calls[0][1] == ({"noise_material_policy": "reuse_negative_waveforms"} if reuse else {})
+    if reuse:
+        assert old_cache.read_bytes() == before
     answer = root / ".studio/additional_actual_answers.json"
     write_json(answer, {"kind": "content_listening_review", "wakeword": "보라야", "saved_at": "test-human-save",
                "source_scope": "Human dispositions entered through the local review screen",
@@ -518,6 +529,24 @@ def test_additional_raw_sources_are_prepared_once_then_reviewed_and_admitted_in_
     assert result["state"] == "completed" and len(calls) == 1
     assert admitted[0][0]["review_queues"] == [descriptor]
     assert admitted[0][1] == {str(preparation): binding}
+
+
+@pytest.mark.parametrize("saved_policy", [None, "reuse_negative_waveforms"])
+def test_download_worker_preserves_legacy_policy_and_binds_new_reuse_policy(project, monkeypatch, saved_policy):
+    from korean_openwakeword import studio_data
+    calls = []
+    def prepare(path, workspace, **kwargs):
+        calls.append(kwargs)
+        return {"review_queues": [], "noise_material_policy": kwargs["noise_material_policy"]}
+    monkeypatch.setattr(studio_data, "prepare_materials", prepare)
+    settings = steps.preset_settings("check")
+    if saved_policy is None:
+        settings.pop("noise_material_policy")
+    else:
+        settings["noise_material_policy"] = saved_policy
+    result = run(project, "data_download", settings=settings)
+    assert result["state"] == "completed"
+    assert calls[0]["noise_material_policy"] == (saved_policy or "official_example")
 
 
 def test_hard_worker_excludes_whole_discarded_phrase_and_resume_keeps_exact_manifest(project, monkeypatch):

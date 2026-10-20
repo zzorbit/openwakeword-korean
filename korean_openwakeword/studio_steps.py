@@ -20,13 +20,13 @@ from .project import BATCH, load_project
 _PRESETS = {
     "check": {"title": "동작 확인용", "originals": 1000, "rounds": 1, "updates": 10000,
               "generic_hours": 2000, "korean_hours": 1, "train_references": 4,
-              "hard_originals": 100, "functional_check_only": True},
+              "hard_originals": 100, "functional_check_only": True, "noise_material_policy": "official_example"},
     "trial": {"title": "시험 모델용", "originals": 20000, "rounds": 3, "updates": 50000,
               "generic_hours": 2000, "korean_hours": 2000 / 3, "train_references": 20,
-              "hard_originals": 1000, "functional_check_only": False},
+              "hard_originals": 1000, "functional_check_only": False, "noise_material_policy": "official_example"},
     "production": {"title": "상용 모델용", "originals": 100000, "rounds": 5, "updates": 100000,
               "generic_hours": 7500, "korean_hours": 2500, "train_references": 100,
-              "hard_originals": 2000, "functional_check_only": False},
+              "hard_originals": 2000, "functional_check_only": False, "noise_material_policy": "reuse_negative_waveforms"},
 }
 
 
@@ -116,6 +116,8 @@ def _validate_settings(settings):
             raise ValueError(f"{key} must be a positive integer")
     if settings.get("rounds") not in (1, 3, 5):
         raise ValueError("증강 횟수는 R1 / R3 / R5입니다.")
+    if settings.get("noise_material_policy") not in (None, "official_example", "reuse_negative_waveforms"):
+        raise ValueError("Unsupported training-noise material policy")
     if settings.get("batch", BATCH) != BATCH:
         raise ValueError("Studio baseline batch must remain 768/256/100/100")
     if settings["train_references"] > 100 or settings["validation_references"] > 30:
@@ -433,7 +435,8 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         def progress(record):
             write_json(workspace / "progress.json", {"stage": stage_id, "updated_at": now(), **record})
         prepared = prepare_materials(project, selected_workspace, preset=settings["preset"], progress=progress,
-                                     evaluation_policy=settings.get("evaluation_policy"))
+                                     evaluation_policy=settings.get("evaluation_policy"),
+                                     noise_material_policy=settings.get("noise_material_policy", "official_example"))
         # Downloaded candidates and reviewed/admitted sources are distinct.
         return _completed(prepared, [q["queue"] for q in prepared.get("review_queues", [])])
 
@@ -459,14 +462,18 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         additional_artifacts = []
         existing_ids = {q["id"] for q in prepared.get("review_queues", [])}
         for source in additions:
-            cached = workspace / ("additional_" + identity(source) + ".json")
+            policy = prepared.get("noise_material_policy")
+            reuse = policy == "reuse_negative_waveforms"
+            selection = {"source": source, "noise_material_policy": policy} if reuse else source
+            cached = workspace / ("additional_" + identity(selection) + ".json")
             if cached.exists():
                 record = read_json(cached)
                 if record.get("source") != source:
                     raise ValueError("Frozen additional source selection changed")
                 addition = record["result"]
             else:
-                addition = prepare_additional_materials(project, selected_workspace, source)
+                addition = prepare_additional_materials(project, selected_workspace, source,
+                    **({"noise_material_policy": policy} if reuse else {}))
                 write_json(cached, {"source": source, "result": addition})
             if isinstance(addition.get("preparation"), dict):
                 bound_file(root, addition["preparation"])

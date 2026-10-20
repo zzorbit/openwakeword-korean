@@ -89,12 +89,18 @@ def _preset(preset):
     return preset
 
 
-def material_recipe(preset="check", workspace=None, evaluation_policy=None):
+def material_recipe(preset="check", workspace=None, evaluation_policy=None, noise_material_policy=None):
     """Preview known downloads and limits without accessing network or audio."""
     preset = _preset(preset)
+    policy = noise_material_policy or ("reuse_negative_waveforms" if preset == "full" else "official_example")
+    if policy not in ("official_example", "reuse_negative_waveforms"):
+        raise ValueError("Unsupported training-noise material policy")
     # Keep smoke pins available for historical receipts, but never request the
-    # standalone fan in a new training recipe. AudioSet remains unfiltered.
+    # standalone fan in a new training recipe. Official-example AudioSet stays
+    # unfiltered; commercial reuse omits the separate augmentation download.
     assets = [a for a in _official_assets() if a["id"] not in ("dns_fan", "dns_door", "electronic_validation")]
+    if policy == "reuse_negative_waveforms":
+        assets = [a for a in assets if a["id"] not in ("audioset", "audioset_segments", "audioset_ontology", "fma", "fma_metadata")]
     for asset in assets:
         path = _cached_asset(asset, Path(workspace).resolve() / "shared" / "downloads") if workspace else None
         asset["local_path"] = str(path) if path else None
@@ -104,7 +110,8 @@ def material_recipe(preset="check", workspace=None, evaluation_policy=None):
     # Recipe 6 starts from the common corpus itself. The historical 193 clips
     # and Zeroth reserve preview remain available only to their old recipes.
     evaluation = {"recipe_version": 6, "assets": [], "size_bytes": 0} if strict_common else evaluation_catalog()
-    result = {"schema_version": 1, "recipe_version": evaluation["recipe_version"], "preset": preset, "assets": assets,
+    result = {"schema_version": 1, "recipe_version": evaluation["recipe_version"], "preset": preset,
+            "noise_material_policy": policy, "assets": assets,
             "evaluation_assets": evaluation["assets"], "evaluation_sources": [] if strict_common else evaluation_preview(),
             "evaluation_download_bytes": evaluation["size_bytes"],
             "known_download_bytes": sum(a["size_bytes"] for a in assets) + evaluation["size_bytes"],
@@ -124,6 +131,12 @@ def material_recipe(preset="check", workspace=None, evaluation_policy=None):
                 "Held-out Development adds environmental sounds, music/electronic sounds, Korean field speech/announcements and reserved Korean read speech; the small curated set does not prove broad population performance.",
                 "Downloads and technical QC are not human listening, admission, or Final evaluation approval."],
             "human_review_required": True, "Final_accessed": False}
+    if policy == "reuse_negative_waveforms":
+        result["limitations"] = [text for text in result["limitations"] if not text.startswith(("FMA's", "Unknown AudioSet/FMA"))]
+        result["limitations"].extend([
+            "Training noise reuses reviewed Train waveform sources admitted as Generic/Korean Negative; the feature-only Generic file cannot be mixed as audio.",
+            "This download still supplies only nominal 2,000h Generic features and 1h Korean Train. Additional reviewed raw Negative sources must meet the selected hours and existing noise-category coverage; they are not automatically downloaded.",
+            "MIT rooms retain conservative Train-only groups; no invented room independence."])
     if evaluation_policy and evaluation_policy.get("evaluation_materials_recipe") in (5, 6):
         from .evaluation_materials import evaluation_material_catalog, evaluation_material_preview
         from .evaluation_rir import common_rir_preview, common_rir_catalog
@@ -409,7 +422,8 @@ def _write_rows(path, rows):
     return {"path": str(path.resolve()), "sha256": digest(path)}
 
 
-def prepare_materials(project_path, workspace, preset="check", progress=None, evaluation_policy=None):
+def prepare_materials(project_path, workspace, preset="check", progress=None, evaluation_policy=None,
+                      noise_material_policy=None):
     """Download, normalize and reserve sources, then return actual review gates."""
     from .preparation import create_source_index, prepare_public_audio
     from .assets import import_generic
@@ -422,7 +436,7 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
         raise ValueError("Public learning material must not be stored inside .codex")
     shared = workspace / "shared"
     downloads = shared / "downloads"
-    recipe = material_recipe(preset, workspace, evaluation_policy)
+    recipe = material_recipe(preset, workspace, evaluation_policy, noise_material_policy)
     workspace.mkdir(parents=True, exist_ok=True)
     # A minimum preflight before any download; actual per-file checks also run.
     missing = sum(a["size_bytes"] for a in recipe["assets"] if a["availability"] == "download_required")
@@ -446,10 +460,11 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
         assets.update({a["id"]: a for a in _official_assets() if a["id"] in ("dns_door", "electronic_validation")})
     paths = {key: _download(asset, downloads, progress) for key, asset in assets.items()}
     extract_archive(paths["zeroth"], shared / "zeroth")
-    extract_archive(paths["audioset"], shared / "audioset")
-    extract_archive(paths["fma_metadata"], shared / "fma_metadata", members=["fma_metadata/tracks.csv"], max_bytes=200 * 1024**2)
-    tracks = shared / "fma_metadata/fma_metadata/tracks.csv"
-    _fma_selection(tracks, paths["fma"], shared / "fma_1h")
+    if recipe["noise_material_policy"] == "official_example":
+        extract_archive(paths["audioset"], shared / "audioset")
+        extract_archive(paths["fma_metadata"], shared / "fma_metadata", members=["fma_metadata/tracks.csv"], max_bytes=200 * 1024**2)
+        tracks = shared / "fma_metadata/fma_metadata/tracks.csv"
+        _fma_selection(tracks, paths["fma"], shared / "fma_1h")
     mit = _fetch_mit(shared, progress)
     stage = root / ".studio" / "materials"
     stage.mkdir(parents=True, exist_ok=True)
@@ -477,11 +492,14 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
     sources = [
         {"id": "zeroth", "directory": shared / "zeroth", "adapter": "zeroth", "license": assets["zeroth"]["license"],
          "source_url": "https://www.openslr.org/40/", "target_hours": 1, "validation_fraction": .1, "pools": ["korean_negative", "noise"]},
-        {"id": "audioset", "directory": shared / "audioset", "adapter": "audioset", "metadata": paths["audioset_segments"],
-         "ontology": paths["audioset_ontology"], "validation_fraction": 0, "pools": ["noise"]},
-        {"id": "fma", "directory": shared / "fma_1h", "adapter": "fma", "metadata": tracks, "validation_fraction": 0, "pools": ["noise"]},
         {"id": "mit_rir", "directory": mit, "adapter": "mit_rir", "validation_fraction": 0, "pools": ["rir"]},
     ]
+    if recipe["noise_material_policy"] == "official_example":
+        sources[1:1] = [
+            {"id": "audioset", "directory": shared / "audioset", "adapter": "audioset", "metadata": paths["audioset_segments"],
+             "ontology": paths["audioset_ontology"], "validation_fraction": 0, "pools": ["noise"]},
+            {"id": "fma", "directory": shared / "fma_1h", "adapter": "fma", "metadata": tracks, "validation_fraction": 0, "pools": ["noise"]},
+        ]
     if extra_rows:
         extra_index = stage / "legacy_evaluation_source_index.jsonl"
         _write_rows(extra_index, extra_rows)
@@ -531,6 +549,7 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
     if any(not r["target_met"] for r in preparations):
         shortages.append("One or more source preparations did not reach the actual unique Train duration quota")
     result = {"kind": "studio_material_preparation_v1", "project": str(project_path), "preset": _preset(preset),
+              "noise_material_policy": recipe["noise_material_policy"],
               "state": "awaiting_human_review", "review_queues": queues, "preparations": preparations,
               "generic_feature_import": {"features": str(paths["generic"]), "output": str(generic_output), "imported": True,
                   "publisher_declared_hours": metadata["publisher_declared_hours"], "unique_source_hours": None},
@@ -591,7 +610,7 @@ def ensure_evaluation_materials(project, workspace, prepared, progress=None):
     return result
 
 
-def prepare_additional_materials(project_path, workspace, source):
+def prepare_additional_materials(project_path, workspace, source, *, noise_material_policy=None):
     """Prepare an explicitly supplied public corpus folder through the same UI.
 
     The source is user-supplied; no licensing, category, transcript, speaker or
@@ -607,6 +626,11 @@ def prepare_additional_materials(project_path, workspace, source):
         raise ValueError("Choose an existing public-data adapter")
     if pool not in ("generic_negative", "korean_negative", "noise", "rir"):
         raise ValueError("Additional pool must be generic_negative, korean_negative, noise or rir")
+    if noise_material_policy not in (None, "official_example", "reuse_negative_waveforms"):
+        raise ValueError("Unsupported training-noise material policy")
+    reuse = noise_material_policy == "reuse_negative_waveforms"
+    if reuse and pool == "noise":
+        raise ValueError("Reused training noise must be supplied as raw generic_negative or korean_negative audio, not a separate noise source")
     if dataset == "mit_rir" and pool != "rir":
         raise ValueError("The MIT RIR adapter belongs to the rir pool; use a provider manifest for another RIR corpus")
     workspace = Path(workspace).expanduser().resolve()
@@ -633,6 +657,8 @@ def prepare_additional_materials(project_path, workspace, source):
         source.setdefault("source_url", "https://www.openslr.org/40/")
         source.setdefault("license", dataset_catalog()["assets"]["zeroth"]["license"])
     request = {**source, "directory": str(directory), "wakeword": config["wakeword"]}
+    if reuse:
+        request["noise_material_policy"] = noise_material_policy
     key = identity(request)[:20]
     stage = root / ".studio" / "materials" / ("additional_" + key)
     index = stage.with_name(stage.name + "_source_index.jsonl")
@@ -650,13 +676,40 @@ def prepare_additional_materials(project_path, workspace, source):
     descriptor = {"id": "materials_additional_" + key, "kind": "content",
         "queue": record["artifacts"]["representative_queue"]["path"],
         "pool_manifest": record["artifacts"]["source_manifest"]["path"],
-        "preparation": record["preparation"]["path"], "pools": [pool],
+        "preparation": record["preparation"]["path"],
+        "pools": [pool, "noise"] if reuse and pool in ("generic_negative", "korean_negative") else [pool],
         "label": "추가 공개 자료 · " + pool}
     return {"kind": "studio_additional_material_preparation_v1", "source": request,
             "review_queue": descriptor, "preparation": record["preparation"],
             "target_met": record["target_met"], "train_hours": record["train_hours"],
             "validation_reserve": record["artifacts"]["validation_reserve"],
             "human_listened_count": 0, "training_admitted": False, "Final_accessed": False}
+
+
+def _reused_noise_shortages(root, config, receipts):
+    """Check approved raw reuse without rewriting old single-pool admissions."""
+    shortages, categories = [], set()
+    for receipt in receipts:
+        path = bound_file(root, receipt) if isinstance(receipt, dict) else resolved(root, receipt)
+        record = read_json(path)
+        negatives = []
+        for pool in ("generic_negative", "korean_negative"):
+            binding = record.get("source_manifests", {}).get(pool, record.get("manifests", {}).get(pool))
+            if binding:
+                negatives.extend(read_rows(bound_file(root, binding)))
+        binding = record.get("source_manifests", {}).get("noise", record.get("manifests", {}).get("noise"))
+        noise = read_rows(bound_file(root, binding)) if binding else []
+        key = lambda row: (row["sha256"], row.get("start_s", 0), row.get("end_s", row.get("duration_s", 0)))
+        negative_keys, noise_keys = {key(row) for row in negatives}, {key(row) for row in noise}
+        if negative_keys != noise_keys:
+            shortages.append("비호출 원본 재사용에는 같은 Train 음원을 비호출·noise 양쪽에 승인한 새 검수 receipt가 필요합니다. 기존 단일 용도 승인은 변경하지 않습니다.")
+        if any(Path(row["path"]).suffix.lower() not in _AUDIO for row in noise):
+            raise ValueError("Training noise reuse requires waveform audio, not precomputed features")
+        categories.update(row["category"] for row in noise)
+    missing = sorted(set(config["augmentation"]["category_weights"]) - categories)
+    if missing:
+        shortages.append("재사용할 학습용 비호출 원본에 소음 종류가 부족합니다: " + ", ".join(missing))
+    return list(dict.fromkeys(shortages))
 
 
 def admit_materials(project_path, prepared, answers_by_preparation=None, *, admissions=()):
@@ -740,6 +793,8 @@ def admit_materials(project_path, prepared, answers_by_preparation=None, *, admi
         shortages.append(f"Active Generic feature cache covers {generic_available:g}h, below selected {generic_target:g}h; additional raw Generic admissions require a separately rebuilt feature cache, not addition to the legacy 2,000h file")
     if "korean_negative" in all_pools and durations["korean_negative"] + 1e-9 < korean_target:
         shortages.append(f"Korean unique admitted Train duration {durations['korean_negative']:g}h is below selected {korean_target:g}h")
+    if prepared.get("noise_material_policy") == "reuse_negative_waveforms":
+        shortages.extend(_reused_noise_shortages(root, config, receipts))
     material_coverage = duration_budget = None
     if prepared.get("recipe_version") in (5, 6):
         from .evaluation_materials import evaluation_material_coverage
