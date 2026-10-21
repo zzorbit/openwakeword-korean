@@ -110,7 +110,7 @@ def _automatic_source_plan(preset, generic_hours=DEFAULT_GENERIC_HOURS, korean_h
             "scope": "Unique technically usable Train targets; actual review/admission remains required."}
 
 
-def _automatic_space_plan(preset, config=None, material_acquisition_policy="automatic_v1"):
+def _automatic_space_plan(preset, config=None, material_acquisition_policy="automatic_v1", fma_acquisition_policy=None):
     from .automatic_sources import automatic_storage_plan
     preset = _preset(preset)
     default_generic, default_korean, originals, rounds = {
@@ -120,15 +120,20 @@ def _automatic_space_plan(preset, config=None, material_acquisition_policy="auto
                                      "korean_hours": default_korean}, "augmentation_rounds": rounds}
     return automatic_storage_plan(selected, generic_hours=selected["targets"]["generic_hours"],
                                   korean_hours=selected["targets"]["korean_hours"], preset=preset,
-                                  material_acquisition_policy=material_acquisition_policy)
+                                  material_acquisition_policy=material_acquisition_policy,
+                                  fma_acquisition_policy=fma_acquisition_policy or selected.get("fma_acquisition_policy"))
 
 
 def material_recipe(preset="check", workspace=None, evaluation_policy=None, noise_material_policy=None,
-                    material_acquisition_policy=None):
+                    material_acquisition_policy=None, fma_acquisition_policy=None):
     """Preview known downloads and limits without accessing network or audio."""
     preset = _preset(preset)
     if material_acquisition_policy not in (None, "automatic_v1", "automatic_v2", "automatic_v3"):
         raise ValueError("Unsupported material acquisition policy")
+    if fma_acquisition_policy not in (None, "per_track_flac_prefetch_v1"):
+        raise ValueError("Unsupported FMA acquisition policy")
+    if fma_acquisition_policy and material_acquisition_policy != "automatic_v3":
+        raise ValueError("Per-track FMA requires canonical FLAC storage")
     automatic = material_acquisition_policy in ("automatic_v1", "automatic_v2", "automatic_v3")
     policy = noise_material_policy or ("reuse_negative_waveforms" if preset == "full" else "official_example")
     if policy not in ("official_example", "reuse_negative_waveforms"):
@@ -182,6 +187,8 @@ def material_recipe(preset="check", workspace=None, evaluation_policy=None, nois
             result["training_negative_plan"] = commercial_negative_plan()
     if automatic:
         result["material_acquisition_policy"] = material_acquisition_policy
+        if fma_acquisition_policy:
+            result["fma_acquisition_policy"] = fma_acquisition_policy
         result["automatic_source_plan"] = _automatic_source_plan(preset)
         result["known_download_bytes_scope"] = "Pinned base and common-evaluation archives only; automatic provider shards/tracks are resolved and preflighted separately."
         result["automatic_target_hours"] = ({"generic_raw": DEFAULT_GENERIC_HOURS, "korean_train": DEFAULT_KOREAN_HOURS} if preset == "full"
@@ -214,7 +221,8 @@ def material_recipe(preset="check", workspace=None, evaluation_policy=None, nois
             result["limitations"] = [text for text in result["limitations"] if "reserved Korean read speech" not in text]
             result["limitations"].append("Only the common corpus and its held-out RIRs enter this benchmark; legacy supplemental clips and training-source reserves are excluded.")
     if automatic:
-        space = _automatic_space_plan(preset, material_acquisition_policy=material_acquisition_policy)
+        space = _automatic_space_plan(preset, material_acquisition_policy=material_acquisition_policy,
+                                      fma_acquisition_policy=fma_acquisition_policy)
         # Include the pinned base/evaluation archives separately from provider
         # audio forecasts; this is a planning estimate, not a disk reservation.
         base = result["known_download_bytes"]
@@ -535,7 +543,7 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
     shared = workspace / "shared"
     downloads = shared / "downloads"
     recipe = material_recipe(preset, workspace, evaluation_policy, noise_material_policy,
-                             material_acquisition_policy)
+                             material_acquisition_policy, config.get("fma_acquisition_policy"))
     automatic = recipe.get("material_acquisition_policy") in ("automatic_v1", "automatic_v2", "automatic_v3")
     workspace.mkdir(parents=True, exist_ok=True)
     # A minimum preflight before any download; actual per-file checks also run.

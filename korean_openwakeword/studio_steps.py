@@ -104,6 +104,7 @@ def preset_settings(name="check"):
             "evaluation_policy": policy, "batch": dict(BATCH),
             "material_acquisition_policy": "automatic_v3",
             "audio_storage_policy": "canonical_flac_only_v1",
+            **({"fma_acquisition_policy": "per_track_flac_prefetch_v1"} if name == "production" else {}),
             "final_locked": True, "positive_text_policy": "standalone_only"}
 
 
@@ -125,6 +126,10 @@ def _validate_settings(settings):
         raise ValueError("Unsupported material acquisition policy")
     if settings.get("audio_storage_policy") not in (None, "canonical_flac_only_v1"):
         raise ValueError("Unsupported canonical audio storage policy")
+    if settings.get("fma_acquisition_policy") not in (None, "per_track_flac_prefetch_v1"):
+        raise ValueError("Unsupported FMA acquisition policy")
+    if settings.get("fma_acquisition_policy") and settings.get("material_acquisition_policy") != "automatic_v3":
+        raise ValueError("Per-track FMA requires canonical FLAC storage")
     if settings.get("batch", BATCH) != BATCH:
         raise ValueError("Studio baseline batch must remain 768/256/100/100")
     if settings["train_references"] > 100 or settings["validation_references"] > 30:

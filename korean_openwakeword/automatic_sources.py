@@ -46,10 +46,14 @@ def _preset(value):
 
 
 def automatic_source_policy(generic_hours=DEFAULT_GENERIC_HOURS, korean_hours=DEFAULT_KOREAN_HOURS, preset="full", *,
-                            material_acquisition_policy="automatic_v1"):
+                            material_acquisition_policy="automatic_v1", fma_acquisition_policy=None):
     """Offline description; no source files or provider metadata are opened."""
     if material_acquisition_policy not in ("automatic_v1", "automatic_v2", "automatic_v3"):
         raise ValueError("Unsupported automatic material acquisition policy")
+    if fma_acquisition_policy not in (None, "per_track_flac_prefetch_v1"):
+        raise ValueError("Unsupported FMA acquisition policy")
+    if fma_acquisition_policy and material_acquisition_policy != "automatic_v3":
+        raise ValueError("Per-track FMA requires canonical FLAC storage")
     generic, korean = _hours(generic_hours, "Generic"), _hours(korean_hours, "Korean")
     preset = _preset(preset)
     targets = generic_source_hours(generic) if preset == "full" else {}
@@ -64,6 +68,8 @@ def automatic_source_policy(generic_hours=DEFAULT_GENERIC_HOURS, korean_hours=DE
         result.update(version=2, storage_policy="verified_extracted_only_v1")
     elif material_acquisition_policy == "automatic_v3":
         result.update(version=3, storage_policy="canonical_flac_only_v1")
+    if fma_acquisition_policy:
+        result["fma_acquisition_policy"] = fma_acquisition_policy
     return result
 
 
@@ -109,8 +115,13 @@ def _space_plan(policy, config):
     if canonical:
         # Only features are an exact hard lower bound. FLAC compression depends
         # on the source; the PCM figure is a reference budget, never a measured
-        # FLAC estimate. The unchanged FMA playlist is acquired as one batch.
+        # FLAC estimate. Old requests retain their batch acquisition contract.
         fma_peak = math.ceil(policy["component_targets"].get("fma_full", 0) * 125_000_000)
+        streaming = policy.get("fma_acquisition_policy") == "per_track_flac_prefetch_v1"
+        if streaming:
+            # A planning allowance, not a hard track-size upper bound. Exact
+            # selected-track and conversion workspace checks run before I/O.
+            fma_peak = 0
         transient = max(fma_peak, _RESERVE if policy["component_targets"] else 0)
         known_features = negative_features + positive_features
         result.update(storage_policy=policy["storage_policy"],
@@ -125,14 +136,20 @@ def _space_plan(policy, config):
             transient_source_bytes=transient,
             estimated_total_bytes=known_features + normalized + _RESERVE + transient,
             estimate_scope="PCM16 audio is an uncompressed comparison budget, not measured FLAC size or a minimum. Only feature payload is a known lower bound. Verified canonical FLAC replaces newly acquired raw audio; transfer bytes are unchanged. The complete unchanged FMA playlist remains a temporary raw batch. Existing sources, TTS/evaluation audio and checkpoints are separate.")
+        if streaming:
+            result.update(fma_acquisition_policy=policy["fma_acquisition_policy"],
+                estimate_scope="PCM16 audio is a reference budget, not measured FLAC size or a minimum. FMA converts each verified track while at most one next track is prefetched; the working allowance is checked against actual selected track sizes. Existing sources, TTS/evaluation audio and checkpoints are separate.")
     return result
 
 
 def automatic_storage_plan(config=None, *, generic_hours=DEFAULT_GENERIC_HOURS, korean_hours=DEFAULT_KOREAN_HOURS, preset="full",
-                           material_acquisition_policy="automatic_v1"):
+                           material_acquisition_policy="automatic_v1", fma_acquisition_policy=None):
     """Offline known payload lower bound and separately labelled forecasts."""
+    if fma_acquisition_policy is None:
+        fma_acquisition_policy = (config or {}).get("fma_acquisition_policy")
     return _space_plan(automatic_source_policy(generic_hours, korean_hours, preset,
-        material_acquisition_policy=material_acquisition_policy), config or {})
+        material_acquisition_policy=material_acquisition_policy,
+        fma_acquisition_policy=fma_acquisition_policy), config or {})
 
 
 def _binding(path):
@@ -216,11 +233,16 @@ class PublicSourceBackend:
     its provider index rows and immutable receipt bindings. A test backend may
     implement these two methods without network access.
     """
-    def __init__(self, directory, *, storage_policy="retain_archives"):
+    def __init__(self, directory, *, storage_policy="retain_archives", fma_acquisition_policy=None):
         if storage_policy not in ("retain_archives", "verified_extracted_only_v1", "canonical_flac_only_v1"):
             raise ValueError("Unsupported source archive storage policy")
         self.directory = Path(directory)
         self.storage_policy = storage_policy
+        if fma_acquisition_policy not in (None, "per_track_flac_prefetch_v1"):
+            raise ValueError("Unsupported FMA acquisition policy")
+        if fma_acquisition_policy and storage_policy != "canonical_flac_only_v1":
+            raise ValueError("Per-track FMA requires canonical FLAC storage")
+        self.fma_acquisition_policy = fma_acquisition_policy
         self.session = _TreeSession(self.directory / "provider_pages")
 
     def inventory(self, component):
@@ -286,6 +308,13 @@ class PublicSourceBackend:
 
     def prepare(self, candidate, directory, *, target_hours, max_download_bytes,
                 max_extract_bytes, excluded_track_ids=(), progress=None):
+        if candidate["component"] == "fma_full" and self.fma_acquisition_policy:
+            from .fma_streaming import prepare_fma_streaming_source
+            destination = Path(directory) / self.fma_acquisition_policy / identity([
+                target_hours, sorted(set(excluded_track_ids)), SEED, "allow-derivatives"])
+            return prepare_fma_streaming_source(destination, target_hours=target_hours,
+                seed=SEED, max_download_bytes=max_download_bytes, max_extract_bytes=max_extract_bytes,
+                excluded_track_ids=excluded_track_ids, progress=progress)
         if self.storage_policy == "canonical_flac_only_v1":
             from .canonical_sources import prepare_canonical_source
             from .canonical_audio import canonicalize_prepared_source
@@ -493,7 +522,8 @@ def prepare_automatic_sources(project, workspace, *, generic_hours, korean_hours
     if (root / "final_lock.json").exists():
         raise ValueError("Final-locked projects cannot request new training materials")
     policy = automatic_source_policy(generic_hours, korean_hours, preset,
-        material_acquisition_policy=material_acquisition_policy)
+        material_acquisition_policy=material_acquisition_policy,
+        fma_acquisition_policy=config.get("fma_acquisition_policy"))
     canonical = material_acquisition_policy == "automatic_v3"
     compact = material_acquisition_policy in ("automatic_v2", "automatic_v3")
     if not policy["component_targets"]:
@@ -538,7 +568,9 @@ def prepare_automatic_sources(project, workspace, *, generic_hours, korean_hours
                     f"원본·압축 자료 예상 {space['estimated_original_archive_bytes']:,}바이트는 별도입니다. 목표량을 줄이지 않고 중단했습니다.")
         _frozen(request_path, requested)
         backend = backend or PublicSourceBackend(default_backend,
-            **({"storage_policy": policy["storage_policy"]} if compact else {}))
+            **({"storage_policy": policy["storage_policy"]} if compact else {}),
+            **({"fma_acquisition_policy": policy["fma_acquisition_policy"]}
+               if policy.get("fma_acquisition_policy") else {}))
         sources, receipts, artifacts, shortages = [], [], [str(request_path)], []
         actual = {component: 0.0 for component in policy["component_targets"]}
         seen_hashes, seen_sources, seen_tracks = set(), set(), set()
@@ -578,7 +610,11 @@ def prepare_automatic_sources(project, workspace, *, generic_hours, korean_hours
                                 or not canonical_receipt.is_file()
                                 or digest(canonical_receipt) != canonical_binding["sha256"]):
                             raise ValueError("Frozen canonical source receipt changed or escaped its cache")
-                        verify_canonical_source(canonical_receipt.parent)
+                        if read_json(canonical_receipt).get("kind") == "fma_streaming_source_v1":
+                            from .fma_streaming import verify_fma_streaming_source
+                            verify_fma_streaming_source(canonical_receipt.parent)
+                        else:
+                            verify_canonical_source(canonical_receipt.parent)
                     compact_binding = record.get("compact_receipt") if compact and not canonical else None
                     if compact_binding:
                         from .compact_sources import verify_compact_source

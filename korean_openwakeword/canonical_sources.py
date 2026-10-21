@@ -293,6 +293,41 @@ def verify_canonical_source(directory, *, verify=None):
     return _result(directory, receipt, resumed=True)
 
 
+def stage_canonical_source(directory, *, request, acquire):
+    """Durably claim one acquisition before a separate conversion consumer.
+
+    This small transaction boundary permits a bounded producer to acquire the
+    next independent source while the consumer canonicalizes the current one.
+    It uses the same ownership rules as ``prepare_canonical_source``. A file
+    already present when staging starts is never newly claimed for retirement.
+    Completed sources are verified locally without requesting retired inputs.
+    """
+    directory = _directory(directory); directory.mkdir(parents=True, exist_ok=True)
+    directory = _directory(directory)
+    with writer_lock(directory / ".canonical_lock"):
+        initial, request_binding = _request(directory, request)
+        if (directory / _RECEIPT).exists():
+            return verify_canonical_source(directory)
+        acquisition_path = directory / _ACQUISITION
+        if acquisition_path.exists():
+            acquisition = read_json(acquisition_path)
+            if not (directory / _PENDING).exists():
+                _check_acquisition(directory, acquisition, request_binding)
+            else:
+                # A crash can occur after durable preservation and during raw
+                # retirement. The consumer validates and completes that commit.
+                _verify_pending(directory, read_json(directory / _PENDING),
+                                request_binding, acquisition)
+        else:
+            before_acquire = set(_files(directory))
+            prepared = acquire()
+            if not isinstance(prepared, dict):
+                raise ValueError("Canonical acquisition did not return prepared sources")
+            acquisition = _claim_acquisition(directory, prepared, request_binding,
+                set(initial["preexisting_files"]) | before_acquire)
+        return copy.deepcopy(acquisition["prepared"])
+
+
 def prepare_canonical_source(directory, *, request, acquire, canonicalize,
                              verify=None, max_retained_bytes=None, progress=None):
     """Acquire/index, canonicalize, commit, and retire only new private raw audio.

@@ -529,6 +529,25 @@ function commercialRecipeV3() {
     assert.equal(b.elements.get("adv-korean").placeholder, "1500");
     assert.match(b.elements.get("source-plan-note").textContent, /WAV 기준 참고 예산/);
   });
+  await test("per-track FMA replaces only the batch scratch forecast and preserves old estimates", async () => {
+    const recipe = commercialRecipeV3();
+    Object.assign(recipe, { originals: 100000, rounds: 5, material_acquisition_policy: "automatic_v3",
+      automatic_source_plan: { components: recipe.training_negative_plan.components.map(item => ({ ...item,
+        provider: { mixed: "audioset_unbalanced", multilingual: "mls", korean_web: "yodas2" }[item.id] || item.sources[0].id })) },
+      automatic_space_plan: { base_archive_bytes: 1000, base_working_bytes: 2000, future_buffer_bytes: 3000,
+        transient_source_working_bytes: 8 * 1024 ** 3 } });
+    const b = browser({ recipeList: [recipe] }); await flush();
+    const legacy = b.helpers.storageEstimate(recipe);
+    const current = { ...recipe, fma_acquisition_policy: "per_track_flac_prefetch_v1" };
+    const streamed = b.helpers.storageEstimate(current);
+    assert.equal(legacy.transient, 125000000000);
+    assert.equal(streamed.transient, 8 * 1024 ** 3);
+    for (const field of ["reference", "known", "retained"]) assert.equal(streamed[field], legacy[field]);
+    assert.equal(legacy.total - streamed.total, legacy.transient - streamed.transient);
+    assert.equal(b.helpers.storageEstimate({ ...current, fma_acquisition_policy: "unknown" }), null);
+    assert.deepEqual(b.helpers.storageEstimate({ ...recipe, automatic_space_plan: {
+      ...recipe.automatic_space_plan, fma_acquisition_policy: "per_track_flac_prefetch_v1" } }), streamed);
+  });
   await test("canonical trial keeps source working space and automatic YODAS coverage", async () => {
     const recipe = commonRecipe({ id: "trial", korean_hours: 2000 / 3, material_acquisition_policy: "automatic_v3",
       automatic_source_plan: { version: 3, enabled: true, components: [{ id: "yodas2", provider: "yodas2", pool: "korean_negative", target_hours: 2000 / 3 }] },

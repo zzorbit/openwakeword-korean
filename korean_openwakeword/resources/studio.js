@@ -81,9 +81,11 @@
       const known = Math.ceil(seconds / 2) * 16 * 96 * 4 + Math.ceil(originals * rounds * 16 * 96 * 4);
       const fmaRate = space.source_forecast_bytes_per_hour?.fma_full ?? 125000000;
       if (!Number.isFinite(fmaRate) || fmaRate < 0) return null;
+      const fmaPolicy = recipe.fma_acquisition_policy ?? space.fma_acquisition_policy;
+      if (fmaPolicy !== undefined && fmaPolicy !== "per_track_flac_prefetch_v1") return null;
       const fmaBytes = components.reduce((sum, item) => (item.provider || item.id) === "fma_full" && totals[item.pool] > 0
         ? sum + targets[item.pool] * item.target_hours / totals[item.pool] * fmaRate : sum, 0);
-      const transient = Math.ceil(Math.max(archive, fmaBytes));
+      const transient = Math.ceil(Math.max(archive, fmaPolicy ? 0 : fmaBytes));
       return { basis: "wav_reference", reference, known, retained: 0, transient,
         total: fixed.reduce((sum, value) => sum + value, 0) + reference + known + transient };
     }

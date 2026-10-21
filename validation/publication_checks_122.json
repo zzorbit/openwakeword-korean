@@ -1,0 +1,55 @@
+{
+  "version": "0.12.2",
+  "kind": "FMA_bounded_pipeline_validation",
+  "data_budgets_changed": false,
+  "sample_bundle_changed": false,
+  "sample_tracks": 8,
+  "actual_audio_minutes": 32.52,
+  "controlled_repetitions_per_mode": 2,
+  "controlled_transfer_bytes_per_second": 1048576,
+  "controlled_latency_per_track_seconds": 0.05,
+  "median_seconds": {
+    "batch": 78.20317100000102,
+    "stream": 74.0414438000007
+  },
+  "peak_audio_data_MiB_excluding_reused_metadata": {
+    "batch": [
+      85.40683364868164,
+      85.40697383880615
+    ],
+    "stream": [
+      63.601802825927734,
+      63.476799964904785
+    ]
+  },
+  "successful_canonical_tracks": 3,
+  "unchanged_rejected_original_tracks": 5,
+  "PCM_logical_WAV_FLAC_equal_for_successful_tracks": true,
+  "rejected_original_SHA_and_reason_equal": true,
+  "completed_cache_network_free_reuse_verified": true,
+  "real_HTTPS_production_API_checked": true,
+  "local_targeted_pytest": {
+    "tests": 251,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "studio_JS_tests": 45,
+  "microphone_JS_tests": 14,
+  "scope": [
+    "Fixed real MP3s over controlled HTTP compare processing order, not internet speed.",
+    "Real HTTPS/ZIP API was checked separately; WAN variance prevents a universal speed claim.",
+    "Existing source material, standalone original downloader and historical configs remain preserved.",
+    "A small sample's rejection rate is not an estimate for the complete music corpus."
+  ],
+  "runtime_sha256": {
+    "automatic_sources.py": "f7f883681978c2d6c41c52f744effb4a8b1b06f7009a151561f61c0cc749ed9e",
+    "canonical_sources.py": "05376c392bcf82350a8a235dd60144869bcef5997e2780600c141e0fe53206ca",
+    "fma_streaming.py": "d7d9b7f40996de5b239881756c3e24ba9f9bacb73a1ea9c9449ce7270bffbc0f",
+    "studio.py": "74e8dcb79a4a4ce9474dab14d3a3beb96148624ac4dc33bbfd4bfc5917cfa44c",
+    "studio_data.py": "a698d8158ea35ee708810a4847eda6d3fbcb1493688afbb82daa02b953191931",
+    "studio_steps.py": "d61858f3e8865d5cf649a1c60647d6faad1067daf278c0c6b8301f833d4dbbff",
+    "__init__.py": "64cfb805d5293796f83dbda13512b24c1342ea4712f589a7ee25f487615a37af",
+    "resources/studio.js": "b2c9cef21e1eddb59e133cc3062f2f0ef5f30ab1b805d34de555f6afaf0928bc"
+  }
+}

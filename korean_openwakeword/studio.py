@@ -188,7 +188,8 @@ class StudioManager:
         for key, label in (("check", "동작 확인용"), ("trial", "시험 모델용"), ("production", "상용 모델용")):
             settings = preset_settings(key)
             recipe = material_recipe(key, evaluation_policy=settings["evaluation_policy"],
-                                     material_acquisition_policy=settings.get("material_acquisition_policy"))
+                                     material_acquisition_policy=settings.get("material_acquisition_policy"),
+                                     fma_acquisition_policy=settings.get("fma_acquisition_policy"))
             presets.append({**settings, **recipe, "id": key, "label": label})
         return {"presets": presets, "default_directory": str(self.workspace / "projects"),
                 "storage_note": "선택한 작업 폴더에 자료·모델·캐시를 저장합니다. 공개 자료와 Qwen 모델의 첫 다운로드는 별도 용량이 필요합니다."}
@@ -234,6 +235,11 @@ class StudioManager:
                 if _lock_paths(target):
                     raise ValueError("기존 작업의 잠금이 있습니다. 실행 상태를 확인한 뒤 연결하세요.")
                 settings.update(generic_hours=config["targets"]["generic_hours"], korean_hours=config["targets"]["korean_hours"])
+                # A newly installed library must not change an attached
+                # project's frozen FMA download/retirement transaction.
+                settings.pop("fma_acquisition_policy", None)
+                if config.get("fma_acquisition_policy"):
+                    settings["fma_acquisition_policy"] = config["fma_acquisition_policy"]
                 if config.get("audio_storage_policy") != "canonical_flac_only_v1":
                     # Attaching an existing CLI project must not reinterpret
                     # its old WAV/cache/receipt contract as canonical storage.
@@ -255,6 +261,8 @@ class StudioManager:
                                validation_voice_families=settings["validation_references"])
                 _, config = load_project(project)
                 config["audio_storage_policy"] = settings["audio_storage_policy"]
+                if settings.get("fma_acquisition_policy"):
+                    config["fma_acquisition_policy"] = settings["fma_acquisition_policy"]
                 write_json(project, config)
             state = {"schema_version": 1, "id": project_id, "workspace": str(self.workspace),
                      "storage_workspace": str(self.workspace if target.is_relative_to(self.workspace) else target),
