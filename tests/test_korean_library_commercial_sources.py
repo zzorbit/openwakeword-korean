@@ -62,17 +62,19 @@ def reseal(record):
 
 def test_plan_scales_pools_without_changing_batch_or_supply():
     plan = sources.commercial_negative_plan()
-    assert plan["generic_hours"] == 7000
-    assert plan["korean_hours"] == 3000
-    assert plan["total_hours"] == 10000
+    assert plan["generic_hours"] == 3500
+    assert plan["korean_hours"] == 1500
+    assert plan["total_hours"] == 5000
     assert (plan["id"], plan["version"]) == ("commercial_negative_v3", 3)
-    assert sum(c["target_hours"] for c in plan["components"] if c["pool"] == "generic_negative") == 7000
-    assert [c["target_hours"] for c in plan["components"]] == [3000, 3000, 1000, 3000]
+    assert sum(c["target_hours"] for c in plan["components"] if c["pool"] == "generic_negative") == 3500
+    assert [c["target_hours"] for c in plan["components"]] == [1500, 1500, 500, 1500]
     assert [c["sources"][0]["id"] for c in plan["components"]] == ["audioset_unbalanced", "mls", "fma_full", "yodas2"]
     assert plan["content_approved"] is False
     assert plan["batch_changed"] is False
     scaled = sources.commercial_negative_plan(3500, 1)
     assert [c["target_hours"] for c in scaled["components"]] == [1500, 1500, 500, 1]
+    previous = sources.commercial_negative_plan(7000, 3000)
+    assert [c["target_hours"] for c in previous["components"]] == [3000, 3000, 1000, 3000]
 
 
 @pytest.mark.parametrize("bad", [0, -1, float("nan"), float("inf"), True, "7000"])
@@ -344,6 +346,28 @@ def test_fma_full_metadata_only_never_requests_the_near_terabyte_archive(monkeyp
     assert receipt["state"] == "metadata_downloaded" and receipt["downloaded_audio_files"] == 0
     assert not (tmp_path / "fma_full.zip").exists()
     assert not receipt["content_approved"]
+
+
+def test_ancestor_sha1_cache_preserves_asset_receipt_and_publishes_completion(monkeypatch, tmp_path):
+    content = b"cached original metadata"
+    sha1 = hashlib.sha1(content).hexdigest()
+    monkeypatch.setitem(sources._FMA_FILES, "fma_metadata.zip", (len(content), sha1))
+    cached = tmp_path / "fma_metadata.zip"
+    cached.write_bytes(content)
+    output = tmp_path / "selected"
+    from korean_openwakeword import studio_data
+    monkeypatch.setattr(studio_data.requests, "get", lambda *a, **kw: pytest.fail("Use the verified ancestor cache"))
+    record = sources.resolve_commercial_source("fma_full", selection={"parts": ["metadata"]})
+    result = sources.download_commercial_source(record, output, max_download_bytes=len(content), metadata_only=True)
+    per_file = json.loads((output / "fma_metadata.zip.reused.receipt.json").read_text(encoding="utf-8"))
+    complete = output / "metadata_download_receipt.json"
+    assert per_file["path"] == str(cached)
+    assert per_file["verified_upstream_algorithm"] == "sha1"
+    assert complete.is_file() and json.loads(complete.read_text(encoding="utf-8")) == result
+    assert (output / "fma_metadata.zip").read_bytes() == content
+    before = complete.read_bytes()
+    assert sources.download_commercial_source(record, output, max_download_bytes=len(content), metadata_only=True) == result
+    assert complete.read_bytes() == before and cached.read_bytes() == content
 
 
 def test_git_blob_readme_checksum_is_verified(monkeypatch, tmp_path):

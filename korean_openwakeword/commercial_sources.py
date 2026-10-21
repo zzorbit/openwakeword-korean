@@ -17,6 +17,7 @@ import requests
 
 from .common import digest, identity, now, read_json, write_json
 from .downloads import download_checked
+from .budgets import DEFAULT_GENERIC_HOURS, DEFAULT_KOREAN_HOURS, generic_source_hours
 
 
 _PROVIDERS = {
@@ -80,26 +81,26 @@ def commercial_source_catalog():
         ]}
 
 
-def commercial_negative_plan(generic_hours=7000, korean_hours=3000):
+def commercial_negative_plan(generic_hours=DEFAULT_GENERIC_HOURS, korean_hours=DEFAULT_KOREAN_HOURS):
     """Scale each pool independently, leaving the selected training batch unchanged."""
     generic_hours, korean_hours = _hours(generic_hours), _hours(korean_hours)
+    generic_targets = generic_source_hours(generic_hours)
     specs = (
-        ("mixed", "generic_negative", "생활·환경·말소리 혼합 음원", 3000, "audioset_unbalanced"),
-        ("multilingual_read", "generic_negative", "다국어 낭독 음성", 3000, "mls"),
-        ("music", "generic_negative", "음악·보컬·연주곡", 1000, "fma_full"),
-        ("korean_web_speech", "korean_negative", "한국어 음성", 3000, "yodas2"),
+        ("mixed", "generic_negative", "생활·환경·말소리 혼합 음원", "audioset_unbalanced"),
+        ("multilingual_read", "generic_negative", "다국어 낭독 음성", "mls"),
+        ("music", "generic_negative", "음악·보컬·연주곡", "fma_full"),
+        ("korean_web_speech", "korean_negative", "한국어 음성", "yodas2"),
     )
     components = []
-    for key, pool, name, baseline, provider in specs:
+    for key, pool, name, provider in specs:
         source = _PROVIDERS[provider]
         component = {"id": key, "pool": pool, "name": name,
             "description": source["description"],
-            "target_hours": baseline * (generic_hours if pool == "generic_negative" else korean_hours)
-                            / (7000 if pool == "generic_negative" else 3000),
+            "target_hours": generic_targets[provider] if pool == "generic_negative" else korean_hours,
             "sources": [{"id": provider, "name": source["name"], "source_url": source["source_url"],
                 "availability": "public_source_requires_preparation", "description": source["description"]}]}
         if provider == "fma_full":
-            component["description"] = "필요한 원곡만 선택 다운로드 · 원본 MP3 보존"
+            component["description"] = "필요한 원곡만 원본 MP3로 선택 다운로드"
             component["sources"][0].update(download_mode="selective", description=component["description"])
         components.append(component)
     return {"id": "commercial_negative_v3", "version": 3,
@@ -388,8 +389,8 @@ def download_commercial_source(record, output, *, max_download_bytes, progress=N
             downloaded_path = _download(asset, target.parent, progress=progress)
             if downloaded_path.parent != target.parent:
                 # The legacy downloader can reuse an ancestor's verified cache.
-                receipt_path = target.parent / (downloaded_path.name + ".reused.receipt.json")
-                receipt = read_json(receipt_path)
+                reused_receipt_path = target.parent / (downloaded_path.name + ".reused.receipt.json")
+                receipt = read_json(reused_receipt_path)
                 shutil.copyfile(downloaded_path, target)
                 if digest(target) != receipt["sha256"]:
                     raise ValueError("Copied source cache differs from verified original")

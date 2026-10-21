@@ -26,6 +26,16 @@ def training_batch(config):
     return {role: config["batch"][role] for role in BATCH if role in config["batch"]}
 
 
+def _noise_target_hours(targets):
+    """Read an explicit target, or the first value in the historical range."""
+    if "noise_hours" in targets:
+        return targets["noise_hours"]
+    phase1 = targets.get("noise_hours_phase1")
+    if not isinstance(phase1, (list, tuple)) or not phase1:
+        raise ValueError("Noise preparation hours need an explicit target or phase-one range")
+    return phase1[0]
+
+
 def configure_budget(config, *, positive_originals=None, augmentation_rounds=None,
                      updates=None, generic_hours=None, korean_hours=None,
                      noise_hours=None, training_overrides=None):
@@ -58,10 +68,8 @@ def configure_budget(config, *, positive_originals=None, augmentation_rounds=Non
         raise ValueError("Unsupported advanced training setting: " + str(sorted(set(overrides) - ADVANCED_TRAINING_KEYS)))
     t.update(deepcopy(overrides))
     n, r = result["targets"]["positive_originals"], result["augmentation_rounds"]
-    if n != previous_n:
-        # Avoid colliding with an immutable cache built for another N.
-        result["pool_features"]["positive"] = f"features/positive_N{n}_R{r}"
-    elif r != previous_r:
+    if (n, r) != (previous_n, previous_r):
+        # A different original count or round count needs its own cache.
         result["pool_features"]["positive"] = f"features/positive_N{n}_R{r}"
     return validate_project(result)
 
@@ -89,7 +97,7 @@ def workload_summary(config):
         "data_targets": {
             "generic_negative_hours": config["targets"]["generic_hours"],
             "korean_negative_hours": config["targets"]["korean_hours"],
-            "environment_noise_hours": config["targets"].get("noise_hours", config["targets"]["noise_hours_phase1"][0]),
+            "environment_noise_hours": _noise_target_hours(config["targets"]),
             "scope": "Preparation targets, not downloaded or approved hours. Negative targets are checked before formal training; noise hours are a planning target, with diversity reviewed separately.",
         },
         "workload_kind": "reference_100k_R5_50k" if (n, r, t["updates"]) == (100000, 5, 50000) and config["batch"] == LEGACY_BATCH else "user_selected_budget",
@@ -124,8 +132,8 @@ def validate_project(config):
     for key in ("positive_originals", "validation_originals", "final_originals"):
         if type(config["targets"][key]) is not int or config["targets"][key] < 1:
             raise ValueError("TTS original counts must be positive integers")
-    for key in ("generic_hours", "korean_hours", "noise_hours"):
-        value = config["targets"].get(key, config["targets"]["noise_hours_phase1"][0])
+    for value in (config["targets"].get("generic_hours"), config["targets"].get("korean_hours"),
+                  _noise_target_hours(config["targets"])):
         if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
             raise ValueError("Data preparation hours must be positive finite numbers")
     if config.get("human_reference_used") is not False or config.get("positive_text_policy") != "standalone_only":

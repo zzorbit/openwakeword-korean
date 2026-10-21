@@ -16,17 +16,17 @@ def test_studio_api_exposes_the_same_new_plan_as_cli_and_preserves_smaller_prese
     production = recipes["production"]
     plan = dispatch(parser().parse_args(["negative-plan"]))
     assert production["training_negative_plan"] == plan
-    assert (production["generic_hours"], production["korean_hours"]) == (7000, 3000)
-    assert sum(row["target_hours"] for row in plan["components"]) == 10000
+    assert (production["generic_hours"], production["korean_hours"]) == (3500, 1500)
+    assert sum(row["target_hours"] for row in plan["components"]) == 5000
     assert plan["id"] == "commercial_negative_v3" and plan["version"] == 3
-    assert [row["target_hours"] for row in plan["components"]] == [3000, 3000, 1000, 3000]
+    assert [row["target_hours"] for row in plan["components"]] == [1500, 1500, 500, 1500]
     assert [row["sources"][0]["id"] for row in plan["components"]] == ["audioset_unbalanced", "mls", "fma_full", "yodas2"]
     assert (recipes["check"]["generic_hours"], recipes["check"]["korean_hours"]) == (2000, 1)
     assert (recipes["trial"]["generic_hours"], recipes["trial"]["korean_hours"]) == (2000, 2000 / 3)
     assert all(record["batch"] == BATCH for record in recipes.values())
     assert all("training_negative_plan" not in recipes[key] for key in ("check", "trial"))
     assert production["material_acquisition_policy"] == "automatic_v3"
-    assert production["automatic_target_hours"] == {"generic_raw": 7000, "korean_train": 3000}
+    assert production["automatic_target_hours"] == {"generic_raw": 3500, "korean_train": 1500}
     assert recipes["trial"]["automatic_target_hours"] == {"generic_nominal": 2000, "korean_train": 2000 / 3}
     assert recipes["check"]["automatic_target_hours"] == {"generic_nominal": 2000, "korean_train": 1}
     assert not plan["content_approved"]
@@ -85,7 +85,7 @@ def test_invalid_source_download_budget_is_rejected_before_network(monkeypatch, 
 
 def test_cli_default_targets_and_new_negative_plan_do_not_change_sampling():
     profile = default_profile()
-    assert profile["targets"]["generic_hours"] == 7000 and profile["targets"]["korean_hours"] == 3000
+    assert profile["targets"]["generic_hours"] == 3500 and profile["targets"]["korean_hours"] == 1500
     assert profile["batch"] == preset_settings("production")["batch"] == BATCH
     plan = dispatch(parser().parse_args(["negative-plan", "--generic-hours", "3500", "--korean-hours", "1500"]))
     assert [row["target_hours"] for row in plan["components"]] == [1500, 1500, 500, 1500]
@@ -135,7 +135,7 @@ def test_fma_full_cli_defaults_to_selected_tracks_not_the_whole_archive(monkeypa
     assert preview["download_mode"] == "selective" and not seen
     result = dispatch(parser().parse_args(["download-source", "--source", "fma_full", "--output", str(tmp_path),
         "--max-download-gib", "150"]))
-    assert seen["max_download_bytes"] == 150 * 1024**3 and seen["hours"] == 1000
+    assert seen["max_download_bytes"] == 150 * 1024**3 and seen["hours"] == 500
     assert result["mode"] == "selective_original_mp3"
 
 

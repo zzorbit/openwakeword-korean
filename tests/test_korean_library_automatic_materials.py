@@ -34,9 +34,11 @@ def test_new_acquisition_has_explicit_offline_plan_and_keeps_legacy_recipe(prese
     else:
         assert "generic" not in ids and "zeroth" not in ids
         assert {row["provider"] for row in components} == {"audioset_unbalanced", "mls", "fma_full", "yodas2"}
-        assert [row["target_hours"] for row in components] == [3000, 3000, 1000, 3000]
+        assert [row["target_hours"] for row in components] == [1500, 1500, 500, 1500]
         assert legacy["shortages"]
-        assert current["automatic_space_plan"]["minimum_total_bytes"] > 110 * 1024**3
+        space = current["automatic_space_plan"]
+        assert space["minimum_total_bytes"] > (space["negative_feature_payload_bytes"]
+                                                 + space["positive_feature_payload_bytes"])
     assert current["estimated_workspace_bytes"] == current["automatic_space_plan"]["estimated_total_bytes"]
     assert steps.preset_settings(preset)["material_acquisition_policy"] == "automatic_v3"
 

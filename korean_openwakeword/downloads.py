@@ -13,15 +13,19 @@ def dataset_catalog():
 
 
 def download_checked(url, output, sha256, size_bytes=None):
+    if (not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", sha256)
+            or not isinstance(url, str) or not url.startswith("https://")):
+        raise ValueError("A pinned SHA256 and HTTPS source are required")
+    if size_bytes is not None and (type(size_bytes) is not int or size_bytes <= 0):
+        raise ValueError("Pinned asset size must be a positive integer")
     output = Path(output).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
-    if not re.fullmatch(r"[0-9a-f]{64}", sha256) or not url.startswith("https://"):
-        raise ValueError("A pinned SHA256 and HTTPS source are required")
     # A separate lock for each asset permits unrelated downloads in parallel.
     with writer_lock(output.parent / ("." + output.name + ".download")):
         if output.exists():
-            if not output.is_file() or digest(output) != sha256:
-                raise ValueError("Existing download differs from the expected checksum")
+            if (not output.is_file() or size_bytes is not None and output.stat().st_size != size_bytes
+                    or digest(output) != sha256):
+                raise ValueError("Existing download differs from the pinned size or checksum")
             reused = True
         else:
             reused = False
@@ -49,8 +53,13 @@ def download_checked(url, output, sha256, size_bytes=None):
                         raise ValueError("Unexpected partial download response")
                     with partial.open("ab" if offset else "wb") as handle:
                         for chunk in response.iter_content(8 * 1024 * 1024):
+                            if not chunk:
+                                continue
+                            if size_bytes is not None and offset + len(chunk) > size_bytes:
+                                raise ValueError("Download response exceeds the pinned asset size; partial preserved")
                             handle.write(chunk)
-            if size_bytes is not None and partial.stat().st_size != size_bytes or digest(partial) != sha256:
+                            offset += len(chunk)
+            if (size_bytes is not None and partial.stat().st_size != size_bytes) or digest(partial) != sha256:
                 raise ValueError("Incomplete/altered asset; preserve .part for diagnosis or resume")
             partial.replace(output)
         record = {"path": str(output), "sha256": sha256, "bytes": output.stat().st_size,

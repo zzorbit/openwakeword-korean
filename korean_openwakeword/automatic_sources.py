@@ -19,6 +19,7 @@ import requests
 import soundfile as sf
 
 from .common import digest, identity, now, read_json, read_rows, write_json, writer_lock
+from .budgets import DEFAULT_GENERIC_HOURS, DEFAULT_KOREAN_HOURS, generic_source_hours
 from .project import load_project
 
 
@@ -44,15 +45,14 @@ def _preset(value):
     return value
 
 
-def automatic_source_policy(generic_hours=7000, korean_hours=3000, preset="full", *,
+def automatic_source_policy(generic_hours=DEFAULT_GENERIC_HOURS, korean_hours=DEFAULT_KOREAN_HOURS, preset="full", *,
                             material_acquisition_policy="automatic_v1"):
     """Offline description; no source files or provider metadata are opened."""
     if material_acquisition_policy not in ("automatic_v1", "automatic_v2", "automatic_v3"):
         raise ValueError("Unsupported automatic material acquisition policy")
     generic, korean = _hours(generic_hours, "Generic"), _hours(korean_hours, "Korean")
     preset = _preset(preset)
-    targets = ({"audioset_unbalanced": generic * 3 / 7,
-                "mls": generic * 3 / 7, "fma_full": generic / 7} if preset == "full" else {})
+    targets = generic_source_hours(generic) if preset == "full" else {}
     if preset != "check" and korean:
         targets["yodas2"] = korean
     result = {"version": POLICY_VERSION, "preset": preset, "component_targets": targets,
@@ -128,7 +128,7 @@ def _space_plan(policy, config):
     return result
 
 
-def automatic_storage_plan(config=None, *, generic_hours=7000, korean_hours=3000, preset="full",
+def automatic_storage_plan(config=None, *, generic_hours=DEFAULT_GENERIC_HOURS, korean_hours=DEFAULT_KOREAN_HOURS, preset="full",
                            material_acquisition_policy="automatic_v1"):
     """Offline known payload lower bound and separately labelled forecasts."""
     return _space_plan(automatic_source_policy(generic_hours, korean_hours, preset,

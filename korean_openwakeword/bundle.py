@@ -36,7 +36,8 @@ def package_run(project, run, output):
         shutil.copyfile(source, destination)
         frontend.append({"path": "frontend/" + filename, "sha256": expected})
     manifest = {"schema_version": 1, "wakeword": config["wakeword"], "id": run.name,
-        "members": members, "frontend": frontend, "aggregation": "ordered_float64_mean_to_float32",
+        "members": members, "frontend": frontend,
+        "aggregation": "single" if len(members) == 1 else "ordered_float64_mean_to_float32",
         "runtime": config["runtime"], "training": config["training"], "rounds": config["augmentation_rounds"],
         "created_at": now(), "stage": "candidate_not_final_validated", "project_config_sha256": digest(project)}
     manifest["selected_candidate"] = deployment_candidate(manifest)

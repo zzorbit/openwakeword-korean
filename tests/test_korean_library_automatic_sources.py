@@ -97,8 +97,10 @@ def test_compact_storage_forecast_keeps_identical_data_targets_and_known_payload
 
 def test_canonical_forecast_separates_feature_minimum_pcm_reference_and_real_peak():
     config = {"targets": {"positive_originals": 100000}, "augmentation_rounds": 5}
-    previous = module.automatic_storage_plan(config, material_acquisition_policy="automatic_v2")
-    current = module.automatic_storage_plan(config, material_acquisition_policy="automatic_v3")
+    previous = module.automatic_storage_plan(config, generic_hours=7000, korean_hours=3000,
+                                            material_acquisition_policy="automatic_v2")
+    current = module.automatic_storage_plan(config, generic_hours=7000, korean_hours=3000,
+                                           material_acquisition_policy="automatic_v3")
     assert current["storage_policy"] == "canonical_flac_only_v1"
     assert current["normalized_pcm16_bytes"] == previous["normalized_pcm16_bytes"] == 1_152_000_000_000
     assert current["minimum_known_bytes"] == current["negative_feature_payload_bytes"] + current["positive_feature_payload_bytes"]

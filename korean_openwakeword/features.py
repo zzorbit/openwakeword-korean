@@ -163,8 +163,11 @@ def build_features(project, role, output=None, rounds=None, batch_size=32, smoke
     pool = "positive_train" if role == "positive" else role
     if pool not in ("positive_train", "generic_negative", "korean_negative", "hard_negative"):
         raise ValueError("Only declared training pools are supported")
-    rounds = rounds or (config["augmentation_rounds"] if role == "positive" else 1)
-    if rounds not in (1, 3, 5) or role != "positive" and rounds != 1:
+    if type(batch_size) is not int or batch_size < 1:
+        raise ValueError("Feature batch_size must be a positive integer")
+    if rounds is None:
+        rounds = config["augmentation_rounds"] if role == "positive" else 1
+    if type(rounds) is not int or rounds not in (1, 3, 5) or role != "positive" and rounds != 1:
         raise ValueError("Positive R1/R3/R5; fixed Negative R1 only")
     manifest = resolved(root, config["manifests"][pool])
     source_count, source_manifest_sha = _manifest_inventory(manifest)

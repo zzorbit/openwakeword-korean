@@ -15,6 +15,7 @@ import shutil
 import soundfile as sf
 
 from .commercial_sources import _FMA_FILES
+from .budgets import DEFAULT_FMA_HOURS
 from .common import digest, now, read_json, write_json
 
 _FULL_URL = "https://os.unil.cloud.switch.ch/fma/fma_full.zip"
@@ -156,7 +157,7 @@ def _remaining_bytes(rows, directory):
     return needed
 
 
-def download_fma(output, *, hours=1000, seed=20261021, max_download_bytes=None,
+def download_fma(output, *, hours=DEFAULT_FMA_HOURS, seed=20261021, max_download_bytes=None,
                  plan_only=False, license_policy="allow-derivatives", exclusions=None,
                  progress=None, archive_factory=None):
     """Freeze a playlist, transfer exact MP3s, then verify/resume each track.

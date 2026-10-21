@@ -72,6 +72,44 @@ def test_corrupt_bytes_never_published(tmp_path, monkeypatch):
     assert not output.exists()
 
 
+@pytest.mark.parametrize("resume", [False, True])
+def test_oversized_response_stops_before_writing_outside_the_pin(tmp_path, monkeypatch, resume):
+    output = tmp_path / "asset"
+    partial = output.with_name("asset.part")
+    if resume:
+        partial.write_bytes(b"ab")
+    class ChunkedResponse(Response):
+        def iter_content(self, block):
+            yield b"cd" if resume else b"ab"
+            yield b"efghi"  # Would exceed the pinned total of six bytes.
+            pytest.fail("An oversized response must not be consumed further")
+    response = ChunkedResponse(b"", 206 if resume else 200,
+        {"Content-Range": "bytes 2-5/6"} if resume else {})
+    monkeypatch.setattr("korean_openwakeword.downloads.requests.get", lambda *a, **k: response)
+    with pytest.raises(ValueError, match="exceeds.*pinned"):
+        download_checked("https://example.org/fixture", output, "0" * 64, 6)
+    assert not output.exists()
+    assert partial.read_bytes() == (b"abcd" if resume else b"ab")
+
+
+@pytest.mark.parametrize("size", [True, 0, -1, 1.5, "6"])
+def test_invalid_size_pin_fails_before_creating_a_download_folder(tmp_path, size):
+    output = tmp_path / "not_created" / "asset"
+    with pytest.raises(ValueError, match="size"):
+        download_checked("https://example.org/fixture", output, "0" * 64, size)
+    assert not output.parent.exists()
+
+
+def test_cached_hash_cannot_override_the_pinned_size(tmp_path, monkeypatch):
+    output = tmp_path / "asset"
+    output.write_bytes(b"correct bytes")
+    sha = hashlib.sha256(output.read_bytes()).hexdigest()
+    monkeypatch.setattr("korean_openwakeword.downloads.requests.get", lambda *a, **k: pytest.fail("Invalid cached size must stop"))
+    with pytest.raises(ValueError, match="Existing download"):
+        download_checked("https://example.org/fixture", output, sha, output.stat().st_size + 1)
+    assert output.read_bytes() == b"correct bytes"
+
+
 def test_catalog_contains_actual_pins_no_local_paths():
     catalog = dataset_catalog()
     assert len(catalog["assets"]) == 34

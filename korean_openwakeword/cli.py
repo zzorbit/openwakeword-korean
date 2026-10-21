@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .common import resolved, write_json
 from .project import create_project, load_project, status, default_profile, workload_summary, save_configuration
+from .budgets import DEFAULT_GENERIC_HOURS, DEFAULT_KOREAN_HOURS, DEFAULT_FMA_HOURS
 
 
 def setup_arguments(a):
@@ -13,8 +14,8 @@ def setup_arguments(a):
     basic.add_argument("--originals", type=int, help="증강 전 Positive TTS 원본 수; 시작값 100000")
     basic.add_argument("--rounds", type=int, choices=(1, 3, 5), help="원본당 증강 횟수; 시작값 5")
     basic.add_argument("--updates", type=int, help="모델 한 개의 optimizer update 수; 시작값 100000")
-    basic.add_argument("--generic-hours", type=float, help="일반 비호출 자료 목표 시간; 시작값 7000")
-    basic.add_argument("--korean-hours", type=float, help="한국어 비호출 자료 목표 시간; 시작값 3000")
+    basic.add_argument("--generic-hours", type=float, help=f"일반 비호출 자료 목표 시간; 시작값 {DEFAULT_GENERIC_HOURS}")
+    basic.add_argument("--korean-hours", type=float, help=f"한국어 비호출 자료 목표 시간; 시작값 {DEFAULT_KOREAN_HOURS}")
     basic.add_argument("--noise-hours", type=float, help="환경소음 증강 재료 목표 시간; 시작값 30, 다양성도 별도 확인")
     mode = basic.add_mutually_exclusive_group()
     mode.add_argument("--interactive", dest="interactive", action="store_true", help="작업량 선택 화면 열기")
@@ -87,8 +88,8 @@ def parser():
     a.add_argument("--output", type=Path, required=True)
     sub.add_parser("datasets", help="춘식아에 사용한 공개 자료의 출처·고정 버전·용량 확인")
     a = sub.add_parser("negative-plan", help="상용 비호출의 종류별 준비 목표와 실제 공개 출처 확인 (다운로드 없음)")
-    a.add_argument("--generic-hours", type=float, default=7000)
-    a.add_argument("--korean-hours", type=float, default=3000)
+    a.add_argument("--generic-hours", type=float, default=DEFAULT_GENERIC_HOURS)
+    a.add_argument("--korean-hours", type=float, default=DEFAULT_KOREAN_HOURS)
     a = sub.add_parser("download-source", help="상용 비호출의 원본 묶음 선택·용량 확인·다운로드 (검수·시간 집계 별도)")
     a.add_argument("--source", choices=("audioset_unbalanced", "mls", "yodas2", "fma_large", "fma_full"), required=True)
     a.add_argument("--parts", nargs="+", help="AudioSet/YODAS 묶음 번호 또는 MLS 화자·책 묶음 ID")
@@ -98,13 +99,13 @@ def parser():
     a.add_argument("--max-download-gib", type=float, help="실제 다운로드에 허용할 최대 GiB; 생략하면 메타데이터만 확인")
     a.add_argument("--metadata-only", action="store_true", help="명시한 용량 안에서 제공자 설명·시간·전사만 받고 원본 오디오는 받지 않음")
     a.add_argument("--whole-archive", action="store_true", help="FMA full 전체 ZIP을 명시적으로 선택; 기본은 필요한 원곡만 다운로드")
-    a.add_argument("--hours", type=float, default=1000, help="FMA full 선택 다운로드 목표 시간; 기본 1000")
+    a.add_argument("--hours", type=float, default=DEFAULT_FMA_HOURS, help=f"FMA full 선택 다운로드 목표 시간; 기본 {DEFAULT_FMA_HOURS:g}")
     a.add_argument("--seed", type=int, default=20261021)
     a.add_argument("--license-policy", choices=("allow-derivatives", "commercial-only"), default="allow-derivatives")
     a.add_argument("--exclude", type=Path, help="추가로 제외할 FMA 곡·음악가·원출처 목록 JSON")
     a = sub.add_parser("download-fma", help="FMA full에서 필요한 원곡만 선택·검증·이어받기 (재인코딩 없음)")
     a.add_argument("--output", type=Path, required=True)
-    a.add_argument("--hours", type=float, default=1000)
+    a.add_argument("--hours", type=float, default=DEFAULT_FMA_HOURS)
     a.add_argument("--seed", type=int, default=20261021)
     a.add_argument("--plan-only", action="store_true", help="목록·메타데이터만 받고 고정 선곡·예상 용량 저장; 원곡 다운로드 없음")
     a.add_argument("--max-download-gib", type=float, help="실제 다운로드의 최대 GiB; 원곡을 받으려면 필수")

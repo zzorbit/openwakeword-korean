@@ -20,8 +20,8 @@ from test_korean_library import project
 
 def test_default_targets_batch_and_actual_labels():
     config = default_profile()
-    assert config['targets']['generic_hours'] == 7000
-    assert config['targets']['korean_hours'] == 3000
+    assert config['targets']['generic_hours'] == 3500
+    assert config['targets']['korean_hours'] == 1500
     assert config['training']['updates'] == config['training']['schedule_horizon'] == 100000
     assert training_batch(config) == BATCH
     sizes = {r: 5 for r in BATCH}
@@ -156,7 +156,7 @@ def test_expanded_target_refuses_old_nominal_generic_scale():
     meta = {'positive': {'original_count': 100000, 'rounds': 5, 'feature_rows': 500000},
             'generic_negative': {'legacy_generic_bridge': True, 'publisher_declared_hours': 2000},
             'korean_negative': {'unique_source_hours': 3000}}
-    with pytest.raises(ValueError, match='7000h'):
+    with pytest.raises(ValueError, match='3500h'):
         validate_training_scale(config, meta)
 
 

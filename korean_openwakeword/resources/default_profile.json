@@ -9,8 +9,8 @@
     "positive_originals": 100000,
     "validation_originals": 5000,
     "final_originals": 5000,
-    "generic_hours": 7000,
-    "korean_hours": 3000,
+    "generic_hours": 3500,
+    "korean_hours": 1500,
     "noise_hours_phase1": [
       30,
       50
@@ -151,7 +151,7 @@
   },
   "limitations": [
     "CNN128 and learning settings are recommended starting values selected on Chunsik fixed Development, not a universal Korean optimum; new words need evaluation.",
-    "100k originals, R5, 100k updates per model and 7000/3000h Negative targets are selected new-project budgets, not the historical sample model workload or proven optimal data quantities. Source hours are 70:30; the unchanged Generic/Korean batch sampling is 75:25.",
+    "100k originals, R5, 100k updates per model and 3500/1500h Negative targets are selected new-project budgets, not the historical sample model workload or proven optimal data quantities. Source hours are 70:30; the unchanged Generic/Korean batch sampling is 75:25.",
     "The new 768/256/100/100 batch requires a reviewed nonempty Hard Negative pool; never substitute ordinary Negative silently.",
     "Requested synthetic voice IDs do not prove perceptual diversity.",
     "R5 is a selected default, not proof of monotonic R improvement.",

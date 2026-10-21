@@ -505,6 +505,30 @@ function commercialRecipeV3() {
     assert.equal(JSON.stringify(recipe), before);
     assert.equal(b.helpers.storageEstimate({ ...recipe, automatic_space_plan: { ...recipe.automatic_space_plan, transient_source_working_bytes: undefined } }), null);
   });
+  await test("5000-hour production recipe renders the halved sources and keeps the positive workload", async () => {
+    const recipe = commercialRecipeV3();
+    recipe.generic_hours = 3500; recipe.korean_hours = 1500;
+    recipe.training_negative_plan.generic_hours = 3500;
+    recipe.training_negative_plan.korean_hours = 1500;
+    recipe.training_negative_plan.total_hours = 5000;
+    for (const item of recipe.training_negative_plan.components) item.target_hours /= 2;
+    Object.assign(recipe, { originals: 100000, rounds: 5, updates: 100000,
+      material_acquisition_policy: "automatic_v3",
+      automatic_source_plan: { version: 3, enabled: true, components: recipe.training_negative_plan.components.map(item => ({ ...item,
+        provider: { mixed: "audioset_unbalanced", multilingual: "mls", korean_web: "yodas2" }[item.id] || item.sources[0].id })) },
+      automatic_space_plan: { base_archive_bytes: 31592837906, base_working_bytes: 16106127360,
+        future_buffer_bytes: 8 * 1024 ** 3, transient_source_working_bytes: 8 * 1024 ** 3,
+        transient_archive_bytes: 0, canonical_flac_estimated_bytes: null, estimated_retained_source_bytes: 0 } });
+    const b = browser({ recipeList: [recipe] }); await flush();
+    const estimate = b.helpers.storageEstimate(recipe);
+    assert.equal(estimate.reference, 576000000000);
+    assert.equal(estimate.known, 58368000000);
+    assert.equal(estimate.transient, 62500000000);
+    assert.equal(estimate.total, 753156899858);
+    assert.equal(b.elements.get("adv-generic").placeholder, "3500");
+    assert.equal(b.elements.get("adv-korean").placeholder, "1500");
+    assert.match(b.elements.get("source-plan-note").textContent, /WAV 기준 참고 예산/);
+  });
   await test("canonical trial keeps source working space and automatic YODAS coverage", async () => {
     const recipe = commonRecipe({ id: "trial", korean_hours: 2000 / 3, material_acquisition_policy: "automatic_v3",
       automatic_source_plan: { version: 3, enabled: true, components: [{ id: "yodas2", provider: "yodas2", pool: "korean_negative", target_hours: 2000 / 3 }] },

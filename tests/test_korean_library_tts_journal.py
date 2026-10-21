@@ -174,3 +174,52 @@ def test_completed_candidates_are_reused_and_changed_contract_is_rejected(tmp_pa
     with pytest.raises(ValueError, match="settings changed"):
         tts.generate(project, method="design")
     assert queue.read_bytes() == before
+
+
+def test_positive_journal_cannot_be_rebound_after_contract_is_lost(tmp_path, monkeypatch):
+    monkeypatch.setattr(tts, "_seed", cpu_seed)
+    project = approved_project(tmp_path / "word", "design", count=2)
+    tts.generate(project, method="design", model=SeededQwen(read_json(project)))
+    directory = project.parent / "data/generated/train"
+    queue = directory / "candidates.jsonl"
+    before = queue.read_bytes()
+    (directory / "contract.json").unlink()
+    monkeypatch.setattr(tts, "_load_model", lambda *args: pytest.fail("No TTS before contract verification"))
+    with pytest.raises(ValueError, match="journal exists without its frozen contract"):
+        tts.generate(project, method="design")
+    assert queue.read_bytes() == before
+    assert not (directory / "contract.json").exists()
+
+
+def test_completed_positive_resume_preserves_existing_contract(tmp_path, monkeypatch):
+    monkeypatch.setattr(tts, "_seed", cpu_seed)
+    project = approved_project(tmp_path / "word", "design", count=2)
+    tts.generate(project, method="design", model=SeededQwen(read_json(project)))
+    contract = project.parent / "data/generated/train/contract.json"
+    original_write = tts.write_json
+
+    def preserve_contract(path, value):
+        assert path != contract, "An existing frozen generation contract must not be rewritten"
+        return original_write(path, value)
+
+    monkeypatch.setattr(tts, "write_json", preserve_contract)
+    assert tts.generate(project, method="design")["full_target_reached"]
+
+
+def test_reference_journal_also_requires_its_original_contract(tmp_path, monkeypatch):
+    class ReferenceFixture:
+        def generate_voice_design(self, **kwargs):
+            return [.1 * np.sin(np.arange(8000) / 20)], 16000
+
+    monkeypatch.setattr(tts, "_seed", cpu_seed)
+    project = create_project(tmp_path / "word", "보라야", "bora")
+    tts.generate_references(project, limit=1, model=ReferenceFixture())
+    directory = project.parent / "data/references/train"
+    queue = directory / "references.jsonl"
+    before = queue.read_bytes()
+    (directory / "contract.json").unlink()
+    monkeypatch.setattr(tts, "_load_model", lambda *args: pytest.fail("No TTS before reference contract verification"))
+    with pytest.raises(ValueError, match="journal exists without its frozen contract"):
+        tts.generate_references(project, limit=1)
+    assert queue.read_bytes() == before
+    assert not (directory / "contract.json").exists()

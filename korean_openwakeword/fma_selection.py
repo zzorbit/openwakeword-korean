@@ -18,6 +18,7 @@ import unicodedata
 from urllib.parse import unquote, urlsplit
 
 from .common import digest, identity
+from .budgets import DEFAULT_FMA_HOURS
 
 
 _MEMBER = re.compile(r"fma_full/(\d{3})/(\d{6})\.mp3")
@@ -278,7 +279,7 @@ def _quantities(rows):
         "estimated_member_transfer_bytes": sum(row["compressed_bytes"] + row["estimated_header_bytes"] for row in rows)}
 
 
-def select_fma_tracks(tracks_csv, index_entries, *, target_hours=1000, seed=20261021,
+def select_fma_tracks(tracks_csv, index_entries, *, target_hours=DEFAULT_FMA_HOURS, seed=20261021,
                       license_policy="allow-derivatives", excluded_track_ids=(),
                       excluded_artist_ids=(), excluded_artist_names=(), original_url_prefixes=(),
                       max_artist_hours=None, reserve_hours=None):

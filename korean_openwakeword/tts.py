@@ -74,6 +74,24 @@ def _seed(seed):
         torch.cuda.manual_seed_all(seed)
 
 
+def _generation_journal(output, contract, filename, changed_message):
+    """Load an existing frozen journal without replacing or inventing its contract.
+
+    The caller holds the output writer lock. A journal without its original
+    contract cannot prove which settings produced the saved waveforms.
+    """
+    contract_path = output / "contract.json"
+    existing_contract = contract_path.exists()
+    if existing_contract and read_json(contract_path) != contract:
+        raise ValueError(changed_message)
+    rows = read_rows(output / filename)
+    if not existing_contract:
+        if rows:
+            raise ValueError("Generation journal exists without its frozen contract")
+        write_json(contract_path, contract)
+    return rows
+
+
 @project_storage
 def generate_references(project, split="train", limit=None, model=None):
     root, config = load_project(project)
@@ -88,10 +106,9 @@ def generate_references(project, split="train", limit=None, model=None):
     output = root / "data" / "references" / split
     with writer_lock(output):
         reference_contract = {"tts": config["tts"], "families": families, "text": REFERENCE_TEXT, "implementation_sha256": digest(__file__)}
-        if (output / "contract.json").exists() and read_json(output / "contract.json") != reference_contract:
-            raise ValueError("Reference generation settings changed; version the bank")
-        write_json(output / "contract.json", reference_contract)
-        completed = {r["voice_family_id"]: r for r in read_rows(output / "references.jsonl")}
+        rows = _generation_journal(output, reference_contract, "references.jsonl",
+                                   "Reference generation settings changed; version the bank")
+        completed = {r["voice_family_id"]: r for r in rows}
         for row in completed.values():
             if digest(resolved(root, row["path"])) != row["sha256"]:
                 raise ValueError("Synthetic reference changed")
@@ -157,11 +174,8 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
     settings = {"word": config["wakeword"], "split": split, "tts": config["tts"], "method": method,
                 "references": references, "pilot": pilot, "implementation_sha256": digest(__file__)}
     with writer_lock(output):
-        run_path = output / "contract.json"
-        if run_path.exists() and read_json(run_path) != settings:
-            raise ValueError("TTS model/reference/settings changed; use a new project or versioned output")
-        write_json(run_path, settings)
-        rows = read_rows(output / "candidates.jsonl")
+        rows = _generation_journal(output, settings, "candidates.jsonl",
+                                   "TTS model/reference/settings changed; use a new project or versioned output")
         by_slot = {r["slot"]: r for r in rows if r["qc"]["passed"]}
         attempts_by_slot = Counter(row["slot"] for row in rows)
         for row in rows:
@@ -227,7 +241,8 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
                     break
             print(f"TTS {split}: accepted technical {len(by_slot)}/{target}; attempts {len(rows)}", flush=True)
         passed = sorted(by_slot.values(), key=lambda r: r["slot"])
-        # A single complete manifest is atomically published; partial generation remains resumable.
+        # Atomically publish the currently accepted candidates, including partial
+        # runs. The summary records whether the selected target was reached.
         if not pilot:
             dest = resolved(root, config["manifests"]["positive_" + split])
             temporary = dest.with_suffix(".tmp")
