@@ -559,7 +559,7 @@ def _candidate_rows(catalog, paths, stage, project, workspace, known, progress):
                     "source_construction": "provider-ordered consecutive interview parts; first contiguous 20 or 30 minutes"})
             else:
                 result.append({**row, "original_path": str(original_paths[row["member"]])})
-    result.extend(_zeroth_candidates(project, workspace, known, catalog))
+    result.extend(_zeroth_candidates(project, workspace, known, catalog, paths, progress))
     return result
 
 
@@ -603,17 +603,26 @@ def _join_seoul(row, paths, output):
     return destination, components
 
 
-def _zeroth_candidates(project, workspace, known, catalog):
-    """Reuse the original Zeroth index; reserve whole speakers absent in Train."""
+def _zeroth_candidates(project, workspace, known, catalog, paths=None, progress=None):
+    """Prepare its own held-out source; never require a Zeroth Train import."""
     from .project import load_project
     from .preparation import create_source_index
+    from .studio_data import extract_archive, _emit
     root, _ = load_project(project)
+    workspace = Path(workspace).resolve()
     directory = workspace / "shared" / "zeroth"
     index = root / ".studio" / "materials" / "zeroth_source_index.jsonl"
-    if not index.exists():
-        raise ValueError("Prepare the pinned Zeroth training source/index before common evaluation")
-    excluded = {r.get("canonical_speaker_id") for r in known if r.get("canonical_speaker_id")}
     asset = next(r for r in catalog["archives"] if r["id"] == "zeroth")
+    if not index.exists():
+        archive = (paths or {}).get("zeroth")
+        if archive is None:
+            archive = _download_archive(asset, workspace / "shared" / "downloads", progress)
+        _emit(progress, "공통 평가 한국어 낭독 원본 준비")
+        extract_archive(archive, directory)
+        index.parent.mkdir(parents=True, exist_ok=True)
+        create_source_index(directory, output=index, dataset="zeroth", dataset_id="zeroth",
+                            license=asset["license"], source_url="https://www.openslr.org/40/")
+    excluded = {r.get("canonical_speaker_id") for r in known if r.get("canonical_speaker_id")}
     grouped = defaultdict(list)
     for row in read_rows(index):
         speaker = row.get("canonical_speaker_id")

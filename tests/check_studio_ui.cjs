@@ -245,7 +245,7 @@ function commercialRecipeV3() {
       assert.equal(amount(groups[0], "호출어 음성"), specs[index][1].toLocaleString("ko-KR") + "개");
       assert.equal(amount(groups[0], "유사어 음성"), specs[index][2].toLocaleString("ko-KR") + "개");
       assert.equal(amount(groups[0], "일반 비호출 자료"), specs[index][3].toLocaleString("ko-KR") + "시간");
-      assert.equal(amount(groups[0], "한국어 비호출 자료"), specs[index][4].toLocaleString("ko-KR") + "시간");
+      assert.equal(amount(groups[0], "한국어 비호출 자료"), specs[index][4].toLocaleString("ko-KR", { maximumFractionDigits: 1 }) + "시간");
       assert.equal(amount(groups[1], "호출어 음성"), "5,000개");
       assert.equal(amount(groups[1], "일반 비호출 자료"), "12시간");
       assert.equal(amount(groups[1], "한국어 비호출 자료"), "18시간");
@@ -361,6 +361,82 @@ function commercialRecipeV3() {
     const restored = sourceEntries(material(b.elements.get("source-preview").children[0], "일반 비호출 자료"))[2];
     assert.equal(withClass(restored, "source-quantity")[0].textContent, "준비 목표 1,000시간");
     assert.match(textOf(restored), /선택 다운로드.*원본 MP3 보존/);
+  });
+  await test("new trial projects show automatically selected Korean sources without a manual shortage or legacy Zeroth", async () => {
+    const recipe = commonRecipe({ id: "trial", korean_hours: 2000 / 3, material_acquisition_policy: "automatic_v1",
+      automatic_source_plan: { version: 1, enabled: true, components: [{ id: "korean", provider: "yodas2", pool: "korean_negative", target_hours: 2000 / 3 }] } });
+    recipe.assets = recipe.assets.filter(item => item.id !== "zeroth");
+    const b = browser({ recipeList: [recipe] }); await flush();
+    const training = b.elements.get("source-preview").children[0], korean = material(training, "한국어 비호출 자료");
+    assert.equal(withClass(korean, "material-description")[0].textContent, "한국어 대화 · 낭독 등 음성");
+    assert.equal(withClass(korean, "material-amount")[0].textContent, "666.7시간");
+    assert.deepEqual(sourceEntries(korean).map(row => withClass(row, "source-name")[0].textContent), ["YODAS2 한국어"]);
+    assert.match(textOf(korean), /목표량 자동 선정/);
+    assert.equal(textOf(training).includes("직접 준비할"), false);
+    assert.equal(textOf(training).includes("Zeroth"), false);
+    assert.match(textOf(material(training, "소음 증강 음원")), /학습용 한국어 원본 음원 재사용/);
+    assert.match(textOf(material(training, "일반 비호출 자료")), /2,000시간/);
+    assert.equal(b.elements.get("source-plan-note").hidden, false);
+    assert.match(b.elements.get("source-plan-note").textContent, /추가 다운로드 용량은 목록 확정 후/);
+    b.elements.get("adv-korean").value = "100"; b.elements.get("adv-korean").handlers.input();
+    assert.equal(withClass(sourceEntries(material(b.elements.get("source-preview").children[0], "한국어 비호출 자료"))[0], "source-quantity")[0].textContent, "준비 목표 100시간");
+  });
+  await test("automatic production omits unused legacy downloads and never presents a planned corpus as admitted", async () => {
+    const recipe = commercialRecipeV3();
+    recipe.material_acquisition_policy = "automatic_v1";
+    recipe.automatic_source_plan = { version: 1, enabled: true, components: recipe.training_negative_plan.components.map(item => ({ ...item, provider: item.sources[0].id })) };
+    recipe.assets = recipe.assets.filter(item => !["generic", "zeroth", "audioset", "fma", "fma_metadata", "audioset_segments", "audioset_ontology"].includes(item.id));
+    const b = browser({ recipeList: [recipe] }); await flush();
+    const training = b.elements.get("source-preview").children[0];
+    assert.match(textOf(training), /AudioSet.*MLS.*FMA full/);
+    assert.equal(textOf(training).includes("openWakeWord"), false);
+    assert.equal(textOf(training).includes("Zeroth"), false);
+    assert.equal(textOf(training).includes("준비 완료"), false);
+    assert.equal(textOf(training).includes("검수 승인"), false);
+    assert.equal(b.calls.some(call => /download|prepare/.test(call.url)), false);
+  });
+  await test("historical bounded recipes retain explicit manual shortages and no automatic-acquisition claim", async () => {
+    const b = browser({ recipeList: [commonRecipe({ id: "trial", korean_hours: 2000 / 3 })] }); await flush();
+    assert.match(textOf(material(b.elements.get("source-preview").children[0], "한국어 비호출 자료")), /직접 준비할/);
+    assert.equal(b.elements.get("source-plan-note").hidden, true);
+  });
+  await test("minimum storage uses known payloads and updates with custom N, rounds and source hours", async () => {
+    const recipe = commercialRecipeV3();
+    Object.assign(recipe, { originals: 100000, rounds: 5, material_acquisition_policy: "automatic_v1",
+      automatic_source_plan: { version: 1, enabled: true, components: [{ pool: "generic_negative" }, { pool: "korean_negative" }] },
+      automatic_space_plan: { base_archive_bytes: 1000, base_working_bytes: 2000, future_buffer_bytes: 3000, estimated_original_archive_bytes: 99 * 1024 ** 4 } });
+    const before = JSON.stringify(recipe);
+    const b = browser({ recipeList: [recipe], initialState: { projects: [], system: { free_bytes: 1000 } } }); await flush();
+    const expected = (generic, korean, originals, rounds) => 6000 + Math.ceil((generic + korean) * 3600 * 32000)
+      + Math.ceil((generic + korean) * 3600 / 2) * 6144 + Math.ceil(originals * rounds * 6144);
+    assert.equal(b.helpers.minimumStorage(recipe), expected(7000, 3000, 100000, 5));
+    assert.equal(b.helpers.bytes(1024 ** 4), "1 TiB");
+    assert.match(b.elements.get("source-plan-note").textContent, /최소 저장 공간 .*TiB \+ 원본·압축파일 추가/);
+    assert.match(b.elements.get("source-plan-note").textContent, /현재 여유 공간보다 큽니다/);
+    b.elements.get("adv-generic").value = "3500"; b.elements.get("adv-generic").handlers.input();
+    b.elements.get("adv-korean").value = "1500"; b.elements.get("adv-korean").handlers.input();
+    b.elements.get("adv-originals").value = "1000"; b.elements.get("adv-originals").handlers.input();
+    b.elements.get("adv-rounds").value = "1"; b.elements.get("adv-rounds").handlers.input();
+    assert.match(b.elements.get("source-plan-note").textContent, new RegExp(b.helpers.bytes(expected(3500, 1500, 1000, 1)).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.equal(JSON.stringify(recipe), before);
+    assert.equal(b.helpers.minimumStorage(commonRecipe()), null);
+  });
+  await test("training source coverage separates targets, measured candidates, admission and nominal legacy features", async () => {
+    const project = { id: "bora", wakeword: "보라야", status: "running", training_materials: {
+      targets: { generic_negative: 7000, korean_negative: 3000 }, candidate: { generic_negative: 24.5, korean_negative: 0 }, admitted: null, generic_publisher_nominal_hours: null
+    }, progress: { done: 2.5, total: 10, unit: "audio_hours", label: "한국어 원본 검사" } };
+    const b = browser({ initialState: { projects: [project] } }); await flush();
+    assert.equal(b.elements.get("training-material-coverage").hidden, false);
+    assert.match(textOf(b.elements.get("training-material-coverage-list")), /기술 검사 24.5시간 · 검수 승인 확인 전 \/ 목표 7,000시간/);
+    assert.match(textOf(b.elements.get("training-material-coverage-list")), /기술 검사 0시간 · 검수 승인 확인 전 \/ 목표 3,000시간/);
+    assert.match(b.elements.get("progress-label").textContent, /2.5 \/ 10시간/);
+    assert.match(b.elements.get("eta").textContent, /처리 속도를 측정한 뒤/);
+    project.training_materials = { targets: { generic_negative: 2000, korean_negative: 1 }, candidate: { generic_negative: 0, korean_negative: 1.02 }, admitted: { generic_negative: 0, korean_negative: 1.01 }, generic_publisher_nominal_hours: 2000 };
+    await b.tick();
+    assert.match(textOf(b.elements.get("training-material-coverage-list")), /공개 특징 명목 2,000시간 \/ 목표 2,000시간/);
+    assert.match(textOf(b.elements.get("training-material-coverage-list")), /기술 검사 1.02시간 · 검수 승인 1.01시간/);
+    delete project.training_materials; await b.tick();
+    assert.equal(b.elements.get("training-material-coverage").hidden, true);
   });
   await test("common evaluation groups each real source once and keeps archive bytes with quantity", async () => {
     const b = browser({ recipeList: [commonRecipe()] }); await flush();

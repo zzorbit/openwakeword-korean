@@ -14,6 +14,32 @@ from korean_openwakeword import evaluation_materials as module
 from korean_openwakeword.common import digest, read_json
 
 
+def test_common_zeroth_bootstraps_without_training_import_and_reserves_speakers(tmp_path, monkeypatch):
+    from korean_openwakeword.project import create_project
+    project = create_project(tmp_path / "word", "보라야", "bora")
+    archive = tmp_path / "zeroth_fixture.tar.gz"
+    with tarfile.open(archive, "w:gz") as target:
+        for speaker in ("001", "002"):
+            name = speaker + "_001"
+            wav = io.BytesIO()
+            sf.write(wav, np.sin(np.arange(16000) * .04) * .1, 16000, format="WAV", subtype="PCM_16")
+            for relative, data in ((f"train_data_01/{speaker}/{name}.wav", wav.getvalue()),
+                                   (f"train_data_01/{speaker}/{speaker}.trans.txt", (name + " 보라야 시험\n").encode())):
+                member = tarfile.TarInfo(relative); member.size = len(data)
+                target.addfile(member, io.BytesIO(data))
+    monkeypatch.setattr(module, "_download_archive", lambda *a, **k: pytest.fail("Already verified archive is reused"))
+    catalog = {"archives": [{"id": "zeroth", "license": "fixture"}]}
+    known = [{"canonical_speaker_id": "zeroth:speaker:001"}]
+    first = module._zeroth_candidates(project, tmp_path, known, catalog, {"zeroth": archive})
+    assert len(first) == 1 and first[0]["canonical_speaker_id"] == "zeroth:speaker:002"
+    assert first[0]["split"] == "validation" and first[0]["original_provider_split"] == "train"
+    assert Path(first[0]["original_path"]).is_file()
+    assert not list((project.parent / "data").rglob("*admission*"))
+    from korean_openwakeword import studio_data
+    monkeypatch.setattr(studio_data, "extract_archive", lambda *a, **k: pytest.fail("Existing index is reused"))
+    assert module._zeroth_candidates(project, tmp_path, known, catalog) == first
+
+
 def test_catalog_has_real_pins_and_all_seven_buckets():
     catalog = module.evaluation_material_catalog()
     assert catalog["target_hours_by_bucket"] == module.BUCKET_HOURS

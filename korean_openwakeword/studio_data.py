@@ -19,7 +19,7 @@ import zipfile
 
 import requests
 
-from .common import (bound_file, digest, identity, now, read_json, read_rows,
+from .common import (bound_file, digest, identity, iter_rows, now, read_json, read_rows,
                      resolved, write_json, writer_lock)
 from .downloads import dataset_catalog, download_checked
 from .project import load_project
@@ -89,9 +89,44 @@ def _preset(preset):
     return preset
 
 
-def material_recipe(preset="check", workspace=None, evaluation_policy=None, noise_material_policy=None):
+def _automatic_source_plan(preset, generic_hours=7000, korean_hours=None):
+    """Offline source targets; neither downloaded nor admitted duration."""
+    preset = _preset(preset)
+    if preset == "check":
+        components = []
+    elif preset == "test":
+        components = [{"id": "yodas2", "provider": "yodas2", "pool": "korean_negative",
+                       "name": "한국어 웹 음성", "target_hours": 2000 / 3 if korean_hours is None else korean_hours}]
+    else:
+        from .commercial_sources import commercial_negative_plan
+        plan = commercial_negative_plan(generic_hours, 3000 if korean_hours is None else korean_hours)
+        components = [{"id": row["sources"][0]["id"], "provider": row["sources"][0]["id"],
+                       "pool": row["pool"], "name": row["name"], "target_hours": row["target_hours"]}
+                      for row in plan["components"]]
+    return {"version": 1, "enabled": True, "components": components,
+            "state": "requires_download_preparation_and_review",
+            "scope": "Unique technically usable Train targets; actual review/admission remains required."}
+
+
+def _automatic_space_plan(preset, config=None):
+    from .automatic_sources import automatic_storage_plan
+    preset = _preset(preset)
+    default_generic, default_korean, originals, rounds = {
+        "check": (2000, 1, 1000, 1), "test": (2000, 2000 / 3, 20000, 3),
+        "full": (7000, 3000, 100000, 5)}[preset]
+    selected = config or {"targets": {"positive_originals": originals, "generic_hours": default_generic,
+                                     "korean_hours": default_korean}, "augmentation_rounds": rounds}
+    return automatic_storage_plan(selected, generic_hours=selected["targets"]["generic_hours"],
+                                  korean_hours=selected["targets"]["korean_hours"], preset=preset)
+
+
+def material_recipe(preset="check", workspace=None, evaluation_policy=None, noise_material_policy=None,
+                    material_acquisition_policy=None):
     """Preview known downloads and limits without accessing network or audio."""
     preset = _preset(preset)
+    if material_acquisition_policy not in (None, "automatic_v1"):
+        raise ValueError("Unsupported material acquisition policy")
+    automatic = material_acquisition_policy == "automatic_v1"
     policy = noise_material_policy or ("reuse_negative_waveforms" if preset == "full" else "official_example")
     if policy not in ("official_example", "reuse_negative_waveforms"):
         raise ValueError("Unsupported training-noise material policy")
@@ -101,6 +136,8 @@ def material_recipe(preset="check", workspace=None, evaluation_policy=None, nois
     assets = [a for a in _official_assets() if a["id"] not in ("dns_fan", "dns_door", "electronic_validation")]
     if policy == "reuse_negative_waveforms":
         assets = [a for a in assets if a["id"] not in ("audioset", "audioset_segments", "audioset_ontology", "fma", "fma_metadata")]
+    if automatic and preset in ("test", "full"):
+        assets = [a for a in assets if a["id"] != "zeroth" and not (preset == "full" and a["id"] == "generic")]
     for asset in assets:
         path = _cached_asset(asset, Path(workspace).resolve() / "shared" / "downloads") if workspace else None
         asset["local_path"] = str(path) if path else None
@@ -140,6 +177,21 @@ def material_recipe(preset="check", workspace=None, evaluation_policy=None, nois
         if preset == "full":
             from .commercial_sources import commercial_negative_plan
             result["training_negative_plan"] = commercial_negative_plan()
+    if automatic:
+        result["material_acquisition_policy"] = material_acquisition_policy
+        result["automatic_source_plan"] = _automatic_source_plan(preset)
+        result["known_download_bytes_scope"] = "Pinned base and common-evaluation archives only; automatic provider shards/tracks are resolved and preflighted separately."
+        result["automatic_target_hours"] = ({"generic_raw": 7000, "korean_train": 3000} if preset == "full"
+            else {"generic_nominal": 2000, "korean_train": 2000 / 3 if preset == "test" else 1})
+        result["shortages"] = []
+        if preset != "check":
+            result["limitations"] = [text for text in result["limitations"] if not text.startswith((
+                "The public Generic", "This download still supplies", "Held-out Development"))]
+            if preset == "test":
+                result["limitations"].append("Generic 2,000h are publisher-nominal feature-only hours; Korean audio is automatically selected from pinned YODAS2 sources.")
+            result["limitations"].extend([
+                "Additional source download bytes depend on the pinned shards and selected original tracks; preflight each transfer before downloading.",
+                "Provider hours, technical usable hours, representative review and admitted hours are distinct; failed QC may require another shard."])
     if evaluation_policy and evaluation_policy.get("evaluation_materials_recipe") in (5, 6):
         from .evaluation_materials import evaluation_material_catalog, evaluation_material_preview
         from .evaluation_rir import common_rir_preview, common_rir_catalog
@@ -158,6 +210,17 @@ def material_recipe(preset="check", workspace=None, evaluation_policy=None, nois
             result["evaluation_source_scope"] = "common_30h_only"
             result["limitations"] = [text for text in result["limitations"] if "reserved Korean read speech" not in text]
             result["limitations"].append("Only the common corpus and its held-out RIRs enter this benchmark; legacy supplemental clips and training-source reserves are excluded.")
+    if automatic:
+        space = _automatic_space_plan(preset)
+        # Include the pinned base/evaluation archives separately from provider
+        # audio forecasts; this is a planning estimate, not a disk reservation.
+        base = result["known_download_bytes"]
+        working = 15 * 1024**3
+        result["automatic_space_plan"] = {**space, "base_archive_bytes": base,
+            "base_working_bytes": working,
+            "minimum_total_bytes": base + working + space["minimum_known_bytes"] + space["future_buffer_bytes"],
+            "estimated_total_bytes": base + working + space["estimated_total_bytes"]}
+        result["estimated_workspace_bytes"] = result["automatic_space_plan"]["estimated_total_bytes"]
     return result
 
 
@@ -425,8 +488,33 @@ def _write_rows(path, rows):
     return {"path": str(path.resolve()), "sha256": digest(path)}
 
 
+def _candidate_pool_hours(root, queues):
+    """Measure technical raw candidates without treating them as approved."""
+    from .data import coverage_interval, union_hours
+    intervals = {"generic_negative": {}, "korean_negative": {}}
+    seen = {pool: set() for pool in intervals}
+    for queue in queues:
+        selected = set(queue.get("pools", ())).intersection(intervals)
+        if not selected or queue.get("evaluation_only"):
+            continue
+        for row in iter_rows(resolved(root, queue["pool_manifest"])):
+            if row.get("category") == "rir" or row.get("split") != "train":
+                continue
+            start, end = row.get("start_s", 0), row.get("end_s", row.get("duration_s", 0))
+            for pool in selected:
+                if pool == "korean_negative" and not (row.get("speech") and row.get("language") in ("ko", "kor", "Korean")):
+                    continue
+                exact = (row["sha256"], start, end)
+                if exact in seen[pool]:
+                    continue
+                seen[pool].add(exact)
+                source, interval = coverage_interval(row, start, end)
+                intervals[pool].setdefault(source, []).append(interval)
+    return {pool: union_hours(values) for pool, values in intervals.items()}
+
+
 def prepare_materials(project_path, workspace, preset="check", progress=None, evaluation_policy=None,
-                      noise_material_policy=None):
+                      noise_material_policy=None, material_acquisition_policy=None):
     """Download, normalize and reserve sources, then return actual review gates."""
     from .preparation import create_source_index, prepare_public_audio
     from .assets import import_generic
@@ -439,7 +527,9 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
         raise ValueError("Public learning material must not be stored inside .codex")
     shared = workspace / "shared"
     downloads = shared / "downloads"
-    recipe = material_recipe(preset, workspace, evaluation_policy, noise_material_policy)
+    recipe = material_recipe(preset, workspace, evaluation_policy, noise_material_policy,
+                             material_acquisition_policy)
+    automatic = recipe.get("material_acquisition_policy") == "automatic_v1"
     workspace.mkdir(parents=True, exist_ok=True)
     # A minimum preflight before any download; actual per-file checks also run.
     missing = sum(a["size_bytes"] for a in recipe["assets"] if a["availability"] == "download_required")
@@ -455,14 +545,32 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
         rir_archive = common_rir_catalog()["archive"]
         if not (downloads / "common_rir" / rir_archive["filename"]).is_file():
             missing += rir_archive["size_bytes"]
-    if shutil.disk_usage(workspace).free < missing + 4 * 1024**3:
+    reserve = 4 * 1024**3
+    if automatic and recipe["preset"] in ("test", "full"):
+        space = _automatic_space_plan(recipe["preset"], config)
+        ongoing = (root / ".studio/materials/automatic_sources_v1/request.json").is_file()
+        if not ongoing:
+            reserve = max(reserve, space["minimum_known_bytes"] + space["future_buffer_bytes"] + 15 * 1024**3)
+        check = {**space, "missing_base_archive_bytes": missing, "required_free_bytes": missing + reserve,
+                 "available_bytes": shutil.disk_usage(workspace).free, "provider_request_exists": ongoing,
+                 "audio_download_started": False, "created_at": now()}
+        write_json(root / ".studio/materials/automatic_base_preflight.json", check)
+    free = shutil.disk_usage(workspace).free
+    if free < missing + reserve:
+        if automatic:
+            required = missing + reserve
+            raise ValueError(f"자료 준비 공간이 부족합니다. 최소 필요 {required / 1024**3:,.1f} GiB / "
+                f"선택 드라이브 여유 {free / 1024**3:,.1f} GiB / 부족 {(required - free) / 1024**3:,.1f} GiB. "
+                "이는 정규화 음원·feature·미다운로드 기본 자료의 하한이며, 추가 원본 용량은 별도입니다. "
+                "목표량을 줄이지 않고 다운로드 전에 중단했습니다.")
         raise ValueError("Not enough selected-workspace space for the displayed data recipe and preparation")
     assets = {a["id"]: a for a in recipe["assets"]}
     legacy_extra = root / ".studio/materials/extra_source_index.jsonl"
     if recipe.get("recipe_version") != 6 and legacy_extra.exists() and any(r.get("canonical_source_id") in ("freesound:102956", "freesound:13613") for r in read_rows(legacy_extra)):
         assets.update({a["id"]: a for a in _official_assets() if a["id"] in ("dns_door", "electronic_validation")})
     paths = {key: _download(asset, downloads, progress) for key, asset in assets.items()}
-    extract_archive(paths["zeroth"], shared / "zeroth")
+    if "zeroth" in paths:
+        extract_archive(paths["zeroth"], shared / "zeroth")
     if recipe["noise_material_policy"] == "official_example":
         extract_archive(paths["audioset"], shared / "audioset")
         # The publisher's tracks.csv expands to 260,414,445 bytes. Keep a
@@ -495,13 +603,13 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
             "language": "unknown", "speech": None if key == "electronic_validation" else False,
             "speech_presence": "unknown" if key == "electronic_validation" else "declared",
             "category_basis": "ESC-50 electronic alarm (music/electronic evaluation category)" if key == "electronic_validation" else "Pinned DNS Freesound environmental source metadata"})
-    sources = [
-        {"id": "zeroth", "directory": shared / "zeroth", "adapter": "zeroth", "license": assets["zeroth"]["license"],
-         "source_url": "https://www.openslr.org/40/", "target_hours": 1, "validation_fraction": .1, "pools": ["korean_negative", "noise"]},
-        {"id": "mit_rir", "directory": mit, "adapter": "mit_rir", "validation_fraction": 0, "pools": ["rir"]},
-    ]
+    sources = []
+    if "zeroth" in paths:
+        sources.append({"id": "zeroth", "directory": shared / "zeroth", "adapter": "zeroth", "license": assets["zeroth"]["license"],
+            "source_url": "https://www.openslr.org/40/", "target_hours": 1, "validation_fraction": .1, "pools": ["korean_negative", "noise"]})
+    sources.append({"id": "mit_rir", "directory": mit, "adapter": "mit_rir", "validation_fraction": 0, "pools": ["rir"]})
     if recipe["noise_material_policy"] == "official_example":
-        sources[1:1] = [
+        sources[-1:-1] = [
             {"id": "audioset", "directory": shared / "audioset", "adapter": "audioset", "metadata": paths["audioset_segments"],
              "ontology": paths["audioset_ontology"], "validation_fraction": 0, "pools": ["noise"]},
             {"id": "fma", "directory": shared / "fma_1h", "adapter": "fma", "metadata": tracks, "validation_fraction": 0, "pools": ["noise"]},
@@ -511,59 +619,103 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
         _write_rows(extra_index, extra_rows)
         sources.append({"id": "legacy_evaluation_smoke", "directory": extra,
                         "index": extra_index, "validation_fraction": 0, "pools": ["noise"]})
+    def prepare_source(source):
+        name = source["id"]
+        provided_index = source.get("source_index") or source.get("index")
+        if isinstance(provided_index, dict):
+            provided_index = bound_file(root, provided_index)
+        index = Path(provided_index) if provided_index else stage / (name + "_source_index.jsonl")
+        if not provided_index:
+            create_source_index(source["directory"], output=index, dataset=source["adapter"],
+                                dataset_id=name, metadata=source.get("metadata"), ontology=source.get("ontology"),
+                                license=source.get("license"), source_url=source.get("source_url"))
+        # Automatic refill adds a new immutable preparation when its candidate
+        # index grows; it must never rewrite a partial/finished old preparation.
+        suffix = "_" + digest(index)[:16] if provided_index else ""
+        return prepare_public_audio(project_path, input_directory=source["directory"], output=stage / (name + suffix),
+                    source_index=index, target_hours=source.get("target_hours"),
+                    validation_fraction=source.get("validation_fraction", 0), representatives_per_stratum=2)
+
+    automatic_preparation = None
+    if automatic and recipe["preset"] in ("test", "full"):
+        from .automatic_sources import prepare_automatic_sources
+        automatic_preparation = prepare_automatic_sources(project_path, workspace,
+            generic_hours=config["targets"]["generic_hours"], korean_hours=config["targets"]["korean_hours"],
+            preset=recipe["preset"], progress=progress, qualify_source=prepare_source)
+        for supplied in automatic_preparation["sources"]:
+            # Provider selection records describe their Negative purpose. The
+            # Studio review explicitly admits the same originals for mixing,
+            # without editing those immutable provider records or old consent.
+            pools = list(supplied["pools"])
+            if set(pools).intersection(("generic_negative", "korean_negative")) and "noise" not in pools:
+                pools.append("noise")
+            sources.append({**supplied, "pools": pools})
     queues, reserves, preparations = [], [], []
     for order, source in enumerate(sources):
         name = source["id"]
         _emit(progress, "자료 변환·분리: " + name, order, len(sources), "datasets")
-        index = source.get("index") or stage / (name + "_source_index.jsonl")
-        if "index" not in source:
-            create_source_index(source["directory"], output=index, dataset=source["adapter"],
-                                dataset_id=name, metadata=source.get("metadata"), ontology=source.get("ontology"),
-                                license=source.get("license"), source_url=source.get("source_url"))
-        record = prepare_public_audio(project_path, input_directory=source["directory"], output=stage / name,
-                    source_index=index, target_hours=source.get("target_hours"), validation_fraction=source["validation_fraction"],
-                    representatives_per_stratum=2)
+        record = source.get("prepared") or prepare_source(source)
         binding = record["preparation"]
         preparation = binding["path"]
         queues.append({"id": "materials_" + name, "kind": "content", "queue": record["artifacts"]["representative_queue"]["path"],
                        "pool_manifest": record["artifacts"]["source_manifest"]["path"], "preparation": preparation,
-                       "pools": source["pools"], "label": name + " 대표 음원 확인"})
+                        "pools": source["pools"], "label": name + " 대표 음원 확인",
+                        **({"automatic_component": source["component"]} if source.get("component") else {})})
+        if source.get("component"):
+            title = {"audioset_unbalanced": "AudioSet 일반 오디오 확인", "mls": "MLS 다국어 낭독 확인",
+                     "fma_full": "FMA 음악 확인", "yodas2": "YODAS2 한국어 음성 확인"}[source["component"]]
+            queues[-1].update(title=title, label=title,
+                description="자료 종류가 맞고 소리가 깨지지 않으면 보존하고, 이상한 항목만 폐기·재검수로 표시하세요.")
         if recipe.get("recipe_version") != 6:
             reserves.extend(read_rows(record["artifacts"]["validation_reserve"]["path"]))
-        preparations.append({"id": name, "preparation": binding, "train_hours": record["train_hours"],
+        preparations.append({"id": name, "preparation": binding, "pools": list(source["pools"]), "train_hours": record["train_hours"],
                              "validation_hours": record["validation_hours"], "target_met": record["target_met"]})
     validation = _write_rows(stage / "noise_validation.jsonl", [r for r in reserves if r["category"] != "rir"])
     negative = _write_rows(stage / "negative_validation.jsonl", [{**r, "kind": "negative", "calls": []}
                           for r in reserves if r["category"] != "rir"])
     generic_output = resolved(root, config["pool_features"]["generic_negative"])
-    metadata_path = generic_output / "metadata.json"
-    if metadata_path.is_file():
-        metadata = read_json(metadata_path)
-        if (metadata.get("feature_sha256") != assets["generic"]["sha256"]
-                or Path(metadata.get("feature_path", "")).resolve() != paths["generic"].resolve()
-                or metadata.get("canonical_frontend_assets") != {"melspectrogram": PINNED_ASSETS["melspectrogram.onnx"], "embedding": PINNED_ASSETS["embedding_model.onnx"]}):
-            raise ValueError("Existing Generic import differs from the studio recipe")
+    if "generic" in paths:
+        metadata_path = generic_output / "metadata.json"
+        if metadata_path.is_file():
+            metadata = read_json(metadata_path)
+            if (metadata.get("feature_sha256") != assets["generic"]["sha256"]
+                    or Path(metadata.get("feature_path", "")).resolve() != paths["generic"].resolve()
+                    or metadata.get("canonical_frontend_assets") != {"melspectrogram": PINNED_ASSETS["melspectrogram.onnx"], "embedding": PINNED_ASSETS["embedding_model.onnx"]}):
+                raise ValueError("Existing Generic import differs from the studio recipe")
+        else:
+            _emit(progress, "일반 비호출 특징 전체 검사·연결")
+            metadata = import_generic(paths["generic"], generic_output, {"model_sha256": {
+                "melspectrogram": PINNED_ASSETS["melspectrogram.onnx"], "embedding": PINNED_ASSETS["embedding_model.onnx"]}})
+        generic_import = {"features": str(paths["generic"]), "output": str(generic_output), "imported": True,
+                          "publisher_declared_hours": metadata["publisher_declared_hours"], "unique_source_hours": None}
     else:
-        _emit(progress, "일반 비호출 특징 전체 검사·연결")
-        metadata = import_generic(paths["generic"], generic_output, {"model_sha256": {
-            "melspectrogram": PINNED_ASSETS["melspectrogram.onnx"], "embedding": PINNED_ASSETS["embedding_model.onnx"]}})
+        generic_import = {"mode": "raw_generic", "output": str(generic_output), "imported": False,
+                          "publisher_declared_hours": None, "unique_source_hours": None,
+                          "scope": "Raw sources are technical candidates; hours become admitted only after review."}
     shortages = list(recipe["shortages"])
-    if config["targets"]["generic_hours"] > 2000:
-        shortages.append(f"Generic target {config['targets']['generic_hours']}h exceeds the available publisher nominal 2000h")
-    if config["targets"]["korean_hours"] > 1:
+    if automatic_preparation:
+        shortages.extend(automatic_preparation.get("shortages", []))
+    if "generic" in paths and config["targets"]["generic_hours"] > generic_import["publisher_declared_hours"]:
+        shortages.append(f"Generic target {config['targets']['generic_hours']}h exceeds the available publisher nominal {generic_import['publisher_declared_hours']:g}h; choose raw Generic preparation for this budget")
+    if (not automatic or recipe["preset"] == "check") and config["targets"]["korean_hours"] > 1:
         shortages.append(f"Korean target {config['targets']['korean_hours']}h exceeds this bounded 1h preparation; add reviewed admissions")
     if any(not r["target_met"] for r in preparations):
         shortages.append("One or more source preparations did not reach the actual unique Train duration quota")
     result = {"kind": "studio_material_preparation_v1", "project": str(project_path), "preset": _preset(preset),
               "noise_material_policy": recipe["noise_material_policy"],
               "state": "awaiting_human_review", "review_queues": queues, "preparations": preparations,
-              "generic_feature_import": {"features": str(paths["generic"]), "output": str(generic_output), "imported": True,
-                  "publisher_declared_hours": metadata["publisher_declared_hours"], "unique_source_hours": None},
+              "generic_feature_import": generic_import,
               "validation_noise_manifest": validation, "negative_validation_manifest": negative,
               "validation_source_count": len(reserves), "validation_unique_source_hours": sum(r["duration_s"] for r in reserves) / 3600,
               "shortages": shortages, "limitations": recipe["limitations"], "human_listened_count": 0,
               "training_admitted": False, "Final_accessed": False, "created_at": now()}
-    legacy_result = stage / "preparation_result.json"
+    if automatic:
+        result.update(material_acquisition_policy=material_acquisition_policy,
+                      automatic_source_plan=_automatic_source_plan(recipe["preset"], config["targets"]["generic_hours"], config["targets"]["korean_hours"]),
+                      candidate_unique_hours=_candidate_pool_hours(root, queues))
+        if automatic_preparation:
+            result["automatic_source_preparation"] = {key: value for key, value in automatic_preparation.items() if key != "sources"}
+    legacy_result = stage / ("preparation_result_automatic_v1.json" if automatic else "preparation_result.json")
     if not legacy_result.exists():
         write_json(legacy_result, result)
     if evaluation_policy and evaluation_policy.get("evaluation_materials_recipe") in (5, 6):
@@ -718,6 +870,39 @@ def _reused_noise_shortages(root, config, receipts):
     return list(dict.fromkeys(shortages))
 
 
+def _automatic_admission_coverage(root, prepared, receipts):
+    """Do not let one oversized shard replace another source's target."""
+    from .data import coverage_interval, union_hours
+    components = prepared.get("automatic_source_plan", {}).get("components", [])
+    targets = {row["provider"]: row["target_hours"] for row in components}
+    pools = {row["provider"]: row["pool"] for row in components}
+    known = {digest(resolved(root, queue["preparation"])): queue["automatic_component"]
+             for queue in prepared.get("review_queues", []) if queue.get("automatic_component")}
+    intervals, seen = {key: {} for key in targets}, {key: set() for key in targets}
+    for binding in receipts:
+        path = bound_file(root, binding) if isinstance(binding, dict) else resolved(root, binding)
+        record = read_json(path)
+        component = known.get(record.get("request", {}).get("preparation", {}).get("sha256"))
+        if component not in targets:
+            continue
+        manifest = record.get("source_manifests", {}).get(pools[component])
+        if not manifest:
+            continue
+        for row in iter_rows(bound_file(root, manifest)):
+            start, end = row.get("start_s", 0), row.get("end_s", row.get("duration_s", 0))
+            exact = (row["sha256"], start, end)
+            if exact in seen[component]:
+                continue
+            seen[component].add(exact)
+            source, interval = coverage_interval(row, start, end)
+            intervals[component].setdefault(source, []).append(interval)
+    hours = {key: union_hours(values) for key, values in intervals.items()}
+    shortages = [f"{key}: reviewed unique Train {hours[key]:g}h is below selected source target {target:g}h"
+                 for key, target in targets.items() if hours[key] + 1e-9 < target]
+    return {"targets": targets, "admitted_unique_hours": hours, "shortages": shortages,
+            "target_met": not shortages}
+
+
 def admit_materials(project_path, prepared, answers_by_preparation=None, *, admissions=()):
     """Consume actual saved review answers and connect their exact admitted pools."""
     from .preparation import apply_prepared_review, connect_materials
@@ -801,6 +986,10 @@ def admit_materials(project_path, prepared, answers_by_preparation=None, *, admi
         shortages.append(f"Korean unique admitted Train duration {durations['korean_negative']:g}h is below selected {korean_target:g}h")
     if prepared.get("noise_material_policy") == "reuse_negative_waveforms":
         shortages.extend(_reused_noise_shortages(root, config, receipts))
+    automatic_coverage = None
+    if prepared.get("material_acquisition_policy") == "automatic_v1":
+        automatic_coverage = _automatic_admission_coverage(root, prepared, receipts)
+        shortages.extend(automatic_coverage["shortages"])
     material_coverage = duration_budget = None
     if prepared.get("recipe_version") in (5, 6):
         from .evaluation_materials import evaluation_material_coverage
@@ -825,6 +1014,7 @@ def admit_materials(project_path, prepared, answers_by_preparation=None, *, admi
         return {"state": "awaiting_additional_materials", "admissions": receipts, "pools_ready": [],
                 "shortages": shortages, "admitted_unique_hours": durations,
                 "evaluation_material_coverage": material_coverage,
+                **({"automatic_source_admission": automatic_coverage} if automatic_coverage is not None else {}),
                 **({"negative_duration_budget": duration_budget} if strict_common else {}),
                 "generic_publisher_nominal_hours": nominal, "Final_accessed": False}
     connection = connect_materials(project_path, admissions=receipts, pools=sorted(all_pools))
@@ -905,6 +1095,7 @@ def admit_materials(project_path, prepared, answers_by_preparation=None, *, admi
             "validation_noise_manifest": validation,
             "validation_rir_manifest": rir_manifest,
             "evaluation_material_coverage": material_coverage,
+            **({"automatic_source_admission": automatic_coverage} if automatic_coverage is not None else {}),
             **({"negative_duration_budget": duration_budget} if strict_common else {}),
             "evaluation_noise_admissions": evaluation_admissions,
             "evaluation_noise_recipe_version": prepared.get("recipe_version", 2) if evaluation_rows else 1,

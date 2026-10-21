@@ -37,8 +37,23 @@
     if (value === null || value === undefined || value === "" || !Number.isFinite(Number(value)) || Number(value) < 0) return "";
     const size = Number(value);
     if (size < 1024) return `${number(size)} B`;
-    const unit = Math.min(3, Math.floor(Math.log(size) / Math.log(1024)));
-    return `${(size / 1024 ** unit).toLocaleString("ko-KR", { maximumFractionDigits: 1 })} ${["B", "KiB", "MiB", "GiB"][unit]}`;
+    const unit = Math.min(4, Math.floor(Math.log(size) / Math.log(1024)));
+    return `${(size / 1024 ** unit).toLocaleString("ko-KR", { maximumFractionDigits: 1 })} ${["B", "KiB", "MiB", "GiB", "TiB"][unit]}`;
+  }
+  function minimumStorage(recipe, selected = {}) {
+    const space = recipe.automatic_space_plan, components = recipe.automatic_source_plan?.components;
+    if (!space || !Array.isArray(components)) return null;
+    const fixed = [space.base_archive_bytes, space.base_working_bytes, space.future_buffer_bytes];
+    const originals = selected.originals ?? recipe.originals, rounds = selected.rounds ?? recipe.rounds;
+    const generic = selected.genericHours ?? recipe.generic_hours, korean = selected.koreanHours ?? recipe.korean_hours;
+    if (![...fixed, originals, rounds, generic, korean].every(value => Number.isFinite(value) && value >= 0)) return null;
+    const rawGeneric = components.some(item => item.pool === "generic_negative") ? generic : 0;
+    const rawKorean = components.some(item => item.pool === "korean_negative") ? korean : 0;
+    const seconds = (rawGeneric + rawKorean) * 3600;
+    // Same known-payload arithmetic as automatic_sources.automatic_storage_plan;
+    // raw codec/archive forecasts are deliberately excluded from this minimum.
+    return fixed.reduce((sum, value) => sum + value, 0) + Math.ceil(seconds * 16000 * 2)
+      + Math.ceil(seconds / 2) * 16 * 96 * 4 + Math.ceil(originals * rounds * 16 * 96 * 4);
   }
   function eta(value) {
     if (Array.isArray(value) && value.length === 2) {
@@ -158,7 +173,7 @@
     return value >= 1e9 ? `${(value / 1e9).toFixed(2)} GB` : value >= 1e6 ? `${(value / 1e6).toFixed(1)} MB` : `${Math.round(value / 1e3)} KB`;
   }
   function materialGroups(recipe) {
-    const hours = value => `${number(value)}시간`, count = value => `${number(value)}개`;
+    const hours = value => `${Number.isFinite(value) ? value.toLocaleString("ko-KR", { maximumFractionDigits: 1 }) : "—"}시간`, count = value => `${number(value)}개`;
     const selected = (id, fallback) => $(id).value !== "" && Number.isFinite(Number($(id).value)) && Number($(id).value) >= 0 ? Number($(id).value) : fallback;
     const originals = selected("adv-originals", recipe.originals ?? recipe.positive_originals);
     const genericHours = selected("adv-generic", recipe.generic_hours ?? recipe.automatic_target_hours?.generic_nominal ?? 0);
@@ -182,6 +197,8 @@
     const suppliedGeneric = recipe.automatic_target_hours?.generic_nominal ?? asset("generic")?.hours ?? 0;
     const suppliedKorean = recipe.automatic_target_hours?.korean_train ?? asset("zeroth")?.hours ?? 0;
     const negativePlan = recipe.training_negative_plan;
+    const automaticPlan = recipe.material_acquisition_policy === "automatic_v1" && recipe.automatic_source_plan?.version === 1
+      && recipe.automatic_source_plan.enabled === true && Array.isArray(recipe.automatic_source_plan.components) ? recipe.automatic_source_plan : null;
     const hasNegativePlan = ((negativePlan?.id === "commercial_negative_v1" && negativePlan.version === 1)
       || (negativePlan?.id === "commercial_negative_v2" && negativePlan.version === 2)
       || (negativePlan?.id === "commercial_negative_v3" && negativePlan.version === 3)) && Array.isArray(negativePlan.components);
@@ -198,11 +215,23 @@
         return source(name, content, `준비 목표 ${hours(amount)}`, amount * 3600, records.length === 1 ? records[0] : undefined);
       });
     };
+    const automaticSources = (pool, target) => {
+      const components = (automaticPlan?.components || []).filter(item => item.pool === pool && Number.isFinite(item.target_hours) && item.target_hours > 0);
+      const total = components.reduce((sum, item) => sum + item.target_hours, 0);
+      const providers = { yodas2: ["YODAS2 한국어", "한국어 웹 음성 · 목표량 자동 선정", "https://huggingface.co/datasets/espnet/yodas2"] };
+      return components.map(item => {
+        const provider = providers[item.provider] || [item.name || item.provider, "목표량 자동 선정", undefined];
+        const amount = item.target_hours * target / total;
+        return source(provider[0], provider[1], `준비 목표 ${hours(amount)}`, amount * 3600, { source_url: item.source_url || provider[2] });
+      });
+    };
+    const automaticGeneric = automaticSources("generic_negative", genericHours), automaticKorean = automaticSources("korean_negative", koreanHours);
     // Planned raw-audio hours never add the opaque legacy 2,000h feature file.
     const generic = hasNegativePlan ? plannedSources("generic_negative", genericHours) : asset("generic") ? [source("openWakeWord", "일반 음성·음악·환경음의 특징 데이터", hours(suppliedGeneric), suppliedGeneric * 3600, asset("generic"))] : [];
-    const korean = hasNegativePlan ? plannedSources("korean_negative", koreanHours) : asset("zeroth") ? [source("Zeroth Korean", "한국어 낭독 음성", hours(suppliedKorean), suppliedKorean * 3600, asset("zeroth"))] : [];
+    if (!hasNegativePlan && automaticGeneric.length) generic.splice(0, generic.length, ...automaticGeneric);
+    const korean = hasNegativePlan ? plannedSources("korean_negative", koreanHours) : automaticKorean.length ? automaticKorean : asset("zeroth") ? [source("Zeroth Korean", "한국어 낭독 음성", hours(suppliedKorean), suppliedKorean * 3600, asset("zeroth"))] : [];
     if (!hasNegativePlan) {
-      for (const [items, target, available, content] of [[generic, genericHours, suppliedGeneric, "일반 비호출 음원·특징 자료"], [korean, koreanHours, suppliedKorean, "한국어 대화·낭독 등 음성"]]) {
+      for (const [items, target, available, content] of [[generic, genericHours, automaticGeneric.length ? genericHours : suppliedGeneric, "일반 비호출 음원·특징 자료"], [korean, koreanHours, automaticKorean.length ? koreanHours : suppliedKorean, "한국어 대화·낭독 등 음성"]]) {
         if (target > available) items.push(source("추가 자료", `직접 준비할 ${content}`, hours(target - available), (target - available) * 3600));
       }
     }
@@ -213,7 +242,8 @@
     ] : [];
     if (!reuseNegativeWaveforms) {
       if (asset("fma")) noise.push(source("FMA", "음악 120곡 · 곡당 30초", "약 1시간", 3600, asset("fma"), bundleSize(["fma", "fma_metadata"])));
-      if (asset("zeroth")) noise.push(source("Zeroth Korean", "학습용 한국어 낭독 재사용", hours(suppliedKorean), suppliedKorean * 3600, asset("zeroth")));
+      if (automaticKorean.length) noise.push(...automaticKorean.map(item => ({ ...item, content: "학습용 한국어 원본 음원 재사용", amount: "원본 재사용", bytes: undefined })));
+      else if (asset("zeroth")) noise.push(source("Zeroth Korean", "학습용 한국어 낭독 재사용", hours(suppliedKorean), suppliedKorean * 3600, asset("zeroth")));
       if (asset("audioset")) noise.push(source("AudioSet", "여러 종류의 일반 오디오", "1묶음", null, asset("audioset"), bundleSize(["audioset", "audioset_segments", "audioset_ontology"])));
     }
     const mit = asset("mit_rir") || recipe.additional_download;
@@ -221,7 +251,7 @@
       { id: "positive", name: "호출어 음성", description: "호출어 합성 음성", amount: count(originals), sources: [source("Qwen TTS", "호출어만 말한 음성", count(originals), originals)] },
       { id: "hard", name: "유사어 음성", description: "호출어로 오인할 수 있는 다른 단어·표현", amount: count(recipe.hard_originals ?? 0), sources: [source("Qwen TTS", "헷갈리기 쉬운 단어·표현을 합성한 음성", count(recipe.hard_originals ?? 0), recipe.hard_originals ?? 0)] },
       { id: "generic", name: "일반 비호출 자료", description: "일반 음성 · 음악 · 환경음", amount: hours(genericHours), sources: generic },
-      { id: "korean", name: "한국어 비호출 자료", description: hasNegativePlan || koreanHours > suppliedKorean ? "한국어 대화 · 낭독 등 음성" : "한국어 낭독 음성", amount: hours(koreanHours), sources: korean },
+      { id: "korean", name: "한국어 비호출 자료", description: hasNegativePlan || automaticKorean.length || koreanHours > suppliedKorean ? "한국어 대화 · 낭독 등 음성" : "한국어 낭독 음성", amount: hours(koreanHours), sources: korean },
       { id: "noise", name: "소음 증강 음원", description: reuseNegativeWaveforms ? "학습용 비호출 원본 음원 재사용" : "일반 오디오 · 음악 · 한국어 음성", amount: reuseNegativeWaveforms ? "재사용" : `${number(noise.length)}종`, sources: noise },
       { id: "rir", name: "잔향 자료", description: "공간의 울림을 재현하는 파일", amount: mit ? count(mit.files ?? mit.file_count) : "0개", sources: mit ? [source("MIT RIR", "공간의 울림 특성", count(mit.files ?? mit.file_count), mit.files ?? mit.file_count, mit)] : [] }
     ];
@@ -326,6 +356,20 @@
       sections.push(section);
     }
     replace($("source-preview"), sections);
+    const automatic = recipe.material_acquisition_policy === "automatic_v1";
+    $("source-plan-note").hidden = !automatic;
+    if (automatic) {
+      const known = bytes(recipe.known_download_bytes);
+      const additional = recipe.automatic_source_plan?.components?.length > 0;
+      const selected = (id, value) => $(id).value !== "" && Number.isFinite(Number($(id).value)) && Number($(id).value) >= 0 ? Number($(id).value) : value;
+      const minimum = minimumStorage(recipe, { originals: selected("adv-originals", recipe.originals), rounds: selected("adv-rounds", recipe.rounds), genericHours: selected("adv-generic", recipe.generic_hours), koreanHours: selected("adv-korean", recipe.korean_hours) });
+      const free = snapshot.system?.free_bytes ?? snapshot.system?.disk_free_bytes;
+      $("source-plan-note").textContent = minimum !== null
+        ? `최소 저장 공간 ${bytes(minimum)}${additional ? " + 원본·압축파일 추가" : ""}.${Number.isFinite(free) && minimum > free ? " 현재 여유 공간보다 큽니다." : ""} 원본 목록 확정 후 실제 용량을 확인합니다.`
+        : additional
+        ? `목표량에 맞춰 원본을 자동 선정합니다.${known ? " 고정 자료 " + known + " 외" : ""} 추가 다운로드 용량은 목록 확정 후 확인합니다.`
+        : `필요한 공개 자료를 자동 준비합니다.${known ? " 고정 다운로드 " + known + "." : ""} 실제 준비량과 검수 승인은 별도로 확인합니다.`;
+    }
   }
   function renderSystem() {
     const system = snapshot.system || {};
@@ -366,6 +410,20 @@
     // Only supplied counters are shown; generation is never called human approval.
     replace($("counts"), records.map(record => { const item = element("span"); item.append(element("span", (labels[record.label || record.id] || record.label || record.id || "자료") + " "), element("strong", `${typeof record.value === "number" ? number(record.value) : String(record.value ?? "—")}${record.total !== undefined ? " / " + number(record.total) : ""}${record.unit || ""}`)); return item; }));
     $("counts").hidden = !records.length;
+    const training = project.training_materials;
+    $("training-material-coverage").hidden = !training;
+    if (training) {
+      const hours = value => Number.isFinite(value) ? `${value.toLocaleString("ko-KR", { maximumFractionDigits: 2 })}시간` : "확인 전";
+      const lines = ["generic_negative", "korean_negative"].map(role => {
+        const label = role === "generic_negative" ? "일반 비호출" : "한국어 비호출";
+        const target = training.targets?.[role], nominal = training.generic_publisher_nominal_hours;
+        if (role === "generic_negative" && Number.isFinite(nominal) && nominal > 0 && Number.isFinite(target) && target <= nominal) {
+          return element("li", `${label}: 공개 특징 명목 ${hours(nominal)} / 목표 ${hours(target)}`);
+        }
+        return element("li", `${label}: 기술 검사 ${hours(training.candidate?.[role])} · 검수 승인 ${hours(training.admitted?.[role])} / 목표 ${hours(target)}`);
+      });
+      replace($("training-material-coverage-list"), lines);
+    }
     const materials = project.evaluation_materials;
     $("material-coverage").hidden = !materials;
     if (materials) {
@@ -496,7 +554,7 @@
     $("progress-section").hidden = !progress;
     if (progress) {
       const stageCount = /단계/.test(progress.unit);
-      const unit = { items: "개", samples: "개", files: "개 파일", datasets: "개 자료 묶음", updates: "회 학습", rows: "행" }[progress.unit] || progress.unit;
+      const unit = { items: "개", samples: "개", files: "개 파일", datasets: "개 자료 묶음", updates: "회 학습", rows: "행", hours: "시간", audio_hours: "시간" }[progress.unit] || progress.unit;
       const quantity = ["bytes", "B", "바이트"].includes(unit) ? `${bytes(progress.done)} / ${bytes(progress.total)}` : `${number(progress.done)} / ${number(progress.total)}${unit}`;
       $("progress-label").textContent = stageCount ? `전체 절차 ${number(progress.done)} / ${number(progress.total)}단계 완료` : `${progress.label ? progress.label + " · " : ""}${quantity}`;
       $("progress-percent").textContent = stageCount ? "" : `${progress.percent.toFixed(1)}%`;
@@ -591,7 +649,7 @@
   }
   async function boot() {
     $("create-form").addEventListener("submit", create);
-    for (const id of ["adv-originals", "adv-generic", "adv-korean"]) $(id).addEventListener("input", renderRecipe);
+    for (const id of ["adv-originals", "adv-rounds", "adv-generic", "adv-korean"]) $(id).addEventListener("input", renderRecipe);
     $("input-form").addEventListener("submit", submitInput);
     $("material-mode").addEventListener("change", () => renderInputMode(selectedProject()));
     $("source-dataset").addEventListener("change", () => {
@@ -621,6 +679,6 @@
     pollTimer = setInterval(async () => { if (!document.hidden) { await refresh(); if ($("log-details").open) await loadLog(); } }, 3000);
     window.addEventListener("pagehide", () => clearInterval(pollTimer), { once: true });
   }
-  window.KowwStudio = Object.freeze({ duration, bytes, eta, progressValue, requestBody, localUrl, webUrl });
+  window.KowwStudio = Object.freeze({ duration, bytes, minimumStorage, eta, progressValue, requestBody, localUrl, webUrl });
   if (!window.KOWW_STUDIO_TEST) boot();
 })();

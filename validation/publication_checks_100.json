@@ -1,0 +1,214 @@
+{
+  "schema_version": 1,
+  "version": "0.10.0",
+  "checked_at": "2026-10-21T00:32:18.631219+00:00",
+  "scope": "Automatic selected-budget source supply and full workflow functional validation, not full-scale corpus acquisition or a performance claim.",
+  "installed_package_tests": {
+    "passed": 1020,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 1,
+    "elapsed_seconds": 282.766,
+    "legacy_parity_deselected": 5,
+    "installed_regular_wheel": true,
+    "dependencies_reused": true,
+    "source_checkout_imported": false,
+    "tested_wheel_sha256": "181eff12864e96e3b2a74881ca8bf851ac7c6166037dbb1b9b154fb2f1d3d3f3"
+  },
+  "final_delta_retests": {
+    "passed": 23,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "elapsed_seconds": 4.332,
+    "changed_modules": [
+      "automatic_sources.py",
+      "studio_data.py"
+    ],
+    "changes_since_full_run": [
+      "Conservative original-storage forecasts only",
+      "Human-readable source review titles only"
+    ],
+    "final_wheel_sha256": "4a52a8b17d5a4ce4b247c2b22c27418935fec04433d23484bec425354ae2aab4"
+  },
+  "web_tests": {
+    "passed": 37,
+    "failures": 0,
+    "real_installed_browser_checked": true
+  },
+  "distribution": {
+    "version": "0.10.0",
+    "wheel_bytes": 20159424,
+    "wheel_sha256": "4a52a8b17d5a4ce4b247c2b22c27418935fec04433d23484bec425354ae2aab4",
+    "large_raw_corpora_included": false,
+    "private_path_and_token_scan_passed": true
+  },
+  "automatic_training_sources": {
+    "new_policy": "automatic_v1",
+    "historical_policy_preserved": true,
+    "check": {
+      "generic_publisher_nominal_hours": 2000,
+      "korean_train_hours_target": 1
+    },
+    "trial": {
+      "generic_publisher_nominal_hours": 2000,
+      "yodas2_train_hours_target": 666.6666666666666
+    },
+    "production": {
+      "audioset_train_hours_target": 3000,
+      "mls_train_hours_target": 3000,
+      "fma_full_train_hours_target": 1000,
+      "yodas2_train_hours_target": 3000,
+      "legacy_2000h_feature_file_added": false
+    },
+    "post_qc_refill_tested": true,
+    "all_qc_failed_shard_refill_tested": true,
+    "source_component_quota_gate_tested": true,
+    "negative_and_noise_dual_admission_tested": true,
+    "byte_caps_and_preflight_tested": true,
+    "interruption_and_integrity_recheck_tested": true
+  },
+  "actual_provider_inventories": {
+    "audio_download_started": false,
+    "provider_inventories": {
+      "audioset_unbalanced": {
+        "parts_or_batches": 870,
+        "first_selection": {
+          "parts": [
+            199
+          ]
+        },
+        "archive_bytes_total": 2409795399680
+      },
+      "mls": {
+        "parts_or_batches": 186,
+        "first_selection": {
+          "language": "dutch",
+          "parts": [
+            "2450_8886_002",
+            "10587_9412_000",
+            "2450_9207_001",
+            "2450_7160_005",
+            "2450_6408_006",
+            "2450_9162_001",
+            "2450_5089_000",
+            "2450_12965_001",
+            "2450_7371_001",
+            "2450_4029_007",
+            "1724_10176_000",
+            "2450_9433_001",
+            "2450_4461_005",
+            "2450_4300_001",
+            "2450_10876_001",
+            "2450_6737_008"
+          ]
+        },
+        "archive_bytes_total": 357735206455,
+        "languages": [
+          "dutch",
+          "french",
+          "german",
+          "italian",
+          "polish",
+          "portuguese",
+          "spanish"
+        ]
+      },
+      "yodas2": {
+        "parts_or_batches": 2178,
+        "first_selection": {
+          "subset": "ko000",
+          "parts": [
+            337
+          ]
+        },
+        "archive_bytes_total": 3178983683634,
+        "subsets": [
+          "ko000",
+          "ko100",
+          "ko101",
+          "ko102",
+          "ko103"
+        ]
+      }
+    },
+    "formal_training_started": false,
+    "actual_metadata_transfer_bytes_this_run": 1944657
+  },
+  "actual_audio_probe": {
+    "actual_provider": "mls",
+    "provider_revision": "2e83e61823b4c47dcbcb1980bb88601274127609",
+    "real_audio_files": 30,
+    "technical_passed_files": 30,
+    "actual_unique_train_hours": 0.1275888888888889,
+    "new_original_audio_download_bytes": 0,
+    "provider_metadata_transfer_bytes_this_run": 2268,
+    "content_approved": false,
+    "training_admitted": false,
+    "human_listened_count": 0,
+    "independent_STT_runs": 0,
+    "Final_accessed": false
+  },
+  "actual_audio_probe_scope": "Existing real MLS source cache through provider indexing, automatic supply and actual preparation; no actual AudioSet/FMA full-scale download in this probe.",
+  "bounded_workflow_probe": {
+    "technical_prepare_review_wait_explicit_fixture_answers_and_connect": true,
+    "actual_feature_extraction": true,
+    "cnn_models": 3,
+    "optimizer_updates_per_model": 1,
+    "onnx_export": true,
+    "scored_audio_sessions": 17,
+    "result_site": true,
+    "procedural_test_data_only": true,
+    "performance_claim": false
+  },
+  "common_evaluation": {
+    "policy": "common_development_v4",
+    "background_hours_target": 30,
+    "positive_sessions_target": 112000,
+    "train_separation_and_shortage_gates_tested": true,
+    "zeroth_without_training_bootstrap_tested": true,
+    "full_30h_preparation_completed": false,
+    "full_112000_scoring_completed": false
+  },
+  "full_10000h_corpus_acquisition_completed": false,
+  "formal_new_training_started": false,
+  "new_tts_generation_started": false,
+  "new_actual_source_listening_approved": false,
+  "independent_Final_completed": false,
+  "Final_unlocked": false,
+  "evidence_reused": [
+    "publication_checks_090.json",
+    "publication_checks_091.json"
+  ],
+  "limitations": [
+    "Functional tests and small actual-source probes do not establish complete target-volume availability or population detection performance.",
+    "Source approval and real human listening are not inferred from technical checks or prior YODAS2 source-strategy acceptance.",
+    "Check/trial Generic targets over the public nominal 2000h require explicit additional sources or a raw-source production project; shortages are not hidden.",
+    "Original/archive storage forecasts are estimates; exact selected bytes and actual selected-drive free space are checked before transfers.",
+    "Independent Final remains a separate locked holdout, outside the automated common Development workflow."
+  ],
+  "code_document_sha256": {
+    "README.md": "fd3569cb7ef39882f687503f49dedcb1998a0f21349275e33e7d5f5653fe7ba5",
+    "plan.md": "3645bd3abaf13c35dd0e35254023c685bcdc6d1f5a7706e305ec9656123fb82f",
+    "CHANGELOG.md": "9ff8d950e8c2e8f7ff5b795ef5d01fb6e6dfe354147cb466efa27eee74b92626",
+    "pyproject.toml": "0905c2aa0ad882130b8ef3c424121a3b9112d0a0fb97cddad7a1e9d70dfc7a63",
+    "docs/DATASETS.md": "a1e4d8486556e47971b1a768d0fbe33c8ad23eb5f5b35738897c4a5f23cc64d5",
+    "docs/WEB_GUIDE.md": "47f6660612e91698d359e172d54d56406bbe6f155afc6ff98fc503a328087565",
+    "docs/LIBRARY_GUIDE.md": "7ad18c345072ea753796c71e2acac603c08c8b74b3af5533fc8bd5cfa01154ad",
+    "docs/VALIDATION.md": "bd06ff159e500a95e4e27f6953981141e0aa8cf5ee42f8e97f4704b2bf9fbebd",
+    "korean_openwakeword/__init__.py": "2a38c45a9abf502f03864cdd2c486a551306a9310ea93aa51c8e68852be1e04a",
+    "korean_openwakeword/automatic_sources.py": "6dbc94ff4bdfbd0de4996b28b85e8680a03bc33ea9e97f1d4b721169a4b1f1c9",
+    "korean_openwakeword/studio.py": "f510a9cacdb2c825388157a3d6adc7d9a2bb751ac372e5205c64e32696a4c776",
+    "korean_openwakeword/studio_data.py": "23d1362a66b9a57e9b30f2fceff7dcb67d2394c7895d15a9277f50d747c6e7fd",
+    "korean_openwakeword/studio_steps.py": "f20290517ee5a291c46004a3efbbb9dfdf62a03cb81b2b40fcea5fb2866302a7",
+    "korean_openwakeword/evaluation_materials.py": "df4393eb6f595c9b7e971ecc87232e326eb7cfce59849b7919eaf7c2a70dc65c",
+    "korean_openwakeword/resources/studio.html": "8ffc421b975d563e1a9378ceff4473a9c23d129e1f82483d3e35d075952a6ad2",
+    "korean_openwakeword/resources/studio.js": "23f0a0d480abfe5fc8f687fa829ceb4721ea50255c6787216f635f28c7039657",
+    "tests/check_studio_ui.cjs": "18e7e6c2d741ded9616356b63381753249b752137faaaf5af334042700c4202e",
+    "tests/test_korean_library_automatic_sources.py": "1eb0d36a781db474f2cafff1953b8f34a445b2adf73894b190a7f5f099b53ca8",
+    "tests/test_korean_library_automatic_materials.py": "642890c85cc2a93bc3152ed95be27ecfcaaef5633bc508b24618fea20bd4a88f",
+    "tests/test_korean_library_commercial_integration.py": "efb8ea96856a26a981714e69c136b0d67a3b598099077572123e5ff85009e468",
+    "tests/test_korean_library_studio.py": "aa6c5426ee812eb8eb39808e5e0e20908fc77ddc6583df9af42f000e94067be7",
+    "tests/test_korean_library_evaluation_materials.py": "81f61e4ca91900531d7473fa9dccb608833e44a2c1a8d174d2e0e7fb99876c4f"
+  }
+}

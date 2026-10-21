@@ -30,7 +30,7 @@
             <label>한국어 비호출 자료 · 시간<input id="adv-korean" type="number" min="0" step="any" inputmode="decimal"></label>
           </div><p class="hint">모델 구조와 학습 방법은 라이브러리 기본 설정을 사용합니다. CPU/GPU는 사용 가능한 환경과 작업에 맞게 선택합니다.</p></details>
         </div>
-        <div class="card materials-preview"><div class="section-heading"><h2>준비할 자료</h2></div><div id="source-preview" class="materials-groups"></div></div>
+        <div class="card materials-preview"><div class="section-heading"><h2>준비할 자료</h2></div><div id="source-preview" class="materials-groups"></div><p id="source-plan-note" class="hint" hidden></p></div>
         <div class="setup-footer"><p id="system-summary" class="hint"></p><button id="create" class="primary large" type="submit" disabled>만들고 준비 시작</button></div>
       </form>
     </section>
@@ -45,6 +45,7 @@
         <div class="timing"><span id="elapsed"></span><span id="eta"></span></div>
         <div id="project-error" class="notice error" hidden></div>
         <div id="counts" class="counts" hidden></div>
+        <details id="training-material-coverage" class="advanced" hidden><summary>학습 비호출 준비량</summary><ul id="training-material-coverage-list"></ul></details>
         <details id="material-coverage" class="advanced" hidden><summary>공통 평가 자료 준비량</summary><p id="material-coverage-note" class="hint"></p><ul id="material-coverage-list"></ul></details>
         <p id="resume-note" class="hint">일시정지는 현재 단계가 끝난 뒤 적용됩니다. 작업 기록은 저장되며, 서버를 다시 켜면 이어서 진행할 수 있습니다.</p>
       </div>

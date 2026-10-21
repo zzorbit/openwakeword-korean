@@ -187,7 +187,8 @@ class StudioManager:
         presets = []
         for key, label in (("check", "동작 확인용"), ("trial", "시험 모델용"), ("production", "상용 모델용")):
             settings = preset_settings(key)
-            recipe = material_recipe(key, evaluation_policy=settings["evaluation_policy"])
+            recipe = material_recipe(key, evaluation_policy=settings["evaluation_policy"],
+                                     material_acquisition_policy=settings.get("material_acquisition_policy"))
             presets.append({**settings, **recipe, "id": key, "label": label})
         return {"presets": presets, "default_directory": str(self.workspace / "projects"),
                 "storage_note": "선택한 작업 폴더에 자료·모델·캐시를 저장합니다. 공개 자료와 Qwen 모델의 첫 다운로드는 별도 용량이 필요합니다."}
@@ -691,6 +692,17 @@ class StudioManager:
         downloaded = downloaded.get("result", downloaded)
         connected = material_results.get("data_connect", {})
         connected = connected.get("result", connected)
+        if state.get("settings", {}).get("material_acquisition_policy") == "automatic_v1":
+            candidate = downloaded.get("candidate_unique_hours")
+            admitted = connected.get("admitted_unique_hours")
+            nominal = connected.get("generic_publisher_nominal_hours")
+            if nominal is None:
+                nominal = downloaded.get("generic_feature_import", {}).get("publisher_declared_hours")
+            view["training_materials"] = {
+                "targets": {"generic_negative": state["settings"]["generic_hours"],
+                            "korean_negative": state["settings"]["korean_hours"]},
+                "candidate": candidate, "admitted": admitted,
+                "generic_publisher_nominal_hours": nominal}
         candidate_coverage = downloaded.get("evaluation_material_coverage")
         admitted_coverage = connected.get("evaluation_material_coverage")
         if candidate_coverage or admitted_coverage:
