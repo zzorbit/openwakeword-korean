@@ -26,6 +26,7 @@ from .project import load_project
 
 AS_REV = "5a2fa42a1506470d275a47ff8e1fdac5b364e6ef"
 MIT_REV = "b824a1ef2821f112fda0b9cb26e4278c62b425bb"
+MIT_RIR_COUNT = 270
 FMA_REV = "607364e7d8263f890d23c838802f29637600611f"
 DNS_REV = "70f19285c36cca4df2338f9248775ddc50980c6b"
 _AUDIO = {".wav", ".flac", ".mp3", ".ogg", ".opus", ".aif", ".aiff", ".au"}
@@ -154,7 +155,7 @@ def material_recipe(preset="check", workspace=None, evaluation_policy=None, nois
             "evaluation_download_bytes": evaluation["size_bytes"],
             "known_download_bytes": sum(a["size_bytes"] for a in assets) + evaluation["size_bytes"],
             "additional_download": {"id": "mit_rir", "source_url": f"https://huggingface.co/datasets/davidscripka/MIT_environmental_impulse_responses/tree/{MIT_REV}/16khz",
-                "upstream_revision": MIT_REV, "files": 271, "size_bytes": None,
+                "upstream_revision": MIT_REV, "files": MIT_RIR_COUNT, "size_bytes": None,
                 "license": "Unknown in provider card; preserve MIT original source terms and review before use",
                 "verification": "Each file's LFS SHA256 and size from the pinned provider tree; no guessed hash or room identity"},
             "estimated_workspace_bytes": 90 * 1024**3,
@@ -440,8 +441,8 @@ def _fetch_mit(shared, progress=None):
         entries = response.json()
         write_json(manifest, {"source_url": url, "entries": entries, "retrieved_at": now()})
     entries = [r for r in entries if r.get("type") == "file" and r.get("path", "").endswith(".wav")]
-    if len(entries) != 271 or len({r["path"] for r in entries}) != 271:
-        raise ValueError("Pinned MIT provider inventory must contain exactly 271 WAVs")
+    if len(entries) != MIT_RIR_COUNT or len({r["path"] for r in entries}) != MIT_RIR_COUNT:
+        raise ValueError(f"Pinned MIT provider inventory must contain exactly {MIT_RIR_COUNT} WAVs")
     for order, row in enumerate(entries):
         path = _archive_target(directory, row["path"])
         checksum = row.get("lfs", {}).get("oid")

@@ -28,8 +28,10 @@ def test_recipe_is_offline_pinned_and_reports_real_scale(monkeypatch, tmp_path):
     assert module.material_recipe("full")["shortages"]
     assert not plan["shortages"]
     assert plan["additional_download"]["license"].startswith("Unknown")
+    assert plan["additional_download"]["files"] == 270
     for preset in ("check", "test", "full"):
         selected = module.material_recipe(preset)
+        assert selected["additional_download"]["files"] == 270
         assets = {asset["id"]: asset for asset in selected["assets"]}
         assert "dns_fan" not in assets
         if preset == "full":

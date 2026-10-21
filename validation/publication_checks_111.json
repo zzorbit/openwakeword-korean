@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "kind": "library_publication_checks",
+  "version": "0.11.1",
+  "installed_related_tests": {
+    "passed": 144,
+    "failed": 0,
+    "seconds": 39.811,
+    "uses_separately_installed_wheel": true,
+    "scope": "MIT source count and validation, Studio material preparation, raw source integration and web workflow"
+  },
+  "studio_javascript_passed": 40,
+  "installed_http_recipe_counts": {
+    "check": 270,
+    "trial": 270,
+    "production": 270
+  },
+  "real_provider_verification": {
+    "provider_revision": "b824a1ef2821f112fda0b9cb26e4278c62b425bb",
+    "real_provider_file_count": 270,
+    "real_provider_audio_bytes": 8374902,
+    "real_inventory_all_pinned_download_dispatches_checked": 270,
+    "dispatch_check_uses_mock_transfer": true,
+    "dispatch_check_network_calls": 0,
+    "actual_audio_downloaded_and_verified": 33,
+    "actual_audio_bytes_verified": 1024064,
+    "actual_audio_sha256_sizes_16khz_mono_finite": true,
+    "full_270_file_download_completed": false,
+    "remaining_audio_not_downloaded_for_this_bounded_verification": 237,
+    "provider_manifest_sha256": "a4dc169db7ae40f8b10a9c107b6c558b6b1f7480b4f859b3ccc250cc4ec64b90"
+  },
+  "regression_cases": [
+    "Valid 270 WAVs",
+    "Missing or extra WAV",
+    "Duplicate paths",
+    "Unexpected pagination",
+    "Changed cached revision",
+    "Offline metadata cache reuse",
+    "Pinned URL/SHA256/size forwarding",
+    "Existing checksum and size guards"
+  ],
+  "historical_receipts_and_training_settings_changed": false,
+  "human_listened_count": 0,
+  "training_admitted": false,
+  "Final_accessed": false,
+  "source_sha256": {
+    "korean_openwakeword/studio_data.py": "2993af30a7dcb6a3ecc3a3a0a56627c2e32857349fcc832c4397db03375e28fb",
+    "korean_openwakeword/__init__.py": "557ef29c165222a60d8d631175e41d2a0548a319b7bc8c1b242c0d61fa87cd4d"
+  },
+  "wheel_sha256": "b45756cf2d72d05fb99028006f5e9a1b56d33f23f50f6e2fd72a177f0d3c0155"
+}

@@ -126,7 +126,7 @@ README의 **동작 확인용·시험 모델용**은 모두 [openWakeWord 공식 
 
 AudioSet의 최신 버전은 Parquet 형식으로 바뀌어 기존 압축파일 경로가 없습니다. 공식 예제와 같은 파일을 받을 때는 위의 고정 버전 `5a2fa42a1506470d275a47ff8e1fdac5b364e6ef`를 사용하세요. [직접 다운로드](https://huggingface.co/datasets/agkphysics/AudioSet/resolve/5a2fa42a1506470d275a47ff8e1fdac5b364e6ef/data/bal_train09.tar)의 크기는 **968,540,160바이트**이며 SHA256은 `9ab88550e77c8289acf71d19ae3f254fadad16f3cea305ef08a16949a928acf9`입니다. 내려받은 파일의 크기·해시를 확인한 뒤 압축을 풉니다.
 
-**MIT RIR**은 소음 녹음이 아니라 소리가 공간을 거치면서 어떻게 울리는지 측정한 자료입니다. 음성에 적용하면 해당 공간의 울림을 재현할 수 있습니다. [MIT 원출처](https://mcdermottlab.mit.edu/Reverb/IR_Survey.html)와 Hugging Face의 실제 파일 목록을 함께 기록하며, 파일 개수는 내려받은 버전에서 확인합니다.
+**MIT RIR**은 소음 녹음이 아니라 소리가 공간을 거치면서 어떻게 울리는지 측정한 자료입니다. 음성에 적용하면 해당 공간의 울림을 재현할 수 있습니다. [MIT 원출처](https://mcdermottlab.mit.edu/Reverb/IR_Survey.html)와 Hugging Face의 실제 파일 목록을 함께 기록합니다. 현재 고정 버전의 학습용 16kHz WAV는 **270개**이며, 자동 준비에서도 같은 수량을 확인합니다.
 
 잔향 재료는 **상용 모델용도 동일한 MIT RIR의 `train` 전체**로 준비합니다. 호출어 원본이 많아져도 같은 공간의 RIR을 여러 호출 음성에 적용할 수 있으므로 자료 수를 비례해서 늘릴 필요는 없습니다. 개발용 평가에서 부족한 공간 조건이 확인되면 다른 공개 RIR을 추가하며, 평가용 RIR의 분리는 유지합니다.
 

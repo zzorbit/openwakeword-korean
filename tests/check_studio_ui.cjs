@@ -93,7 +93,7 @@ function commonRecipe(overrides = {}) {
       { id: "fma", role: "noise_music_train", size_bytes: 7679594875 },
       { id: "fma_metadata", role: "provider_metadata", size_bytes: 358412441 }
     ],
-    additional_download: { id: "mit_rir", files: 271, size_bytes: null },
+    additional_download: { id: "mit_rir", files: 270, size_bytes: null },
     evaluation_policy: { id: "common_development_v4", validation_references: 30, validation_originals: 5000,
       snrs: [20, 15, 10, 5, 0], positive_sessions: 112000, dry_positive_sessions: 80000,
       reverb_originals: 1000, reverb_positive_sessions: 32000, rir_rooms: 20, negative_hours_by_bucket: buckets },
@@ -519,7 +519,7 @@ function commercialRecipeV3() {
     assert.match(withClass(music, "file-size")[0].textContent, /8\.04 GB/);
     assert.equal(/DNS|팬 작동 소리|팬 소음/.test(textOf(group)), false);
     assert.equal(withClass(material(group, "소음 증강 음원"), "material-amount")[0].textContent, "3종");
-    const rir = material(group, "잔향 자료"); assert.match(textOf(rir), /271개/);
+    const rir = material(group, "잔향 자료"); assert.match(textOf(rir), /270개/);
     assert.equal(withClass(rir, "file-size").length, 0);
   });
   await test("commercial augmentation reuses Negative waveforms without new archives or invented hours", async () => {
