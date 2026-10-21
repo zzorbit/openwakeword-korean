@@ -44,19 +44,25 @@ def _preset(value):
     return value
 
 
-def automatic_source_policy(generic_hours=7000, korean_hours=3000, preset="full"):
+def automatic_source_policy(generic_hours=7000, korean_hours=3000, preset="full", *,
+                            material_acquisition_policy="automatic_v1"):
     """Offline description; no source files or provider metadata are opened."""
+    if material_acquisition_policy not in ("automatic_v1", "automatic_v2"):
+        raise ValueError("Unsupported automatic material acquisition policy")
     generic, korean = _hours(generic_hours, "Generic"), _hours(korean_hours, "Korean")
     preset = _preset(preset)
     targets = ({"audioset_unbalanced": generic * 3 / 7,
                 "mls": generic * 3 / 7, "fma_full": generic / 7} if preset == "full" else {})
     if preset != "check" and korean:
         targets["yodas2"] = korean
-    return {"version": POLICY_VERSION, "preset": preset, "component_targets": targets,
+    result = {"version": POLICY_VERSION, "preset": preset, "component_targets": targets,
             "generic_mode": "raw_waveforms" if preset == "full" else "publisher_2000h_features",
             "korean_mode": "existing_zeroth_1h" if preset == "check" else "yodas2_raw_waveforms",
             "post_qc_refill": True, "validation_fraction": 0,
             "content_approved": False, "training_admitted": False, "Final_accessed": False}
+    if material_acquisition_policy == "automatic_v2":
+        result.update(version=2, storage_policy="verified_extracted_only_v1")
+    return result
 
 
 def _space_plan(policy, config):
@@ -69,23 +75,42 @@ def _space_plan(policy, config):
     positive_features = math.ceil(originals * rounds * 16 * 96 * 4)
     # Raw codecs and compression vary. These are forecasts, not publisher
     # verified sizes or promises; resolved part sizes remain the hard gate.
-    per_hour = {"audioset_unbalanced": 1_000_000_000, "mls": 280_000_000,
-                "fma_full": 125_000_000, "yodas2": 300_000_000}
+    compact = policy.get("storage_policy") == "verified_extracted_only_v1"
+    per_hour = ({"audioset_unbalanced": 500_000_000, "mls": 140_000_000,
+                 "fma_full": 125_000_000, "yodas2": 180_000_000} if compact else
+                {"audioset_unbalanced": 1_000_000_000, "mls": 280_000_000,
+                 "fma_full": 125_000_000, "yodas2": 300_000_000})
     source_forecast = math.ceil(sum(hours * per_hour[key]
         for key, hours in policy["component_targets"].items()))
     known = normalized + negative_features + positive_features
-    return {"normalized_pcm16_bytes": normalized,
+    result = {"normalized_pcm16_bytes": normalized,
         "negative_feature_payload_bytes": negative_features,
         "positive_feature_payload_bytes": positive_features,
         "minimum_known_bytes": known, "future_buffer_bytes": _RESERVE,
         "estimated_original_archive_bytes": source_forecast,
         "estimated_total_bytes": known + source_forecast + _RESERVE,
         "estimate_scope": "Original/archive sizes are planning forecasts; TTS WAV, evaluation, optimizer/checkpoint and codec variation need additional room"}
+    if compact:
+        temporary = _RESERVE if policy["component_targets"] else 0
+        download_per_hour = {"audioset_unbalanced": 500_000_000, "mls": 140_000_000,
+                             "fma_full": 125_000_000, "yodas2": 140_000_000}
+        result.update(storage_policy=policy["storage_policy"],
+            estimated_retained_source_bytes=source_forecast,
+            source_forecast_bytes_per_hour=per_hour,
+            download_forecast_bytes_per_hour=download_per_hour,
+            estimated_download_bytes=math.ceil(sum(hours * download_per_hour[key]
+                for key, hours in policy["component_targets"].items())),
+            transient_archive_bytes=temporary,
+            estimated_total_bytes=known + source_forecast + _RESERVE + temporary,
+            estimate_scope="Retained original-audio and transfer bytes are separate forecasts. One archive at a time is temporary; actual selected archive/extraction size is checked before use. Existing archives and old receipts are not retired. TTS/evaluation WAVs and checkpoints need additional room.")
+    return result
 
 
-def automatic_storage_plan(config=None, *, generic_hours=7000, korean_hours=3000, preset="full"):
+def automatic_storage_plan(config=None, *, generic_hours=7000, korean_hours=3000, preset="full",
+                           material_acquisition_policy="automatic_v1"):
     """Offline known payload lower bound and separately labelled forecasts."""
-    return _space_plan(automatic_source_policy(generic_hours, korean_hours, preset), config or {})
+    return _space_plan(automatic_source_policy(generic_hours, korean_hours, preset,
+        material_acquisition_policy=material_acquisition_policy), config or {})
 
 
 def _binding(path):
@@ -169,8 +194,11 @@ class PublicSourceBackend:
     its provider index rows and immutable receipt bindings. A test backend may
     implement these two methods without network access.
     """
-    def __init__(self, directory):
+    def __init__(self, directory, *, storage_policy="retain_archives"):
+        if storage_policy not in ("retain_archives", "verified_extracted_only_v1"):
+            raise ValueError("Unsupported source archive storage policy")
         self.directory = Path(directory)
+        self.storage_policy = storage_policy
         self.session = _TreeSession(self.directory / "provider_pages")
 
     def inventory(self, component):
@@ -274,12 +302,33 @@ class PublicSourceBackend:
             original = directory / "originals"
             original.mkdir(exist_ok=True)
             self._share_metadata(resolution, original)
-            if resolution["total_bytes"] >= max_extract_bytes:
-                raise ValueError("다음 자료 묶음의 원본 다운로드 크기가 남은 자동 자료 저장 한도를 초과합니다.")
-            # The source cap covers all pinned files, including shared metadata;
-            # this intentionally remains conservative when cache is reused.
-            result = download_commercial_source(resolution, original,
-                max_download_bytes=max_download_bytes, progress=progress)
+            if self.storage_policy == "verified_extracted_only_v1":
+                from .compact_sources import prepare_compact_source
+                result = prepare_compact_source(resolution, directory,
+                    max_download_bytes=max_download_bytes, max_extract_bytes=max_extract_bytes,
+                    progress=progress)
+                audio = Path(result["audio_directory"])
+                receipts = result["receipts"]
+                reserved_bytes = result["reserved_download_bytes"]
+                original_storage = result["original_storage_bytes"]
+            else:
+                if resolution["total_bytes"] >= max_extract_bytes:
+                    raise ValueError("다음 자료 묶음의 원본 다운로드 크기가 남은 자동 자료 저장 한도를 초과합니다.")
+                # The legacy cache retains its exact archives and receipt layout.
+                result = download_commercial_source(resolution, original,
+                    max_download_bytes=max_download_bytes, progress=progress)
+                audio = directory / "audio"
+                extraction_receipts = []
+                expanded = 0
+                for index, asset in enumerate(resolution["assets"]):
+                    extracted = extract_archive(original / asset["path"], audio / f"part_{index:04d}",
+                        max_bytes=max_extract_bytes-resolution["total_bytes"]-expanded)
+                    expanded += extracted["bytes"]
+                    extraction_receipts.append(_binding(Path(extracted["output_directory"]) / "extraction_receipt.json")
+                        if "output_directory" in extracted else _binding(audio / f"part_{index:04d}" / "extraction_receipt.json"))
+                receipts = [_binding(original / "download_receipt.json"), *extraction_receipts]
+                reserved_bytes = result["bytes"]
+                original_storage = result["bytes"] + expanded
             shared = self.directory / "shared_metadata"
             for asset in resolution["metadata_assets"]:
                 cached = shared / (asset[asset["checksum_algorithm"]] + "_" + asset["filename"])
@@ -289,17 +338,6 @@ class PublicSourceBackend:
                         os.link(target, cached)
                     except OSError:
                         shutil.copyfile(target, cached)
-            audio = directory / "audio"
-            extraction_receipts = []
-            expanded = 0
-            # Disjoint part directories prevent unrelated extraction receipts
-            # from overwriting one another while retaining exact source IDs.
-            for index, asset in enumerate(resolution["assets"]):
-                extracted = extract_archive(original / asset["path"], audio / f"part_{index:04d}",
-                    max_bytes=max_extract_bytes-resolution["total_bytes"]-expanded)
-                expanded += extracted["bytes"]
-                extraction_receipts.append(_binding(Path(extracted["output_directory"]) / "extraction_receipt.json")
-                    if "output_directory" in extracted else _binding(audio / f"part_{index:04d}" / "extraction_receipt.json"))
             provider = resolution["provider"]
             source = {"directory": str(audio), "adapter": "audioset" if component == "audioset_unbalanced" else component,
                       "source_url": provider["source_url"], "license": provider["license"]}
@@ -308,18 +346,20 @@ class PublicSourceBackend:
                               ontology=str(original / "data/ontology.json"))
             else:
                 source["metadata"] = str(original / "source_resolution.json")
-            receipts = [_binding(original / "download_receipt.json"), *extraction_receipts]
-            reserved_bytes = result["bytes"]
-            original_storage = result["bytes"] + expanded
         index = directory / "provider_index.jsonl"
         # Provider adapters preserve exact identities/transcripts, without STT.
         create_source_index(audio, output=index, dataset=source["adapter"],
             metadata=source.get("metadata"), ontology=source.get("ontology"),
             source_url=source.get("source_url"), license=source.get("license"))
-        return {"source": source, "rows": read_rows(index), "receipts": receipts,
+        prepared = {"source": source, "rows": read_rows(index), "receipts": receipts,
                 "reserved_download_bytes": reserved_bytes,
                 "original_storage_bytes": original_storage,
                 "artifacts": [str(index), *(receipt["path"] for receipt in receipts)]}
+        if self.storage_policy == "verified_extracted_only_v1" and component != "fma_full":
+            prepared.update(retired_archive_bytes=result["retired_archive_bytes"],
+                            temporary_archive_peak_bytes=result["temporary_archive_peak_bytes"],
+                            compact_directory=str(directory), compact_receipt=result["compact_receipt"])
+        return prepared
 
 
 def _validate_rows(source, rows, selected, seen_hashes, seen_sources, diagnostics=None,
@@ -361,6 +401,15 @@ def _validate_rows(source, rows, selected, seen_hashes, seen_sources, diagnostic
         if destination.exists():
             if digest(destination) != checksum:
                 raise ValueError("Frozen selected automatic source changed")
+            # A transfer may stop after a same-volume link fallback copied the
+            # file but before source.json committed its storage accounting.
+            # Recount that independent copy on retry; a hardlink consumes no
+            # second audio payload and remains excluded from the copy cost.
+            if storage_counter is not None and not os.path.samefile(original, destination):
+                copy_bytes = original.stat().st_size
+                if max_copy_bytes is not None and storage_counter["bytes"] + copy_bytes > max_copy_bytes:
+                    raise ValueError("원본 연결에 필요한 복사본이 자동 자료 누적 저장 한도를 초과합니다.")
+                storage_counter["bytes"] += copy_bytes
         else:
             try:
                 os.link(original, destination)
@@ -382,7 +431,8 @@ def _validate_rows(source, rows, selected, seen_hashes, seen_sources, diagnostic
 
 
 def prepare_automatic_sources(project, workspace, *, generic_hours, korean_hours,
-                              preset, progress=None, backend=None, qualify_source=None):
+                              preset, progress=None, backend=None, qualify_source=None,
+                              material_acquisition_policy="automatic_v1"):
     """Supply Train originals until real qualified component quotas are reached.
 
     ``qualify_source(source)`` returns the existing ``prepare_public_audio``
@@ -398,19 +448,22 @@ def prepare_automatic_sources(project, workspace, *, generic_hours, korean_hours
         raise ValueError("Automatic materials must use the selected data workspace")
     if (root / "final_lock.json").exists():
         raise ValueError("Final-locked projects cannot request new training materials")
-    policy = automatic_source_policy(generic_hours, korean_hours, preset)
+    policy = automatic_source_policy(generic_hours, korean_hours, preset,
+        material_acquisition_policy=material_acquisition_policy)
+    compact = material_acquisition_policy == "automatic_v2"
     if not policy["component_targets"]:
         return {"sources": [], "plan": policy, "receipts": [], "artifacts": [],
                 "component_actual_hours": {}, "shortages": [], "actual_download_bytes": 0}
     workspace.mkdir(parents=True, exist_ok=True)
-    state = root / ".studio/materials/automatic_sources_v1"
+    namespace = "automatic_sources_v2" if compact else "automatic_sources_v1"
+    state = root / ".studio/materials" / namespace
     state.mkdir(parents=True, exist_ok=True)
-    default_backend = workspace / "shared/automatic_sources_v1"
+    default_backend = workspace / "shared" / namespace
     request_path = state / "request.json"
     existing = read_json(request_path) if request_path.exists() else None
     limits = config.get("automatic_data_limits", {})
     available = max(0, shutil.disk_usage(workspace).free - _RESERVE)
-    requested = {"kind": "automatic_negative_supply_v1", "policy": policy,
+    requested = {"kind": "automatic_negative_supply_v2" if compact else "automatic_negative_supply_v1", "policy": policy,
         "wakeword": config["wakeword"], "project_id": config["project_id"],
         "workspace": str(workspace), "seed": SEED}
     from .commercial_sources import _PROVIDERS as providers
@@ -429,7 +482,7 @@ def prepare_automatic_sources(project, workspace, *, generic_hours, korean_hours
     with writer_lock(state):
         if not existing:
             free = shutil.disk_usage(workspace).free
-            minimum = space["minimum_known_bytes"] + space["future_buffer_bytes"]
+            minimum = space["minimum_known_bytes"] + space["future_buffer_bytes"] + space.get("transient_archive_bytes", 0)
             write_json(state / "space_preflight.json", {**space, "available_bytes": free,
                 "max_workspace_bytes": requested["limits"]["max_workspace_bytes"],
                 "audio_download_started": False, "created_at": now()})
@@ -438,11 +491,13 @@ def prepare_automatic_sources(project, workspace, *, generic_hours, korean_hours
                     f"선택 드라이브 여유는 {free:,}바이트, 설정한 저장 한도는 {requested['limits']['max_workspace_bytes']:,}바이트입니다. "
                     f"원본·압축 자료 예상 {space['estimated_original_archive_bytes']:,}바이트는 별도입니다. 목표량을 줄이지 않고 중단했습니다.")
         _frozen(request_path, requested)
-        backend = backend or PublicSourceBackend(default_backend)
+        backend = backend or PublicSourceBackend(default_backend,
+            **({"storage_policy": policy["storage_policy"]} if compact else {}))
         sources, receipts, artifacts, shortages = [], [], [str(request_path)], []
         actual = {component: 0.0 for component in policy["component_targets"]}
         seen_hashes, seen_sources, seen_tracks = set(), set(), set()
         reserved_bytes, source_storage_bytes = 0, 0
+        retired_archive_bytes, temporary_archive_peak_bytes = 0, 0
         for component, target in policy["component_targets"].items():
             inventory_path = state / (component + "_inventory.json")
             inventory = read_json(inventory_path) if inventory_path.exists() else backend.inventory(component)
@@ -468,6 +523,15 @@ def prepare_automatic_sources(project, workspace, *, generic_hours, korean_hours
                     record = read_json(record_path)
                     if record.get("candidate") != candidate:
                         raise ValueError("Frozen automatic source selection changed")
+                    compact_binding = record.get("compact_receipt") if compact else None
+                    if compact_binding:
+                        from .compact_sources import verify_compact_source
+                        compact_receipt = Path(compact_binding["path"]).resolve()
+                        if (not compact_receipt.is_relative_to(default_backend.resolve())
+                                or not compact_receipt.is_file()
+                                or digest(compact_receipt) != compact_binding["sha256"]):
+                            raise ValueError("Frozen compact source receipt changed or escaped its cache")
+                        verify_compact_source(compact_receipt.parent)
                     source, rows = record["source"], read_rows(record["source"]["source_index"])
                     if digest(source["source_index"]) != record["source_index_sha256"]:
                         raise ValueError("Frozen automatic source index changed")
@@ -484,15 +548,17 @@ def prepare_automatic_sources(project, workspace, *, generic_hours, korean_hours
                         shortages.append(f"{component}: automatic source byte budget is exhausted before the next part")
                         break
                     free = shutil.disk_usage(workspace).free
-                    # Preserve working room for compressed originals, extraction
-                    # and the callback's normalized PCM16 copy before transfer.
-                    minimum = max(_GIB, (archive_bytes or 0) * 3) + _RESERVE
+                    # v1 retains the whole archive selection. Compact sources
+                    # materialize only one archive at a time; its downloader
+                    # and safe extractor gate the actual resolved peak. Do not
+                    # reserve three times an MLS multi-archive batch here.
+                    minimum = (_GIB if compact else max(_GIB, (archive_bytes or 0) * 3)) + _RESERVE
                     if free < minimum:
                         shortages.append(f"{component}: next part needs at least {minimum} free bytes on the selected drive; {free} available")
                         break
                     source_room = (requested["limits"]["max_workspace_bytes"]
                                    - space["minimum_known_bytes"] - source_storage_bytes)
-                    if source_room <= 0 or type(archive_bytes) is int and archive_bytes * 2 > source_room:
+                    if source_room <= 0 or (not compact and type(archive_bytes) is int and archive_bytes * 2 > source_room):
                         shortages.append(f"{component}: 자동 자료 누적 저장 한도 부족. 원본·압축·추출 자료에 남은 {max(0, source_room):,}바이트로 다음 묶음을 준비할 수 없습니다.")
                         break
                     prepared = backend.prepare(candidate, default_backend / "parts" / key,
@@ -523,9 +589,18 @@ def prepare_automatic_sources(project, workspace, *, generic_hours, korean_hours
                         "reserved_download_bytes": part_bytes, "receipts": part_receipts,
                         "original_storage_bytes": part_storage, "header_rejections": diagnostics,
                         "artifacts": part_artifacts}
+                    if compact:
+                        record.update(retired_archive_bytes=prepared.get("retired_archive_bytes", 0),
+                            temporary_archive_peak_bytes=prepared.get("temporary_archive_peak_bytes", 0))
+                        if prepared.get("compact_receipt"):
+                            record["compact_receipt"] = prepared["compact_receipt"]
                     _frozen(record_path, record)
                 reserved_bytes += part_bytes
                 source_storage_bytes += part_storage
+                if compact:
+                    retired_archive_bytes += record.get("retired_archive_bytes", 0)
+                    temporary_archive_peak_bytes = max(temporary_archive_peak_bytes,
+                        record.get("temporary_archive_peak_bytes", 0))
                 if reserved_bytes > requested["limits"]["max_download_bytes"]:
                     raise ValueError("Persisted automatic sources exceed their frozen byte budget")
                 if source_storage_bytes + space["minimum_known_bytes"] > requested["limits"]["max_workspace_bytes"]:
@@ -576,5 +651,8 @@ def prepare_automatic_sources(project, workspace, *, generic_hours, korean_hours
             "source_storage_bytes": source_storage_bytes, "space_plan": space,
             "hours_scope": "post_technical_QC_Train" if qualify_source else "provider_index_and_audio_headers_only",
             "content_approved": False, "training_admitted": False, "Final_accessed": False}
+        if compact:
+            result.update(storage_policy=policy["storage_policy"], retired_archive_bytes=retired_archive_bytes,
+                          temporary_archive_peak_bytes=temporary_archive_peak_bytes)
         write_json(state / "result.json", result)
         return result

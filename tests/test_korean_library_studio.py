@@ -110,7 +110,7 @@ def test_create_presets_only_configure_without_work(manager, preset, originals, 
 def test_automatic_training_view_separates_targets_candidates_admissions_and_nominal_features(manager):
     view = create(manager)
     state = manager._load(view["id"])
-    assert state["settings"]["material_acquisition_policy"] == "automatic_v1"
+    assert state["settings"]["material_acquisition_policy"] == "automatic_v2"
     state["results"].update({
         "data_download": {"result": {"candidate_unique_hours": {"generic_negative": 0, "korean_negative": 1.1},
                                     "generic_feature_import": {"publisher_declared_hours": 2000}}},
@@ -130,7 +130,7 @@ def test_recipes_preview_has_three_budgets_known_sources_and_no_network(manager)
     assert all(row["known_download_bytes"] > 0 for row in recipes["presets"])
     assert all(row["assets"] or row.get("automatic_source_plan", {}).get("components")
                for row in recipes["presets"])
-    assert all(row["material_acquisition_policy"] == "automatic_v1" for row in recipes["presets"])
+    assert all(row["material_acquisition_policy"] == "automatic_v2" for row in recipes["presets"])
     assert all(row["human_review_required"] is True for row in recipes["presets"])
     policies = [row["evaluation_policy"] for row in recipes["presets"]]
     assert all(policy == policies[0] for policy in policies)

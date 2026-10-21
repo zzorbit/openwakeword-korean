@@ -421,6 +421,56 @@ function commercialRecipeV3() {
     assert.equal(JSON.stringify(recipe), before);
     assert.equal(b.helpers.minimumStorage(commonRecipe()), null);
   });
+  await test("compact storage shows retained-source estimate and one temporary archive budget with custom scaling", async () => {
+    const recipe = commercialRecipeV3();
+    Object.assign(recipe, { originals: 100000, rounds: 5, material_acquisition_policy: "automatic_v2",
+      automatic_source_plan: { version: 2, enabled: true, components: recipe.training_negative_plan.components.map(item => ({ ...item,
+        provider: { mixed: "audioset_unbalanced", multilingual: "mls", korean_web: "yodas2" }[item.id] || item.sources[0].id })) },
+      automatic_space_plan: { base_archive_bytes: 1000, base_working_bytes: 2000, future_buffer_bytes: 3000,
+        transient_archive_bytes: 8 * 1024 ** 3, estimated_original_archive_bytes: 99 * 1024 ** 4 } });
+    const original = JSON.stringify(recipe);
+    const b = browser({ recipeList: [recipe], initialState: { projects: [], system: { free_bytes: 2 * 1024 ** 4 } } }); await flush();
+    const estimate = b.helpers.storageEstimate(recipe);
+    assert.equal(estimate.retained, 2585000000000);
+    assert.equal(estimate.minimum, 6000 + 8 * 1024 ** 3 + 1152000000000 + 110592000000 + 3072000000);
+    assert.equal(estimate.total, estimate.minimum + 2585000000000);
+    assert.match(b.elements.get("source-plan-note").textContent, /예상 필요 공간 .*묶음 임시 8 GiB 예산 포함/);
+    assert.match(b.elements.get("source-plan-note").textContent, /원본 제외 최소/);
+    const small = { genericHours: 3500, koreanHours: 1500, originals: 1000, rounds: 1 };
+    assert.equal(b.helpers.storageEstimate(recipe, small).retained, 1292500000000);
+    for (const [id, value] of [["adv-generic", "3500"], ["adv-korean", "1500"], ["adv-originals", "1000"], ["adv-rounds", "1"]]) {
+      b.elements.get(id).value = value; b.elements.get(id).handlers.input();
+    }
+    assert.ok(b.elements.get("source-plan-note").textContent.includes(b.helpers.bytes(b.helpers.storageEstimate(recipe, small).total)));
+    assert.equal(JSON.stringify(recipe), original);
+    assert.equal(b.helpers.storageEstimate({ ...recipe, material_acquisition_policy: "automatic_v1" }), null);
+    assert.equal(b.helpers.storageEstimate({ ...recipe, automatic_space_plan: { ...recipe.automatic_space_plan, transient_archive_bytes: undefined } }), null);
+    assert.equal(b.helpers.storageEstimate({ ...recipe, automatic_source_plan: { components: [{ provider: "unknown", pool: "generic_negative", target_hours: 1 }] } }), null);
+  });
+  await test("compact trial still selects YODAS automatically and does not change the legacy source display", async () => {
+    const recipe = commonRecipe({ id: "trial", korean_hours: 2000 / 3, material_acquisition_policy: "automatic_v2",
+      automatic_source_plan: { version: 2, enabled: true, components: [{ id: "yodas2", provider: "yodas2", pool: "korean_negative", target_hours: 2000 / 3 }] } });
+    recipe.assets = recipe.assets.filter(item => item.id !== "zeroth");
+    const b = browser({ recipeList: [recipe] }); await flush();
+    const training = b.elements.get("source-preview").children[0];
+    assert.match(textOf(material(training, "한국어 비호출 자료")), /YODAS2 한국어.*목표량 자동 선정/);
+    assert.equal(textOf(training).includes("직접 준비할"), false);
+    assert.equal(textOf(training).includes("Zeroth"), false);
+    assert.equal(b.elements.get("source-plan-note").hidden, false);
+  });
+  await test("compact check omits empty temporary and duplicate minimum amounts", async () => {
+    const recipe = commonRecipe({ id: "check", originals: 1000, rounds: 1, generic_hours: 2000, korean_hours: 1,
+      material_acquisition_policy: "automatic_v2",
+      automatic_source_plan: { version: 2, enabled: true, components: [] },
+      automatic_space_plan: { base_archive_bytes: 57880940221, base_working_bytes: 16106127360,
+        future_buffer_bytes: 8589934592, transient_archive_bytes: 0 } });
+    const b = browser({ recipeList: [recipe] }); await flush();
+    const note = b.elements.get("source-plan-note").textContent;
+    assert.match(note, /예상 필요 공간 76\.9 GiB/);
+    assert.equal(note.includes("묶음 임시"), false);
+    assert.equal(note.includes("원본 제외 최소"), false);
+    assert.match(note, /실제 용량은 선정 후 확인합니다/);
+  });
   await test("training source coverage separates targets, measured candidates, admission and nominal legacy features", async () => {
     const project = { id: "bora", wakeword: "보라야", status: "running", training_materials: {
       targets: { generic_negative: 7000, korean_negative: 3000 }, candidate: { generic_negative: 24.5, korean_negative: 0 }, admitted: null, generic_publisher_nominal_hours: null

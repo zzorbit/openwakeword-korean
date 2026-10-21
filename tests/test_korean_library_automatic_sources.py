@@ -77,6 +77,129 @@ def test_check_keeps_existing_bounded_recipe_without_provider_access(setup):
     assert backend.inventories == backend.prepared == []
 
 
+def test_compact_storage_forecast_keeps_identical_data_targets_and_known_payload():
+    old_policy = module.automatic_source_policy(7000, 3000, "production")
+    current_policy = module.automatic_source_policy(7000, 3000, "production", material_acquisition_policy="automatic_v2")
+    assert old_policy["component_targets"] == current_policy["component_targets"]
+    assert old_policy["version"] == 1 and "storage_policy" not in old_policy
+    assert current_policy["version"] == 2
+    old = module.automatic_storage_plan({}, generic_hours=7000, korean_hours=3000)
+    current = module.automatic_storage_plan({}, generic_hours=7000, korean_hours=3000,
+                                            material_acquisition_policy="automatic_v2")
+    for field in ("normalized_pcm16_bytes", "negative_feature_payload_bytes", "positive_feature_payload_bytes", "minimum_known_bytes"):
+        assert current[field] == old[field]
+    assert current["estimated_retained_source_bytes"] == 2_585_000_000_000
+    assert current["estimated_download_bytes"] == 2_465_000_000_000
+    assert current["transient_archive_bytes"] == 8 * 1024**3
+    assert current["estimated_total_bytes"] < old["estimated_total_bytes"]
+    assert current["estimated_original_archive_bytes"] == current["estimated_retained_source_bytes"]
+
+
+def test_compact_policy_uses_separate_namespace_and_same_source_selection(setup):
+    old_backend = Backend()
+    old = supply(setup, old_backend)
+    old_request = setup[0].parent / ".studio/materials/automatic_sources_v1/request.json"
+    prior = old_request.read_bytes()
+    compact_backend = Backend()
+    compact = module.prepare_automatic_sources(setup[0], setup[1], preset="test",
+        generic_hours=2000, korean_hours=2/3600, backend=compact_backend,
+        material_acquisition_policy="automatic_v2")
+    assert old_request.read_bytes() == prior
+    assert "/automatic_sources_v2/" in compact["plan"]["request"]["path"].replace("\\", "/")
+    assert old_backend.prepared[0][0] == compact_backend.prepared[0][0]
+    assert compact["sources"][0]["id"] == old["sources"][0]["id"]
+    assert compact["storage_policy"] == "verified_extracted_only_v1"
+    assert compact["component_actual_hours"] == old["component_actual_hours"]
+
+
+def test_compact_resume_rechecks_full_preservation_receipt_before_selected_hours(setup, monkeypatch):
+    from korean_openwakeword import compact_sources
+    class ProofBackend(Backend):
+        def prepare(self, candidate, directory, **kwargs):
+            result = super().prepare(candidate, directory, **kwargs)
+            proof = Path(directory) / "compact_receipt.json"
+            proof.write_text("{}\n", encoding="utf-8")
+            return {**result, "compact_receipt": {"path": str(proof.resolve()), "sha256": digest(proof)},
+                    "retired_archive_bytes": 50, "temporary_archive_peak_bytes": 50}
+    backend = ProofBackend()
+    verified = []
+    monkeypatch.setattr(compact_sources, "verify_compact_source", lambda directory: verified.append(directory))
+    kwargs = {"preset": "test", "generic_hours": 2000, "korean_hours": 2/3600,
+              "backend": backend, "material_acquisition_policy": "automatic_v2"}
+    first = module.prepare_automatic_sources(setup[0], setup[1], **kwargs)
+    second = module.prepare_automatic_sources(setup[0], setup[1], **kwargs)
+    assert len(backend.prepared) == len(verified) == 1
+    assert second["component_actual_hours"] == first["component_actual_hours"]
+    assert second["retired_archive_bytes"] == second["temporary_archive_peak_bytes"] == 50
+    (verified[0] / "compact_receipt.json").write_text("changed", encoding="utf-8")
+    with pytest.raises(ValueError, match="receipt changed"):
+        module.prepare_automatic_sources(setup[0], setup[1], **kwargs)
+    assert len(verified) == 1
+
+
+def test_public_backend_compact_preserves_original_bytes_and_provider_rows(tmp_path, monkeypatch):
+    import hashlib
+    import io
+    import json
+    import tarfile
+    from korean_openwakeword import commercial_sources
+    from korean_openwakeword.common import identity
+    provider = commercial_sources._PROVIDERS["audioset_unbalanced"]
+    original = b"same original audio bytes; neither reencoding nor gain changes" * 8
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w") as stream:
+        info = tarfile.TarInfo("corpus/fixture0001.wav"); info.size = len(original)
+        stream.addfile(info, io.BytesIO(original))
+    payloads = {}
+    def asset(path, data):
+        url = commercial_sources._resolve_url(provider, path)
+        payloads[url] = data
+        return {"path": path, "filename": Path(path).name, "source_url": url,
+                "size_bytes": len(data), "checksum_algorithm": "sha256",
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "upstream_revision": provider["revision"], "license": provider["license"]}
+    assets = [asset("data/unbal_train000.tar", archive.getvalue())]
+    metadata = [asset("data/unbalanced_train_segments.csv", b'fixture0001,0,4,"/m/environment"\n'),
+                asset("data/ontology.json", json.dumps([
+                    {"id": key, "name": key, "child_ids": []}
+                    for key in ("/m/09x0r", "/m/04rlf", "/m/environment")]).encode())]
+    resolution = {"kind": "commercial_source_resolution_v1", "source_id": "audioset_unbalanced",
+                  "provider": provider, "selection": {"parts": [0]}, "assets": assets,
+                  "metadata_assets": metadata, "total_bytes": sum(a["size_bytes"] for a in assets + metadata),
+                  "resolved_at": "fixture"}
+    resolution["resolution_sha256"] = identity({k: v for k, v in resolution.items() if k != "resolved_at"})
+    monkeypatch.setattr(commercial_sources, "resolve_commercial_source", lambda *a, **k: resolution)
+    class Response:
+        status_code = 200
+        headers = {}
+        def __init__(self, data): self.data = data
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def raise_for_status(self): pass
+        def iter_content(self, size): yield self.data
+    monkeypatch.setattr(module.requests, "get", lambda url, **kwargs: Response(payloads[url]))
+    candidate = {"component": "audioset_unbalanced", "selection": {"parts": [0]}}
+    legacy_root, compact_root = tmp_path / "legacy", tmp_path / "compact"
+    args = {"target_hours": 1, "max_download_bytes": resolution["total_bytes"], "max_extract_bytes": 1024**2}
+    legacy = module.PublicSourceBackend(legacy_root).prepare(candidate, legacy_root / "parts/source", **args)
+    compact = module.PublicSourceBackend(compact_root, storage_policy="verified_extracted_only_v1").prepare(
+        candidate, compact_root / "parts/source", **args)
+    for result in (legacy, compact):
+        assert (Path(result["source"]["directory"]) / "part_0000/corpus/fixture0001.wav").read_bytes() == original
+    def comparable(rows):
+        return [{**row, "provider_metadata_bindings": [binding["sha256"] for binding in row["provider_metadata_bindings"]]} for row in rows]
+    assert comparable(legacy["rows"]) == comparable(compact["rows"])
+    assert legacy["original_storage_bytes"] - compact["original_storage_bytes"] == assets[0]["size_bytes"]
+    assert (legacy_root / "parts/source/originals" / assets[0]["path"]).is_file()
+    assert not (compact_root / "parts/source/originals" / assets[0]["path"]).exists()
+    proof = Path(compact["compact_receipt"]["path"])
+    proof_sha = digest(proof)
+    monkeypatch.setattr(module.requests, "get", lambda *a, **k: pytest.fail("Completed compact cache must not download"))
+    resumed = module.PublicSourceBackend(compact_root, storage_policy="verified_extracted_only_v1").prepare(
+        candidate, compact_root / "parts/source", **args)
+    assert resumed["rows"] == compact["rows"] and digest(proof) == proof_sha
+
+
 def test_each_full_component_refills_after_real_callback_shortfall(setup):
     backend = Backend()
     qualified = []
@@ -113,6 +236,56 @@ def test_resume_reuses_frozen_selection_and_changed_audio_fails_closed(setup):
     (Path(source["directory"]) / "original.wav").write_bytes(b"changed")
     with pytest.raises(ValueError, match="waveform changed"):
         supply(setup, backend)
+
+
+@pytest.mark.parametrize("policy", ["automatic_v1", "automatic_v2"])
+def test_interrupted_selection_recounts_fallback_copies_before_source_commit(setup, monkeypatch, policy):
+    backend = Backend()
+    def prepare():
+        return module.prepare_automatic_sources(setup[0], setup[1], preset="test", generic_hours=2000,
+            korean_hours=2/3600, backend=backend, material_acquisition_policy=policy)
+    frozen = module._frozen
+    def interrupt_before_commit(path, record):
+        if path.name == "source.json":
+            raise InterruptedError("fixture: copied selection before source record commit")
+        return frozen(path, record)
+    def cannot_link(*args):
+        raise OSError("fixture filesystem does not support hardlinks")
+    monkeypatch.setattr(module.os, "link", cannot_link)
+    monkeypatch.setattr(module, "_frozen", interrupt_before_commit)
+    with pytest.raises(InterruptedError, match="before source record commit"):
+        prepare()
+    monkeypatch.setattr(module, "_frozen", frozen)
+    result = prepare()
+    source = result["sources"][0]
+    selected = Path(source["directory"]) / "original.wav"
+    assert result["source_storage_bytes"] == 100 + selected.stat().st_size
+    assert selected.read_bytes() == b"yodas2_0"
+
+
+@pytest.mark.parametrize("independent_copy", [False, True])
+def test_existing_selection_distinguishes_hardlink_payload_from_copy_cost(setup, independent_copy):
+    source_dir = setup[1] / "original"
+    source_dir.mkdir(parents=True)
+    original = source_dir / "example.wav"
+    original.write_bytes(b"fixture original payload")
+    selected = setup[1] / "selected"
+    selected.mkdir()
+    destination = selected / original.name
+    if independent_copy:
+        destination.write_bytes(original.read_bytes())
+    else:
+        module.os.link(original, destination)
+    row = {"path": original.name, "sha256": digest(original), "canonical_source_id": "fixture:one"}
+    counter = {"bytes": 0}
+    module._validate_rows({"directory": str(source_dir)}, [row], selected, set(), set(),
+                          storage_counter=counter, max_copy_bytes=original.stat().st_size)
+    assert counter["bytes"] == (original.stat().st_size if independent_copy else 0)
+    if independent_copy:
+        with pytest.raises(ValueError, match="복사본"):
+            module._validate_rows({"directory": str(source_dir)}, [row], selected, set(), set(),
+                                  storage_counter={"bytes": 0}, max_copy_bytes=original.stat().st_size - 1)
+        assert destination.read_bytes() == original.read_bytes()
 
 
 def test_duplicates_do_not_replace_missing_unique_hours(setup):

@@ -692,7 +692,7 @@ class StudioManager:
         downloaded = downloaded.get("result", downloaded)
         connected = material_results.get("data_connect", {})
         connected = connected.get("result", connected)
-        if state.get("settings", {}).get("material_acquisition_policy") == "automatic_v1":
+        if state.get("settings", {}).get("material_acquisition_policy") in ("automatic_v1", "automatic_v2"):
             candidate = downloaded.get("candidate_unique_hours")
             admitted = connected.get("admitted_unique_hours")
             nominal = connected.get("generic_publisher_nominal_hours")

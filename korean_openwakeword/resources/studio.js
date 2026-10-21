@@ -44,6 +44,7 @@
     const space = recipe.automatic_space_plan, components = recipe.automatic_source_plan?.components;
     if (!space || !Array.isArray(components)) return null;
     const fixed = [space.base_archive_bytes, space.base_working_bytes, space.future_buffer_bytes];
+    if (recipe.material_acquisition_policy === "automatic_v2") fixed.push(space.transient_archive_bytes);
     const originals = selected.originals ?? recipe.originals, rounds = selected.rounds ?? recipe.rounds;
     const generic = selected.genericHours ?? recipe.generic_hours, korean = selected.koreanHours ?? recipe.korean_hours;
     if (![...fixed, originals, rounds, generic, korean].every(value => Number.isFinite(value) && value >= 0)) return null;
@@ -54,6 +55,30 @@
     // raw codec/archive forecasts are deliberately excluded from this minimum.
     return fixed.reduce((sum, value) => sum + value, 0) + Math.ceil(seconds * 16000 * 2)
       + Math.ceil(seconds / 2) * 16 * 96 * 4 + Math.ceil(originals * rounds * 16 * 96 * 4);
+  }
+  function storageEstimate(recipe, selected = {}) {
+    if (recipe.material_acquisition_policy !== "automatic_v2") return null;
+    const minimum = minimumStorage(recipe, selected), space = recipe.automatic_space_plan;
+    const components = recipe.automatic_source_plan?.components;
+    if (minimum === null || !Number.isFinite(space?.transient_archive_bytes) || space.transient_archive_bytes < 0) return null;
+    const rates = space.source_forecast_bytes_per_hour || {
+      audioset_unbalanced: 500000000, mls: 140000000, fma_full: 125000000, yodas2: 180000000
+    };
+    const targets = { generic_negative: selected.genericHours ?? recipe.generic_hours,
+      korean_negative: selected.koreanHours ?? recipe.korean_hours };
+    const totals = {};
+    for (const item of components) {
+      if (!Object.hasOwn(targets, item.pool) || !Number.isFinite(item.target_hours) || item.target_hours < 0) return null;
+      totals[item.pool] = (totals[item.pool] || 0) + item.target_hours;
+    }
+    let retained = 0;
+    for (const item of components) {
+      const rate = rates[item.provider || item.id];
+      if (!Number.isFinite(rate) || rate < 0 || !Number.isFinite(targets[item.pool])) return null;
+      if (totals[item.pool] > 0) retained += targets[item.pool] * item.target_hours / totals[item.pool] * rate;
+    }
+    return { minimum, retained: Math.ceil(retained), transient: space.transient_archive_bytes,
+      total: minimum + Math.ceil(retained) };
   }
   function eta(value) {
     if (Array.isArray(value) && value.length === 2) {
@@ -197,7 +222,7 @@
     const suppliedGeneric = recipe.automatic_target_hours?.generic_nominal ?? asset("generic")?.hours ?? 0;
     const suppliedKorean = recipe.automatic_target_hours?.korean_train ?? asset("zeroth")?.hours ?? 0;
     const negativePlan = recipe.training_negative_plan;
-    const automaticPlan = recipe.material_acquisition_policy === "automatic_v1" && recipe.automatic_source_plan?.version === 1
+    const automaticPlan = ["automatic_v1", "automatic_v2"].includes(recipe.material_acquisition_policy) && [1, 2].includes(recipe.automatic_source_plan?.version)
       && recipe.automatic_source_plan.enabled === true && Array.isArray(recipe.automatic_source_plan.components) ? recipe.automatic_source_plan : null;
     const hasNegativePlan = ((negativePlan?.id === "commercial_negative_v1" && negativePlan.version === 1)
       || (negativePlan?.id === "commercial_negative_v2" && negativePlan.version === 2)
@@ -356,16 +381,19 @@
       sections.push(section);
     }
     replace($("source-preview"), sections);
-    const automatic = recipe.material_acquisition_policy === "automatic_v1";
+    const automatic = ["automatic_v1", "automatic_v2"].includes(recipe.material_acquisition_policy);
     $("source-plan-note").hidden = !automatic;
     if (automatic) {
       const known = bytes(recipe.known_download_bytes);
       const additional = recipe.automatic_source_plan?.components?.length > 0;
       const selected = (id, value) => $(id).value !== "" && Number.isFinite(Number($(id).value)) && Number($(id).value) >= 0 ? Number($(id).value) : value;
-      const minimum = minimumStorage(recipe, { originals: selected("adv-originals", recipe.originals), rounds: selected("adv-rounds", recipe.rounds), genericHours: selected("adv-generic", recipe.generic_hours), koreanHours: selected("adv-korean", recipe.korean_hours) });
+      const values = { originals: selected("adv-originals", recipe.originals), rounds: selected("adv-rounds", recipe.rounds), genericHours: selected("adv-generic", recipe.generic_hours), koreanHours: selected("adv-korean", recipe.korean_hours) };
+      const minimum = minimumStorage(recipe, values), estimate = storageEstimate(recipe, values);
       const free = snapshot.system?.free_bytes ?? snapshot.system?.disk_free_bytes;
-      $("source-plan-note").textContent = minimum !== null
-        ? `최소 저장 공간 ${bytes(minimum)}${additional ? " + 원본·압축파일 추가" : ""}.${Number.isFinite(free) && minimum > free ? " 현재 여유 공간보다 큽니다." : ""} 원본 목록 확정 후 실제 용량을 확인합니다.`
+      $("source-plan-note").textContent = estimate !== null
+        ? `예상 필요 공간 ${bytes(estimate.total)}${estimate.transient > 0 ? "(묶음 임시 " + bytes(estimate.transient) + " 예산 포함)" : ""}.${estimate.retained > 0 ? " 원본 제외 최소 " + bytes(minimum) + "." : ""}${Number.isFinite(free) && minimum > free ? " 현재 여유 공간보다 큽니다." : Number.isFinite(free) && estimate.total > free ? " 현재 여유가 예상량보다 적습니다." : ""} 실제 용량은 선정 후 확인합니다.`
+        : minimum !== null
+        ? `최소 저장 공간 ${bytes(minimum)}${additional ? recipe.material_acquisition_policy === "automatic_v2" ? " + 원본 추가" : " + 원본·압축파일 추가" : ""}.${Number.isFinite(free) && minimum > free ? " 현재 여유 공간보다 큽니다." : ""} 원본 목록 확정 후 실제 용량을 확인합니다.`
         : additional
         ? `목표량에 맞춰 원본을 자동 선정합니다.${known ? " 고정 자료 " + known + " 외" : ""} 추가 다운로드 용량은 목록 확정 후 확인합니다.`
         : `필요한 공개 자료를 자동 준비합니다.${known ? " 고정 다운로드 " + known + "." : ""} 실제 준비량과 검수 승인은 별도로 확인합니다.`;
@@ -679,6 +707,6 @@
     pollTimer = setInterval(async () => { if (!document.hidden) { await refresh(); if ($("log-details").open) await loadLog(); } }, 3000);
     window.addEventListener("pagehide", () => clearInterval(pollTimer), { once: true });
   }
-  window.KowwStudio = Object.freeze({ duration, bytes, minimumStorage, eta, progressValue, requestBody, localUrl, webUrl });
+  window.KowwStudio = Object.freeze({ duration, bytes, minimumStorage, storageEstimate, eta, progressValue, requestBody, localUrl, webUrl });
   if (!window.KOWW_STUDIO_TEST) boot();
 })();
