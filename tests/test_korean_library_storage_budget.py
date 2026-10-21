@@ -45,6 +45,7 @@ def test_baseline_file_formulas_and_shared_features():
     assert rows["hard_features"]["bytes"] == 12288000 + 512
     assert rows["tts_wavs"]["bytes"] == 175800738944
     assert rows["training_rirs"]["bytes"] == 8374902 + 1554203
+    assert rows["fma_catalog"]["bytes"] == 260414445
     assert result["variables"]["tts_slots"] == 112024
     assert result["variables"]["reference_count"] == 140
     for row in result["rows"]:

@@ -72,6 +72,9 @@ def commercial_storage_budget(settings, *, base_archive_bytes):
     row("base_archives", "공통 평가·기본 자료 묶음", "published",
         "현재 고정 catalog의 보존 다운로드 합계. 대규모 학습 shard와 독립 Final 원본 다운로드는 제외합니다.",
         constant=_nonnegative_integer(base_archive_bytes))
+    row("fma_catalog", "FMA 원곡 목록", "measured",
+        "전체 tracks.csv 한 사본260,414,445B 실측 참조입니다. 메타 ZIP 전체를 받지 않으며 보충 candidate의 추가 사본과 생성 목록은 미확정 항목에 남깁니다.",
+        constant=evidence["fma_catalog_reference_bytes"])
     row("common_originals", "공통 평가 원본·해제 중간본(확인분)", "reference",
         "고정 목록의 FSD·Seoul·MUSAN 원본, Seoul 중첩 ZIP·결합 WAV, Zeroth FLAC·TXT와 공통 RIR80개를 합산합니다. 원본 목록·아카이브 member 크기·실측 헤더에 근거합니다.",
         constant=evidence["common_source_known_bytes"])

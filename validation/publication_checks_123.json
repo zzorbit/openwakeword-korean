@@ -10,9 +10,9 @@
   "studio_JS_tests": 51,
   "microphone_JS_tests": 14,
   "studio_actual_API_parity_cases": 4,
-  "ledger_known_rows": 18,
+  "ledger_known_rows": 19,
   "ledger_unresolved_rows": 9,
-  "conditional_reference_subtotal_bytes": 1074278382334,
+  "conditional_reference_subtotal_bytes": 1074538796779,
   "total_required_bytes": null,
   "peak_required_bytes": null,
   "removed_unsupported_allowances_bytes": 33285996544,
@@ -21,7 +21,7 @@
   "Zeroth_all_flac_txt_bytes": 2876686058,
   "MIT_RIR_PCM_equal_files": 270,
   "MIT_RIR_original_and_FLAC_bytes": 9929105,
-  "evidence_resource_sha256": "83f3a0797481d41292599e8b85b4fa064aa3873fffa6172c60ae95fc2576eb98",
+  "evidence_resource_sha256": "c08bb8b13c41bbf14e49e431ada0b6a50fbeee5afd231472f1ea8632e9ec70c2",
   "scope": [
     "Pinned provider metadata, existing archive member inventories and named small fixtures; not full commercial source acquisition.",
     "TTS count/payload bound and evaluation WAV scenario are calculations, not generated audio measurements.",
@@ -31,11 +31,11 @@
     "Windows local tooling size is an installed-file reference, not a portable environment constant."
   ],
   "runtime_sha256": {
-    "storage_budget.py": "2025dad1e46622e45b8c70d5856ac425a196c20fa94717aeceec9e75dffc1d8e",
+    "storage_budget.py": "60a2ec853e753699f0a48a9894d1a89285339b764d1cfaaae5b20098683dfbca",
     "studio.py": "afa2306a29328c77d06806111be3bba259924772e7881db16771e8eb068099b1",
     "studio_data.py": "be7c3bc3132ac2a4bad2e7272edc4f1ff3a440f12d0e4135827d4c1632b70a1f",
     "evaluation_materials.py": "d58792353a0537da6fa04635e651076fd7e29924899df9e5171923e20ea566c8",
-    "resources/storage_evidence_v1.json": "83f3a0797481d41292599e8b85b4fa064aa3873fffa6172c60ae95fc2576eb98",
+    "resources/storage_evidence_v1.json": "c08bb8b13c41bbf14e49e431ada0b6a50fbeee5afd231472f1ea8632e9ec70c2",
     "resources/studio.js": "75f3a539e13d501cd56cbcc40491d12107b2651b88ef21c41084c056aeb9e93f",
     "resources/studio.html": "c3ae7df52ad7ff9784652739e3faee2b676b1115c5cb20bd90fb733be4df67f6",
     "resources/studio.css": "5ab52e1f00a544864fdbd46ef4a023d2027f2b6100711f129377c1c4a2f254b5"

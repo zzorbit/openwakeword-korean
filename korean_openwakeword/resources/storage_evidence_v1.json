@@ -3,6 +3,8 @@
   "audited_at": "2026-10-21",
   "scope": "New commercial automatic_v3 run; no production corpus or independent Final was generated or unlocked for this audit.",
   "qwen_snapshot_bytes": 9064393532,
+  "fma_catalog_reference_bytes": 260414445,
+  "fma_catalog_reference": {"retained_tracks_csv_bytes": 260414445, "temporary_compressed_member_bytes": 19496284, "whole_metadata_zip_bytes_not_retained": 358412441, "scope": "Existing real FMA RangeZip metadata receipt and CSV stat. One full CSV in the initial candidate directory; supplemental candidates may retain additional copies. Compressed member is removed after extraction; do not add the whole ZIP."},
   "qwen_snapshots": [
     {"repository": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign", "revision": "5ecdb67327fd37bb2e042aab12ff7391903235d3", "bytes": 4520163832},
     {"repository": "Qwen/Qwen3-TTS-12Hz-1.7B-Base", "revision": "fd4b254389122332181a7c3db7f27e918eec64e3", "bytes": 4544229700}
@@ -85,7 +87,7 @@
   },
   "unknowns": [
     {"id": "actual_flac_and_quota", "label": "실제 FLAC 크기·목표 초과분", "detail": "최종 선정·QC 후 canonical receipt의 실제 byte 합계로 PCM 환산을 대체합니다. 전체 압축률이나 불량률을 작은 표본으로 정하지 않습니다."},
-    {"id": "feature_metadata", "label": "자료 목록·증강 기록·특징 추가 행", "detail": "원본별 ceil(duration/2), admitted/merged/project 목록 사본, 행별 augmentation.jsonl와 네 contract를 포함합니다. 작은 표본은 비호출 목록1행1,938~1,940B·최소3사본, 특징 기록1행451~456B였습니다. 명목9M행이면 비호출 목록만 약52.33~52.38GB의 외삽 예시가 되지만 경로·원본·증강 내용이 달라 고정 비용으로 합산하지 않습니다."},
+    {"id": "feature_metadata", "label": "자료 목록·증강 기록·특징 추가 행", "detail": "원본별 ceil(duration/2), admitted/merged/project 목록 사본, 행별 augmentation.jsonl와 네 contract를 포함합니다. 작은 표본은 비호출 목록1행1,938~1,940B·최소3사본, 특징 기록1행451~456B였습니다. 명목9M행이면 비호출 목록만 약52.33~52.38GB의 외삽 예시지만 고정 비용으로 합산하지 않습니다. AudioSet 목록·ontology, MLS 언어별 TXT·README, YODAS shard별 duration·text, 추가 FMA 목록도 실제 선정과 보충 후 합산합니다. 공유 메타 hardlink를 경로별로 중복 계산하지 않습니다."},
     {"id": "negative_padding", "label": "비호출 유효 시간 보충·WAV 헤더", "detail": "공통 30h·Final100h는 warmup·부분 프레임을 제외한 시간입니다. 실제 stream 수에 따른 2초 warmup, 꼬리, WAV 헤더와 원본 단위 초과량이 필요합니다."},
     {"id": "final_downloads", "label": "독립 Final 원본·중간 자료", "detail": "현재 자동 웹 흐름은 공통 평가까지입니다. 독립 Final의 별도 출처·압축 묶음·RIR 구성은 미지정이며 선택·동결 전에는 전체 byte를 확정할 수 없습니다."},
     {"id": "scores_and_reports", "label": "점수·보고서·선택 증거 사본", "detail": "가이드 시나리오 점수 float32 payload는 약611.424MB지만 실제 NPZ 압축·JSONL·clips/report·선택 사본 크기는 미확정입니다. 평가 중 frames.npy와 압축 NPZ가 동시에 존재합니다."},
