@@ -198,6 +198,20 @@ a.source-name:hover{text-decoration:underline}
 
 .materials-summary strong{margin-left:6px;color:var(--fg);font-weight:700}
 
+.storage-budget{margin-top:10px;font-size:13px}
+.storage-budget summary{cursor:pointer;font-weight:650;width:fit-content}
+.storage-budget>div>p{margin:10px 0}
+.storage-table-wrap{overflow-x:auto;margin:10px 0;border:1px solid var(--border);border-radius:8px}
+.storage-table{width:100%;min-width:620px;border-collapse:collapse;text-align:left;font-size:12px;line-height:1.6}
+.storage-table th,.storage-table td{padding:9px 12px;vertical-align:top;border-bottom:1px solid var(--line)}
+.storage-table thead{background:var(--control)}
+.storage-table thead th{font-size:12px;font-weight:700}
+.storage-table tbody th{font-weight:650;width:22%}
+.storage-table td:nth-child(2),.storage-table td:nth-child(3){white-space:nowrap;font-variant-numeric:tabular-nums}
+.storage-table td:last-child{color:var(--muted);min-width:230px}
+.storage-table tbody tr:last-child>*{border-bottom:0}
+.storage-assumptions{padding-left:19px;color:var(--muted);margin:10px 0}
+
 @media(max-width:700px){.material-button{padding:9px 5px;gap:16px}
 .material-copy{grid-template-columns:130px minmax(0,1fr);gap:14px}
 .material-name{font-size:14px}

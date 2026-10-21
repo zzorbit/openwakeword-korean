@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "audited_at": "2026-10-21",
+  "scope": "New commercial automatic_v3 run; no production corpus or independent Final was generated or unlocked for this audit.",
+  "qwen_snapshot_bytes": 9064393532,
+  "qwen_snapshots": [
+    {"repository": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign", "revision": "5ecdb67327fd37bb2e042aab12ff7391903235d3", "bytes": 4520163832},
+    {"repository": "Qwen/Qwen3-TTS-12Hz-1.7B-Base", "revision": "fd4b254389122332181a7c3db7f27e918eec64e3", "bytes": 4544229700}
+  ],
+  "environment_reference_bytes": 8400364949,
+  "environment_reference": "Installed dependency-closure RECORD files, Windows Python3.12 Torch2.8.0+cu128; replace stale editable package with 0.12.2 portable installation. Shared Python, pip cache and installer scratch excluded.",
+  "common_source_known_bytes": 14417277853,
+  "common_source_components": [
+    {"id": "fsd_candidate_originals", "bytes": 2144119982, "basis": "1,861 fixed catalog original-file sizes; not 4-hour cutouts"},
+    {"id": "seoul_candidate_originals", "bytes": 1033698874, "basis": "94 fixed catalog FLAC file sizes"},
+    {"id": "seoul_nested_zip", "bytes": 2589154301, "basis": "Existing pinned nested sound-flac.zip stat and saved checksum receipt"},
+    {"id": "seoul_join_wavs", "bytes": 2381401760, "basis": "Existing original headers: 22,050Hz mono PCM16; 15h across 40 joined WAVs including 44-byte headers"},
+    {"id": "musan_selected_originals", "bytes": 3390165358, "basis": "Existing pinned tar.gz metadata inventory: all 300 catalog WAV members found, no audio extraction or decoding. Music140=1241295770B, speech160=2148869588B."},
+    {"id": "zeroth_selected_flac_txt", "bytes": 2876686058, "basis": "Existing pinned TGZ metadata inventory: all FLAC2873199378B + TXT3486680B. Nested GZ and SEG are not used by source indexing and are not extracted by new selectors. Original full TGZ remains retained."},
+    {"id": "common_rir_originals", "bytes": 2051520, "basis": "80 pinned PCM16 WAV members:32*0.5s+48*1s. Common RIR ZIP is already counted in base archives; no second normalized RIR disk copy."}
+  ],
+  "mit_rir_audio_bytes": 9929105,
+  "mit_rir_measurement": {"revision": "b824a1ef2821f112fda0b9cb26e4278c62b425bb", "files": 270, "original_PCM24_bytes": 8374902, "canonical_FLAC_bytes": 1554203, "same_PCM_verified_files": 270, "sidecar_fixture_bytes": 274925, "scope": "Existing pinned original hashes checked; standard conversion to a new audit output, original files preserved. Sidecar bytes depend on actual paths and remain under management-file unknowns."},
+  "checkpoint_reference_bytes": 103181112,
+  "deployment_files_reference_bytes": 13082421,
+  "deployment_files_reference": {"three_trained_ONNX_bytes": 1946271, "ONNX_copies": 3, "frontend_pair_bytes": 2414536, "frontend_copies": 3, "scope": "Existing CNN128 model files and pinned frontend measured by stat; scenario keeps original run, package and three-member selected bundle. Installed sample assets are already in environment_reference_bytes."},
+  "checkpoint_reference": {"parameters": 161025, "single_bytes": 11464568, "count": 9, "basis": "In-memory zero-gradient AdamW serialization fixture, no training; nominal 9M Negative rows, 500k Positive rows, 2k Hard rows"},
+  "tts_completion_bound": {
+    "max_new_tokens": 256,
+    "decoder_output_sample_rate": 24000,
+    "decoder_samples_per_token": 1920,
+    "failed_pcm16_16k_frame_bound": 327681,
+    "successful_max_seconds": 8,
+    "attempts_per_completed_slot": 3,
+    "bytes_per_completed_slot_bound": 1566856,
+    "reference_float_wav_bytes_bound": 1966160,
+    "basis": "At most two retained failed outputs plus one QC-passing output per completed slot. Failed output bound includes reference-cut rounding. FLOAT references use measured 80-byte header; PCM WAV uses 44 bytes. Default model/config only; journals and incomplete/rerun projects excluded."
+  },
+  "independent_final_scenario": {
+    "status": "guide_example_not_frozen_protocol",
+    "originals": 5000,
+    "noise_sections": 5,
+    "positive_sessions": 380000,
+    "formula": "5000 * (1 + 3 categories * 5 SNRs * 5 sections)",
+    "negative_eligible_hours": 100,
+    "rir_sessions": 0,
+    "reference": "docs/LIBRARY_GUIDE.md, manual prepare-eval --split final --originals 5000 --noise-sections 5"
+  },
+  "evaluation_audio": {
+    "common_positive": 19809024000,
+    "final_positive": 63735120000,
+    "common_sources": 3456000000,
+    "common_streams": 3456000000,
+    "final_negative": 11520000000,
+    "site_copies": 98520144000,
+    "basis": "Common:80k*167724B +32k*199722B. Final guide case:380k*167724B.30/100h PCM16 nominal bytes. Site copies both positive sets and packed Negative WAVs; 44-byte Negative headers, excluded warmup/tails and quota overshoot remain unresolved."
+  },
+  "observed_fixtures": {
+    "small_tts_success_count": 1000,
+    "small_tts_attempt_count": 1001,
+    "small_tts_success_bytes": 25592800,
+    "small_tts_all_attempt_bytes": 25664524,
+    "small_tts_average_success_seconds": 0.7984,
+    "small_tts_scope": "Old 4-voice operation check only; not extrapolated to 100-voice 100k commercial generation.",
+    "feature_journal_bytes_per_row": [451, 456],
+    "negative_window_manifest_bytes_per_row": [1938, 1940],
+    "manifest_copies_at_least": 3,
+    "metadata_scope": "Small connected-source fixtures; actual path lengths, contracts and augmentations vary. Not a corpus upper bound or a fixed allowance.",
+    "evaluation_fixture_sessions": 17,
+    "evaluation_fixture_audio_bytes": 2349548,
+    "evaluation_fixture_site_copy_bytes": 2349548,
+    "evaluation_fixture_clips_json_bytes": 175746,
+    "evaluation_fixture_score_npz_bytes": 5757,
+    "evaluation_fixture_score_raw_bytes": 14800,
+    "evaluation_fixture_scope": "Separate files/inodes confirm audio duplication; metadata and NPZ compression are not extrapolated as universal bounds."
+  },
+  "provider_batch_metadata": {
+    "audioset_revision": "5a2fa42a1506470d275a47ff8e1fdac5b364e6ef",
+    "audioset_largest_unbalanced_tar_bytes": 2867630080,
+    "mls_revision": "2e83e61823b4c47dcbcb1980bb88601274127609",
+    "mls_largest_tar_gz_bytes": 305242679,
+    "mls_largest_16_tar_gz_sum_bytes": 4683371776,
+    "yodas2_largest_korean_shard_bytes": 1702288869,
+    "basis": "Pinned provider tree metadata only. Compressed transfer bytes are not expanded-source bytes or a complete processing-peak bound."
+  },
+  "unknowns": [
+    {"id": "actual_flac_and_quota", "label": "실제 FLAC 크기·목표 초과분", "detail": "최종 선정·QC 후 canonical receipt의 실제 byte 합계로 PCM 환산을 대체합니다. 전체 압축률이나 불량률을 작은 표본으로 정하지 않습니다."},
+    {"id": "feature_metadata", "label": "자료 목록·증강 기록·특징 추가 행", "detail": "원본별 ceil(duration/2), admitted/merged/project 목록 사본, 행별 augmentation.jsonl와 네 contract를 포함합니다. 작은 표본은 비호출 목록1행1,938~1,940B·최소3사본, 특징 기록1행451~456B였습니다. 명목9M행이면 비호출 목록만 약52.33~52.38GB의 외삽 예시가 되지만 경로·원본·증강 내용이 달라 고정 비용으로 합산하지 않습니다."},
+    {"id": "negative_padding", "label": "비호출 유효 시간 보충·WAV 헤더", "detail": "공통 30h·Final100h는 warmup·부분 프레임을 제외한 시간입니다. 실제 stream 수에 따른 2초 warmup, 꼬리, WAV 헤더와 원본 단위 초과량이 필요합니다."},
+    {"id": "final_downloads", "label": "독립 Final 원본·중간 자료", "detail": "현재 자동 웹 흐름은 공통 평가까지입니다. 독립 Final의 별도 출처·압축 묶음·RIR 구성은 미지정이며 선택·동결 전에는 전체 byte를 확정할 수 없습니다."},
+    {"id": "scores_and_reports", "label": "점수·보고서·선택 증거 사본", "detail": "가이드 시나리오 점수 float32 payload는 약611.424MB지만 실제 NPZ 압축·JSONL·clips/report·선택 사본 크기는 미확정입니다. 평가 중 frames.npy와 압축 NPZ가 동시에 존재합니다."},
+    {"id": "models_and_indices", "label": "관리 파일·index·TTS 기록", "detail": "리뷰 HTML, SQLite 임시 index, 라이선스·해시·receipt와 TTS journal, 실제 행 수에 따른 체크포인트 차이를 포함합니다. 실제 출력 목록과 byte로 합산합니다."},
+    {"id": "candidate_peak", "label": "단계별 다운로드·해제·변환 최대량", "detail": "FMA는 현재 곡+다음 곡1개, AudioSet·MLS·YODAS는 candidate 묶음 원본과 FLAC이 함께 남는 구간을 계산합니다. 특히 gzip 해제 크기와 QC 거부 보존량은 미확정입니다. 과거8GiB를 상한으로 쓰지 않습니다."},
+    {"id": "install_peak", "label": "설치 다운로드·임시 파일", "detail": "플랫폼·해결된 패키지 버전·기존 wheel 캐시에 따라 달라집니다. 설치 환경 실측에 임의의 캐시 여유를 더하지 않습니다."},
+    {"id": "filesystem_and_history", "label": "파일시스템·기존 자료·추가 실행", "detail": "파일별 할당 단위와 hardlink/copy 여부, 기존 보존 자료·백업, 중단·재생성 이력은 실제 작업 드라이브에서 별도 측정합니다. 예:4096B 할당 단위라면 파일당 slack은0~4095B입니다."}
+  ]
+}

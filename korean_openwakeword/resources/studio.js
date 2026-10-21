@@ -112,6 +112,56 @@
     return { minimum, retained: Math.ceil(retained), transient: space.transient_archive_bytes,
       total: minimum + Math.ceil(retained) };
   }
+  function storageBudget(recipe, selected = {}) {
+    const budget = recipe.storage_budget;
+    const numeric = value => typeof value === "number" && Number.isFinite(value) && value >= 0;
+    const record = value => value !== null && typeof value === "object" && !Array.isArray(value);
+    const keys = ["negative_hours", "negative_feature_rows", "positive_feature_rows", "tts_slots", "reference_count", "hard_originals"];
+    if (!record(budget) || budget.version !== 1 || budget.complete !== false
+      || budget.total_required_bytes !== null || budget.peak_required_bytes !== null
+      || !numeric(budget.reference_subtotal_bytes) || !record(budget.variables)
+      || !keys.every(key => numeric(budget.variables[key])) || !Array.isArray(budget.rows)
+      || !Array.isArray(budget.assumptions) || !budget.assumptions.every(item => typeof item === "string")
+      || !Array.isArray(budget.unknowns) || !budget.unknowns.every(item => record(item)
+        && typeof item.id === "string" && typeof item.label === "string" && typeof item.detail === "string")) return null;
+    const values = {};
+    for (const [key, field] of [["originals", "originals"], ["rounds", "rounds"], ["genericHours", "generic_hours"], ["koreanHours", "korean_hours"]]) {
+      values[key] = Object.hasOwn(selected, key) ? selected[key] : recipe[field];
+      if (!numeric(values[key])) return null;
+    }
+    if (!Number.isInteger(values.originals) || !Number.isInteger(values.rounds) || !numeric(recipe.originals)) return null;
+    const components = recipe.automatic_source_plan?.components;
+    if (!Array.isArray(components)) return null;
+    // Published feature-only pools have no stored waveform or newly extracted
+    // window rows. Only raw pools present in this recipe scale with hours.
+    const rawHours = (components.some(item => item.pool === "generic_negative") ? values.genericHours : 0)
+      + (components.some(item => item.pool === "korean_negative") ? values.koreanHours : 0);
+    const variables = { ...budget.variables, negative_hours: rawHours,
+      negative_feature_rows: Math.ceil(rawHours * 3600 / 2),
+      positive_feature_rows: values.originals * values.rounds,
+      tts_slots: budget.variables.tts_slots + values.originals - recipe.originals };
+    if (!keys.every(key => numeric(variables[key]))) return null;
+    const classes = new Set(["published", "measured", "calculated", "reference", "unresolved"]), ids = new Set(), rows = [];
+    let baseline = 0, subtotal = 0;
+    const calculate = (terms, input) => Math.ceil(Object.entries(terms).reduce((sum, [key, coefficient]) => sum + coefficient * (key === "constant" ? 1 : input[key]), 0));
+    for (const row of budget.rows) {
+      if (!record(row) || typeof row.id !== "string" || ids.has(row.id) || typeof row.label !== "string"
+        || typeof row.detail !== "string" || !classes.has(row.classification)) return null;
+      ids.add(row.id);
+      if (row.bytes === null) {
+        if (row.classification !== "unresolved" || (row.terms !== undefined && row.terms !== null && (!record(row.terms) || Object.keys(row.terms).length))) return null;
+        rows.push({ ...row }); continue;
+      }
+      if (!numeric(row.bytes) || row.classification === "unresolved" || !record(row.terms)
+        || !Object.keys(row.terms).length || !Object.entries(row.terms).every(([key, value]) => (key === "constant" || keys.includes(key)) && numeric(value))) return null;
+      if (Math.abs(calculate(row.terms, budget.variables) - row.bytes) > 1) return null;
+      const size = calculate(row.terms, variables);
+      if (!numeric(size)) return null;
+      baseline += row.bytes; subtotal += size; rows.push({ ...row, bytes: size });
+    }
+    if (Math.abs(baseline - budget.reference_subtotal_bytes) > 1) return null;
+    return { ...budget, variables, rows, reference_subtotal_bytes: subtotal };
+  }
   function eta(value) {
     if (Array.isArray(value) && value.length === 2) {
       const low = duration(value[0]), high = duration(value[1]);
@@ -413,13 +463,47 @@
       sections.push(section);
     }
     replace($("source-preview"), sections);
+    const selected = (id, value) => $(id).value !== "" && Number.isFinite(Number($(id).value)) && Number($(id).value) >= 0 ? Number($(id).value) : value;
+    const values = { originals: selected("adv-originals", recipe.originals), rounds: selected("adv-rounds", recipe.rounds), genericHours: selected("adv-generic", recipe.generic_hours), koreanHours: selected("adv-korean", recipe.korean_hours) };
+    $("storage-budget-details").hidden = true;
+    replace($("storage-budget-content"), []);
+    if (Object.hasOwn(recipe, "storage_budget")) {
+      const budget = storageBudget(recipe, values);
+      $("source-plan-note").hidden = false;
+      $("source-plan-note").textContent = budget
+        ? `전체 필요 공간: 미확정. 계산 가능한 항목의 비교 합계 ${bytes(budget.reference_subtotal_bytes)}.`
+        : "전체 필요 공간: 미확정. 용량 계산 근거를 확인할 수 없습니다.";
+      if (budget) {
+        const wrap = element("div", undefined, "storage-table-wrap"), table = element("table", undefined, "storage-table");
+        table.setAttribute("aria-label", "저장 공간 항목별 계산 근거");
+        const head = element("thead"), headings = element("tr"), body = element("tbody");
+        for (const label of ["항목", "용량", "구분", "근거"]) { const cell = element("th", label); cell.setAttribute("scope", "col"); headings.append(cell); }
+        head.append(headings);
+        const classifications = { published: "고정 파일", measured: "실측", calculated: "형식 계산", reference: "참조", unresolved: "미확정" };
+        const unknowns = budget.unknowns.filter(item => !budget.rows.some(row => row.id === item.id && row.bytes === null));
+        const rows = [...budget.rows, ...unknowns.map(item => ({ ...item, bytes: null, classification: "unresolved" }))];
+        for (const row of rows) {
+          const line = element("tr");
+          line.append(element("th", row.label), element("td", row.bytes === null ? "미확정" : bytes(row.bytes)),
+            element("td", classifications[row.classification]), element("td", row.detail));
+          line.children[0].setAttribute("scope", "row"); body.append(line);
+        }
+        table.append(head, body); wrap.append(table);
+        const content = [element("p", "비교 합계는 실제 FLAC 저장량이나 최대 필요 공간이 아닙니다.", "hint"), wrap];
+        if (budget.assumptions.length) {
+          const list = element("ul", undefined, "storage-assumptions");
+          for (const assumption of budget.assumptions) list.append(element("li", assumption));
+          content.push(list);
+        }
+        replace($("storage-budget-content"), content); $("storage-budget-details").hidden = false;
+      }
+      return;
+    }
     const automatic = ["automatic_v1", "automatic_v2", "automatic_v3"].includes(recipe.material_acquisition_policy);
     $("source-plan-note").hidden = !automatic;
     if (automatic) {
       const known = bytes(recipe.known_download_bytes);
       const additional = recipe.automatic_source_plan?.components?.length > 0;
-      const selected = (id, value) => $(id).value !== "" && Number.isFinite(Number($(id).value)) && Number($(id).value) >= 0 ? Number($(id).value) : value;
-      const values = { originals: selected("adv-originals", recipe.originals), rounds: selected("adv-rounds", recipe.rounds), genericHours: selected("adv-generic", recipe.generic_hours), koreanHours: selected("adv-korean", recipe.korean_hours) };
       const minimum = minimumStorage(recipe, values), estimate = storageEstimate(recipe, values);
       const free = snapshot.system?.free_bytes ?? snapshot.system?.disk_free_bytes;
       $("source-plan-note").textContent = estimate?.basis === "wav_reference"
@@ -746,6 +830,6 @@
     pollTimer = setInterval(async () => { if (!document.hidden) { await refresh(); if ($("log-details").open) await loadLog(); } }, 3000);
     window.addEventListener("pagehide", () => clearInterval(pollTimer), { once: true });
   }
-  window.KowwStudio = Object.freeze({ duration, bytes, minimumStorage, storageEstimate, eta, progressValue, requestBody, localUrl, webUrl });
+  window.KowwStudio = Object.freeze({ duration, bytes, minimumStorage, storageEstimate, storageBudget, eta, progressValue, requestBody, localUrl, webUrl });
   if (!window.KOWW_STUDIO_TEST) boot();
 })();

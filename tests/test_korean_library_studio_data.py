@@ -4,6 +4,7 @@ import io
 import json
 from pathlib import Path
 import stat
+import struct
 import tarfile
 import zipfile
 
@@ -86,6 +87,117 @@ def test_archive_extract_exact_subset_resume_and_tamper_detection(tmp_path):
     (output / "folder/a.wav").write_bytes(b"changed")
     with pytest.raises(ValueError, match="changed"):
         module.extract_archive(archive, output, members=["folder/a.wav"])
+
+
+def _large_declared_zip(path):
+    """Tiny ZIP64 fixture declares the publisher's 4.44 GB nested gzip size."""
+    _zip(path, [("folder/a.flac", b"audio"), ("folder/a.trans.txt", b"transcript"),
+                ("README.txt", b"metadata"), ("nested/train_data_01.tar.gz", b"")])
+    raw = bytearray(path.read_bytes())
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        start = archive.start_dir
+    position = start
+    while raw[position:position + 4] == b"PK\x01\x02":
+        header = list(struct.unpack_from(zipfile.structCentralDir, raw, position))
+        filename_end = position + 46 + header[zipfile._CD_FILENAME_LENGTH]
+        name = bytes(raw[position + 46:filename_end]).decode()
+        if name.endswith(".tar.gz"):
+            extra = struct.pack("<HHQ", 1, 8, 4443000000)
+            header[zipfile._CD_UNCOMPRESSED_SIZE] = 0xffffffff
+            header[zipfile._CD_EXTRA_FIELD_LENGTH] += len(extra)
+            struct.pack_into(zipfile.structCentralDir, raw, position, *header)
+            raw[filename_end:filename_end] = extra
+            end = raw.rfind(b"PK\x05\x06")
+            footer = list(struct.unpack_from("<4s4H2LH", raw, end))
+            footer[5] += len(extra)
+            struct.pack_into("<4s4H2LH", raw, end, *footer)
+            path.write_bytes(raw)
+            return
+        position = filename_end + header[zipfile._CD_EXTRA_FIELD_LENGTH] + header[zipfile._CD_COMMENT_LENGTH]
+    pytest.fail("Missing large fixture member")
+
+
+def test_suffix_selection_skips_large_unneeded_payloads_and_resumes_without_rewriting(tmp_path):
+    archive = tmp_path / "publisher.zip"
+    _large_declared_zip(archive)
+    with zipfile.ZipFile(archive) as handle:
+        assert handle.getinfo("nested/train_data_01.tar.gz").file_size == 4443000000
+    before_archive = archive.read_bytes()
+    with pytest.raises(ValueError, match="safety limit"):
+        module.extract_archive(archive, tmp_path / "unfiltered")
+    output = tmp_path / "selected"
+    result = module.extract_archive(archive, output, include_suffixes=(".flac", ".txt"))
+    assert {row["path"] for row in result["files"]} == {"folder/a.flac", "folder/a.trans.txt", "README.txt"}
+    assert result["bytes"] == len(b"audiotranscriptmetadata")
+    assert result["request"]["selector"] == {"version": 1, "include_suffixes": [".flac", ".txt"]}
+    assert not (output / "nested/train_data_01.tar.gz").exists()
+    before_receipt = (output / "extraction_receipt.json").read_bytes()
+    assert module.extract_archive(archive, output, include_suffixes=(".txt", ".FLAC"))["resumed"]
+    assert (output / "extraction_receipt.json").read_bytes() == before_receipt
+    assert archive.read_bytes() == before_archive
+
+
+def test_default_archive_request_identity_and_zeroth_legacy_member_resume_are_unchanged(tmp_path):
+    archive = tmp_path / "legacy.zip"
+    _zip(archive, [("a.flac", b"audio"), ("README.txt", b"metadata"), ("old.gz", b"old")])
+    for mode, options in (("all", {}), ("subset", {"members": ["a.flac", "README.txt"], "max_bytes": 100})):
+        output = tmp_path / mode
+        result = module.extract_archive(archive, output, **options)
+        assert result["request"] == {"archive": {"path": str(archive.resolve()), "sha256": digest(archive)},
+            "members": sorted(options["members"]) if "members" in options else None, "max_bytes": options.get("max_bytes", 40 * 1024**3)}
+        receipt = output / "extraction_receipt.json"
+        before = receipt.read_bytes()
+        assert module._extract_zeroth_archive(archive, output)["resumed"]
+        assert receipt.read_bytes() == before
+        with pytest.raises(ValueError, match="request changed"):
+            module.extract_archive(archive, output, include_suffixes=(".flac", ".txt"))
+        assert receipt.read_bytes() == before
+
+
+@pytest.mark.parametrize("failure", ["unsafe", "symlink", "duplicate", "missing", "selected_large"])
+def test_suffix_selector_preserves_full_inventory_safety_and_missing_member_checks(tmp_path, failure):
+    archive = tmp_path / "unsafe.zip"
+    if failure == "selected_large":
+        _large_declared_zip(archive)
+        with pytest.raises(ValueError, match="safety limit"):
+            module.extract_archive(archive, tmp_path / "out", include_suffixes=(".gz",))
+        return
+    with zipfile.ZipFile(archive, "w") as handle:
+        handle.writestr("a.flac", b"audio")
+        if failure == "unsafe":
+            handle.writestr("../skip.gz", b"bad")
+        elif failure == "symlink":
+            info = zipfile.ZipInfo("skip.gz"); info.create_system = 3
+            info.external_attr = (stat.S_IFLNK | 0o777) << 16
+            handle.writestr(info, "../outside")
+        elif failure == "duplicate":
+            with pytest.warns(UserWarning, match="Duplicate name"):
+                handle.writestr("skip.gz", b"first"); handle.writestr("skip.gz", b"second")
+    with pytest.raises(ValueError, match="Unsafe|escapes|links|Duplicate|missing"):
+        module.extract_archive(archive, tmp_path / "out", include_suffixes=(".flac", ".txt"),
+                               members=["absent.flac"] if failure == "missing" else None)
+    assert not (tmp_path / "out/a.flac").exists()
+
+
+@pytest.mark.parametrize("suffixes", [[], [""], ["flac"], ["../flac"], [".a/b"], [".a\\b"], [None], ".flac"])
+def test_invalid_suffix_selector_is_rejected(tmp_path, suffixes):
+    archive = tmp_path / "source.zip"
+    _zip(archive, [("audio.flac", b"audio")])
+    with pytest.raises(ValueError, match="suffix selector"):
+        module.extract_archive(archive, tmp_path / "out", include_suffixes=suffixes)
+
+
+def test_suffix_selector_still_rejects_unselected_tar_special_members(tmp_path):
+    archive = tmp_path / "source.tar"
+    with tarfile.open(archive, "w") as handle:
+        info = tarfile.TarInfo("audio.flac"); info.size = 5
+        handle.addfile(info, io.BytesIO(b"audio"))
+        special = tarfile.TarInfo("unselected.gz")
+        special.type = tarfile.LNKTYPE; special.linkname = "outside"
+        handle.addfile(special)
+    with pytest.raises(ValueError, match="links and special"):
+        module.extract_archive(archive, tmp_path / "out", include_suffixes=(".flac", ".txt"))
+    assert not (tmp_path / "out/audio.flac").exists()
 
 
 @pytest.mark.parametrize("name", ["../escape", "/absolute", "C:/drive", "CON.wav", "a./b", "file "])
@@ -252,16 +364,16 @@ def test_full_preparation_recipe_uses_real_qc_and_never_auto_approves(tmp_path, 
     source.mkdir()
     assets = module._official_assets()
     paths = {}
-    def wav_bytes(seed, frames=32000):
+    def wav_bytes(seed, frames=32000, file_format="WAV"):
         stream = io.BytesIO()
-        sf.write(stream, np.random.default_rng(seed).normal(0, .04, frames), 16000, format="WAV", subtype="PCM_16")
+        sf.write(stream, np.random.default_rng(seed).normal(0, .04, frames), 16000, format=file_format, subtype="PCM_16")
         return stream.getvalue()
     paths["generic"] = source / "generic.npy"
     paths["generic"].write_bytes(b"fixture precomputed array; import is explicitly mocked")
     paths["zeroth"] = source / "zeroth.tar.gz"
     with tarfile.open(paths["zeroth"], "w:gz") as archive:
         for partition, speaker in (("train_data_01", "001"), ("test_data_01", "002")):
-            for name, content in [(f"{speaker}_001.wav", wav_bytes(int(speaker))),
+            for name, content in [(f"{speaker}_001.flac", wav_bytes(int(speaker), file_format="FLAC")),
                                   ("transcripts.trans.txt", f"{speaker}_001 이것은 제공자 전사입니다\n".encode())]:
                 info = tarfile.TarInfo(f"zeroth/{partition}/{speaker}/{name}")
                 info.size = len(content)
@@ -295,7 +407,7 @@ def test_full_preparation_recipe_uses_real_qc_and_never_auto_approves(tmp_path, 
         ("fma_metadata/echonest.csv", "unselected feature table")])
     real_extract = module.extract_archive
     metadata_extractions = []
-    def extract(archive, output, *, members=None, max_bytes=40 * 1024**3):
+    def extract(archive, output, *, members=None, max_bytes=40 * 1024**3, include_suffixes=None):
         if Path(archive) == paths["fma_metadata"]:
             # Regression for the real pinned tracks.csv (260,414,445 bytes):
             # a 200 MiB budget rejects it before writing. The guard remains
@@ -303,7 +415,7 @@ def test_full_preparation_recipe_uses_real_qc_and_never_auto_approves(tmp_path, 
             assert 260_414_445 <= max_bytes <= 512 * 1024**2
             assert members == ["fma_metadata/tracks.csv"]
             metadata_extractions.append(Path(output))
-        return real_extract(archive, output, members=members, max_bytes=max_bytes)
+        return real_extract(archive, output, members=members, max_bytes=max_bytes, include_suffixes=include_suffixes)
     monkeypatch.setattr(module, "extract_archive", extract)
     paths["fma"] = source / "fma_small.zip"
     _zip(paths["fma"], tracks)

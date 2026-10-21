@@ -147,6 +147,36 @@ function commercialRecipeV3() {
   return recipe;
 }
 
+function storageBudgetRecipe(overrides = {}) {
+  const variables = { negative_hours: 5000, negative_feature_rows: 9000000,
+    positive_feature_rows: 500000, tts_slots: 112024, reference_count: 140, hard_originals: 2000 };
+  const row = (id, label, classification, terms, detail) => ({ id, label, classification, terms, detail,
+    bytes: Math.ceil(Object.entries(terms).reduce((sum, [key, value]) => sum + value * (key === "constant" ? 1 : variables[key]), 0)) });
+  const rows = [
+    row("archives", "고정 공개 자료", "published", { constant: 1000 }, "제공자가 공개한 파일 크기"),
+    row("negative_audio", "비호출 변환 음원", "reference", { negative_hours: 115200000 }, "16 kHz PCM 비교 기준"),
+    row("negative_features", "비호출 특징", "calculated", { negative_feature_rows: 6144 }, "명목 2초 window 기준"),
+    row("positive_features", "호출어 특징", "calculated", { positive_feature_rows: 6144 }, "원본 수 × 증강 횟수"),
+    row("tts", "TTS 음원", "reference", { tts_slots: 32000 }, "음원당 비교 기준"),
+    row("references", "참조 음색", "measured", { reference_count: 1200 }, "측정 파일의 비교값"),
+    row("hard_features", "유사어 특징", "calculated", { hard_originals: 6144 }, "고정 유사어 수"),
+    row("zero", "추가 사본", "calculated", { constant: 0 }, "추가 사본 없음"),
+    { id: "metadata", label: "목록·검사 기록", bytes: null, classification: "unresolved", detail: "실제 음원 수 확정 후 측정" }
+  ];
+  return commonRecipe({ id: "production", originals: 100000, rounds: 5, generic_hours: 3500, korean_hours: 1500,
+    material_acquisition_policy: "automatic_v3",
+    automatic_source_plan: { components: [{ pool: "generic_negative" }, { pool: "korean_negative" }] },
+    // This old forecast is intentionally invalid: a new ledger must never fall back to it.
+    automatic_space_plan: { base_archive_bytes: 999999999999 },
+    storage_budget: { version: 1, complete: false, variables, rows,
+      reference_subtotal_bytes: rows.reduce((sum, item) => sum + (item.bytes ?? 0), 0),
+      total_required_bytes: null, peak_required_bytes: null,
+      assumptions: ["비교 합계에는 조건부 참고값이 포함됩니다."],
+      unknowns: [{ id: "metadata", label: "목록·검사 기록", detail: "실제 음원 수 확정 후 측정" },
+        { id: "refill", label: "자료 보충", detail: "품질 검사 결과에 따라 달라짐" }],
+      removed_legacy_allowance_bytes: 33285996544 }, ...overrides });
+}
+
 (async () => {
   await test("budget request preserves selected values and does not invent overrides", () => {
     const { helpers } = browser({ noBoot: true });
@@ -163,6 +193,122 @@ function commercialRecipeV3() {
     assert.equal(helpers.progressValue({ progress: { done: 25, total: 100, unit: "개" } }).percent, 25);
     assert.equal(helpers.eta(null), ""); assert.equal(helpers.eta([3600, 5400]), "1시간–1시간 30분");
     assert.equal(helpers.bytes(1073741824), "1 GiB"); assert.equal(helpers.duration(0), "0초");
+  });
+  await test("audited storage scales explicit terms without changing unknowns, fixed slots or the recipe", () => {
+    const { helpers } = browser({ noBoot: true }), recipe = storageBudgetRecipe(), before = JSON.stringify(recipe);
+    const base = helpers.storageBudget(recipe);
+    assert.equal(base.reference_subtotal_bytes, recipe.storage_budget.reference_subtotal_bytes);
+    assert.equal(base.total_required_bytes, null); assert.equal(base.peak_required_bytes, null);
+    assert.equal(base.rows.find(row => row.id === "metadata").bytes, null);
+    const updated = helpers.storageBudget(recipe, { genericHours: 1000.001, koreanHours: 200, originals: 20000, rounds: 3 });
+    assert.equal(updated.variables.negative_hours, 1200.001);
+    assert.equal(updated.variables.negative_feature_rows, Math.ceil(1200.001 * 1800));
+    assert.equal(updated.variables.positive_feature_rows, 60000);
+    assert.equal(updated.variables.tts_slots, 32024);
+    for (const key of ["reference_count", "hard_originals"]) assert.equal(updated.variables[key], base.variables[key]);
+    assert.equal(updated.reference_subtotal_bytes, updated.rows.reduce((sum, row) => sum + (row.bytes ?? 0), 0));
+    assert.equal(updated.rows.find(row => row.id === "archives").bytes, 1000);
+    assert.equal(JSON.stringify(recipe), before);
+  });
+  await test("audited storage keeps feature-only pools outside raw audio calculations and permits measured zero", () => {
+    const { helpers } = browser({ noBoot: true }), recipe = storageBudgetRecipe();
+    recipe.automatic_source_plan.components = [{ pool: "korean_negative" }];
+    const budget = helpers.storageBudget(recipe, { genericHours: 9999, koreanHours: 0 });
+    assert.equal(budget.variables.negative_hours, 0); assert.equal(budget.variables.negative_feature_rows, 0);
+    assert.equal(budget.rows.find(row => row.id === "negative_audio").bytes, 0);
+    assert.equal(budget.rows.find(row => row.id === "zero").bytes, 0);
+    recipe.automatic_source_plan.components = [];
+    assert.equal(helpers.storageBudget(recipe).variables.negative_hours, 0);
+  });
+  await test("audited storage rejects absent, null and malformed numeric fields rather than silently treating them as zero", () => {
+    const { helpers } = browser({ noBoot: true });
+    const mutations = [
+      recipe => { delete recipe.storage_budget.variables.negative_hours; },
+      recipe => { recipe.storage_budget.variables.negative_hours = null; },
+      recipe => { recipe.storage_budget.reference_subtotal_bytes = null; },
+      recipe => { delete recipe.storage_budget.rows[0].bytes; },
+      recipe => { recipe.storage_budget.rows[0].bytes = null; },
+      recipe => { recipe.storage_budget.rows[0].terms.constant = null; },
+      recipe => { recipe.storage_budget.rows[0].terms.constant = "1000"; },
+      recipe => { recipe.storage_budget.rows[0].bytes += 10; },
+      recipe => { recipe.storage_budget.rows[0].terms.other = 1; },
+      recipe => { recipe.storage_budget.rows.at(-1).terms = false; },
+      recipe => { recipe.storage_budget.total_required_bytes = 0; },
+      recipe => { delete recipe.storage_budget.peak_required_bytes; }
+    ];
+    for (const mutate of mutations) { const recipe = storageBudgetRecipe(); mutate(recipe); assert.equal(helpers.storageBudget(recipe), null); }
+    assert.equal(helpers.storageBudget(storageBudgetRecipe(), { genericHours: null }), null);
+    assert.equal(helpers.storageBudget(storageBudgetRecipe(), { originals: 1.5 }), null);
+    assert.equal(helpers.storageBudget({}), null);
+  });
+  await test("new storage summary says the full requirement is unknown and presents evidence in a separate disclosure", async () => {
+    const recipe = storageBudgetRecipe(), b = browser({ recipeList: [recipe] }); await flush();
+    const note = b.elements.get("source-plan-note"), details = b.elements.get("storage-budget-details"), content = b.elements.get("storage-budget-content");
+    assert.equal(note.hidden, false); assert.equal(details.hidden, false);
+    assert.match(note.textContent, /^전체 필요 공간: 미확정\. 계산 가능한 항목의 비교 합계 /);
+    assert.equal(/최소 저장 공간|예상 필요 공간|WAV 기준 참고 예산/.test(note.textContent), false);
+    assert.match(textOf(content), /항목.*용량.*구분.*근거/);
+    assert.match(textOf(content), /실제 FLAC 저장량이나 최대 필요 공간이 아닙니다/);
+    assert.match(textOf(content), /추가 사본 0 B 형식 계산/);
+    assert.match(textOf(content), /목록·검사 기록 미확정 미확정 실제 음원 수 확정 후 측정/);
+    assert.match(textOf(content), /자료 보충 미확정 미확정 품질 검사 결과에 따라 달라짐/);
+    assert.equal(descendants(content).filter(node => node.textContent === "목록·검사 기록").length, 1);
+    details.open = true;
+    b.elements.get("adv-originals").value = "20000"; b.elements.get("adv-originals").handlers.input();
+    const estimate = b.helpers.storageBudget(recipe, { originals: 20000 });
+    assert.ok(note.textContent.includes(b.helpers.bytes(estimate.reference_subtotal_bytes)));
+    assert.equal(details.open, true);
+    assert.equal(b.calls.some(call => /download|prepare/.test(call.url)), false);
+  });
+  await test("storage evidence uses text nodes for untrusted labels and malformed ledgers never fall back to legacy totals", async () => {
+    const recipe = storageBudgetRecipe();
+    recipe.storage_budget.rows[0].label = "<img src=x onerror=bad()>";
+    recipe.storage_budget.rows[0].detail = "<script>bad()</script>";
+    recipe.storage_budget.assumptions.push("<iframe src=bad>");
+    recipe.storage_budget.unknowns[1].detail = "<svg onload=bad()>";
+    const b = browser({ recipeList: [recipe] }); await flush();
+    const content = b.elements.get("storage-budget-content");
+    for (const value of ["<img src=x onerror=bad()>", "<script>bad()</script>", "<iframe src=bad>", "<svg onload=bad()>"]) assert.ok(textOf(content).includes(value));
+    assert.equal(descendants(content).some(node => ["img", "script", "iframe", "svg"].includes(node.tagName)), false);
+    for (const storage_budget of [null, {}, { version: 1 }]) {
+      const invalid = browser({ recipeList: [storageBudgetRecipe({ storage_budget })] }); await flush();
+      assert.equal(invalid.elements.get("source-plan-note").textContent, "전체 필요 공간: 미확정. 용량 계산 근거를 확인할 수 없습니다.");
+      assert.equal(invalid.elements.get("storage-budget-details").hidden, true);
+      assert.equal(invalid.elements.get("storage-budget-content").children.length, 0);
+    }
+  });
+  await test("switching back to a historical recipe clears the new storage evidence and retains legacy behavior", async () => {
+    const b = browser({ recipeList: [storageBudgetRecipe(), commonRecipe()] }); await flush();
+    // The default selected recipe is check; choose production, then return.
+    const radios = descendants(b.elements.get("presets")).filter(node => node.tagName === "input");
+    radios.find(node => node.value === "production").handlers.change();
+    assert.equal(b.elements.get("storage-budget-details").hidden, false);
+    radios.find(node => node.value === "check").handlers.change();
+    assert.equal(b.elements.get("storage-budget-details").hidden, true);
+    assert.equal(b.elements.get("storage-budget-content").children.length, 0);
+    assert.equal(b.elements.get("source-plan-note").hidden, true);
+  });
+  if (process.env.KOWW_STUDIO_STORAGE_FIXTURE) await test("actual Studio recipes storage evidence agrees with backend arithmetic and renders every evidence row", async () => {
+    // Optional integration input is produced by the backend without acquiring
+    // audio or touching training/Final state; ordinary UI tests stay standalone.
+    const fixture = JSON.parse(fs.readFileSync(process.env.KOWW_STUDIO_STORAGE_FIXTURE, "utf8"));
+    const b = browser({ recipeList: [fixture.recipe] }); await flush();
+    for (const item of fixture.cases) {
+      const actual = b.helpers.storageBudget(fixture.recipe, item.selected);
+      assert.ok(actual);
+      assert.equal(actual.reference_subtotal_bytes, item.expected.reference_subtotal_bytes);
+      assert.deepEqual(JSON.parse(JSON.stringify(actual.variables)), item.expected.variables);
+      assert.deepEqual(JSON.parse(JSON.stringify(actual.rows.map(row => [row.id, row.bytes]))), item.expected.rows.map(row => [row.id, row.bytes]));
+      for (const [key, id] of [["originals", "adv-originals"], ["rounds", "adv-rounds"], ["genericHours", "adv-generic"], ["koreanHours", "adv-korean"]]) {
+        b.elements.get(id).value = Object.hasOwn(item.selected, key) ? String(item.selected[key]) : "";
+      }
+      b.elements.get("adv-originals").handlers.input();
+      assert.ok(b.elements.get("source-plan-note").textContent.includes(b.helpers.bytes(item.expected.reference_subtotal_bytes)));
+      const content = b.elements.get("storage-budget-content");
+      assert.equal(descendants(content).filter(node => node.tagName === "tbody")[0].children.length, item.expected.rows.length);
+      for (const row of item.expected.rows) assert.ok(textOf(content).includes(row.label), row.label);
+      assert.equal(item.expected.total_required_bytes, null); assert.equal(item.expected.peak_required_bytes, null);
+    }
   });
   await test("result/review frames only accept same-origin URLs", () => {
     const { helpers } = browser({ noBoot: true });

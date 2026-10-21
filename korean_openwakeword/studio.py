@@ -190,9 +190,14 @@ class StudioManager:
             recipe = material_recipe(key, evaluation_policy=settings["evaluation_policy"],
                                      material_acquisition_policy=settings.get("material_acquisition_policy"),
                                      fma_acquisition_policy=settings.get("fma_acquisition_policy"))
+            if key == "production":
+                from .storage_budget import commercial_storage_budget
+                recipe["storage_budget"] = commercial_storage_budget(
+                    settings, base_archive_bytes=recipe["known_download_bytes"])
+                recipe["estimated_workspace_bytes_scope"] = "legacy_partial_not_total"
             presets.append({**settings, **recipe, "id": key, "label": label})
         return {"presets": presets, "default_directory": str(self.workspace / "projects"),
-                "storage_note": "선택한 작업 폴더에 자료·모델·캐시를 저장합니다. 공개 자료와 Qwen 모델의 첫 다운로드는 별도 용량이 필요합니다."}
+                "storage_note": "선택한 작업 폴더에 자료·모델·캐시를 저장합니다. 상용 모델용의 용량 계산 근거에서 확인분과 미확정 항목을 구분해 볼 수 있습니다."}
 
     def create(self, payload):
         from .studio_steps import preset_settings, workflow_plan

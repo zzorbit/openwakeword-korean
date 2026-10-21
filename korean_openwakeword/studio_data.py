@@ -363,13 +363,22 @@ def _archive_target(root, name):
     return target
 
 
-def extract_archive(archive, output, *, members=None, max_bytes=40 * 1024**3):
+def extract_archive(archive, output, *, members=None, max_bytes=40 * 1024**3, include_suffixes=None):
     """Safely resume exact selected files; never follow links or call extractall."""
     archive, output = Path(archive).resolve(), Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     requested = set(members) if members is not None else None
     request = {"archive": {"path": str(archive), "sha256": digest(archive)},
                "members": sorted(requested) if requested is not None else None, "max_bytes": max_bytes}
+    suffixes = None
+    if include_suffixes is not None:
+        if not isinstance(include_suffixes, (list, tuple, set, frozenset)) or not include_suffixes or any(
+                not isinstance(value, str) or not value.startswith(".") or len(value) < 2
+                or any(character in value for character in ("/", "\\", ":", "\0")) for value in include_suffixes):
+            raise ValueError("Archive suffix selector must contain nonempty filename suffixes")
+        suffixes = tuple(sorted({value.lower() for value in include_suffixes}))
+        # Default requests retain their historical byte-for-byte identity.
+        request["selector"] = {"version": 1, "include_suffixes": list(suffixes)}
     receipt_path = output / "extraction_receipt.json"
     if receipt_path.is_file():
         receipt = read_json(receipt_path)
@@ -401,6 +410,8 @@ def extract_archive(archive, output, *, members=None, max_bytes=40 * 1024**3):
                 names.add(name)
                 targets.add(target)
                 if requested is not None and name not in requested:
+                    continue
+                if suffixes is not None and not name.lower().endswith(suffixes):
                     continue
                 size = member.file_size if is_zip else member.size
                 if not 0 <= size <= 512 * 1024**2:
@@ -434,6 +445,23 @@ def extract_archive(archive, output, *, members=None, max_bytes=40 * 1024**3):
         receipt = {"request": request, "files": records, "bytes": required, "completed_at": now(), "content_approved": False}
         write_json(receipt_path, receipt)
         return {**receipt, "resumed": False}
+
+
+def _extract_zeroth_archive(archive, output):
+    """Skip nested archive copies in new runs; preserve existing receipt policy."""
+    receipt_path = Path(output) / "extraction_receipt.json"
+    options = {"include_suffixes": (".flac", ".txt")}
+    if receipt_path.is_file():
+        request = read_json(receipt_path).get("request", {})
+        if not isinstance(request, dict):
+            raise ValueError("Invalid existing Zeroth extraction request; original receipt preserved")
+        options = {"members": request.get("members"), "max_bytes": request.get("max_bytes", 40 * 1024**3)}
+        if "selector" in request:
+            selector = request["selector"]
+            if not isinstance(selector, dict) or selector.get("version") != 1 or "include_suffixes" not in selector:
+                raise ValueError("Unsupported existing Zeroth archive selector; original receipt preserved")
+            options["include_suffixes"] = selector["include_suffixes"]
+    return extract_archive(archive, output, **options)
 
 
 def _fetch_mit(shared, progress=None):
@@ -586,7 +614,7 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
         assets.update({a["id"]: a for a in _official_assets() if a["id"] in ("dns_door", "electronic_validation")})
     paths = {key: _download(asset, downloads, progress) for key, asset in assets.items()}
     if "zeroth" in paths:
-        extract_archive(paths["zeroth"], shared / "zeroth")
+        _extract_zeroth_archive(paths["zeroth"], shared / "zeroth")
     if recipe["noise_material_policy"] == "official_example":
         extract_archive(paths["audioset"], shared / "audioset")
         # The publisher's tracks.csv expands to 260,414,445 bytes. Keep a

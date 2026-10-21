@@ -607,7 +607,7 @@ def _zeroth_candidates(project, workspace, known, catalog, paths=None, progress=
     """Prepare its own held-out source; never require a Zeroth Train import."""
     from .project import load_project
     from .preparation import create_source_index
-    from .studio_data import extract_archive, _emit
+    from .studio_data import _extract_zeroth_archive, _emit
     root, _ = load_project(project)
     workspace = Path(workspace).resolve()
     directory = workspace / "shared" / "zeroth"
@@ -618,7 +618,7 @@ def _zeroth_candidates(project, workspace, known, catalog, paths=None, progress=
         if archive is None:
             archive = _download_archive(asset, workspace / "shared" / "downloads", progress)
         _emit(progress, "공통 평가 한국어 낭독 원본 준비")
-        extract_archive(archive, directory)
+        _extract_zeroth_archive(archive, directory)
         index.parent.mkdir(parents=True, exist_ok=True)
         create_source_index(directory, output=index, dataset="zeroth", dataset_id="zeroth",
                             license=asset["license"], source_url="https://www.openslr.org/40/")

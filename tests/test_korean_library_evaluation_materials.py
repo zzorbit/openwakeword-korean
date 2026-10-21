@@ -22,8 +22,8 @@ def test_common_zeroth_bootstraps_without_training_import_and_reserves_speakers(
         for speaker in ("001", "002"):
             name = speaker + "_001"
             wav = io.BytesIO()
-            sf.write(wav, np.sin(np.arange(16000) * .04) * .1, 16000, format="WAV", subtype="PCM_16")
-            for relative, data in ((f"train_data_01/{speaker}/{name}.wav", wav.getvalue()),
+            sf.write(wav, np.sin(np.arange(16000) * .04) * .1, 16000, format="FLAC", subtype="PCM_16")
+            for relative, data in ((f"train_data_01/{speaker}/{name}.flac", wav.getvalue()),
                                    (f"train_data_01/{speaker}/{speaker}.trans.txt", (name + " 보라야 시험\n").encode())):
                 member = tarfile.TarInfo(relative); member.size = len(data)
                 target.addfile(member, io.BytesIO(data))
@@ -38,6 +38,37 @@ def test_common_zeroth_bootstraps_without_training_import_and_reserves_speakers(
     from korean_openwakeword import studio_data
     monkeypatch.setattr(studio_data, "extract_archive", lambda *a, **k: pytest.fail("Existing index is reused"))
     assert module._zeroth_candidates(project, tmp_path, known, catalog) == first
+
+
+@pytest.mark.parametrize("legacy_mode", ["all", "members", "suffixes"])
+def test_common_zeroth_preserves_existing_extraction_request_and_receipt(tmp_path, monkeypatch, legacy_mode):
+    from korean_openwakeword.project import create_project
+    from korean_openwakeword import studio_data
+    project = create_project(tmp_path / "word", "보라야", "bora")
+    archive = tmp_path / "zeroth.zip"
+    audio = io.BytesIO()
+    sf.write(audio, np.sin(np.arange(16000) * .04) * .1, 16000, format="FLAC", subtype="PCM_16")
+    selected = ["train_data_01/001/001_001.flac", "train_data_01/001/001.trans.txt", "README.txt"]
+    with zipfile.ZipFile(archive, "w") as handle:
+        for name, payload in zip(selected, [audio.getvalue(), "001_001 원본 전사\n".encode(), b"metadata"]):
+            handle.writestr(name, payload)
+        handle.writestr("nested/originals.tar.gz", b"legacy nested archive")
+    directory = tmp_path / "shared" / "zeroth"
+    options = {"members": selected, "max_bytes": 1024**2} if legacy_mode == "members" else {"include_suffixes": (".flac", ".txt")} if legacy_mode == "suffixes" else {}
+    studio_data.extract_archive(archive, directory, **options)
+    receipt = directory / "extraction_receipt.json"
+    before = receipt.read_bytes()
+    catalog = {"archives": [{"id": "zeroth", "license": "fixture"}]}
+    result = module._zeroth_candidates(project, tmp_path, [], catalog, {"zeroth": archive})
+    assert len(result) == 1 and result[0]["text"] == "원본 전사"
+    assert result[0]["canonical_speaker_id"] == "zeroth:speaker:001"
+    assert receipt.read_bytes() == before
+    index = project.parent / ".studio" / "materials" / "zeroth_source_index.jsonl"
+    before_index = index.read_bytes()
+    monkeypatch.setattr(studio_data, "_extract_zeroth_archive", lambda *a, **k: pytest.fail("Existing source index is immutable"))
+    monkeypatch.setattr(module, "_download_archive", lambda *a, **k: pytest.fail("Existing index needs no archive download"))
+    assert module._zeroth_candidates(project, tmp_path, [], catalog) == result
+    assert index.read_bytes() == before_index and receipt.read_bytes() == before
 
 
 def test_catalog_has_real_pins_and_all_seven_buckets():
