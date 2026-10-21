@@ -234,6 +234,11 @@ class StudioManager:
                 if _lock_paths(target):
                     raise ValueError("기존 작업의 잠금이 있습니다. 실행 상태를 확인한 뒤 연결하세요.")
                 settings.update(generic_hours=config["targets"]["generic_hours"], korean_hours=config["targets"]["korean_hours"])
+                if config.get("audio_storage_policy") != "canonical_flac_only_v1":
+                    # Attaching an existing CLI project must not reinterpret
+                    # its old WAV/cache/receipt contract as canonical storage.
+                    settings.update(material_acquisition_policy="automatic_v2")
+                    settings.pop("audio_storage_policy", None)
                 bank = read_json(target / "voices.json")
                 if sum(f["split"] == "validation" for f in bank["families"]) < settings["validation_references"]:
                     # Reusing an existing project does not rewrite its voice bank
@@ -248,6 +253,9 @@ class StudioManager:
                                updates=settings["updates"], generic_hours=settings["generic_hours"],
                                korean_hours=settings["korean_hours"],
                                validation_voice_families=settings["validation_references"])
+                _, config = load_project(project)
+                config["audio_storage_policy"] = settings["audio_storage_policy"]
+                write_json(project, config)
             state = {"schema_version": 1, "id": project_id, "workspace": str(self.workspace),
                      "storage_workspace": str(self.workspace if target.is_relative_to(self.workspace) else target),
                      "project": str(project), "wakeword": word, "preset": preset, "settings": settings,
@@ -450,7 +458,9 @@ class StudioManager:
         root = Path(state["project"]).parent
         shared = Path(state.get("storage_workspace", self.workspace)) / "shared"
         paths = _lock_paths(root)
-        for pattern in ("*/.writer.lock", "downloads/*/.writer.lock", "mit_rir/16khz/*/.writer.lock"):
+        for pattern in ("*/.writer.lock", "downloads/*/.writer.lock", "mit_rir/16khz/*/.writer.lock",
+                        "automatic_sources_v3/parts/*/.writer.lock",
+                        "automatic_sources_v3/parts/*/.canonical_lock/.writer.lock"):
             paths.extend(shared.glob(pattern))
         for path in paths:
             record = read_json(path)
@@ -692,7 +702,7 @@ class StudioManager:
         downloaded = downloaded.get("result", downloaded)
         connected = material_results.get("data_connect", {})
         connected = connected.get("result", connected)
-        if state.get("settings", {}).get("material_acquisition_policy") in ("automatic_v1", "automatic_v2"):
+        if state.get("settings", {}).get("material_acquisition_policy") in ("automatic_v1", "automatic_v2", "automatic_v3"):
             candidate = downloaded.get("candidate_unique_hours")
             admitted = connected.get("admitted_unique_hours")
             nominal = connected.get("generic_publisher_nominal_hours")
@@ -703,6 +713,11 @@ class StudioManager:
                             "korean_negative": state["settings"]["korean_hours"]},
                 "candidate": candidate, "admitted": admitted,
                 "generic_publisher_nominal_hours": nominal}
+            canonical_storage = downloaded.get("automatic_source_preparation", {})
+            if canonical_storage.get("storage_policy") == "canonical_flac_only_v1":
+                view["training_materials"]["storage"] = {key: canonical_storage.get(key)
+                    for key in ("storage_policy", "canonical_storage_bytes", "source_storage_bytes",
+                                "retired_original_bytes", "acquired_original_peak_bytes")}
         candidate_coverage = downloaded.get("evaluation_material_coverage")
         admitted_coverage = connected.get("evaluation_material_coverage")
         if candidate_coverage or admitted_coverage:

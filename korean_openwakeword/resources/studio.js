@@ -41,6 +41,9 @@
     return `${(size / 1024 ** unit).toLocaleString("ko-KR", { maximumFractionDigits: 1 })} ${["B", "KiB", "MiB", "GiB", "TiB"][unit]}`;
   }
   function minimumStorage(recipe, selected = {}) {
+    // FLAC size depends on the selected audio. Its WAV reference is not a
+    // minimum-space requirement and must not be shown as one.
+    if (recipe.material_acquisition_policy === "automatic_v3") return null;
     const space = recipe.automatic_space_plan, components = recipe.automatic_source_plan?.components;
     if (!space || !Array.isArray(components)) return null;
     const fixed = [space.base_archive_bytes, space.base_working_bytes, space.future_buffer_bytes];
@@ -57,6 +60,33 @@
       + Math.ceil(seconds / 2) * 16 * 96 * 4 + Math.ceil(originals * rounds * 16 * 96 * 4);
   }
   function storageEstimate(recipe, selected = {}) {
+    if (recipe.material_acquisition_policy === "automatic_v3") {
+      const space = recipe.automatic_space_plan, components = recipe.automatic_source_plan?.components;
+      if (!space || !Array.isArray(components)) return null;
+      const fixed = [space.base_archive_bytes, space.base_working_bytes, space.future_buffer_bytes];
+      const originals = selected.originals ?? recipe.originals, rounds = selected.rounds ?? recipe.rounds;
+      const targets = { generic_negative: selected.genericHours ?? recipe.generic_hours,
+        korean_negative: selected.koreanHours ?? recipe.korean_hours };
+      const archive = space.transient_source_working_bytes;
+      if (![...fixed, originals, rounds, ...Object.values(targets), archive].every(value => Number.isFinite(value) && value >= 0)) return null;
+      const totals = {}, providers = new Set(["audioset_unbalanced", "mls", "fma_full", "yodas2"]);
+      for (const item of components) {
+        if (!providers.has(item.provider || item.id) || !Object.hasOwn(targets, item.pool)
+          || !Number.isFinite(item.target_hours) || item.target_hours < 0) return null;
+        totals[item.pool] = (totals[item.pool] || 0) + item.target_hours;
+      }
+      const rawHours = Object.keys(totals).reduce((sum, pool) => sum + targets[pool], 0);
+      const seconds = rawHours * 3600;
+      const reference = Math.ceil(seconds * 16000 * 2);
+      const known = Math.ceil(seconds / 2) * 16 * 96 * 4 + Math.ceil(originals * rounds * 16 * 96 * 4);
+      const fmaRate = space.source_forecast_bytes_per_hour?.fma_full ?? 125000000;
+      if (!Number.isFinite(fmaRate) || fmaRate < 0) return null;
+      const fmaBytes = components.reduce((sum, item) => (item.provider || item.id) === "fma_full" && totals[item.pool] > 0
+        ? sum + targets[item.pool] * item.target_hours / totals[item.pool] * fmaRate : sum, 0);
+      const transient = Math.ceil(Math.max(archive, fmaBytes));
+      return { basis: "wav_reference", reference, known, retained: 0, transient,
+        total: fixed.reduce((sum, value) => sum + value, 0) + reference + known + transient };
+    }
     if (recipe.material_acquisition_policy !== "automatic_v2") return null;
     const minimum = minimumStorage(recipe, selected), space = recipe.automatic_space_plan;
     const components = recipe.automatic_source_plan?.components;
@@ -222,7 +252,7 @@
     const suppliedGeneric = recipe.automatic_target_hours?.generic_nominal ?? asset("generic")?.hours ?? 0;
     const suppliedKorean = recipe.automatic_target_hours?.korean_train ?? asset("zeroth")?.hours ?? 0;
     const negativePlan = recipe.training_negative_plan;
-    const automaticPlan = ["automatic_v1", "automatic_v2"].includes(recipe.material_acquisition_policy) && [1, 2].includes(recipe.automatic_source_plan?.version)
+    const automaticPlan = ["automatic_v1", "automatic_v2", "automatic_v3"].includes(recipe.material_acquisition_policy) && [1, 2, 3].includes(recipe.automatic_source_plan?.version)
       && recipe.automatic_source_plan.enabled === true && Array.isArray(recipe.automatic_source_plan.components) ? recipe.automatic_source_plan : null;
     const hasNegativePlan = ((negativePlan?.id === "commercial_negative_v1" && negativePlan.version === 1)
       || (negativePlan?.id === "commercial_negative_v2" && negativePlan.version === 2)
@@ -381,7 +411,7 @@
       sections.push(section);
     }
     replace($("source-preview"), sections);
-    const automatic = ["automatic_v1", "automatic_v2"].includes(recipe.material_acquisition_policy);
+    const automatic = ["automatic_v1", "automatic_v2", "automatic_v3"].includes(recipe.material_acquisition_policy);
     $("source-plan-note").hidden = !automatic;
     if (automatic) {
       const known = bytes(recipe.known_download_bytes);
@@ -390,7 +420,9 @@
       const values = { originals: selected("adv-originals", recipe.originals), rounds: selected("adv-rounds", recipe.rounds), genericHours: selected("adv-generic", recipe.generic_hours), koreanHours: selected("adv-korean", recipe.korean_hours) };
       const minimum = minimumStorage(recipe, values), estimate = storageEstimate(recipe, values);
       const free = snapshot.system?.free_bytes ?? snapshot.system?.disk_free_bytes;
-      $("source-plan-note").textContent = estimate !== null
+      $("source-plan-note").textContent = estimate?.basis === "wav_reference"
+        ? `WAV 기준 참고 예산 ${bytes(estimate.total)}${estimate.transient > 0 ? "(임시 " + bytes(estimate.transient) + " 포함)" : ""}. 학습 음원은 무손실 FLAC으로 보관하며 실제 용량은 변환 후 확인합니다.${Number.isFinite(free) && estimate.total > free ? " 현재 여유가 참고 예산보다 적습니다." : ""} 다운로드량은 같으며 원본 재처리 시 다시 받습니다.`
+        : estimate !== null
         ? `예상 필요 공간 ${bytes(estimate.total)}${estimate.transient > 0 ? "(묶음 임시 " + bytes(estimate.transient) + " 예산 포함)" : ""}.${estimate.retained > 0 ? " 원본 제외 최소 " + bytes(minimum) + "." : ""}${Number.isFinite(free) && minimum > free ? " 현재 여유 공간보다 큽니다." : Number.isFinite(free) && estimate.total > free ? " 현재 여유가 예상량보다 적습니다." : ""} 실제 용량은 선정 후 확인합니다.`
         : minimum !== null
         ? `최소 저장 공간 ${bytes(minimum)}${additional ? recipe.material_acquisition_policy === "automatic_v2" ? " + 원본 추가" : " + 원본·압축파일 추가" : ""}.${Number.isFinite(free) && minimum > free ? " 현재 여유 공간보다 큽니다." : ""} 원본 목록 확정 후 실제 용량을 확인합니다.`
@@ -450,6 +482,11 @@
         }
         return element("li", `${label}: 기술 검사 ${hours(training.candidate?.[role])} · 검수 승인 ${hours(training.admitted?.[role])} / 목표 ${hours(target)}`);
       });
+      const storage = training.storage;
+      if (storage?.storage_policy === "canonical_flac_only_v1"
+        && Number.isFinite(storage.canonical_storage_bytes) && storage.canonical_storage_bytes >= 0) {
+        lines.push(element("li", `학습용 FLAC 실제 보관량: ${bytes(storage.canonical_storage_bytes)}`));
+      }
       replace($("training-material-coverage-list"), lines);
     }
     const materials = project.evaluation_materials;

@@ -13,7 +13,7 @@ from korean_openwakeword import studio_steps as steps
 
 
 @pytest.mark.parametrize("preset", ["check", "trial", "production"])
-@pytest.mark.parametrize("policy", ["automatic_v1", "automatic_v2"])
+@pytest.mark.parametrize("policy", ["automatic_v1", "automatic_v2", "automatic_v3"])
 def test_new_acquisition_has_explicit_offline_plan_and_keeps_legacy_recipe(preset, policy, monkeypatch):
     monkeypatch.setattr(data.requests, "get", lambda *args, **kwargs: pytest.fail("offline preview"))
     legacy = data.material_recipe(preset)
@@ -38,10 +38,10 @@ def test_new_acquisition_has_explicit_offline_plan_and_keeps_legacy_recipe(prese
         assert legacy["shortages"]
         assert current["automatic_space_plan"]["minimum_total_bytes"] > 110 * 1024**3
     assert current["estimated_workspace_bytes"] == current["automatic_space_plan"]["estimated_total_bytes"]
-    assert steps.preset_settings(preset)["material_acquisition_policy"] == "automatic_v2"
+    assert steps.preset_settings(preset)["material_acquisition_policy"] == "automatic_v3"
 
 
-@pytest.mark.parametrize("policy", [None, "automatic_v1", "automatic_v2"])
+@pytest.mark.parametrize("policy", [None, "automatic_v1", "automatic_v2", "automatic_v3"])
 def test_worker_preserves_saved_acquisition_policy(tmp_path, monkeypatch, policy):
     project = create_project(tmp_path / "bora", "보라야", "bora", positive_originals=1000,
                              augmentation_rounds=1, updates=10000, generic_hours=2000, korean_hours=1)
@@ -91,7 +91,7 @@ def test_production_uses_qualified_raw_sources_without_legacy_generic_or_zeroth(
     calls = []
     def automatic(path, work, *, generic_hours, korean_hours, preset, progress, qualify_source,
                   material_acquisition_policy):
-        assert material_acquisition_policy == "automatic_v2"
+        assert material_acquisition_policy == "automatic_v3"
         calls.append((generic_hours, korean_hours, preset))
         sources = []
         for number, (name, component, category, language, pool, seconds) in enumerate((

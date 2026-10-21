@@ -101,7 +101,8 @@ def preset_settings(name="check"):
     return {"preset": name, **deepcopy(_PRESETS[name]),
             **{key: policy[key] for key in ("validation_references", "validation_originals", "noise_sections")},
             "evaluation_policy": policy, "batch": dict(BATCH),
-            "material_acquisition_policy": "automatic_v2",
+            "material_acquisition_policy": "automatic_v3",
+            "audio_storage_policy": "canonical_flac_only_v1",
             "final_locked": True, "positive_text_policy": "standalone_only"}
 
 
@@ -119,8 +120,10 @@ def _validate_settings(settings):
         raise ValueError("증강 횟수는 R1 / R3 / R5입니다.")
     if settings.get("noise_material_policy") not in (None, "official_example", "reuse_negative_waveforms"):
         raise ValueError("Unsupported training-noise material policy")
-    if settings.get("material_acquisition_policy") not in (None, "automatic_v1", "automatic_v2"):
+    if settings.get("material_acquisition_policy") not in (None, "automatic_v1", "automatic_v2", "automatic_v3"):
         raise ValueError("Unsupported material acquisition policy")
+    if settings.get("audio_storage_policy") not in (None, "canonical_flac_only_v1"):
+        raise ValueError("Unsupported canonical audio storage policy")
     if settings.get("batch", BATCH) != BATCH:
         raise ValueError("Studio baseline batch must remain 768/256/100/100")
     if settings["train_references"] > 100 or settings["validation_references"] > 30:

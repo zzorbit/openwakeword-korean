@@ -79,7 +79,7 @@ def _non_silent_noise_window(root, noise, samples, offset, mask, seed):
         if attempt < MAX_NOISE_OFFSET_ATTEMPTS:
             if retry_rng is None:
                 retry_seed = int(identity([seed, "non_silent_noise_offset_v1",
-                    source_key(noise), noise["sha256"], scope])[:16], 16)
+                    source_key(noise), noise.get("logical_audio_sha256", noise["sha256"]), scope])[:16], 16)
                 retry_rng = np.random.default_rng(retry_seed)
             # seek_audio propagates broken/missing/nonfinite input errors.
             # No category/file replacement and no clean fallback is allowed.

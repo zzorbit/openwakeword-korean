@@ -126,9 +126,9 @@ def material_recipe(preset="check", workspace=None, evaluation_policy=None, nois
                     material_acquisition_policy=None):
     """Preview known downloads and limits without accessing network or audio."""
     preset = _preset(preset)
-    if material_acquisition_policy not in (None, "automatic_v1", "automatic_v2"):
+    if material_acquisition_policy not in (None, "automatic_v1", "automatic_v2", "automatic_v3"):
         raise ValueError("Unsupported material acquisition policy")
-    automatic = material_acquisition_policy in ("automatic_v1", "automatic_v2")
+    automatic = material_acquisition_policy in ("automatic_v1", "automatic_v2", "automatic_v3")
     policy = noise_material_policy or ("reuse_negative_waveforms" if preset == "full" else "official_example")
     if policy not in ("official_example", "reuse_negative_waveforms"):
         raise ValueError("Unsupported training-noise material policy")
@@ -223,6 +223,10 @@ def material_recipe(preset="check", workspace=None, evaluation_policy=None, nois
             "minimum_total_bytes": base + working + space["minimum_known_bytes"] + space["future_buffer_bytes"] + space.get("transient_archive_bytes", 0),
             "estimated_total_bytes": base + working + space["estimated_total_bytes"]}
         result["estimated_workspace_bytes"] = result["automatic_space_plan"]["estimated_total_bytes"]
+        if material_acquisition_policy == "automatic_v3":
+            result["audio_storage_policy"] = "canonical_flac_only_v1"
+            result["limitations"].append(
+                "New public training inputs retain verified canonical FLAC. Only newly acquired backend-owned raw audio is retired after exact PCM verification; existing sources, archives, TTS and evaluation audio are preserved. PCM storage is a reference budget until real FLAC sizes are measured.")
     return result
 
 
@@ -531,7 +535,7 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
     downloads = shared / "downloads"
     recipe = material_recipe(preset, workspace, evaluation_policy, noise_material_policy,
                              material_acquisition_policy)
-    automatic = recipe.get("material_acquisition_policy") in ("automatic_v1", "automatic_v2")
+    automatic = recipe.get("material_acquisition_policy") in ("automatic_v1", "automatic_v2", "automatic_v3")
     workspace.mkdir(parents=True, exist_ok=True)
     # A minimum preflight before any download; actual per-file checks also run.
     missing = sum(a["size_bytes"] for a in recipe["assets"] if a["availability"] == "download_required")
@@ -550,7 +554,7 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
     reserve = 4 * 1024**3
     if automatic and recipe["preset"] in ("test", "full"):
         space = _automatic_space_plan(recipe["preset"], config, material_acquisition_policy)
-        namespace = "automatic_sources_v2" if material_acquisition_policy == "automatic_v2" else "automatic_sources_v1"
+        namespace = "automatic_sources_" + material_acquisition_policy.removeprefix("automatic_")
         ongoing = (root / ".studio/materials" / namespace / "request.json").is_file()
         if not ongoing:
             reserve = max(reserve, space["minimum_known_bytes"] + space["future_buffer_bytes"] + 15 * 1024**3 + space.get("transient_archive_bytes", 0))
@@ -645,7 +649,7 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
         automatic_preparation = prepare_automatic_sources(project_path, workspace,
             generic_hours=config["targets"]["generic_hours"], korean_hours=config["targets"]["korean_hours"],
             preset=recipe["preset"], progress=progress, qualify_source=prepare_source,
-            **({"material_acquisition_policy": material_acquisition_policy} if material_acquisition_policy == "automatic_v2" else {}))
+            **({"material_acquisition_policy": material_acquisition_policy} if material_acquisition_policy in ("automatic_v2", "automatic_v3") else {}))
         for supplied in automatic_preparation["sources"]:
             # Provider selection records describe their Negative purpose. The
             # Studio review explicitly admits the same originals for mixing,
@@ -991,7 +995,7 @@ def admit_materials(project_path, prepared, answers_by_preparation=None, *, admi
     if prepared.get("noise_material_policy") == "reuse_negative_waveforms":
         shortages.extend(_reused_noise_shortages(root, config, receipts))
     automatic_coverage = None
-    if prepared.get("material_acquisition_policy") in ("automatic_v1", "automatic_v2"):
+    if prepared.get("material_acquisition_policy") in ("automatic_v1", "automatic_v2", "automatic_v3"):
         automatic_coverage = _automatic_admission_coverage(root, prepared, receipts)
         shortages.extend(automatic_coverage["shortages"])
     material_coverage = duration_budget = None

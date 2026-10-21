@@ -25,7 +25,7 @@ def test_studio_api_exposes_the_same_new_plan_as_cli_and_preserves_smaller_prese
     assert (recipes["trial"]["generic_hours"], recipes["trial"]["korean_hours"]) == (2000, 2000 / 3)
     assert all(record["batch"] == BATCH for record in recipes.values())
     assert all("training_negative_plan" not in recipes[key] for key in ("check", "trial"))
-    assert production["material_acquisition_policy"] == "automatic_v2"
+    assert production["material_acquisition_policy"] == "automatic_v3"
     assert production["automatic_target_hours"] == {"generic_raw": 7000, "korean_train": 3000}
     assert recipes["trial"]["automatic_target_hours"] == {"generic_nominal": 2000, "korean_train": 2000 / 3}
     assert recipes["check"]["automatic_target_hours"] == {"generic_nominal": 2000, "korean_train": 1}

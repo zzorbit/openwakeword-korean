@@ -103,6 +103,7 @@ def test_create_presets_only_configure_without_work(manager, preset, originals, 
     assert config["augmentation_rounds"] == rounds
     assert config["training"]["updates"] == updates
     assert config["targets"]["korean_hours"] == pytest.approx(korean)
+    assert config["audio_storage_policy"] == "canonical_flac_only_v1"
     assert view["status"] == "ready" and not manager.workers.items
     assert not (Path(state["project"]).parent / "final_lock.json").exists()
 
@@ -110,16 +111,21 @@ def test_create_presets_only_configure_without_work(manager, preset, originals, 
 def test_automatic_training_view_separates_targets_candidates_admissions_and_nominal_features(manager):
     view = create(manager)
     state = manager._load(view["id"])
-    assert state["settings"]["material_acquisition_policy"] == "automatic_v2"
+    assert state["settings"]["material_acquisition_policy"] == "automatic_v3"
     state["results"].update({
         "data_download": {"result": {"candidate_unique_hours": {"generic_negative": 0, "korean_negative": 1.1},
-                                    "generic_feature_import": {"publisher_declared_hours": 2000}}},
+                                    "generic_feature_import": {"publisher_declared_hours": 2000},
+                                    "automatic_source_preparation": {"storage_policy": "canonical_flac_only_v1",
+                                        "canonical_storage_bytes": 4096, "source_storage_bytes": 8192,
+                                        "retired_original_bytes": 16384, "acquired_original_peak_bytes": 32768}}},
         "data_connect": {"result": {"admitted_unique_hours": {"generic_negative": 0, "korean_negative": 1}}}})
     actual = manager.describe(state)["training_materials"]
     assert actual["targets"] == {"generic_negative": 2000, "korean_negative": 1}
     assert actual["candidate"] == {"generic_negative": 0, "korean_negative": 1.1}
     assert actual["admitted"] == {"generic_negative": 0, "korean_negative": 1}
     assert actual["generic_publisher_nominal_hours"] == 2000
+    assert actual["storage"]["canonical_storage_bytes"] == 4096
+    assert actual["storage"]["source_storage_bytes"] == 8192
     state["settings"].pop("material_acquisition_policy")
     assert "training_materials" not in manager.describe(state)
 
@@ -130,7 +136,7 @@ def test_recipes_preview_has_three_budgets_known_sources_and_no_network(manager)
     assert all(row["known_download_bytes"] > 0 for row in recipes["presets"])
     assert all(row["assets"] or row.get("automatic_source_plan", {}).get("components")
                for row in recipes["presets"])
-    assert all(row["material_acquisition_policy"] == "automatic_v2" for row in recipes["presets"])
+    assert all(row["material_acquisition_policy"] == "automatic_v3" for row in recipes["presets"])
     assert all(row["human_review_required"] is True for row in recipes["presets"])
     policies = [row["evaluation_policy"] for row in recipes["presets"]]
     assert all(policy == policies[0] for policy in policies)
@@ -201,6 +207,10 @@ def test_create_accepts_explicit_directory_and_preserves_existing_project(manage
     again = create(manager, directory=str(target))
     assert first["id"] == again["id"] and digest(original) == before
     assert marker.read_bytes() == b"preserve this original data"
+    adopted = manager._load(first["id"])
+    assert adopted["settings"]["material_acquisition_policy"] == "automatic_v2"
+    assert "audio_storage_policy" not in adopted["settings"]
+    assert "audio_storage_policy" not in read_json(original)
 
 
 def test_registered_project_never_silently_accepts_conflicting_word(manager, tmp_path):
@@ -781,6 +791,60 @@ def test_dead_actual_python_lock_is_recovered_only_for_bound_owner_pid(manager):
     with pytest.raises(ValueError, match="다른 작업"):
         manager._recover_dead_locks(state)
     assert lock.exists()
+
+
+@pytest.mark.parametrize("suffix", [".writer.lock", ".canonical_lock/.writer.lock"])
+def test_canonical_shared_locks_recover_bound_dead_worker_without_recursive_audio_scan(manager, monkeypatch, suffix):
+    project = create(manager)
+    manager.start(project["id"])
+    launcher = manager.workers.items[0]
+    launcher.returncode = 9
+    manager.workers.identities.pop(launcher.pid)
+    _, owner = publish_actual_owner(manager, project["id"])
+    state = manager._load(project["id"])
+    root = Path(state["project"]).parent
+    shared = Path(state["storage_workspace"]) / "shared"
+    lock = shared / "automatic_sources_v3/parts/fixture" / suffix
+    record = {"pid": owner["pid"], "fixture": "canonical-actual-worker"}
+    write_json(lock, record)
+    # A future namespace or arbitrary deep audio folder is outside the exact
+    # recovery patterns. Neither is recursively searched or changed.
+    unrelated = shared / "automatic_sources_v4/parts/fixture" / suffix
+    write_json(unrelated, {"pid": owner["pid"], "fixture": "future-namespace"})
+    monkeypatch.setattr(Path, "rglob", lambda *args, **kwargs: pytest.fail("Recovery must not scan corpus audio recursively"))
+    manager._recover_dead_locks(state)
+    assert not lock.exists() and unrelated.exists()
+    archived = [read_json(path) for path in (root / ".studio/recovered_locks").glob("*.json")]
+    assert len(archived) == 1
+    assert archived[0]["original"] == str(lock)
+    assert archived[0]["record"] == record
+    assert archived[0]["job"]["request_sha256"] == state["job"]["request_sha256"]
+
+
+@pytest.mark.parametrize("suffix", [".writer.lock", ".canonical_lock/.writer.lock"])
+def test_canonical_shared_locks_preserve_live_recycled_and_other_worker_owners(manager, suffix):
+    project = create(manager)
+    manager.start(project["id"])
+    state = manager._load(project["id"])
+    pid = state["job"]["pid"]
+    lock = Path(state["storage_workspace"]) / "shared/automatic_sources_v3/parts/fixture" / suffix
+    write_json(lock, {"pid": pid, "fixture": "actual-launcher"})
+    before = lock.read_bytes()
+    manager._recover_dead_locks(state)
+    assert lock.read_bytes() == before  # Identified original worker is live.
+    manager.workers.items[0].returncode = 9
+    manager.workers.identities[pid] = "recycled-birth-identity"
+    with pytest.raises(ValueError, match="살아|재사용"):
+        manager._recover_dead_locks(state)
+    assert lock.read_bytes() == before
+    manager.workers.identities.pop(pid)
+    write_json(lock, {"pid": pid + 99, "fixture": "another-dead-worker"})
+    before = lock.read_bytes()
+    with pytest.raises(ValueError, match="다른 작업"):
+        manager._recover_dead_locks(state)
+    assert lock.read_bytes() == before
+    root = Path(state["project"]).parent
+    assert not (root / ".studio/recovered_locks").exists()
 
 
 def test_real_worker_subprocess_records_actual_python_identity_and_error_receipt(tmp_path):

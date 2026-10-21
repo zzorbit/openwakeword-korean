@@ -29,6 +29,25 @@ TRAIN_POOLS = frozenset({"generic_negative", "korean_negative", "noise", "rir"})
 _IDENTITIES = ("canonical_source_id", "canonical_recording_id", "canonical_speaker_id", "canonical_room_id", "canonical_book_id")
 
 
+def _audio_digest(row):
+    # Header partitioning historically uses the original file hash. Only the
+    # post-decode duplicate check may use the normalized WAV identity.
+    return row.get("logical_audio_sha256", row["sha256"]) if row.get("technical_pass") is True else row["sha256"]
+
+
+def _partition_audit_row(row):
+    # The former pipeline had not normalized unselected sources. FLAC exists
+    # early for storage only; it must not move the old selection/split boundary.
+    # The published manifest still binds the actual physical FLAC bytes.
+    if row.get("canonical_audio") and row.get("preparation_state") == "metadata_and_original_hash_only":
+        view = {**row, "sha256": row["original_sha256"]}
+        view.pop("logical_audio_sha256", None)
+        return view
+    if row.get("canonical_audio") and row.get("technical_pass") is True:
+        return {**row, "sha256": row["logical_audio_sha256"]}
+    return row
+
+
 def _binding(path):
     return {"path": str(Path(path).resolve()), "sha256": digest(path)}
 
@@ -183,6 +202,8 @@ def _check_existing_partitions(project, rows):
                     held_hashes.add(old["sha256"])
                 if old.get("original_sha256"):
                     held_hashes.add(old["original_sha256"])
+                if old.get("logical_audio_sha256"):
+                    held_hashes.add(old["logical_audio_sha256"])
     for row in rows:
         if any((key, row[key]) in held_ids for key in _IDENTITIES if row.get(key)):
             raise ValueError("An existing held-out source/speaker/recording/room cannot be prepared for training")
@@ -267,9 +288,9 @@ def _source_interval(row):
 def _unique_seconds(rows):
     seen, intervals = set(), defaultdict(list)
     for row in rows:
-        if row["sha256"] in seen:
+        if _audio_digest(row) in seen:
             continue
-        seen.add(row["sha256"])
+        seen.add(_audio_digest(row))
         original, interval = coverage_interval(row, *_source_interval(row))
         intervals[original].append(interval)
     return union_hours(intervals) * 3600
@@ -298,12 +319,15 @@ def _audit_groups(project, rows):
     from itertools import chain
     existing = chain.from_iterable(iter_rows(resolved(root, manifest)) for manifest in config["manifests"].values())
     with manifest_index(root) as index:
-        for row in chain(existing, rows):
+        for supplied in chain(existing, rows):
+            row = _partition_audit_row(supplied)
             if row.get("split") is None:
                 continue
-            for key in (*_IDENTITIES, "sha256", "original_sha256", "unknown_speaker_group"):
+            for key in (*_IDENTITIES, "sha256", "original_sha256", "logical_audio_sha256", "unknown_speaker_group"):
                 if row.get(key):
                     index.partition(key, row[key], row["split"])
+            if row.get("logical_audio_sha256"):
+                index.partition("sha256", row["logical_audio_sha256"], row["split"])
             for speaker in row.get("canonical_speaker_ids", []):
                 index.partition("canonical_speaker_id", speaker, row["split"])
         if index.leaks():
@@ -350,7 +374,10 @@ def _source_groups_until(rows, quota):
 def _prepare_source(root, output, row):
     source_path = Path(row["path"])
     key = identity([row["canonical_source_id"], row["original_sha256"]])
-    wav, record = output / "audio" / (key + ".wav"), output / "checks" / (key + ".json")
+    canonical = row.get("canonical_audio") is not None
+    flac = row.get("audio_storage_policy") == "canonical_flac_only_v1"
+    wav = source_path if canonical else output / "audio" / (key + (".flac" if flac else ".wav"))
+    record = output / "checks" / (key + ".json")
     if record.exists():
         saved = read_json(record)
         if saved.get("original_sha256") != row["original_sha256"]:
@@ -358,17 +385,31 @@ def _prepare_source(root, output, row):
         if saved["state"] == "passed":
             bound_file(root, saved["row"])
         return saved
-    if shutil.disk_usage(output).free < ceil(row["duration_s"] * 32000) * 2 + 65536:
+    if not canonical and shutil.disk_usage(output).free < ceil(row["duration_s"] * 32000) * 2 + 65536:
         raise ValueError("Insufficient project disk space before selected recording conversion")
     try:
-        if wav.exists():
+        if wav.exists() and not canonical and not flac:
             wav.unlink()  # Owned, unfinished deterministic output only.
-        original_info = _convert(source_path, wav)
+        if canonical:
+            from .canonical_audio import verify_canonical_audio
+            saved_audio = verify_canonical_audio(row)
+            original_info = saved_audio["original_info"]
+        elif flac:
+            from .canonical_audio import canonicalize_audio, marker_for
+            saved_audio = canonicalize_audio(source_path, wav)
+            original_info = saved_audio["original_info"]
+            row = {**row, "original_source_sha256": row["original_sha256"],
+                   "provider_sha256": saved_audio["canonical"]["sha256"],
+                   "logical_audio_sha256": saved_audio["logical_audio_sha256"],
+                   "canonical_audio": marker_for(saved_audio, wav.with_suffix(wav.suffix + ".json"))}
+        else:
+            original_info = _convert(source_path, wav)
         checks = _technical_check(wav, row["category"], start_s=row.get("start_s", 0), end_s=row.get("end_s"))
         if row["category"] == "rir":
             start, end = _source_interval(row)
             _technical_check(wav, "rir", start_s=start, end_s=min(end, start + 2))
-        if digest(source_path) != row["original_sha256"]:
+        expected_source = saved_audio["canonical"]["sha256"] if canonical else row["original_sha256"]
+        if digest(source_path) != expected_source:
             raise ValueError("Original source changed while converting")
         prepared = {**row, "original_path": row["path"], "path": str(wav),
                     "sha256": digest(wav), "technical_pass": True,
@@ -378,7 +419,12 @@ def _prepare_source(root, output, row):
         _source_interval(prepared)
         saved = {"state": "passed", "original_sha256": row["original_sha256"], "row": prepared}
     except (ValueError, OSError, RuntimeError) as error:
-        wav.unlink(missing_ok=True)
+        if (canonical or flac) and (isinstance(error, OSError)
+                or isinstance(error, sf.LibsndfileError) and error.code == 2
+                or any(term in str(error) for term in ("changed", "verification failed", "Unverified", "Insufficient", "hash mismatch"))):
+            raise  # Storage/integrity failures cannot become technical rejects.
+        if not canonical:
+            wav.unlink(missing_ok=True)
         saved = {"state": "rejected", "original_path": str(source_path),
                  "original_sha256": row["original_sha256"], "canonical_source_id": row["canonical_source_id"],
                  "reason": str(error), "original_preserved": source_path.exists()}
@@ -405,19 +451,20 @@ def _decode_selected(root, output, train_candidates, reserve_candidates, target_
                     rejected.append(result)
                     continue
                 prepared = result["row"]
-                previous = seen.get(prepared["sha256"])
+                previous = seen.get(_audio_digest(prepared))
                 if previous is not None:
                     if previous["split"] != split:
                         raise ValueError("Same normalized PCM appears across Train and Validation; fix source identities in a new preparation")
                     if (previous["category"], previous["language"], previous["speech"]) != (prepared["category"], prepared["language"], prepared["speech"]):
                         raise ValueError("Exact duplicate normalized audio has conflicting category/language metadata")
                 else:
-                    seen[prepared["sha256"]] = prepared
+                    seen[_audio_digest(prepared)] = prepared
                     new_unique.append(prepared)
                 successful.append(prepared)
             seconds += _unique_seconds([r for r in new_unique if r["category"] != "rir"])
             (train if split == "train" else reserve).extend(successful)
-    unused = [{**r, "technical_pass": False, "preparation_state": "metadata_and_original_hash_only",
+    unused = [{**r, "sha256": r["provider_sha256"] if r.get("canonical_audio") else r["sha256"],
+               "technical_pass": False, "preparation_state": "metadata_and_original_hash_only",
                "individual_human_listening": False, "training_admitted": False,
                "original_audio_opened_for_decode": False} for r in train_candidates + reserve_candidates if r["sample_id"] not in processed]
     return train, reserve, unused, rejected
@@ -640,6 +687,8 @@ def prepare_public_audio(project, *, input_directory, output, dataset_id=None,
                     license=license, category=category, category_basis=category_basis,
                     language=language, speech=speech).items() if v is not None}
     rows = _metadata(paths, directory, defaults, _read_index(source_index))
+    if config.get("audio_storage_policy") == "canonical_flac_only_v1":
+        rows = [{**row, "audio_storage_policy": "canonical_flac_only_v1"} for row in rows]
     caption_screened, caption_excluded = 0, 0
     for row in rows:
         # Reuse only actual provider transcripts. A class/track label stored in
@@ -665,8 +714,14 @@ def prepare_public_audio(project, *, input_directory, output, dataset_id=None,
     # Hash after metadata checks and before decoding. An alias with the exact
     # bytes of a known held-out file is refused before any conversion.
     for row in rows:
-        row["original_sha256"] = digest(row["path"])
-        if row.get("provider_sha256") is not None and row["provider_sha256"] != row["original_sha256"]:
+        physical_sha = digest(row["path"])
+        if row.get("canonical_audio") is not None:
+            from .canonical_audio import verify_canonical_audio
+            saved_audio = verify_canonical_audio(row)
+            row["original_sha256"] = saved_audio["original"]["sha256"]
+        else:
+            row["original_sha256"] = physical_sha
+        if row.get("provider_sha256") is not None and row["provider_sha256"] != physical_sha:
             raise ValueError("Provider source SHA256 does not match downloaded original audio")
         if row["original_sha256"] in held_hashes:
             raise ValueError("Exact held-out audio cannot be prepared for training")
@@ -683,10 +738,14 @@ def prepare_public_audio(project, *, input_directory, output, dataset_id=None,
             if header.frames < 1 or header.samplerate < 1 or header.channels < 1:
                 raise ValueError("Empty or invalid source audio header")
             key = identity([row["canonical_source_id"], row["original_sha256"]])
-            candidate = {**row, "sha256": row["original_sha256"], "duration_s": ceil(header.frames * 16000 / header.samplerate) / 16000,
+            original_info = row.get("canonical_audio", {}).get("original_info", {})
+            frames = original_info.get("input_frames", header.frames)
+            rate = original_info.get("input_sample_rate", header.samplerate)
+            channels = original_info.get("input_channels", header.channels)
+            candidate = {**row, "sha256": row["original_sha256"], "duration_s": ceil(frames * 16000 / rate) / 16000,
                          "sample_id": "public_" + key[:24], "provenance": "public_dataset", "declared_split": row.get("split"),
-                         "technical_pass": False, "input_sample_rate": header.samplerate,
-                         "input_frames": header.frames, "input_channels": header.channels}
+                         "technical_pass": False, "input_sample_rate": rate,
+                         "input_frames": frames, "input_channels": channels}
             _source_interval(candidate)
             headers.append(candidate)
         except (ValueError, OSError, RuntimeError) as error:
@@ -726,6 +785,8 @@ def prepare_public_audio(project, *, input_directory, output, dataset_id=None,
         expected_train = _source_groups_until(planned_train, None if target_hours is None else target_hours * 3600)
         expected_reserve = _source_groups_until(planned_reserve, None if target_hours is None else target_hours * 3600 * validation_fraction / (1 - validation_fraction))
         for row in expected_train + expected_reserve:
+            if row.get("canonical_audio"):
+                continue  # Already retained; no second normalized audio payload.
             key = identity([row["canonical_source_id"], row["original_sha256"]])
             if (output / "checks" / (key + ".json")).exists():
                 continue
@@ -748,13 +809,14 @@ def prepare_public_audio(project, *, input_directory, output, dataset_id=None,
         # metadata on the same PCM is an input error, not an inferred category.
         duplicates, unique = [], {}
         for row in converted:
-            if row["sha256"] in unique:
-                first = unique[row["sha256"]]
+            audio_hash = _audio_digest(row)
+            if audio_hash in unique:
+                first = unique[audio_hash]
                 if (row["category"], row["language"], row["speech"]) != (first["category"], first["language"], first["speech"]):
                     raise ValueError("Exact duplicate normalized audio has conflicting category/language metadata")
                 duplicates.append({"canonical_source_id": row["canonical_source_id"], "duplicate_of": first["canonical_source_id"], "sha256": row["sha256"]})
             else:
-                unique[row["sha256"]] = row
+                unique[audio_hash] = row
         # Partition was fixed before decoding. Audit aliases before publication;
         # normalized duplicates cannot silently move a reserved speaker to Train.
         _audit_groups(project, train + reserve + unused)
@@ -763,7 +825,8 @@ def prepare_public_audio(project, *, input_directory, output, dataset_id=None,
                           for collection in (train, reserve))
         if not train:
             raise ValueError("No Train sources after conservative group splitting; adjust explicit metadata or validation fraction")
-        check = audit_project(project, check_files=False, extra_rows=train + reserve + unused)
+        check = audit_project(project, check_files=False,
+                              extra_rows=[_partition_audit_row(row) for row in train + reserve + unused])
         if not check["passed"]:
             raise ValueError("Prepared source split audit failed: " + str(check["errors"][:5]))
         preview_rows = []

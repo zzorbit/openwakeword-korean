@@ -47,7 +47,7 @@ def _preset(value):
 def automatic_source_policy(generic_hours=7000, korean_hours=3000, preset="full", *,
                             material_acquisition_policy="automatic_v1"):
     """Offline description; no source files or provider metadata are opened."""
-    if material_acquisition_policy not in ("automatic_v1", "automatic_v2"):
+    if material_acquisition_policy not in ("automatic_v1", "automatic_v2", "automatic_v3"):
         raise ValueError("Unsupported automatic material acquisition policy")
     generic, korean = _hours(generic_hours, "Generic"), _hours(korean_hours, "Korean")
     preset = _preset(preset)
@@ -62,6 +62,8 @@ def automatic_source_policy(generic_hours=7000, korean_hours=3000, preset="full"
             "content_approved": False, "training_admitted": False, "Final_accessed": False}
     if material_acquisition_policy == "automatic_v2":
         result.update(version=2, storage_policy="verified_extracted_only_v1")
+    elif material_acquisition_policy == "automatic_v3":
+        result.update(version=3, storage_policy="canonical_flac_only_v1")
     return result
 
 
@@ -75,7 +77,8 @@ def _space_plan(policy, config):
     positive_features = math.ceil(originals * rounds * 16 * 96 * 4)
     # Raw codecs and compression vary. These are forecasts, not publisher
     # verified sizes or promises; resolved part sizes remain the hard gate.
-    compact = policy.get("storage_policy") == "verified_extracted_only_v1"
+    canonical = policy.get("storage_policy") == "canonical_flac_only_v1"
+    compact = policy.get("storage_policy") in ("verified_extracted_only_v1", "canonical_flac_only_v1")
     per_hour = ({"audioset_unbalanced": 500_000_000, "mls": 140_000_000,
                  "fma_full": 125_000_000, "yodas2": 180_000_000} if compact else
                 {"audioset_unbalanced": 1_000_000_000, "mls": 280_000_000,
@@ -103,6 +106,25 @@ def _space_plan(policy, config):
             transient_archive_bytes=temporary,
             estimated_total_bytes=known + source_forecast + _RESERVE + temporary,
             estimate_scope="Retained original-audio and transfer bytes are separate forecasts. One archive at a time is temporary; actual selected archive/extraction size is checked before use. Existing archives and old receipts are not retired. TTS/evaluation WAVs and checkpoints need additional room.")
+    if canonical:
+        # Only features are an exact hard lower bound. FLAC compression depends
+        # on the source; the PCM figure is a reference budget, never a measured
+        # FLAC estimate. The unchanged FMA playlist is acquired as one batch.
+        fma_peak = math.ceil(policy["component_targets"].get("fma_full", 0) * 125_000_000)
+        transient = max(fma_peak, _RESERVE if policy["component_targets"] else 0)
+        known_features = negative_features + positive_features
+        result.update(storage_policy=policy["storage_policy"],
+            minimum_known_bytes=known_features,
+            estimated_retained_source_bytes=0,
+            estimated_original_archive_bytes=0,
+            eliminated_retained_original_forecast_bytes=source_forecast,
+            estimated_canonical_audio_bytes=normalized,
+            canonical_flac_estimated_bytes=None,
+            transient_archive_bytes=0,
+            transient_source_working_bytes=_RESERVE if policy["component_targets"] else 0,
+            transient_source_bytes=transient,
+            estimated_total_bytes=known_features + normalized + _RESERVE + transient,
+            estimate_scope="PCM16 audio is an uncompressed comparison budget, not measured FLAC size or a minimum. Only feature payload is a known lower bound. Verified canonical FLAC replaces newly acquired raw audio; transfer bytes are unchanged. The complete unchanged FMA playlist remains a temporary raw batch. Existing sources, TTS/evaluation audio and checkpoints are separate.")
     return result
 
 
@@ -195,7 +217,7 @@ class PublicSourceBackend:
     implement these two methods without network access.
     """
     def __init__(self, directory, *, storage_policy="retain_archives"):
-        if storage_policy not in ("retain_archives", "verified_extracted_only_v1"):
+        if storage_policy not in ("retain_archives", "verified_extracted_only_v1", "canonical_flac_only_v1"):
             raise ValueError("Unsupported source archive storage policy")
         self.directory = Path(directory)
         self.storage_policy = storage_policy
@@ -264,6 +286,24 @@ class PublicSourceBackend:
 
     def prepare(self, candidate, directory, *, target_hours, max_download_bytes,
                 max_extract_bytes, excluded_track_ids=(), progress=None):
+        if self.storage_policy == "canonical_flac_only_v1":
+            from .canonical_sources import prepare_canonical_source
+            from .canonical_audio import canonicalize_prepared_source
+            request = {"candidate": candidate, "target_hours": target_hours,
+                       "excluded_track_ids": sorted(set(excluded_track_ids)), "seed": SEED,
+                       "storage_policy": self.storage_policy}
+            return prepare_canonical_source(directory, request=request,
+                acquire=lambda: self._prepare(candidate, directory, target_hours=target_hours,
+                    max_download_bytes=max_download_bytes, max_extract_bytes=max_extract_bytes,
+                    excluded_track_ids=excluded_track_ids, progress=progress),
+                canonicalize=canonicalize_prepared_source,
+                max_retained_bytes=max_extract_bytes, progress=progress)
+        return self._prepare(candidate, directory, target_hours=target_hours,
+            max_download_bytes=max_download_bytes, max_extract_bytes=max_extract_bytes,
+            excluded_track_ids=excluded_track_ids, progress=progress)
+
+    def _prepare(self, candidate, directory, *, target_hours, max_download_bytes,
+                 max_extract_bytes, excluded_track_ids=(), progress=None):
         from .commercial_sources import resolve_commercial_source, download_commercial_source
         from .studio_data import extract_archive
         from .preparation import create_source_index
@@ -302,7 +342,7 @@ class PublicSourceBackend:
             original = directory / "originals"
             original.mkdir(exist_ok=True)
             self._share_metadata(resolution, original)
-            if self.storage_policy == "verified_extracted_only_v1":
+            if self.storage_policy in ("verified_extracted_only_v1", "canonical_flac_only_v1"):
                 from .compact_sources import prepare_compact_source
                 result = prepare_compact_source(resolution, directory,
                     max_download_bytes=max_download_bytes, max_extract_bytes=max_extract_bytes,
@@ -355,7 +395,7 @@ class PublicSourceBackend:
                 "reserved_download_bytes": reserved_bytes,
                 "original_storage_bytes": original_storage,
                 "artifacts": [str(index), *(receipt["path"] for receipt in receipts)]}
-        if self.storage_policy == "verified_extracted_only_v1" and component != "fma_full":
+        if self.storage_policy in ("verified_extracted_only_v1", "canonical_flac_only_v1") and component != "fma_full":
             prepared.update(retired_archive_bytes=result["retired_archive_bytes"],
                             temporary_archive_peak_bytes=result["temporary_archive_peak_bytes"],
                             compact_directory=str(directory), compact_receipt=result["compact_receipt"])
@@ -383,7 +423,8 @@ def _validate_rows(source, rows, selected, seen_hashes, seen_sources, diagnostic
         checksum = digest(original)
         if row.get("sha256") and row["sha256"] != checksum:
             raise ValueError("Automatic original waveform changed after provider indexing")
-        if checksum in hashes or canonical in sources:
+        original_identity = row.get("original_source_sha256", checksum)
+        if original_identity in hashes or canonical in sources:
             continue
         try:
             header = sf.info(original)
@@ -422,10 +463,13 @@ def _validate_rows(source, rows, selected, seen_hashes, seen_sources, diagnostic
                     raise ValueError("Copied automatic source hash mismatch")
                 if storage_counter is not None:
                     storage_counter["bytes"] += original.stat().st_size
+        original_info = row.get("canonical_audio", {}).get("original_info", {})
+        duration = (original_info["input_frames"] / original_info["input_sample_rate"]
+                    if original_info else header.frames / header.samplerate)
         row.update(path=relative.as_posix(), sha256=checksum,
-                   duration_s=header.frames/header.samplerate, split="train")
+                   duration_s=duration, split="train")
         result.append(row)
-        hashes.add(checksum)
+        hashes.add(original_identity)
         sources.add(canonical)
     return result
 
@@ -450,12 +494,14 @@ def prepare_automatic_sources(project, workspace, *, generic_hours, korean_hours
         raise ValueError("Final-locked projects cannot request new training materials")
     policy = automatic_source_policy(generic_hours, korean_hours, preset,
         material_acquisition_policy=material_acquisition_policy)
-    compact = material_acquisition_policy == "automatic_v2"
+    canonical = material_acquisition_policy == "automatic_v3"
+    compact = material_acquisition_policy in ("automatic_v2", "automatic_v3")
     if not policy["component_targets"]:
         return {"sources": [], "plan": policy, "receipts": [], "artifacts": [],
                 "component_actual_hours": {}, "shortages": [], "actual_download_bytes": 0}
     workspace.mkdir(parents=True, exist_ok=True)
-    namespace = "automatic_sources_v2" if compact else "automatic_sources_v1"
+    namespace = {"automatic_v1": "automatic_sources_v1", "automatic_v2": "automatic_sources_v2",
+                 "automatic_v3": "automatic_sources_v3"}[material_acquisition_policy]
     state = root / ".studio/materials" / namespace
     state.mkdir(parents=True, exist_ok=True)
     default_backend = workspace / "shared" / namespace
@@ -463,7 +509,7 @@ def prepare_automatic_sources(project, workspace, *, generic_hours, korean_hours
     existing = read_json(request_path) if request_path.exists() else None
     limits = config.get("automatic_data_limits", {})
     available = max(0, shutil.disk_usage(workspace).free - _RESERVE)
-    requested = {"kind": "automatic_negative_supply_v2" if compact else "automatic_negative_supply_v1", "policy": policy,
+    requested = {"kind": "automatic_negative_supply_" + material_acquisition_policy.removeprefix("automatic_"), "policy": policy,
         "wakeword": config["wakeword"], "project_id": config["project_id"],
         "workspace": str(workspace), "seed": SEED}
     from .commercial_sources import _PROVIDERS as providers
@@ -473,7 +519,7 @@ def prepare_automatic_sources(project, workspace, *, generic_hours, korean_hours
     if existing:
         requested["limits"] = existing["limits"]
     else:
-        requested["limits"] = {"max_download_bytes": limits.get("max_download_bytes", min(4 * 1024**4, available)),
+        requested["limits"] = {"max_download_bytes": limits.get("max_download_bytes", 4 * 1024**4 if canonical else min(4 * 1024**4, available)),
                                "max_workspace_bytes": limits.get("max_workspace_bytes", available),
                                "reserve_free_bytes": _RESERVE}
     for key in ("max_download_bytes", "max_workspace_bytes"):
@@ -487,7 +533,7 @@ def prepare_automatic_sources(project, workspace, *, generic_hours, korean_hours
                 "max_workspace_bytes": requested["limits"]["max_workspace_bytes"],
                 "audio_download_started": False, "created_at": now()})
             if free < minimum or requested["limits"]["max_workspace_bytes"] < space["minimum_known_bytes"]:
-                raise ValueError(f"자동 자료 준비를 시작할 공간이 부족합니다. 정규화 음원·feature만 최소 {minimum:,}바이트가 필요하지만 "
+                raise ValueError(f"자동 자료 준비를 시작할 공간이 부족합니다. {'feature·여유 공간' if canonical else '정규화 음원·feature'}만 최소 {minimum:,}바이트가 필요하지만 "
                     f"선택 드라이브 여유는 {free:,}바이트, 설정한 저장 한도는 {requested['limits']['max_workspace_bytes']:,}바이트입니다. "
                     f"원본·압축 자료 예상 {space['estimated_original_archive_bytes']:,}바이트는 별도입니다. 목표량을 줄이지 않고 중단했습니다.")
         _frozen(request_path, requested)
@@ -498,6 +544,7 @@ def prepare_automatic_sources(project, workspace, *, generic_hours, korean_hours
         seen_hashes, seen_sources, seen_tracks = set(), set(), set()
         reserved_bytes, source_storage_bytes = 0, 0
         retired_archive_bytes, temporary_archive_peak_bytes = 0, 0
+        canonical_storage_bytes, retired_original_bytes, acquired_original_peak_bytes = 0, 0, 0
         for component, target in policy["component_targets"].items():
             inventory_path = state / (component + "_inventory.json")
             inventory = read_json(inventory_path) if inventory_path.exists() else backend.inventory(component)
@@ -523,7 +570,16 @@ def prepare_automatic_sources(project, workspace, *, generic_hours, korean_hours
                     record = read_json(record_path)
                     if record.get("candidate") != candidate:
                         raise ValueError("Frozen automatic source selection changed")
-                    compact_binding = record.get("compact_receipt") if compact else None
+                    canonical_binding = record.get("canonical_receipt") if canonical else None
+                    if canonical_binding:
+                        from .canonical_sources import verify_canonical_source
+                        canonical_receipt = Path(canonical_binding["path"]).resolve()
+                        if (not canonical_receipt.is_relative_to(default_backend.resolve())
+                                or not canonical_receipt.is_file()
+                                or digest(canonical_receipt) != canonical_binding["sha256"]):
+                            raise ValueError("Frozen canonical source receipt changed or escaped its cache")
+                        verify_canonical_source(canonical_receipt.parent)
+                    compact_binding = record.get("compact_receipt") if compact and not canonical else None
                     if compact_binding:
                         from .compact_sources import verify_compact_source
                         compact_receipt = Path(compact_binding["path"]).resolve()
@@ -592,7 +648,13 @@ def prepare_automatic_sources(project, workspace, *, generic_hours, korean_hours
                     if compact:
                         record.update(retired_archive_bytes=prepared.get("retired_archive_bytes", 0),
                             temporary_archive_peak_bytes=prepared.get("temporary_archive_peak_bytes", 0))
-                        if prepared.get("compact_receipt"):
+                        if canonical:
+                            record.update(canonical_storage_bytes=prepared.get("canonical_storage_bytes", 0),
+                                retired_original_bytes=prepared.get("retired_original_bytes", 0),
+                                acquired_original_peak_bytes=prepared.get("acquired_original_peak_bytes", 0))
+                            if prepared.get("canonical_receipt"):
+                                record["canonical_receipt"] = prepared["canonical_receipt"]
+                        elif prepared.get("compact_receipt"):
                             record["compact_receipt"] = prepared["compact_receipt"]
                     _frozen(record_path, record)
                 reserved_bytes += part_bytes
@@ -601,6 +663,11 @@ def prepare_automatic_sources(project, workspace, *, generic_hours, korean_hours
                     retired_archive_bytes += record.get("retired_archive_bytes", 0)
                     temporary_archive_peak_bytes = max(temporary_archive_peak_bytes,
                         record.get("temporary_archive_peak_bytes", 0))
+                if canonical:
+                    canonical_storage_bytes += record.get("canonical_storage_bytes", 0)
+                    retired_original_bytes += record.get("retired_original_bytes", 0)
+                    acquired_original_peak_bytes = max(acquired_original_peak_bytes,
+                        record.get("acquired_original_peak_bytes", 0))
                 if reserved_bytes > requested["limits"]["max_download_bytes"]:
                     raise ValueError("Persisted automatic sources exceed their frozen byte budget")
                 if source_storage_bytes + space["minimum_known_bytes"] > requested["limits"]["max_workspace_bytes"]:
@@ -633,7 +700,7 @@ def prepare_automatic_sources(project, workspace, *, generic_hours, korean_hours
                 if hours > 0:
                     sources.append(source)
                 actual[component] += hours
-                seen_hashes.update(row["sha256"] for row in rows)
+                seen_hashes.update(row.get("original_source_sha256", row["sha256"]) for row in rows)
                 seen_sources.update(row["canonical_source_id"] for row in rows)
                 seen_tracks.update(int(row["track_id"]) for row in rows if row.get("track_id") is not None)
                 write_json(state / "progress.json", {"component_actual_hours": actual,
@@ -654,5 +721,9 @@ def prepare_automatic_sources(project, workspace, *, generic_hours, korean_hours
         if compact:
             result.update(storage_policy=policy["storage_policy"], retired_archive_bytes=retired_archive_bytes,
                           temporary_archive_peak_bytes=temporary_archive_peak_bytes)
+        if canonical:
+            result.update(canonical_storage_bytes=canonical_storage_bytes,
+                retired_original_bytes=retired_original_bytes,
+                acquired_original_peak_bytes=acquired_original_peak_bytes)
         write_json(state / "result.json", result)
         return result

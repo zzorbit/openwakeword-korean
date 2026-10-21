@@ -471,6 +471,65 @@ function commercialRecipeV3() {
     assert.equal(note.includes("원본 제외 최소"), false);
     assert.match(note, /실제 용량은 선정 후 확인합니다/);
   });
+  await test("canonical FLAC storage shows a WAV reference budget without inventing a compression ratio or a minimum", async () => {
+    const recipe = commercialRecipeV3();
+    Object.assign(recipe, { originals: 100000, rounds: 5, material_acquisition_policy: "automatic_v3",
+      automatic_source_plan: { version: 3, enabled: true, components: recipe.training_negative_plan.components.map(item => ({ ...item,
+        provider: { mixed: "audioset_unbalanced", multilingual: "mls", korean_web: "yodas2" }[item.id] || item.sources[0].id })) },
+      automatic_space_plan: { base_archive_bytes: 1000, base_working_bytes: 2000, future_buffer_bytes: 3000,
+        transient_source_working_bytes: 8 * 1024 ** 3, transient_source_bytes: 125000000000,
+        transient_archive_bytes: 0, canonical_flac_estimated_bytes: null, estimated_retained_source_bytes: 0 } });
+    const before = JSON.stringify(recipe);
+    const b = browser({ recipeList: [recipe], initialState: { projects: [], system: { free_bytes: 10 ** 12 } } }); await flush();
+    const estimate = b.helpers.storageEstimate(recipe), note = b.elements.get("source-plan-note").textContent;
+    assert.equal(b.helpers.minimumStorage(recipe), null);
+    assert.equal(estimate.basis, "wav_reference");
+    assert.equal(estimate.retained, 0);
+    assert.equal(estimate.reference, 1152000000000);
+    assert.equal(estimate.known, 113664000000);
+    assert.equal(estimate.transient, 125000000000);
+    assert.equal(estimate.total, 1390664006000);
+    assert.match(note, /WAV 기준 참고 예산 .*임시/);
+    assert.match(note, /무손실 FLAC.*실제 용량은 변환 후/);
+    assert.match(note, /여유가 참고 예산보다 적습니다/);
+    assert.match(note, /다운로드량은 같으며 원본 재처리 시 다시 받습니다/);
+    assert.equal(note.includes("최소"), false);
+    assert.equal(note.includes("예상 필요 공간"), false);
+    const half = b.helpers.storageEstimate(recipe, { genericHours: 3500, koreanHours: 1500, originals: 1000, rounds: 1 });
+    assert.equal(half.reference, 576000000000);
+    assert.equal(half.transient, 62500000000);
+    for (const [id, value] of [["adv-generic", "3500"], ["adv-korean", "1500"], ["adv-originals", "1000"], ["adv-rounds", "1"]]) {
+      b.elements.get(id).value = value; b.elements.get(id).handlers.input();
+    }
+    assert.ok(b.elements.get("source-plan-note").textContent.includes(b.helpers.bytes(half.total)));
+    assert.equal(JSON.stringify(recipe), before);
+    assert.equal(b.helpers.storageEstimate({ ...recipe, automatic_space_plan: { ...recipe.automatic_space_plan, transient_source_working_bytes: undefined } }), null);
+  });
+  await test("canonical trial keeps source working space and automatic YODAS coverage", async () => {
+    const recipe = commonRecipe({ id: "trial", korean_hours: 2000 / 3, material_acquisition_policy: "automatic_v3",
+      automatic_source_plan: { version: 3, enabled: true, components: [{ id: "yodas2", provider: "yodas2", pool: "korean_negative", target_hours: 2000 / 3 }] },
+      automatic_space_plan: { base_archive_bytes: 1000, base_working_bytes: 2000, future_buffer_bytes: 3000,
+        transient_source_working_bytes: 8 * 1024 ** 3, transient_source_bytes: 8 * 1024 ** 3, transient_archive_bytes: 0 } });
+    recipe.assets = recipe.assets.filter(item => item.id !== "zeroth");
+    const b = browser({ recipeList: [recipe] }); await flush();
+    assert.equal(b.helpers.storageEstimate(recipe).transient, 8 * 1024 ** 3);
+    assert.match(textOf(material(b.elements.get("source-preview").children[0], "한국어 비호출 자료")), /YODAS2 한국어.*목표량 자동 선정/);
+    assert.match(b.elements.get("source-plan-note").textContent, /WAV 기준 참고 예산/);
+  });
+  await test("canonical storage progress reports measured FLAC bytes separately and leaves unknown sizes unknown", async () => {
+    const project = { id: "bora", wakeword: "보라야", status: "running", training_materials: {
+      targets: { generic_negative: 7000, korean_negative: 3000 },
+      storage: { storage_policy: "canonical_flac_only_v1", canonical_storage_bytes: 1024 ** 3, source_storage_bytes: 99 * 1024 ** 3 }
+    } };
+    const b = browser({ initialState: { projects: [project] } }); await flush();
+    const text = () => textOf(b.elements.get("training-material-coverage-list"));
+    assert.match(text(), /학습용 FLAC 실제 보관량: 1 GiB/);
+    assert.equal(text().includes("99 GiB"), false);
+    project.training_materials.storage.canonical_storage_bytes = null; await b.tick();
+    assert.equal(text().includes("FLAC 실제 보관량"), false);
+    project.training_materials.storage.canonical_storage_bytes = 0; await b.tick();
+    assert.match(text(), /FLAC 실제 보관량: 0 B/);
+  });
   await test("training source coverage separates targets, measured candidates, admission and nominal legacy features", async () => {
     const project = { id: "bora", wakeword: "보라야", status: "running", training_materials: {
       targets: { generic_negative: 7000, korean_negative: 3000 }, candidate: { generic_negative: 24.5, korean_negative: 0 }, admitted: null, generic_publisher_nominal_hours: null

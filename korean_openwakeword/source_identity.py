@@ -27,6 +27,8 @@ def partition_keys(row):
     for key in ("original_sha256", "normalized_pcm_sha256"):
         if row.get(key):
             yield ("sha256" if key == "original_sha256" else "pcm"), row[key]
+    if row.get("logical_audio_sha256"):
+        yield "sha256", row["logical_audio_sha256"]
     for field, kind in (("component_source_ids", "source"),
                         ("component_recording_ids", "source"),
                         ("component_sha256", "sha256"),
@@ -48,7 +50,7 @@ def partition_keys(row):
 def component_lineage(row, role):
     """Copy declared source facts; do not invent speakers, rooms or artists."""
     keys = ("canonical_source_id", "source_id", "canonical_recording_id", "parent_source_id",
-            "sha256", "original_sha256", "normalized_pcm_sha256", "normalized_frames",
+            "sha256", "original_sha256", "logical_audio_sha256", "normalized_pcm_sha256", "normalized_frames",
             "voice_family_id", "canonical_speaker_id", "canonical_speaker_ids",
             "canonical_artist_id", "canonical_artist_ids", "canonical_room_id", "canonical_book_id",
             "provenance", "human_reference_used", "source_url", "original_source_url", "license",

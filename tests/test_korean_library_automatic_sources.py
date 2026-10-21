@@ -95,6 +95,125 @@ def test_compact_storage_forecast_keeps_identical_data_targets_and_known_payload
     assert current["estimated_original_archive_bytes"] == current["estimated_retained_source_bytes"]
 
 
+def test_canonical_forecast_separates_feature_minimum_pcm_reference_and_real_peak():
+    config = {"targets": {"positive_originals": 100000}, "augmentation_rounds": 5}
+    previous = module.automatic_storage_plan(config, material_acquisition_policy="automatic_v2")
+    current = module.automatic_storage_plan(config, material_acquisition_policy="automatic_v3")
+    assert current["storage_policy"] == "canonical_flac_only_v1"
+    assert current["normalized_pcm16_bytes"] == previous["normalized_pcm16_bytes"] == 1_152_000_000_000
+    assert current["minimum_known_bytes"] == current["negative_feature_payload_bytes"] + current["positive_feature_payload_bytes"]
+    assert current["canonical_flac_estimated_bytes"] is None
+    assert current["estimated_retained_source_bytes"] == 0
+    assert current["eliminated_retained_original_forecast_bytes"] == previous["estimated_retained_source_bytes"]
+    assert current["estimated_download_bytes"] == previous["estimated_download_bytes"]
+    assert current["transient_source_bytes"] == 125_000_000_000
+    assert current["transient_source_bytes"] > previous["transient_archive_bytes"]
+    assert current["estimated_total_bytes"] == (current["minimum_known_bytes"]
+        + current["normalized_pcm16_bytes"] + current["future_buffer_bytes"] + current["transient_source_bytes"])
+
+
+def test_canonical_dedup_uses_raw_identity_and_raw_header_duration(tmp_path):
+    import numpy as np
+    import soundfile as sf
+    directory = tmp_path / "canonical"
+    directory.mkdir()
+    rows = []
+    for number in range(2):
+        file = directory / f"{number}.flac"
+        sf.write(file, np.zeros(16000, dtype=np.int16), 16000, format="FLAC", subtype="PCM_16")
+        rows.append({"path": file.name, "sha256": digest(file),
+            "original_source_sha256": str(number) * 64,
+            "canonical_source_id": f"fixture:{number}",
+            "canonical_audio": {"original_info": {"input_frames": 44099,
+                "input_sample_rate": 44100, "input_channels": 1}}})
+    assert rows[0]["sha256"] == rows[1]["sha256"]
+    selected = module._validate_rows({"directory": str(directory)}, rows,
+        tmp_path / "selected", set(), set())
+    assert len(selected) == 2
+    assert all(row["duration_s"] == 44099 / 44100 for row in selected)
+    assert not module._validate_rows({"directory": str(directory)}, rows,
+        tmp_path / "selected_again", {row["original_source_sha256"] for row in rows}, set())
+
+
+@pytest.mark.parametrize("qualify", [False, True])
+def test_v3_backend_acquisition_canonical_selection_and_resume(tmp_path, monkeypatch, qualify):
+    import numpy as np
+    import soundfile as sf
+    root, workspace = tmp_path / "project", tmp_path / "workspace"
+    root.mkdir()
+    config = {"wakeword": "보라야", "project_id": "bora",
+              "targets": {"positive_originals": 0}, "augmentation_rounds": 1}
+    if qualify:
+        from korean_openwakeword.project import create_project
+        from korean_openwakeword.common import write_json
+        project = create_project(root, "보라야", "bora", positive_originals=1000,
+            augmentation_rounds=1, updates=10000, generic_hours=2000, korean_hours=2 / 3600)
+        config = read_json(project)
+        config["audio_storage_policy"] = "canonical_flac_only_v1"
+        write_json(project, config)
+    monkeypatch.setattr(module, "load_project", lambda path: (root, config))
+    monkeypatch.setattr(module.shutil, "disk_usage", lambda path: SimpleNamespace(free=20 * 1024**3))
+    class CanonicalBackend(module.PublicSourceBackend):
+        acquisitions = 0
+        def inventory(self, component):
+            return [{"component": component, "key": "fixture", "archive_bytes": 1000}]
+        def _prepare(self, candidate, directory, **kwargs):
+            self.acquisitions += 1
+            directory = Path(directory)
+            raw = directory / "raw"
+            raw.mkdir(parents=True)
+            original = raw / "speech.wav"
+            sf.write(original, np.random.default_rng(8).normal(0, .03, 44100 * 2), 44100, subtype="PCM_16")
+            self.original = original
+            self.original_sha = digest(original)
+            return {"source": {"directory": str(raw), "adapter": "manifest"},
+                "rows": [{"path": original.name, "sha256": self.original_sha,
+                          "canonical_source_id": "fixture:speech", "split": "train",
+                          "dataset_id": "procedural_fixture", "source_url": "https://example.test/speech",
+                          "license": "test-fixture", "category": "competing_speech",
+                          "category_basis": "explicit test fixture", "language": "ko", "speech": True}],
+                "reserved_download_bytes": original.stat().st_size,
+                "original_storage_bytes": original.stat().st_size, "receipts": [], "artifacts": []}
+    backend = CanonicalBackend(workspace / "shared/automatic_sources_v3", storage_policy="canonical_flac_only_v1")
+    kwargs = dict(preset="test", generic_hours=2000, korean_hours=2 / 3600,
+                  backend=backend, material_acquisition_policy="automatic_v3")
+    if qualify:
+        from korean_openwakeword.preparation import prepare_public_audio
+        def qualify_source(source):
+            return prepare_public_audio(root / "project.json", input_directory=source["directory"],
+                output=root / "prepared", source_index=source["source_index"],
+                target_hours=source["target_hours"], validation_fraction=source["validation_fraction"])
+        kwargs["qualify_source"] = qualify_source
+    first = module.prepare_automatic_sources(root / "project.json", workspace, **kwargs)
+    request = read_json(first["plan"]["request"]["path"])
+    assert request["limits"]["max_download_bytes"] == 4 * 1024**4
+    assert request["limits"]["max_download_bytes"] > request["limits"]["max_workspace_bytes"]
+    source = first["sources"][0]
+    row = module.read_rows(source["source_index"])[0]
+    assert row["path"].endswith(".wav.flac")
+    assert row["original_source_sha256"] == backend.original_sha
+    assert not backend.original.exists()
+    assert first["canonical_storage_bytes"] > 0 and first["retired_original_bytes"] > 0
+    assert first["component_actual_hours"] == {"yodas2": 2 / 3600}
+    if qualify:
+        prepared = source["prepared"]
+        admitted_candidates = module.read_rows(prepared["artifacts"]["source_manifest"]["path"])
+        assert len(admitted_candidates) == 1
+        candidate = admitted_candidates[0]
+        assert candidate["path"].endswith(".flac")
+        assert candidate["original_sha256"] == backend.original_sha
+        assert candidate["sample_id"] == "public_" + module.identity(["fixture:speech", backend.original_sha])[:24]
+        assert candidate["logical_audio_sha256"] == row["logical_audio_sha256"]
+        assert not list((root / "prepared/audio").glob("*"))
+    repeated = module.prepare_automatic_sources(root / "project.json", workspace, **kwargs)
+    assert backend.acquisitions == 1
+    assert repeated["component_actual_hours"] == first["component_actual_hours"]
+    assert repeated["source_storage_bytes"] == first["source_storage_bytes"]
+    (Path(source["directory"]) / row["path"]).write_bytes(b"changed")
+    with pytest.raises(ValueError):
+        module.prepare_automatic_sources(root / "project.json", workspace, **kwargs)
+
+
 def test_compact_policy_uses_separate_namespace_and_same_source_selection(setup):
     old_backend = Backend()
     old = supply(setup, old_backend)
