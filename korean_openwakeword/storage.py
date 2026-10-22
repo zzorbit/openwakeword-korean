@@ -85,8 +85,23 @@ complete pinned local snapshot keeps all sub-loaders out of the user cache.
     if not revision:
         raise ValueError("Remote TTS model needs a pinned revision")
     from huggingface_hub import snapshot_download
+    cache = storage_paths(project_root)["hf_hub"]
+    _prepare_hub_cache(model_path, cache)
     return snapshot_download(repo_id=model_path, revision=revision,
-        cache_dir=str(storage_paths(project_root)["hf_hub"]))
+        cache_dir=str(cache))
+
+
+def _prepare_hub_cache(repo_id, cache):
+    """Finish HF's link-capability probe before its parallel file workers.
+
+    HF 0.36 temporarily caches True before testing the filesystem. Another
+    snapshot worker can observe that provisional value and attempt a Windows
+    symlink without privileges. Probe the exact repository directory first;
+    HF then uses its normal move/copy fallback when links are unsupported.
+    """
+    from huggingface_hub.file_download import are_symlinks_supported, repo_folder_name
+    with _LOCK:
+        are_symlinks_supported(str(Path(cache) / repo_folder_name(repo_id=repo_id, repo_type="model")))
 
 
 def describe_storage(project):
