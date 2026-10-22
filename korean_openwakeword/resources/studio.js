@@ -3,7 +3,7 @@
   const $ = id => document.getElementById(id);
   const names = { check: "동작 확인용", trial: "시험 모델용", production: "상용 모델용" };
   const steps = [
-    ["data", "자료 준비"], ["references", "참조 음색"], ["pilot", "호출어 확인"],
+    ["data", "자료 준비"], ["references", "합성 목소리"], ["pilot", "호출어 확인"],
     ["generate", "음성 생성"], ["features", "증강·특징 추출"], ["train", "모델 학습"],
     ["evaluate", "성능 평가"], ["test", "결과·시험"]
   ];
@@ -609,8 +609,9 @@
     $("review-section").hidden = !show;
     if (!show) { if (reviewIdentity) frameSource($("review-frame"), ""); reviewIdentity = ""; return; }
     const identity = project.id + ":" + (review.queue_id || review.id || url);
-    $("review-title").textContent = review.title || "오디오 검수";
-    $("review-description").textContent = review.description || "끝까지 들으면 자동으로 보존됩니다. 문제가 있는 항목만 바꾼 뒤 검수 완료·저장을 누르세요.";
+    const references = review.queue_id === "references";
+    $("review-title").textContent = references ? "합성 목소리 확인" : review.title || "오디오 검수";
+    $("review-description").textContent = references ? "목소리와 음질을 확인하세요. 호출어 발음은 다음 단계에서 확인합니다." : review.description || "끝까지 들으면 자동으로 보존됩니다. 문제가 있는 항목만 바꾼 뒤 검수 완료·저장을 누르세요.";
     if (reviewIdentity !== identity) { frameSource($("review-frame"), url); reviewIdentity = identity; }
   }
   function renderInput(project) {
@@ -699,7 +700,9 @@
     renderStages(project);
     const stageLabel = project.stage && typeof project.stage === "object" ? project.stage.label : steps.find(([id]) => id === project.stage)?.[1];
     $("current-category").textContent = waiting ? "사용자 확인 대기" : complete ? "완료" : "현재 작업";
-    $("current-title").textContent = project.stage_label || project.title || stageLabel || (complete ? "학습과 평가를 마쳤습니다" : waiting ? "안내를 확인해주세요" : "시작할 준비가 되었습니다");
+    const stageId = typeof project.stage === "object" ? project.stage?.id : project.stage;
+    const voiceTitle = { references: "합성 목소리 만들기", references_review: "합성 목소리 확인" }[stageId];
+    $("current-title").textContent = voiceTitle || project.stage_label || project.title || stageLabel || (complete ? "학습과 평가를 마쳤습니다" : waiting ? "안내를 확인해주세요" : "시작할 준비가 되었습니다");
     $("current-description").textContent = project.next_action || project.description || (waiting ? "아래에서 필요한 확인을 마치면 이어서 진행합니다." : complete ? "아래에서 결과를 확인하고 호출어를 시험할 수 있습니다." : running ? "진행 상태를 자동으로 갱신합니다." : "시작하면 준비된 작업부터 순서대로 진행합니다.");
     $("start").hidden = running || complete || waiting || project.status === "paused" || project.status === "failed" || project.status === "error";
     $("resume").hidden = running || complete || waiting || !["paused", "failed", "error", "interrupted"].includes(project.status);

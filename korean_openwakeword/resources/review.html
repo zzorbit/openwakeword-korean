@@ -14,14 +14,28 @@ option{background:var(--control);color:var(--fg)}a{color:var(--blue)}
 audio{width:100%;margin:15px 0}li{margin:8px 0}.buttons{display:flex;flex-wrap:wrap}#state{font-weight:700;color:var(--blue)}
 hr{border:0;border-top:1px solid var(--border);margin:22px 0}
 </style>
-<main><h1>오디오 검수</h1><p id="purpose"></p><ul id="criteria"><li><b>보존:</b> 기대 문장이 명확하고, 다른 말·문제 소리가 없습니다.</li><li><b>폐기 / 재검수:</b> 발음이 틀리거나 다른 말이 들리거나 판단이 어렵습니다.</li></ul><p>끝까지 들으면 자동으로 보존됩니다. 문제가 있는 번호만 바꾸세요.</p>
+<main><h1 id="review-heading">오디오 검수</h1><p id="purpose"></p><ul id="criteria"><li><b>보존:</b> 기대 문장이 명확하고, 다른 말·문제 소리가 없습니다.</li><li><b>폐기 / 재검수:</b> 발음이 틀리거나 다른 말이 들리거나 판단이 어렵습니다.</li></ul><p>끝까지 들으면 자동으로 보존됩니다. 문제가 있는 번호만 바꾸세요.</p>
 <div class="buttons"><button id="start">연속 듣기 시작</button><button id="pause">일시정지</button><button id="keep">보존</button><button id="discard">폐기</button><button id="review">재검수</button></div>
 <h2 id="title"></h2><p id="expected"></p><p id="instruction"></p><audio id="audio" controls></audio><p id="state"></p><div class="buttons"><button id="prev">이전</button><button id="next">다음</button><select id="items"></select></div>
 <hr><label id="policy" hidden style="line-height:1.8"><input id="policy-approved" type="checkbox"> <span id="policy-text"></span></label><p>결과는 프로젝트에 직접 저장됩니다. 복사·붙여넣기는 필요 없습니다.</p><button id="save">검수 완료 · 저장</button><p id="saved" role="status"></p></main>
 <script>
-"use strict";let data,index=0,continuous=false,decisions={};const $=x=>document.getElementById(x),audio=$("audio");
-fetch('/queue').then(r=>r.json()).then(d=>{data=d;$("purpose").textContent=d.purpose;if(d.policy_review){$("policy").hidden=false;$("policy-text").textContent=d.policy_text;$("criteria").innerHTML='<li><b>보존:</b> 각 음원 아래 안내에 맞고 소리가 정상입니다.</li><li><b>폐기 / 재검수:</b> 안내와 다르거나 소리가 깨지거나 판단이 어렵습니다.</li>';}d.items.forEach((r,i)=>{const o=document.createElement('option');o.value=i;o.textContent=`${i+1} · ${r.group||r.id}`;$("items").append(o);});try{decisions=JSON.parse(localStorage.getItem('koww:'+d.queue_sha256)||'{}');}catch(e){}show();}).catch(e=>{$("saved").textContent='목록을 불러오지 못했습니다: '+e.message;});
-function key(){return 'koww:'+data.queue_sha256;}function remember(){localStorage.setItem(key(),JSON.stringify(decisions));}function show(){const r=data.items[index];$("title").textContent=`${index+1} / ${data.items.length} · ${r.group||r.id}`;$("expected").textContent=(r.group?'확인할 소리: ':'기대 문장: ')+r.text;$("instruction").textContent=r.instruction||'';audio.src=r.audio;$("items").value=index;$("state").textContent=decisions[r.id]?.decision||'아직 듣지 않음';}
+"use strict";let data,index=0,continuous=false,decisions={},referenceReview=false;const $=x=>document.getElementById(x),audio=$("audio");
+fetch('/queue').then(r=>r.json()).then(d=>{
+  data=d;
+  referenceReview=d.kind==='references'||new URLSearchParams(location.search).get('queue')==='references';
+  $("purpose").textContent=d.purpose;
+  if(referenceReview){
+    $("review-heading").textContent='합성 목소리 확인';
+    $("purpose").textContent=`이 목소리로 ‘${d.wakeword}’를 생성합니다. 아래 문장은 목소리를 재현하기 위한 샘플이며, 호출어 학습 음원으로 쓰지 않습니다.`;
+    $("criteria").innerHTML='<li><b>보존:</b> 샘플 문장이 명확하고 목소리가 자연스럽습니다.</li><li><b>폐기 / 재검수:</b> 말이 심하게 뭉개지거나, 문장에 없는 말이 나오거나, 소리가 깨집니다.</li>';
+  }else if(d.policy_review){
+    $("policy").hidden=false;$("policy-text").textContent=d.policy_text;$("criteria").innerHTML='<li><b>보존:</b> 각 음원 아래 안내에 맞고 소리가 정상입니다.</li><li><b>폐기 / 재검수:</b> 안내와 다르거나 소리가 깨지거나 판단이 어렵습니다.</li>';
+  }
+  d.items.forEach((r,i)=>{const o=document.createElement('option');o.value=i;o.textContent=`${i+1} · ${r.group||r.id}`;$("items").append(o);});
+  try{decisions=JSON.parse(localStorage.getItem('koww:'+d.queue_sha256)||'{}');}catch(e){}
+  show();
+}).catch(e=>{$("saved").textContent='목록을 불러오지 못했습니다: '+e.message;});
+function key(){return 'koww:'+data.queue_sha256;}function remember(){localStorage.setItem(key(),JSON.stringify(decisions));}function show(){const r=data.items[index];$("title").textContent=`${index+1} / ${data.items.length} · ${r.group||r.id}`;$("expected").textContent=(referenceReview?'샘플 문장: ':r.group?'확인할 소리: ':'기대 문장: ')+r.text;$("instruction").textContent=r.instruction||'';audio.src=r.audio;$("items").value=index;$("state").textContent=decisions[r.id]?.decision||'아직 듣지 않음';}
 function choose(decision){const id=data.items[index].id;decisions[id]={decision,listened:decisions[id]?.listened||false};remember();$("state").textContent=decision;}
 async function play(){show();try{await audio.play();}catch(e){continuous=false;$("state").textContent='재생 실패: '+e.message;}}
 audio.onended=()=>{const id=data.items[index].id;decisions[id]={decision:decisions[id]?.decision||'keep',listened:true};remember();$("state").textContent='청취 완료 · '+decisions[id].decision;if(continuous&&index+1<data.items.length){index++;play();}else if(continuous){continuous=false;$("state").textContent='전체 청취 완료. 검수 완료 · 저장을 누르세요.';}};

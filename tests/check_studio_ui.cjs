@@ -891,6 +891,18 @@ function storageBudgetRecipe(overrides = {}) {
     project.status = "running"; await b.tick();
     assert.equal(b.elements.get("review-section").hidden, true); assert.equal(b.elements.get("review-frame").getAttribute("src"), null);
   });
+  await test("synthetic voice stages explain voice checking without changing the saved workflow or iframe", async () => {
+    const project = { id: "bora", wakeword: "보라야", status: "waiting_review", stage: { id: "references_review", label: "합성 음색 듣기" }, stage_label: "합성 음색 듣기", review: { queue_id: "references", title: "음원 확인", url: "/review/?project=bora&queue=references" } };
+    const b = browser({ initialState: { projects: [project] } }); await flush();
+    assert.equal(b.elements.get("current-title").textContent, "합성 목소리 확인");
+    assert.equal(b.elements.get("review-title").textContent, "합성 목소리 확인");
+    assert.match(b.elements.get("review-description").textContent, /호출어 발음은 다음 단계/);
+    assert.match(textOf(b.elements.get("stages")), /합성 목소리/);
+    assert.equal(project.stage_label, "합성 음색 듣기");
+    await b.tick(); assert.equal(b.elements.get("review-frame").srcWrites, 1);
+    project.stage = { id: "references", label: "학습 · 평가용 합성 음색 생성" }; project.status = "running";
+    await b.tick(); assert.equal(b.elements.get("current-title").textContent, "합성 목소리 만들기");
+  });
   await test("human input is explicit; polling does not overwrite the text being edited", async () => {
     const project = { id: "bora", wakeword: "보라야", status: "waiting_input", stage: "pilot", input: { kind: "hard_phrases", phrases: ["돌아와"] } };
     const b = browser({ initialState: { projects: [project] } }); await flush();
