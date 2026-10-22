@@ -1,5 +1,6 @@
 """Bulk TTS bookkeeping preserves accepted PCM and deterministic retries."""
 from collections import Counter
+from pathlib import Path
 import random
 import shutil
 
@@ -223,3 +224,48 @@ def test_reference_journal_also_requires_its_original_contract(tmp_path, monkeyp
         tts.generate_references(project, limit=1)
     assert queue.read_bytes() == before
     assert not (directory / "contract.json").exists()
+
+
+@pytest.mark.parametrize("choice", ["default", "custom", "legacy"])
+def test_reference_sentence_matches_generation_contract_and_review_without_rewriting_config(tmp_path, monkeypatch, choice):
+    from korean_openwakeword.project import DEFAULT_VOICE_SAMPLE_TEXT, load_project
+    monkeypatch.setattr(tts, "_seed", cpu_seed)
+    project = create_project(tmp_path / "word", "보라야", "bora")
+    config = read_json(project)
+    if choice == "legacy":
+        config["tts"].pop("reference_text")
+        expected = tts.REFERENCE_TEXT
+    elif choice == "custom":
+        config["tts"]["reference_text"] = expected = "반갑습니다. 오늘도 좋은 하루 보내세요."
+    else:
+        expected = DEFAULT_VOICE_SAMPLE_TEXT
+        assert config["tts"]["reference_text"] == "오늘은 창밖으로 따뜻한 햇살이 들어옵니다."
+    write_json(project, config)
+    before = project.read_bytes()
+    calls = []
+
+    class ReferenceFixture:
+        def generate_voice_design(self, **kwargs):
+            calls.append(kwargs["text"])
+            return [.1 * np.sin(np.arange(8000) / 20)], 16000
+
+    result = tts.generate_references(project, limit=1, model=ReferenceFixture())
+    row = read_rows(result["review_queue"])[0]
+    contract = read_json(project.parent / "data/references/train/contract.json")
+    assert calls == [expected] and row["text"] == contract["text"] == expected
+    assert project.read_bytes() == before
+    assert ("reference_text" in load_project(project)[1]["tts"]) == (choice != "legacy")
+    queue_before = Path(result["review_queue"]).read_bytes()
+    tts.generate_references(project, limit=1, model=ReferenceFixture())
+    assert calls == [expected] and Path(result["review_queue"]).read_bytes() == queue_before
+
+
+@pytest.mark.parametrize("text", [None, False, 123, "", " \n "])
+def test_reference_sentence_rejects_empty_or_nontext_settings(tmp_path, text):
+    from korean_openwakeword.project import load_project
+    project = create_project(tmp_path / "word", "보라야", "bora")
+    config = read_json(project)
+    config["tts"]["reference_text"] = text
+    write_json(project, config)
+    with pytest.raises(ValueError, match="reference_text"):
+        load_project(project)

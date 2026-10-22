@@ -16,6 +16,8 @@ from .common import append_row, digest, identity, now, read_json, read_rows, res
 from .project import load_project
 from .storage import project_storage, local_tts_snapshot, storage_environment
 
+# Legacy projects without an explicit sentence keep their original generation
+# input. New projects record the shorter default in tts.reference_text.
 REFERENCE_TEXT = "오늘은 창밖으로 따뜻한 햇살이 들어옵니다. 천천히 숨을 고르고 자연스러운 목소리로 한국어 문장을 읽습니다."
 STYLE_OPTIONS = (
     ("neutral", "natural relaxed speech"), ("friendly", "warm friendly calling"),
@@ -95,6 +97,7 @@ def _generation_journal(output, contract, filename, changed_message):
 @project_storage
 def generate_references(project, split="train", limit=None, model=None):
     root, config = load_project(project)
+    reference_text = config["tts"].get("reference_text", REFERENCE_TEXT)
     if split not in ("train", "validation", "final") or limit is not None and (type(limit) is not int or limit < 1):
         raise ValueError("Use a valid split and a positive reference limit")
     if split == "final" and not (root / "final_lock.json").exists():
@@ -105,7 +108,7 @@ def generate_references(project, split="train", limit=None, model=None):
     selected = families[:limit] if limit is not None else families
     output = root / "data" / "references" / split
     with writer_lock(output):
-        reference_contract = {"tts": config["tts"], "families": families, "text": REFERENCE_TEXT, "implementation_sha256": digest(__file__)}
+        reference_contract = {"tts": config["tts"], "families": families, "text": reference_text, "implementation_sha256": digest(__file__)}
         rows = _generation_journal(output, reference_contract, "references.jsonl",
                                    "Reference generation settings changed; version the bank")
         completed = {r["voice_family_id"]: r for r in rows}
@@ -119,7 +122,7 @@ def generate_references(project, split="train", limit=None, model=None):
                 continue
             seed = int(identity([config["tts"]["seed"], family["family_id"]])[:8], 16)
             _seed(seed)
-            wavs, rate = model.generate_voice_design(text=REFERENCE_TEXT, language="Korean",
+            wavs, rate = model.generate_voice_design(text=reference_text, language="Korean",
                 instruct=family["description"] + f" {family.get('style', 'neutral')} delivery, {family.get('speed', 'natural')} rate, {family.get('intonation', 'natural')} intonation, {family.get('vocal_effort', 'normal')} vocal effort. Projected means vocal style, not room echo or microphone distance. Say only the provided Korean text once. No extra speech, laughter or echo.",
                 **config["tts"]["generation"])
             samples = np.asarray(wavs[0], dtype=float)
@@ -129,7 +132,7 @@ def generate_references(project, split="train", limit=None, model=None):
             sf.write(path, samples, rate, subtype="FLOAT")
             row = {"sample_id": family["family_id"], "source_id": "qwen:" + family["family_id"],
                 "voice_family_id": family["family_id"], "split": split, "path": str(path.relative_to(root)),
-                "sha256": digest(path), "text": REFERENCE_TEXT, "provenance": "qwen_synthetic_reference",
+                "sha256": digest(path), "text": reference_text, "provenance": "qwen_synthetic_reference",
                 "human_reference_used": False, "status": "pending_review", "model": config["tts"]["design_model"],
                 "seed": seed, "description": family["description"], "style": family.get("style", "neutral"), "speed": family.get("speed", "natural"),
                 "intonation": family.get("intonation", "natural"), "vocal_effort": family.get("vocal_effort", "normal"), "call_length": "reference_style", "created_at": now(), "axes_scope": "requested reference delivery; confirm actual acoustics in the pilot"}

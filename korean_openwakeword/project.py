@@ -8,6 +8,7 @@ import math
 from .common import read_json, write_json, resolved
 
 BATCH = {"generic_negative": 768, "korean_negative": 256, "positive": 100, "hard_negative": 100}
+DEFAULT_VOICE_SAMPLE_TEXT = "오늘은 창밖으로 따뜻한 햇살이 들어옵니다."
 LEGACY_BATCH = {"generic_negative": 768, "korean_negative": 256, "positive": 50}
 SPLITS = ("train", "validation", "final")
 ADVANCED_TRAINING_KEYS = frozenset({
@@ -18,7 +19,11 @@ ADVANCED_TRAINING_KEYS = frozenset({
 
 
 def default_profile():
-    return read_json(files("korean_openwakeword") / "resources" / "default_profile.json")
+    profile = read_json(files("korean_openwakeword") / "resources" / "default_profile.json")
+    # New projects record the sentence explicitly. Do not modify the frozen
+    # resource or backfill existing configs: both can bind historical receipts.
+    profile["tts"].setdefault("reference_text", DEFAULT_VOICE_SAMPLE_TEXT)
+    return profile
 
 
 def training_batch(config):
@@ -149,6 +154,10 @@ def validate_project(config):
         raise ValueError("Seeds must be nonnegative integers")
     if config["tts"]["batch_size"] != 1:
         raise ValueError("Stable Qwen generator uses cached references and batch_size=1; qualify other batching separately")
+    if "reference_text" in config["tts"]:
+        text = config["tts"]["reference_text"]
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("tts.reference_text must be a nonempty sample sentence")
     if t["architecture"] not in ("cnn64", "cnn128", "mlp32", "mlp128", "mlp256"):
         raise ValueError("Supported stable architectures: cnn64/cnn128/mlp32/mlp128/mlp256")
     if t["optimizer"] not in ("Adam", "AdamW") or t["schedule"] not in ("constant", "cosine_with_2percent_warmup"):
