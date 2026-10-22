@@ -249,7 +249,11 @@
       if (!response.ok) throw new Error(body?.error?.message || body?.error || body?.message || `요청에 실패했습니다 (${response.status}).`);
       return body;
     } catch (error) {
-      if (error.name === "AbortError") throw new Error("서버 응답이 늦어지고 있습니다. 진행 상태를 다시 확인하세요. 같은 작업을 중복 실행하지 않습니다.");
+      if (error.name === "AbortError") {
+        const timeoutError = new Error("서버 응답이 늦어지고 있습니다. 진행 상태를 다시 확인하세요. 같은 작업을 중복 실행하지 않습니다.");
+        timeoutError.code = "request_timeout";
+        throw timeoutError;
+      }
       throw error;
     } finally { clearTimeout(timer); }
   }
@@ -741,8 +745,13 @@
       if (!newProject && !snapshot.projects.some(project => project.id === selectedId)) selectedId = snapshot.active_project_id || snapshot.projects[0]?.id || "";
       $("connection").hidden = true; render();
     } catch (error) {
+      const delayed = error.code === "request_timeout";
       $("connection").hidden = false;
-      $("connection").textContent = (receivedState
+      $("connection").className = "notice" + (delayed ? "" : " error");
+      $("connection").setAttribute("role", delayed ? "status" : "alert");
+      $("connection").textContent = delayed
+        ? "진행 상태 확인이 늦어지고 있습니다. 마지막으로 받은 상태를 표시하며 자동으로 다시 확인합니다."
+        : (receivedState
         ? "진행 상태를 화면에 표시하지 못했습니다. 페이지를 새로고침하세요. 저장된 작업은 사라지지 않습니다.\n"
         : "서버에 연결하지 못했습니다. 서버를 실행한 창이 열려 있는지 확인하세요. 저장된 작업은 사라지지 않습니다.\n") + error.message;
     } finally { refreshing = false; }

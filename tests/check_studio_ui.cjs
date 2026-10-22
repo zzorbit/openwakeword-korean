@@ -954,11 +954,42 @@ function storageBudgetRecipe(overrides = {}) {
     const b = browser({ initialState: { projects: [project] } }); await flush();
     b.state.fetchError = new Error("network failure"); await b.tick();
     assert.equal(b.elements.get("connection").hidden, false);
+    assert.equal(b.elements.get("connection").className, "notice error");
+    assert.equal(b.elements.get("connection").getAttribute("role"), "alert");
     assert.match(b.elements.get("connection").textContent, /서버에 연결하지 못했습니다/);
     assert.match(b.elements.get("connection").textContent, /network failure/);
     b.state.fetchError = null; await b.tick();
     assert.equal(b.elements.get("connection").hidden, true);
     assert.equal(b.elements.get("project-title").textContent, "‘보라야’");
+  });
+  await test("a timed-out state poll keeps the last project and iframe while automatic polling recovers", async () => {
+    const project = { id: "bora", wakeword: "보라야", status: "waiting_review", stage: "pilot", error: null,
+      progress: { done: 2, total: 24, unit: "files" },
+      review: { queue_id: "pilot1", url: "/review/?project=bora&queue=pilot1" } };
+    const b = browser({ initialState: { projects: [project], active_project_id: "bora" } }); await flush();
+    const title = b.elements.get("project-title").textContent;
+    const progress = b.elements.get("progress-label").textContent;
+    const frame = b.elements.get("review-frame"), source = frame.getAttribute("src"), writes = frame.srcWrites;
+    const aborted = new Error("The operation was aborted"); aborted.name = "AbortError";
+    b.state.fetchError = aborted; await b.tick(); await b.tick();
+    assert.equal(b.elements.get("connection").hidden, false);
+    assert.equal(b.elements.get("connection").className, "notice");
+    assert.equal(b.elements.get("connection").getAttribute("role"), "status");
+    assert.match(b.elements.get("connection").textContent, /진행 상태 확인이 늦어지고 있습니다/);
+    assert.match(b.elements.get("connection").textContent, /마지막으로 받은 상태.*자동으로 다시 확인/);
+    assert.doesNotMatch(b.elements.get("connection").textContent, /서버에 연결하지 못했습니다|서버를 실행한 창/);
+    assert.equal(b.elements.get("project").hidden, false);
+    assert.equal(b.elements.get("project-title").textContent, title);
+    assert.equal(b.elements.get("progress-label").textContent, progress);
+    assert.equal(b.elements.get("review-section").hidden, false);
+    assert.equal(frame.getAttribute("src"), source); assert.equal(frame.srcWrites, writes);
+    assert.equal(b.calls.some(call => call.options.method === "POST"), false);
+    b.state.fetchError = null; project.progress.done = 4; await b.tick();
+    assert.equal(b.elements.get("connection").hidden, true);
+    assert.equal(b.elements.get("project-title").textContent, title);
+    assert.notEqual(b.elements.get("progress-label").textContent, progress);
+    assert.equal(frame.getAttribute("src"), source); assert.equal(frame.srcWrites, writes);
+    assert.equal(b.calls.some(call => call.options.method === "POST"), false);
   });
   await test("render failures are screen errors rather than false server connection errors", async () => {
     const project = { id: "bora", wakeword: "보라야", status: "ready", stage: "data", error: null };
