@@ -28,11 +28,11 @@ function browser({ noBoot = false, initialState, recipeError = false, recipeOver
   const presets = recipeList || [{ id: "check", label: "동작 확인용", originals: 1000, rounds: 1, updates: 10000, sources: [{ name: "<img src=x onerror=bad()>", role: "비호출 자료", url: "javascript:alert(1)", bytes: 1024 }], ...recipeOverrides }, { id: "trial", originals: 20000, rounds: 3, updates: 20000 }];
   const fetch = async (url, options) => {
     calls.push({ url, options });
-    if (url === "/api/state") return json(state.value);
+    if (url === "/api/state") { if (state.fetchError) throw state.fetchError; return json(state.value); }
     if (url === "/api/recipes") return recipeError ? json({ error: "recipe failure" }, 500) : json({ presets });
     if (url === "/api/projects" && options.method === "POST") {
       const payload = JSON.parse(options.body);
-      const project = { id: "bora", wakeword: payload.wakeword, status: "ready", preset: payload.preset, stage: "data" };
+      const project = { id: "bora", wakeword: payload.wakeword, status: "ready", preset: payload.preset, stage: "data", error: null };
       state.value.projects.push(project); state.value.active_project_id = project.id;
       return json(project);
     }
@@ -879,6 +879,8 @@ function storageBudgetRecipe(overrides = {}) {
     assert.deepEqual(JSON.parse(mutations[0].options.body), { wakeword: "보라야", preset: "check" });
     assert.ok(mutations.every(call => call.options.headers["X-Koww-Token"] === "local-token"));
     assert.equal(b.elements.get("setup").hidden, true); assert.equal(b.elements.get("project").hidden, false);
+    assert.equal(b.elements.get("connection").hidden, true);
+    assert.equal(b.elements.get("project-error").hidden, true);
   });
   await test("state polling preserves an active review iframe; starting work hides and unloads it", async () => {
     const project = { id: "bora", wakeword: "보라야", status: "waiting_review", stage: "pilot", review: { queue_id: "pilot1", url: "/review/?project=bora&queue=pilot1" } };
@@ -908,13 +910,70 @@ function storageBudgetRecipe(overrides = {}) {
     assert.match(b.elements.get("eta").textContent, /측정한 뒤/);
   });
   await test("dependency setup asks for CPU/GPU without mislabeling it as source admission", async () => {
-    const project = { id: "bora", wakeword: "보라야", status: "waiting_input", stage: "frontend", input: { kind: "dependency_setup", recommended_backend: "cu128" } };
+    const project = { id: "bora", wakeword: "보라야", status: "waiting_input", stage: "frontend", error: null, input: { kind: "dependency_setup", recommended_backend: "cu128" } };
     const b = browser({ initialState: { projects: [project] } }); await flush();
+    assert.equal(b.elements.get("connection").hidden, true);
+    assert.equal(b.elements.get("project-error").hidden, true);
+    assert.equal(b.elements.get("input-section").hidden, false);
+    assert.equal(b.elements.get("input-form").hidden, false);
     assert.equal(b.elements.get("input-value").hidden, true); assert.equal(b.elements.get("input-value").required, false);
     assert.equal(b.elements.get("dependency-backend").hidden, false); assert.equal(b.elements.get("dependency-backend").value, "cu128");
     assert.equal(b.elements.get("input-submit").textContent, "선택한 도구 설치하고 계속");
     await b.submit("input-form"); const request = b.calls.find(call => call.url.endsWith("/input"));
     assert.deepEqual(JSON.parse(request.options.body), { dependency_backend: "cu128" });
+  });
+  await test("null and missing errors render normally while string and object errors remain visible", async () => {
+    const cases = [
+      { value: null, visible: false, text: "" },
+      { value: undefined, visible: false, text: "" },
+      { value: "설치 실패", visible: true, text: "설치 실패" },
+      { value: { message: "도구 설치 실패", code: "setup_failed" }, visible: true, text: "도구 설치 실패" },
+      { value: { code: "setup_failed" }, visible: true, text: '{"code":"setup_failed"}' },
+    ];
+    for (const entry of cases) {
+      const project = { id: "bora", wakeword: "보라야", status: "waiting_input", stage: "frontend", error: entry.value, input: { kind: "dependency_setup", recommended_backend: "cu128" } };
+      const b = browser({ initialState: { projects: [project] } }); await flush();
+      assert.equal(b.elements.get("connection").hidden, true, `error=${JSON.stringify(entry.value)}`);
+      assert.equal(b.elements.get("project-error").hidden, !entry.visible);
+      assert.equal(b.elements.get("project-error").textContent, entry.text);
+      assert.equal(b.elements.get("input-section").hidden, false);
+      assert.equal(b.elements.get("dependency-backend").value, "cu128");
+    }
+  });
+  await test("a null current stage does not prevent rendering dependency input", async () => {
+    const project = { id: "bora", wakeword: "보라야", status: "waiting_input", stage: null, error: null, stages: [{ id: "frontend", status: "pending" }], input: { kind: "dependency_setup", recommended_backend: "cu128" } };
+    const b = browser({ initialState: { projects: [project] } }); await flush();
+    assert.equal(b.elements.get("connection").hidden, true);
+    assert.equal(b.elements.get("project-title").textContent, "‘보라야’");
+    assert.ok(b.elements.get("stages").children.length > 0);
+    assert.equal(b.elements.get("input-section").hidden, false);
+    assert.equal(b.elements.get("dependency-backend").value, "cu128");
+  });
+  await test("fetch failures are connection errors and recover on the next successful poll", async () => {
+    const project = { id: "bora", wakeword: "보라야", status: "ready", stage: "data", error: null };
+    const b = browser({ initialState: { projects: [project] } }); await flush();
+    b.state.fetchError = new Error("network failure"); await b.tick();
+    assert.equal(b.elements.get("connection").hidden, false);
+    assert.match(b.elements.get("connection").textContent, /서버에 연결하지 못했습니다/);
+    assert.match(b.elements.get("connection").textContent, /network failure/);
+    b.state.fetchError = null; await b.tick();
+    assert.equal(b.elements.get("connection").hidden, true);
+    assert.equal(b.elements.get("project-title").textContent, "‘보라야’");
+  });
+  await test("render failures are screen errors rather than false server connection errors", async () => {
+    const project = { id: "bora", wakeword: "보라야", status: "ready", stage: "data", error: null };
+    const b = browser({ initialState: { projects: [project] } }); await flush();
+    const title = b.elements.get("project-title");
+    Object.defineProperty(title, "textContent", { configurable: true, set() { throw new Error("render failure"); } });
+    await b.tick();
+    assert.equal(b.elements.get("connection").hidden, false);
+    assert.match(b.elements.get("connection").textContent, /화면.*(?:표시|그리)/);
+    assert.match(b.elements.get("connection").textContent, /render failure/);
+    assert.doesNotMatch(b.elements.get("connection").textContent, /서버에 연결하지 못했습니다/);
+    Object.defineProperty(title, "textContent", { configurable: true, writable: true, value: "" });
+    await b.tick();
+    assert.equal(b.elements.get("connection").hidden, true);
+    assert.equal(title.textContent, "‘보라야’");
   });
   await test("diagnostic and generation policy holds never ask for unrelated admission paths", async () => {
     for (const kind of ["diagnostic", "generation_policy", "unknown"]) {

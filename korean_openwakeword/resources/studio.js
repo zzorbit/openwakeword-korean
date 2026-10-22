@@ -246,7 +246,7 @@
       const text = await response.text();
       let body;
       try { body = text ? JSON.parse(text) : {}; } catch { throw new Error(response.ok ? "서버 응답을 읽지 못했습니다." : `요청에 실패했습니다 (${response.status}).`); }
-      if (!response.ok) throw new Error(body.error?.message || body.error || body.message || `요청에 실패했습니다 (${response.status}).`);
+      if (!response.ok) throw new Error(body?.error?.message || body?.error || body?.message || `요청에 실패했습니다 (${response.status}).`);
       return body;
     } catch (error) {
       if (error.name === "AbortError") throw new Error("서버 응답이 늦어지고 있습니다. 진행 상태를 다시 확인하세요. 같은 작업을 중복 실행하지 않습니다.");
@@ -536,7 +536,7 @@
   }
   function renderStages(project) {
     const provided = Array.isArray(project.stages) ? project.stages : [];
-    const stageId = typeof project.stage === "object" ? project.stage.id : provided.find(item => item.id === project.stage || item.label === project.stage)?.id || project.stage;
+    const stageId = project.stage && typeof project.stage === "object" ? project.stage.id : provided.find(item => item.id === project.stage || item.label === project.stage)?.id || project.stage;
     const currentIndex = steps.findIndex(([id]) => stepGroups[id].includes(stageId));
     const complete = completeStatuses.has(project.status);
     replace($("stages"), steps.map(([id, label], index) => {
@@ -693,7 +693,7 @@
     $("project-status").textContent = statuses[project.status] || project.status_label || "상태 확인 중";
     $("project-status").className = "status-pill" + (complete ? " complete" : project.error ? " failed" : waiting ? " waiting" : running ? " running" : "");
     renderStages(project);
-    const stageLabel = typeof project.stage === "object" ? project.stage.label : steps.find(([id]) => id === project.stage)?.[1];
+    const stageLabel = project.stage && typeof project.stage === "object" ? project.stage.label : steps.find(([id]) => id === project.stage)?.[1];
     $("current-category").textContent = waiting ? "사용자 확인 대기" : complete ? "완료" : "현재 작업";
     $("current-title").textContent = project.stage_label || project.title || stageLabel || (complete ? "학습과 평가를 마쳤습니다" : waiting ? "안내를 확인해주세요" : "시작할 준비가 되었습니다");
     $("current-description").textContent = project.next_action || project.description || (waiting ? "아래에서 필요한 확인을 마치면 이어서 진행합니다." : complete ? "아래에서 결과를 확인하고 호출어를 시험할 수 있습니다." : running ? "진행 상태를 자동으로 갱신합니다." : "시작하면 준비된 작업부터 순서대로 진행합니다.");
@@ -714,7 +714,8 @@
     const currentElapsed = duration(project.current_stage_elapsed_seconds), elapsed = duration(project.elapsed_seconds), remaining = eta(project.eta_seconds);
     $("elapsed").textContent = currentElapsed ? `이 작업 경과 ${currentElapsed}${elapsed ? " · 전체 경과 " + elapsed : ""}` : elapsed ? `전체 경과 ${elapsed}` : "";
     $("eta").textContent = remaining ? `이 작업 예상 남은 시간 ${remaining}` : running ? "예상 시간: 처리 속도를 측정한 뒤 표시합니다" : "";
-    $("project-error").hidden = !project.error; $("project-error").textContent = typeof project.error === "object" ? project.error.message || JSON.stringify(project.error) : project.error || "";
+    $("project-error").hidden = !project.error;
+    $("project-error").textContent = project.error && typeof project.error === "object" ? project.error.message || JSON.stringify(project.error) : project.error || "";
     renderCounts(project); renderReview(project); renderInput(project); renderResultFrame(project);
     if (logProject !== project.id) { logProject = project.id; $("log").textContent = "작업 기록 보기를 열면 최신 기록을 불러옵니다."; if ($("log-details").open) loadLog(); }
   }
@@ -733,14 +734,17 @@
   async function refresh() {
     if (refreshing) return;
     refreshing = true;
+    let receivedState = false;
     try {
-      const state = await api("/api/state"); snapshot = state;
+      const state = await api("/api/state"); receivedState = true; snapshot = state;
       if (!Array.isArray(snapshot.projects)) snapshot.projects = [];
       if (!newProject && !snapshot.projects.some(project => project.id === selectedId)) selectedId = snapshot.active_project_id || snapshot.projects[0]?.id || "";
       $("connection").hidden = true; render();
     } catch (error) {
       $("connection").hidden = false;
-      $("connection").textContent = "서버에 연결하지 못했습니다. 서버를 실행한 창이 열려 있는지 확인하세요. 저장된 작업은 사라지지 않습니다.\n" + error.message;
+      $("connection").textContent = (receivedState
+        ? "진행 상태를 화면에 표시하지 못했습니다. 페이지를 새로고침하세요. 저장된 작업은 사라지지 않습니다.\n"
+        : "서버에 연결하지 못했습니다. 서버를 실행한 창이 열려 있는지 확인하세요. 저장된 작업은 사라지지 않습니다.\n") + error.message;
     } finally { refreshing = false; }
   }
   async function runAction(action) {
