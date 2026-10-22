@@ -543,6 +543,54 @@ def prepare_common_evaluation_materials(project, workspace, prepared, progress=N
     return {**receipt, "preparation": {"path": str(path), "sha256": digest(path)}, "resumed": False}
 
 
+def admit_fixed_evaluation(project, queue, prepared, library_evidence):
+    """Connect pinned, technically validated Development audio without claiming listening."""
+    from .material_policy import validate_library_policy_evidence
+    root, config = load_project(project)
+    if (root / "final_lock.json").exists():
+        raise ValueError("Final is frozen; evaluation inputs cannot change")
+    path = resolved(root, queue["preparation"])
+    receipt = read_json(path)
+    if (not _supported_preparation(receipt, config["wakeword"]) or receipt.get("recipe_version") != 6
+            or queue.get("evaluation_only") is not True or queue.get("pools") != []
+            or receipt.get("evaluation_source_scope") != "common_30h_only"):
+        raise ValueError("Library evaluation admission requires the fixed common corpus")
+    record = {"kind": "studio_evaluation_noise_admission_v6", "state": "accepted_for_evaluation",
+        "type": "library_fixed_catalog_technical_validation", "policy_id": "library_fixed_sources_v1",
+        "content_review": "library_fixed_sources_technical_validation", "wakeword": config["wakeword"],
+        "evaluation_only": True, "training_admitted": False, "intended_use": "held_out_development_noise",
+        "evaluation_source_scope": "common_30h_only", "human_answers": None,
+        "human_listening": False, "human_listened_count": 0,
+        "library_evidence": library_evidence,
+        "preparation": {"path": str(path), "sha256": digest(path)},
+        "source_manifest": receipt["artifacts"]["source_manifest"],
+        "individual_listening_claimed": False, "Final_accessed": False}
+    validate_library_policy_evidence(root, record, role="evaluation")
+    rows = read_rows(bound_file(root, receipt["artifacts"]["source_manifest"]))
+    assert_common_source_scope(rows)
+    if not rows:
+        raise ValueError("No technically usable fixed evaluation sources")
+    for row in rows:
+        bound_file(root, row)
+    audit = assert_held_out(project, [r for r in rows if r["category"] != "rir"], prepared)
+    record.update(accepted_source_sha256=sorted({row["sha256"] for row in rows}),
+        kept_count=len(rows), discarded_count=0, split_audit_scope=audit["scope"],
+        category_counts=dict(Counter(row["category"] for row in rows)),
+        eval_type_counts=dict(Counter(row["eval_type"] for row in rows)))
+    destination = path.parent / "admissions" / ("library_fixed_" + identity(record) + ".json")
+    if destination.exists():
+        if read_json(destination) != record:
+            raise ValueError("Immutable library evaluation admission changed")
+    else:
+        write_json(destination, record)
+    binding = {"path": str(destination), "sha256": digest(destination)}
+    return {"admission": binding, "rows": [{**row, "evaluation_admission": binding,
+        "evaluation_content_approved": True,
+        "evaluation_content_review_scope": {"scope": "library_fixed_catalog_technical_validation",
+                                             "human_listening": False, "evidence": library_evidence},
+        "individual_human_listening": False, "representative_human_listening": False} for row in rows]}
+
+
 def admit_evaluation_review(project, queue, answer, prepared):
     """Admit actual saved listening decisions exclusively for Development noise."""
     root, config = load_project(project)

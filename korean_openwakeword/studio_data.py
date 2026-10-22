@@ -1,8 +1,8 @@
 """Bounded, checksum-bound public-data recipes for the training studio.
 
-Downloads and technical preparation never imply that a person listened or that
-the material was admitted.  All user decisions pass through the existing
-representative-review admission code, including explicit whole-pool consent.
+Fixed public sources can be admitted by the pinned library policy after
+technical checks. Custom sources retain representative human review. Neither
+path invents human listening or changes the existing split and Final rules.
 """
 from __future__ import annotations
 
@@ -125,9 +125,11 @@ def _automatic_space_plan(preset, config=None, material_acquisition_policy="auto
 
 
 def material_recipe(preset="check", workspace=None, evaluation_policy=None, noise_material_policy=None,
-                    material_acquisition_policy=None, fma_acquisition_policy=None):
+                    material_acquisition_policy=None, fma_acquisition_policy=None, material_review_policy=None):
     """Preview known downloads and limits without accessing network or audio."""
     preset = _preset(preset)
+    if material_review_policy not in (None, "library_fixed_sources_v1"):
+        raise ValueError("Unsupported material review policy")
     if material_acquisition_policy not in (None, "automatic_v1", "automatic_v2", "automatic_v3"):
         raise ValueError("Unsupported material acquisition policy")
     if fma_acquisition_policy not in (None, "per_track_flac_prefetch_v1"):
@@ -236,6 +238,13 @@ def material_recipe(preset="check", workspace=None, evaluation_policy=None, nois
             result["audio_storage_policy"] = "canonical_flac_only_v1"
             result["limitations"].append(
                 "New public training inputs retain verified canonical FLAC. Only newly acquired backend-owned raw audio is retired after exact PCM verification; existing sources, archives, TTS and evaluation audio are preserved. PCM storage is a reference budget until real FLAC sizes are measured.")
+    if material_review_policy:
+        result.update(material_review_policy=material_review_policy, human_review_required=False,
+                      custom_material_human_review_required=True)
+        result["limitations"] = [text for text in result["limitations"] if not text.startswith((
+            "Downloads and technical QC", "Provider hours, technical usable hours"))]
+        result["limitations"].append(
+            "Fixed library sources are admitted after pinned provenance, integrity, technical QC and split checks; no user listening is recorded. Custom materials retain human review.")
     return result
 
 
@@ -746,7 +755,7 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
         shortages.append(f"Korean target {config['targets']['korean_hours']}h exceeds this bounded 1h preparation; add reviewed admissions")
     if any(not r["target_met"] for r in preparations):
         shortages.append("One or more source preparations did not reach the actual unique Train duration quota")
-    result = {"kind": "studio_material_preparation_v1", "project": str(project_path), "preset": _preset(preset),
+    result = {"kind": "studio_material_preparation_v1", "project": str(project_path), "workspace": str(workspace), "preset": _preset(preset),
               "noise_material_policy": recipe["noise_material_policy"],
               "state": "awaiting_human_review", "review_queues": queues, "preparations": preparations,
               "generic_feature_import": generic_import,
@@ -948,8 +957,19 @@ def _automatic_admission_coverage(root, prepared, receipts):
             "target_met": not shortages}
 
 
-def admit_materials(project_path, prepared, answers_by_preparation=None, *, admissions=()):
-    """Consume actual saved review answers and connect their exact admitted pools."""
+def material_review_queues(project, prepared, policy=None):
+    """Only non-library sources require repeat user listening decisions."""
+    if policy is None:
+        return list(prepared.get("review_queues", []))
+    if policy != "library_fixed_sources_v1":
+        raise ValueError("Unsupported material review policy")
+    from .material_policy import fixed_queue_evidence
+    return [queue for queue in prepared.get("review_queues", [])
+            if fixed_queue_evidence(project, prepared, queue) is None]
+
+
+def admit_materials(project_path, prepared, answers_by_preparation=None, *, admissions=(), material_review_policy=None):
+    """Connect exact pools using fixed-source evidence or actual human answers."""
     from .preparation import apply_prepared_review, connect_materials
     root, config = load_project(project_path)
     strict_common = prepared.get("recipe_version") == 6
@@ -962,26 +982,34 @@ def admit_materials(project_path, prepared, answers_by_preparation=None, *, admi
             raise ValueError("Existing evaluation/training inputs are frozen; use a new experiment for the unified common corpus")
     answers = answers_by_preparation or {}
     receipts, all_pools, evaluation_rows, evaluation_admissions = [], set(), [], []
+    if material_review_policy not in (None, "library_fixed_sources_v1"):
+        raise ValueError("Unsupported material review policy")
     for queue in prepared.get("review_queues", []):
         answer = answers.get(queue["preparation"], answers.get(queue["id"]))
-        if answer is None:
+        evidence = None
+        if answer is None and material_review_policy == "library_fixed_sources_v1":
+            from .material_policy import fixed_queue_evidence
+            evidence = fixed_queue_evidence(project_path, prepared, queue)
+        if answer is None and evidence is None:
             raise ValueError("Saved representative answers are required for " + queue["id"])
         if isinstance(answer, dict):
             answer = bound_file(root, answer)
         if queue.get("evaluation_only"):
-            from .studio_evaluation_data import admit_evaluation_review
+            from .studio_evaluation_data import admit_evaluation_review, admit_fixed_evaluation
             if strict_common:
                 evaluation_preparation = read_json(resolved(root, queue["preparation"]))
                 if (evaluation_preparation.get("recipe_version") != 6
                         or evaluation_preparation.get("evaluation_source_scope") != "common_30h_only"
                         or queue.get("evaluation_source_scope") != "common_30h_only"):
                     raise ValueError("Legacy evaluation admissions cannot fill the unified common corpus")
-            evaluation = admit_evaluation_review(project_path, queue, answer, prepared)
+            evaluation = (admit_fixed_evaluation(project_path, queue, prepared, evidence) if evidence
+                          else admit_evaluation_review(project_path, queue, answer, prepared))
             evaluation_rows.extend(evaluation["rows"])
             evaluation_admissions.append(evaluation["admission"])
             continue
         record = apply_prepared_review(project_path, preparation=queue["preparation"], answers=answer,
-                                       pools=queue["pools"], connect=False)
+                                       pools=queue["pools"], connect=False,
+                                       **({"library_evidence": evidence} if evidence else {}))
         receipts.append(record["receipt"])
         all_pools.update(queue["pools"])
     receipts.extend(admissions)

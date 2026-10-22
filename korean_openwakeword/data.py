@@ -149,10 +149,17 @@ def validate_admission(root, rows, config, role, smoke=False):
                 artifact = index.admission(key, lambda: read_json(bound_file(root, admission)))
                 if artifact.get("state") != "accepted" or artifact.get("wakeword") not in (None, config["wakeword"]):
                     raise ValueError("Admission is not accepted for this word")
-                if role == "positive" and (artifact.get("human_reference_used") is not False or artifact.get("generation_policy_approved") is not True):
-                    raise ValueError("Approved standalone synthetic generation policy required")
-                if role != "positive" and artifact.get("content_review") != "accepted":
-                    raise ValueError("Public material needs source/content review, not full STT")
+                if artifact.get("type") == "library_fixed_catalog_technical_validation":
+                    if role not in ("generic_negative", "korean_negative", "noise", "rir"):
+                        raise ValueError("Fixed library material validation cannot admit synthetic or Hard Negative inputs")
+                    if index.unique("library_policy_evidence", key):
+                        from .material_policy import validate_library_policy_evidence
+                        validate_library_policy_evidence(root, artifact, role=role)
+                else:
+                    if role == "positive" and (artifact.get("human_reference_used") is not False or artifact.get("generation_policy_approved") is not True):
+                        raise ValueError("Approved standalone synthetic generation policy required")
+                    if role != "positive" and artifact.get("content_review") != "accepted":
+                        raise ValueError("Public material needs source/content review, not full STT")
                 if role != "positive" and not index.admits(key, row["sha256"]):
                     raise ValueError("Content review does not cover this exact source audio")
     if not count:

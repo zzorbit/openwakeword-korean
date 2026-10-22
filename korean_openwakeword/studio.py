@@ -189,7 +189,8 @@ class StudioManager:
             settings = preset_settings(key)
             recipe = material_recipe(key, evaluation_policy=settings["evaluation_policy"],
                                      material_acquisition_policy=settings.get("material_acquisition_policy"),
-                                     fma_acquisition_policy=settings.get("fma_acquisition_policy"))
+                                     fma_acquisition_policy=settings.get("fma_acquisition_policy"),
+                                     material_review_policy=settings.get("material_review_policy"))
             if key == "production":
                 from .storage_budget import commercial_storage_budget
                 recipe["storage_budget"] = commercial_storage_budget(

@@ -103,6 +103,7 @@ def preset_settings(name="check"):
             **{key: policy[key] for key in ("validation_references", "validation_originals", "noise_sections")},
             "evaluation_policy": policy, "batch": dict(BATCH),
             "material_acquisition_policy": "automatic_v3",
+            "material_review_policy": "library_fixed_sources_v1",
             "audio_storage_policy": "canonical_flac_only_v1",
             **({"fma_acquisition_policy": "per_track_flac_prefetch_v1"} if name == "production" else {}),
             "final_locked": True, "positive_text_policy": "standalone_only"}
@@ -110,7 +111,14 @@ def preset_settings(name="check"):
 
 def workflow_plan(settings):
     _validate_settings(settings)
-    return [{"id": sid, "label": title, "title": title, "kind": kind} for sid, title, kind in _STAGES]
+    plan = [{"id": sid, "label": title, "title": title, "kind": kind} for sid, title, kind in _STAGES]
+    if settings.get("material_review_policy") == "library_fixed_sources_v1":
+        for stage in plan:
+            if stage["id"] == "data_review":
+                stage.update(label="고정 자료 자동 확인", title="고정 자료 자동 확인", kind="task")
+            elif stage["id"] == "data_connect":
+                stage.update(label="자료를 용도별로 연결", title="자료를 용도별로 연결")
+    return plan
 
 
 def _validate_settings(settings):
@@ -124,6 +132,8 @@ def _validate_settings(settings):
         raise ValueError("Unsupported training-noise material policy")
     if settings.get("material_acquisition_policy") not in (None, "automatic_v1", "automatic_v2", "automatic_v3"):
         raise ValueError("Unsupported material acquisition policy")
+    if settings.get("material_review_policy") not in (None, "library_fixed_sources_v1"):
+        raise ValueError("Unsupported material review policy")
     if settings.get("audio_storage_policy") not in (None, "canonical_flac_only_v1"):
         raise ValueError("Unsupported canonical audio storage policy")
     if settings.get("fma_acquisition_policy") not in (None, "per_track_flac_prefetch_v1"):
@@ -346,6 +356,24 @@ def _review_gate(root, reviews, context):
                             artifacts=[r["queue"] for r in reviews]))
 
 
+def _material_review_queues(project, prepared, context, policy):
+    """Keep existing human decisions authoritative when enabling fixed sources."""
+    from .studio_data import material_review_queues
+    selected = material_review_queues(project, prepared, policy=policy)
+    inputs = context.get("inputs", {})
+    selected_ids = {q["id"] for q in selected}
+    for queue in prepared.get("review_queues", []):
+        preparation = queue.get("preparation")
+        preparation = preparation.get("path") if isinstance(preparation, dict) else preparation
+        has_answers = (queue["id"] in inputs.get("review_answers", {})
+                       or queue["id"] in inputs.get("review_results", {})
+                       or str(preparation) in inputs.get("material_answers", {}))
+        if has_answers and queue["id"] not in selected_ids:
+            selected.append(queue)
+            selected_ids.add(queue["id"])
+    return selected
+
+
 def _generation_complete(summary):
     if summary.get("full_target_reached") is not True:
         return _waiting("자동 기술 검사를 통과하지 못해 필요한 음성 수를 채우지 못했습니다. 실행 기록의 실패 사유를 확인하세요. "
@@ -395,7 +423,7 @@ def run_stage(project, workspace, settings, stage_id, context=None):
 
     ``context`` contains prior stage results and explicit user input. The
     manager, not this function, owns process locks and stage receipts. Stages
-    never generate Final data, loosen a target, or approve an unheard source.
+    never generate Final data, loosen a target, or invent human listening.
     """
     _validate_settings(settings)
     context = context or {}
@@ -460,9 +488,16 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         if not queues:
             return _waiting("다운로드한 자료의 검수 큐가 없습니다. 자료 준비 결과를 확인하세요.",
                             input_kind="generation_policy")
+        policy = settings.get("material_review_policy")
+        manual_queues = _material_review_queues(project, prepared, context, policy)
+        if policy == "library_fixed_sources_v1" and not manual_queues:
+            return _completed({"material_review_policy": policy, "fixed_source_queue_count": len(queues),
+                               "human_listened_count": 0,
+                               "scope": "Library-fixed source integrity checked; no human listening decisions were created"},
+                              artifacts=[q["queue"] for q in queues])
         reviews = [_review_descriptor(root, q["queue"], "content", q.get("id", f"material_{i}"),
                     **{k: v for k, v in q.items() if k not in ("queue", "kind", "id")})
-                   for i, q in enumerate(queues)]
+                   for i, q in enumerate(manual_queues)]
         return _review_gate(root, reviews, context)
 
     if stage_id == "data_connect":
@@ -496,9 +531,11 @@ def run_stage(project, workspace, settings, stage_id, context=None):
                 prepared.setdefault("review_queues", []).append(queue)
                 existing_ids.add(queue["id"])
             additional_artifacts.append(cached)
+        review_policy = settings.get("material_review_policy")
+        manual_queues = _material_review_queues(project, prepared, context, review_policy)
         reviews = [_review_descriptor(root, q["queue"], "content", q["id"],
                     **{k: v for k, v in q.items() if k not in ("queue", "kind", "id")})
-                   for q in prepared.get("review_queues", [])]
+                   for q in manual_queues]
         gate = _review_gate(root, reviews, context)
         if gate["state"] != "completed":
             gate["artifacts"] = [str(p) for p in additional_artifacts]
@@ -511,7 +548,8 @@ def run_stage(project, workspace, settings, stage_id, context=None):
                 preparation = queue.get("preparation")
                 preparation = preparation.get("path") if isinstance(preparation, dict) else preparation
                 answers[str(preparation)] = answer
-        result = admit_materials(project, prepared, answers, admissions=inputs.get("material_admissions", ()))
+        result = admit_materials(project, prepared, answers, admissions=inputs.get("material_admissions", ()),
+                                 **({"material_review_policy": review_policy} if review_policy else {}))
         shortages = result.get("shortages", prepared.get("shortages", []))
         if shortages:
             return _waiting("선택한 규모에 필요한 자료가 부족합니다. 준비된 자료는 보존하며 추가 자료를 연결해야 합니다.",

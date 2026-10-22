@@ -137,7 +137,9 @@ def test_recipes_preview_has_three_budgets_known_sources_and_no_network(manager)
     assert all(row["assets"] or row.get("automatic_source_plan", {}).get("components")
                for row in recipes["presets"])
     assert all(row["material_acquisition_policy"] == "automatic_v3" for row in recipes["presets"])
-    assert all(row["human_review_required"] is True for row in recipes["presets"])
+    assert all(row["human_review_required"] is False for row in recipes["presets"])
+    assert all(row["custom_material_human_review_required"] is True for row in recipes["presets"])
+    assert all(row["material_review_policy"] == "library_fixed_sources_v1" for row in recipes["presets"])
     policies = [row["evaluation_policy"] for row in recipes["presets"]]
     assert all(policy == policies[0] for policy in policies)
     assert policies[0]["validation_originals"] == 5000

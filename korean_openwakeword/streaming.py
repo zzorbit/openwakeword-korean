@@ -132,7 +132,8 @@ class ManifestIndex:
         self.db.executemany("INSERT OR IGNORE INTO admitted_hashes VALUES (?,?,?)",
                             ((*key, _key(value)) for value in artifact.get("accepted_source_sha256", [])))
         metadata = {k: artifact.get(k) for k in ("state", "wakeword", "human_reference_used",
-                    "generation_policy_approved", "content_review")}
+                    "generation_policy_approved", "content_review", "type", "policy_id", "library_evidence",
+                    "human_listening", "human_listened_count", "human_answers", "source_manifest")}
         self.db.execute("INSERT INTO admissions VALUES (?,?,?)", (*key, json.dumps(metadata)))
         return self._cache(self.admission_metadata, key, metadata)
 

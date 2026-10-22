@@ -1,4 +1,5 @@
 """Studio stages must call real public operations and stop at human gates."""
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -43,6 +44,7 @@ def test_presets_are_explicit_not_changes_to_global_defaults(name, counts):
     assert tuple(settings[k] for k in ("originals", "rounds", "updates", "generic_hours", "korean_hours")) == counts
     assert settings["batch"] == BATCH and settings["final_locked"]
     assert settings["noise_material_policy"] == ("reuse_negative_waveforms" if name == "production" else "official_example")
+    assert settings["material_review_policy"] == "library_fixed_sources_v1"
     settings["batch"]["positive"] = -1
     assert steps.preset_settings(name)["batch"]["positive"] == 100
 
@@ -69,6 +71,36 @@ def test_plan_is_ordered_and_has_no_final_unlock():
     assert ids.index("hard_review") < ids.index("features") < ids.index("training") < ids.index("evaluation")
     assert all(r["kind"] in ("task", "review") and r["label"] for r in plan)
     assert not any("final" in i or "freeze" in i for i in ids)
+
+
+def test_fixed_material_policy_keeps_nineteen_stages_and_legacy_review_plan():
+    settings = steps.preset_settings()
+    plan = steps.workflow_plan(settings)
+    legacy_settings = dict(settings)
+    legacy_settings.pop("material_review_policy")
+    legacy = steps.workflow_plan(legacy_settings)
+    assert len(plan) == len(legacy) == 19
+    assert [stage["id"] for stage in plan] == [stage["id"] for stage in legacy]
+    current = {stage["id"]: stage for stage in plan}
+    historical = {stage["id"]: stage for stage in legacy}
+    assert current["data_review"] == {"id": "data_review", "label": "고정 자료 자동 확인",
+                                       "title": "고정 자료 자동 확인", "kind": "task"}
+    assert historical["data_review"]["kind"] == "review"
+    assert historical["data_review"]["label"] == "학습 · 평가 자료 확인"
+    assert current["data_connect"]["label"] == "자료를 용도별로 연결"
+    assert historical["data_connect"]["label"] == "검수한 자료를 용도별로 연결"
+    assert all(current[sid] == stage for sid, stage in historical.items()
+               if sid not in ("data_review", "data_connect"))
+
+
+def test_unknown_material_review_policy_fails_before_stage_work(project):
+    settings = steps.preset_settings()
+    settings["material_review_policy"] = "auto_accept_everything"
+    with pytest.raises(ValueError, match="material review policy"):
+        steps.workflow_plan(settings)
+    with pytest.raises(ValueError, match="material review policy"):
+        run(project, "data_review", settings=settings)
+    assert not (project.parent / ".studio").exists()
 
 
 @pytest.mark.parametrize("word", ["보라야", "춘식아", "헤이집사", "아", "가나"])
@@ -441,6 +473,115 @@ def test_hard_representatives_cover_every_phrase_voice_pair(project):
     assert descriptor["count"] == 4
     assert len(read_rows(descriptor["pool_manifest"])) == 12
     assert not (root / "data/negative/hard.jsonl").stat().st_size
+
+
+def material_queue(root, name):
+    row = fake_audio(root, name)
+    source = steps._publish_rows(root / ".studio" / (name + "_sources.jsonl"), [row])
+    queue = steps._publish_rows(root / ".studio" / (name + "_queue.jsonl"), [row])
+    return {"id": name, "kind": "content", "queue": str(queue), "pool_manifest": str(source),
+            "preparation": str(root / ".studio" / (name + "_preparation.json")), "pools": ["noise"]}
+
+
+def test_fixed_material_review_uses_verified_source_policy_without_inventing_listening(project, monkeypatch):
+    from korean_openwakeword import studio_data
+    root = project.parent
+    fixed = material_queue(root, "fixed")
+    prepared = {"review_queues": [fixed], "shortages": []}
+    context = {"results": {"data_download": {"result": prepared}}, "inputs": {}}
+    before = deepcopy(context)
+    calls = []
+
+    def manual_queues(path, data, policy=None):
+        calls.append((path, data, policy))
+        return []  # Source pin/technical admission verification belongs to studio_data.
+
+    monkeypatch.setattr(studio_data, "material_review_queues", manual_queues, raising=False)
+    result = run(project, "data_review", context)
+    assert result["state"] == "completed"
+    assert result["result"]["fixed_source_queue_count"] == 1
+    assert result["result"]["human_listened_count"] == 0
+    assert result["result"]["material_review_policy"] == "library_fixed_sources_v1"
+    assert "reviewed_queues" not in result["result"]
+    assert "reviews" not in result
+    assert result["artifacts"] == [fixed["queue"]]
+    assert calls == [(project, prepared, "library_fixed_sources_v1")]
+    assert context == before
+    assert not list((root / ".studio").glob("*answers*"))
+    assert read_json(root / "approval.json")["state"] == "pending"
+
+
+def test_fixed_material_policy_preserves_manual_gate_for_custom_sources(project, monkeypatch):
+    from korean_openwakeword import studio_data
+    root = project.parent
+    fixed, custom = material_queue(root, "fixed"), material_queue(root, "custom")
+    prepared = {"review_queues": [fixed, custom]}
+    monkeypatch.setattr(studio_data, "material_review_queues",
+                        lambda path, data, policy=None: [custom], raising=False)
+    result = run(project, "data_review", {"results": {"data_download": {"result": prepared}}})
+    assert result["state"] == "waiting_review"
+    assert [queue["id"] for queue in result["reviews"]] == ["custom"]
+    assert result["reviews"][0]["kind"] == "content"
+    assert not list((root / ".studio").glob("*answers*"))
+
+
+def test_legacy_material_policy_does_not_silently_remove_a_human_gate(project, monkeypatch):
+    from korean_openwakeword import studio_data
+    fixed = material_queue(project.parent, "fixed")
+    prepared = {"review_queues": [fixed]}
+    settings = steps.preset_settings()
+    settings.pop("material_review_policy")
+    policies = []
+
+    def manual_queues(path, data, policy=None):
+        policies.append(policy)
+        return data["review_queues"]
+
+    monkeypatch.setattr(studio_data, "material_review_queues", manual_queues, raising=False)
+    result = run(project, "data_review", {"results": {"data_download": {"result": prepared}}}, settings=settings)
+    assert result["state"] == "waiting_review"
+    assert [queue["id"] for queue in result["reviews"]] == ["fixed"]
+    assert policies == [None]
+
+
+def test_fixed_material_policy_still_refuses_missing_preparation_queues(project, monkeypatch):
+    from korean_openwakeword import studio_data
+    monkeypatch.setattr(studio_data, "material_review_queues", lambda *a, **k: pytest.fail("No source exists to confirm"), raising=False)
+    result = run(project, "data_review", {"results": {"data_download": {"result": {"review_queues": []}}}})
+    assert result["state"] == "waiting_input"
+    assert result["input_kind"] == "generation_policy"
+
+
+def test_fixed_material_connection_never_bypasses_existing_incomplete_answers(project, monkeypatch):
+    from korean_openwakeword import studio_data
+    root = project.parent
+    fixed = material_queue(root, "fixed")
+    prepared = {"review_queues": [fixed], "shortages": [], "marker": "frozen downloaded preparation"}
+    answer = root / ".studio" / "existing_answers.json"
+    write_json(answer, {"decisions": {"fixed": {"decision": "discard", "listened": True}}})
+    binding = {"path": str(answer), "sha256": digest(answer)}
+    context = {"results": {"data_download": {"result": prepared}},
+               "inputs": {"review_answers": {"fixed": binding}}}
+    before = deepcopy(context)
+    checks, admitted = [], []
+
+    def manual_queues(path, data, policy=None):
+        checks.append((path, deepcopy(data), policy))
+        return []
+
+    def admit(path, data, answers, **kwargs):
+        admitted.append((path, deepcopy(data), answers, kwargs))
+        return {"shortages": [], "state": "connected"}
+
+    monkeypatch.setattr(studio_data, "material_review_queues", manual_queues, raising=False)
+    monkeypatch.setattr(studio_data, "ensure_evaluation_materials", lambda p, w, data: data)
+    monkeypatch.setattr(studio_data, "admit_materials", admit)
+    result = run(project, "data_connect", context)
+    assert result["state"] == "waiting_review"
+    assert checks == [(project, prepared, "library_fixed_sources_v1")]
+    assert admitted == []
+    assert context == before
+    assert digest(answer) == binding["sha256"]
 
 
 def test_resolved_material_discard_requires_actual_hash_bound_admission(project):

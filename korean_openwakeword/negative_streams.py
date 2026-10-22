@@ -88,6 +88,9 @@ def _inventory(root, rows, wakeword):
             if (record.get("state") != "accepted_for_evaluation" or record.get("evaluation_only") is not True
                     or record.get("training_admitted") is not False or record.get("wakeword") != wakeword):
                 raise ValueError("Common evaluation stream admission has an invalid scope")
+            if record.get("type") == "library_fixed_catalog_technical_validation":
+                from .material_policy import validate_library_policy_evidence
+                validate_library_policy_evidence(root, record, role="evaluation")
             admissions[admission_key] = set(record.get("accepted_source_sha256", []))
         if row["sha256"] not in admissions[admission_key]:
             raise ValueError("Common evaluation admission does not cover this exact original audio")

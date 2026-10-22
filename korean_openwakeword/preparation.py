@@ -902,13 +902,15 @@ def prepare_public_audio(project, *, input_directory, output, dataset_id=None,
 
 
 def apply_prepared_review(project, *, preparation, answers=None, output=None,
-                          pools=(), connect=False):
+                          pools=(), connect=False, library_evidence=None):
     """Admit exact Train hashes and optionally connect only empty pool manifests.
 
     Saved representative answers must include explicit whole-pool consent. A
     discarded representative excludes that original only, never an inferred
     category or the unseen pool. Review-held answers block admission. Evaluation
     reserves remain separate and are not added to any training manifest.
+    Pinned library evidence can replace repeated listening for fixed public
+    sources; it cannot be combined with or override saved human answers.
     """
     root, config = load_project(project)
     if (root / "final_lock.json").exists():
@@ -923,19 +925,35 @@ def apply_prepared_review(project, *, preparation, answers=None, output=None,
     source_path = bound_file(root, record["artifacts"]["source_manifest"])
     queue_path = bound_file(root, record["artifacts"]["representative_queue"])
     bound_file(root, record["artifacts"]["validation_reserve"])
-    answer_path = resolved(root, answers or "review/pool_results.json")
-    saved = read_json(answer_path)
-    previews = read_rows(queue_path)
-    decisions = saved.get("decisions", {})
-    if saved.get("whole_pool_policy_approved") is not True:
-        raise ValueError("Explicit whole-pool policy consent is required")
-    if set(decisions) != {r["sample_id"] for r in previews}:
-        raise ValueError("Saved answers must cover this exact representative queue")
-    if any(a.get("decision") == "review" for a in decisions.values()):
-        raise ValueError("Review-held representatives need resolution before admission")
-    excluded = sorted({r["canonical_source_id"] for r in previews if decisions[r["sample_id"]].get("decision") == "discard"})
     if isinstance(pools, (str, bytes)) or set(pools) - TRAIN_POOLS or len(set(pools)) != len(pools):
         raise ValueError("Pools must be unique generic_negative, korean_negative, noise or rir names")
+    technical = library_evidence is not None
+    policy_record = None
+    if technical:
+        if answers is not None or not pools:
+            raise ValueError("Library fixed-source admission cannot invent human answers")
+        from .material_policy import validate_library_policy_evidence
+        policy_record = {"state": "accepted", "type": "library_fixed_catalog_technical_validation",
+                         "policy_id": "library_fixed_sources_v1", "wakeword": config["wakeword"],
+                         "content_review": "library_fixed_sources_technical_validation",
+                         "human_listening": False, "human_listened_count": 0, "human_answers": None,
+                         "library_evidence": library_evidence,
+                         "source_manifest": record["artifacts"]["source_manifest"]}
+        for pool in pools:
+            validate_library_policy_evidence(root, policy_record, role=pool)
+        answer_path, excluded = None, []
+    else:
+        answer_path = resolved(root, answers or "review/pool_results.json")
+        saved = read_json(answer_path)
+        previews = read_rows(queue_path)
+        decisions = saved.get("decisions", {})
+        if saved.get("whole_pool_policy_approved") is not True:
+            raise ValueError("Explicit whole-pool policy consent is required")
+        if set(decisions) != {r["sample_id"] for r in previews}:
+            raise ValueError("Saved answers must cover this exact representative queue")
+        if any(a.get("decision") == "review" for a in decisions.values()):
+            raise ValueError("Review-held representatives need resolution before admission")
+        excluded = sorted({r["canonical_source_id"] for r in previews if decisions[r["sample_id"]].get("decision") == "discard"})
     sources = [r for r in read_rows(source_path) if r["canonical_source_id"] not in excluded]
     selected_pools = {}
     for pool in pools:
@@ -945,7 +963,7 @@ def apply_prepared_review(project, *, preparation, answers=None, output=None,
         if not selection:
             raise ValueError(f"No declared eligible Train sources for {pool}")
         selected_pools[pool] = selection
-    output = resolved(root, output or (preparation_path.parent / "admitted"))
+    output = resolved(root, output or (preparation_path.parent / ("admitted_library_fixed_sources_v1" if technical else "admitted")))
     if not output.is_relative_to(root) or output == root:
         raise ValueError("Admission output must stay inside the project")
     output.mkdir(parents=True, exist_ok=True)
@@ -958,8 +976,10 @@ def apply_prepared_review(project, *, preparation, answers=None, output=None,
     with writer_lock(output):
         admission_path = output / "evidence" / "admission.json"
         receipt_path = output / "admission_receipt.json"
-        binding = _binding(answer_path)
+        binding = _binding(answer_path) if answer_path else None
         request = {"preparation": _binding(preparation_path), "answers": binding, "pools": list(pools)}
+        if technical:
+            request["library_evidence"] = library_evidence
         _own_output(output, "request.json", request)
         if receipt_path.exists():
             receipt = read_json(receipt_path)
@@ -973,8 +993,25 @@ def apply_prepared_review(project, *, preparation, answers=None, output=None,
             return finish(receipt, True)
         if admission_path.exists():
             existing = read_json(admission_path)
-            if existing.get("human_answers") != binding or existing.get("source_manifest") != record["artifacts"]["source_manifest"]:
+            if (existing.get("human_answers") != binding or existing.get("source_manifest") != record["artifacts"]["source_manifest"]
+                    or technical and existing.get("library_evidence") != library_evidence):
                 raise ValueError("Interrupted admission evidence changed; choose a new output")
+            admission = {"path": admission_path.relative_to(root).as_posix(), "sha256": digest(admission_path)}
+        elif technical:
+            for row in sources:
+                if (row.get("split") != "train" or row.get("provenance") != "public_dataset"
+                        or row.get("technical_pass") is not True):
+                    raise ValueError("Only technically validated public Train sources can use the library policy")
+                bound_file(root, row)
+            audit = audit_project(project, extra_rows=sources)
+            if not audit["passed"]:
+                raise ValueError("Library material source/split audit failed: " + str(audit["errors"][:5]))
+            write_json(admission_path, {**policy_record,
+                "preparation": _binding(preparation_path),
+                "accepted_source_sha256": sorted({row["sha256"] for row in sources}),
+                "source_count": len(sources), "individual_source_listening_claimed": False,
+                "whole_sources_heard_claimed": False, "wakeword_absence_certified": False,
+                "independent_STT_runs": 0, "Final_accessed": False})
             admission = {"path": admission_path.relative_to(root).as_posix(), "sha256": digest(admission_path)}
         else:
             approval = approve_pool(project, source_manifest=record["artifacts"]["source_manifest"],
