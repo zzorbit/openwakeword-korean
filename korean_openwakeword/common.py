@@ -1,10 +1,12 @@
 """Hash-bound artifacts, atomic publication, and single-writer ownership."""
 from contextlib import contextmanager
 from datetime import datetime, timezone
+import errno
 import hashlib
 import json
 import os
 from pathlib import Path
+import time
 import uuid
 
 
@@ -12,8 +14,25 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def _retry_windows_sharing(operation, *, read_access=False):
+    """Bound brief Windows file-access races without masking persistent errors."""
+    for attempt in range(8):
+        try:
+            return operation()
+        except OSError as error:
+            # CPython file reads can report a Windows sharing race as EACCES
+            # without winerror. Permanent denial still fails after the bound.
+            transient = (getattr(error, "winerror", None) in (5, 32, 33)
+                         or read_access and os.name == "nt" and isinstance(error, PermissionError)
+                         and error.errno == errno.EACCES)
+            if not transient or attempt == 7:
+                raise
+            time.sleep(min(0.01 * 2**attempt, 0.25))
+
+
 def read_json(path):
-    return json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    text = _retry_windows_sharing(lambda: Path(path).read_text(encoding="utf-8-sig"), read_access=True)
+    return json.loads(text)
 
 
 def write_json(path, value):
@@ -21,7 +40,10 @@ def write_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
     temp.write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
-    os.replace(temp, path)
+    # Windows readers/scanners can briefly deny replacement of an open file.
+    # Retry the same atomic publish; never truncate the destination or relax
+    # non-sharing failures. A final failure preserves both files for recovery.
+    _retry_windows_sharing(lambda: os.replace(temp, path))
 
 
 def digest(path):
