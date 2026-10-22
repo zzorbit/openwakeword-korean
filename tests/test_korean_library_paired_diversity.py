@@ -9,7 +9,7 @@ import soundfile as sf
 from korean_openwakeword.common import digest, identity, read_json, read_rows, write_json
 from korean_openwakeword.data import CATEGORIES
 from korean_openwakeword.paired import _balanced_pool, _balanced_choice, _balanced_noise_window, _assignment_order, prepare_evaluation
-from korean_openwakeword.audio import active_speech_mask, measured_snr, noise_scale
+from korean_openwakeword.audio import active_speech_mask, common_headroom_gain, measured_snr, noise_scale, rms
 from korean_openwakeword.project import create_project
 
 
@@ -102,6 +102,80 @@ def test_early_single_knock_is_placed_once_with_zero_padding_and_same_snr_basis(
     assert np.array_equal(samples, second) and offset == offset2 and construction == construction2
     for snr in (20, 15, 10, 5, 0):
         assert abs(measured_snr(speech, samples * noise_scale(speech, samples, mask, snr), mask) - snr) < 1e-8
+
+
+def delayed_call_with_uneven_background(tmp_path):
+    """A pulse overlaps dry speech but misses the same delayed wet call."""
+    rate = 16000
+    speech = np.r_[np.zeros(round(2.4 * rate)),
+                   .1 * np.sin(2 * np.pi * 210 * np.arange(9600) / rate), np.zeros(rate)]
+    mask = active_speech_mask(speech, 2.4, 3.0)
+    wet = np.pad(speech, (8000, 0))
+    wet_mask = active_speech_mask(wet, 2.9, 3.5)
+    background = .0001 * np.sin(2 * np.pi * 700 * np.arange(len(speech)) / rate)
+    background[40000:41600] += .3 * np.sin(2 * np.pi * 100 * np.arange(1600) / rate)
+    path = tmp_path / "same_source_uneven_background.wav"
+    sf.write(path, background, rate, subtype="PCM_16")
+    noise = {"source_id": "fixture:single-uneven-recording", "path": str(path),
+             "sha256": digest(path), "category": "environment"}
+    context = {"id": "reverb_strong", "speech": wet, "mask": wet_mask,
+               "rir_source_id": "fixture:delayed-rir", "rir_sha256": identity("delayed-rir")}
+    return noise, speech, mask, context
+
+
+def test_paired_window_satisfies_dry_and_wet_calls_without_changing_source_or_snr(tmp_path):
+    noise, speech, mask, context = delayed_call_with_uneven_background(tmp_path)
+    snrs = (20, 15, 10, 5, 0)
+    old, old_offset, old_details = _balanced_noise_window(
+        tmp_path, noise, speech, mask, np.random.default_rng(10), snrs, {})
+    assert old_offset == 0 and old_details["offset_attempts"] == 1
+    assert old_details["placement"] == "original_contiguous"
+    # The old dry-only acceptance really reproduces the wet audibility error.
+    old_wet_noise = np.pad(old, (0, len(context["speech"]) - len(old)))
+    old_scaled = old_wet_noise * noise_scale(context["speech"], old_wet_noise, context["mask"], 0)
+    old_gain = common_headroom_gain(context["speech"], [old_scaled])
+    assert rms(context["speech"] * old_gain, context["mask"]) < 10 ** (-35 / 20)
+
+    samples, offset, construction = _balanced_noise_window(
+        tmp_path, noise, speech, mask, np.random.default_rng(10), snrs, {}, contexts=[context])
+    again, offset2, details2 = _balanced_noise_window(
+        tmp_path, noise, speech, mask, np.random.default_rng(10), snrs, {}, contexts=[context])
+    assert np.array_equal(samples, again) and offset == offset2 and construction == details2
+    assert construction["policy"] == "bounded_offsets_then_zero_padded_event_joint_reverb_v2"
+    assert construction["policy"] != old_details["policy"]
+    assert construction["offset_attempts"] == 16 and construction["repeat_count"] == 1
+    assert construction["placement"] == "zero_padded_event_alignment"
+    assert construction["shift_samples"] > 0 and not np.array_equal(samples, old)
+    assert {detail["context"] for detail in construction["validated_contexts"]} == {"dry", "reverb_strong"}
+    assert all(detail["accepted"] and detail["output_call_active_rms_db"] >= -35
+               for detail in construction["validated_contexts"])
+    assert digest(noise["path"]) == noise["sha256"]
+    # Both conditions use precisely the same shifted source; only wet's full
+    # convolution length gets explicit right-hand silence before SNR scaling.
+    for call, active in ((speech, mask), (context["speech"], context["mask"])):
+        raw = np.pad(samples, (0, len(call) - len(samples)))
+        scaled = [raw * noise_scale(call, raw, active, snr) for snr in snrs]
+        gain = common_headroom_gain(call, scaled)
+        assert rms(call * gain, active) >= 10 ** (-35 / 20)
+        assert max(np.max(np.abs((call + value) * gain)) for value in scaled) <= .9800000001
+        for snr, value in zip(snrs, scaled):
+            assert abs(measured_snr(call * gain, value * gain, active) - snr) < 1e-8
+
+
+def test_joint_window_rejects_unresolvable_nonoverlapping_call_masks(tmp_path):
+    noise, speech, mask, context = delayed_call_with_uneven_background(tmp_path)
+    # A single narrow event cannot cover two disjoint call regions when every
+    # contiguous source offset fails. The policy must fail rather than change
+    # source, remove the RIR, repeat the event or relax its audibility threshold.
+    context["speech"] = np.pad(speech, (32000, 0))
+    context["mask"] = active_speech_mask(context["speech"], 4.4, 5.0)
+    before = digest(noise["path"])
+    with pytest.raises(ValueError, match="(?i)(overlap|intersection|joint|common|audible)") as failure:
+        _balanced_noise_window(tmp_path, noise, speech, mask, np.random.default_rng(10),
+                               (20, 15, 10, 5, 0), {}, contexts=[context])
+    assert failure.value.construction_diagnostics["reason"] == "no_common_active_region_for_one_shared_event_placement"
+    assert len(failure.value.construction_diagnostics["rejected_offsets"]) == 16
+    assert digest(noise["path"]) == before
 
 
 @pytest.fixture

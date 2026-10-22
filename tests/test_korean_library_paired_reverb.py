@@ -7,10 +7,11 @@ import pytest
 import soundfile as sf
 
 from korean_openwakeword.common import digest, read_json, read_rows
+from korean_openwakeword.audio import active_speech_mask, measured_snr, rms
 from korean_openwakeword.evaluation_coverage import assess_common_evaluation
 from korean_openwakeword.evaluation_rir import estimate_rt60_t20, render_rir_review_previews
 from korean_openwakeword.paired import prepare_evaluation, reverb_subset
-from test_korean_library_paired_diversity import project, rows
+from test_korean_library_paired_diversity import delayed_call_with_uneven_background, project, rows
 
 
 def rirs(project):
@@ -96,7 +97,12 @@ def test_reverb_adds_only_fixed_subset_preserves_dry_audio_and_pairs_backgrounds
     assert originals_by_group["moderate"] == originals_by_group["strong"]
     assert len(originals_by_group["moderate"]) == 3
     assert originals_by_group["moderate"] <= originals_by_group["none"]
-    by_dry = {(r["original_id"], r["category"], r.get("snr_db")): r for r in dry}
+    # Joint feasibility adds its context evidence to the construction record.
+    # Compare wet pairs with their dry version from the same new evaluation;
+    # the separate v1 run above still proves unchanged PCM for these already
+    # feasible windows.
+    by_dry = {(r["original_id"], r["category"], r.get("snr_db")): r
+              for r in all_rows if not r.get("rir_applied")}
     for row in all_rows:
         if not row.get("rir_applied"):
             continue
@@ -113,6 +119,93 @@ def test_reverb_adds_only_fixed_subset_preserves_dry_audio_and_pairs_backgrounds
     coverage = read_json(result["noise_coverage"]["path"])
     assert coverage["originals_used"] == 12 and coverage["reverberation"]["originals"] == 3
     assert coverage["reverberation"]["used_rooms"] == coverage["reverberation"]["used_rir_sources"] == 6
+
+
+def test_joint_reverb_recipe_separates_versions_while_dry_only_stays_v1(project):
+    from korean_openwakeword.paired import evaluation_recipe
+    root = project.parent
+    rirs(project)
+    dry = evaluation_recipe(project, originals=1, noise_sections=1, noise_selection="balanced_sources")
+    joint = evaluation_recipe(project, originals=1, noise_sections=1,
+                              noise_selection="balanced_sources", reverb_originals=1)
+    assert dry["noise_window_policy"] == "bounded_offsets_then_zero_padded_event_v1"
+    assert joint["noise_window_policy"] == "bounded_offsets_then_zero_padded_event_joint_reverb_v2"
+    assert joint["reverberation"]["background_feasibility_policy"] == "one_window_valid_for_dry_and_all_selected_rirs_v2"
+    assert joint["snrs"] == dry["snrs"] and joint["seed"] == dry["seed"]
+    assert joint["positive_manifest_sha256"] == dry["positive_manifest_sha256"]
+    assert joint["noise_manifest_sha256"] == dry["noise_manifest_sha256"]
+    # A completed historical v1 recipe must not match the new construction,
+    # even if all selection/source inputs were otherwise the same.
+    old = {**joint, "noise_window_policy": dry["noise_window_policy"],
+           "reverberation": {k: v for k, v in joint["reverberation"].items()
+                             if k != "background_feasibility_policy"}}
+    write_path = root / "reports/old_recipe.json"
+    write_path.write_text(json.dumps(old), encoding="utf-8")
+    assert read_json(write_path) != joint
+
+
+def test_actual_delayed_rir_uses_joint_background_and_keeps_every_condition_audible(project):
+    """Persisted PCM, not a playback gain, fixes a dry-valid/wet-invalid window."""
+    root, config = project.parent, read_json(project)
+    noise, _, _, _ = delayed_call_with_uneven_background(root / "data")
+    noises = read_rows(root / config["manifests"]["noise_validation"])
+    environment = next(row for row in noises if row["category"] == "environment")
+    environment.update(path=noise["path"], sha256=noise["sha256"], start_s=0, end_s=4.0)
+    rows(root / config["manifests"]["noise_validation"],
+         [environment] + [row for row in noises if row["category"] != "environment"])
+    rir_rows = rirs(project)
+    chosen = []
+    for group, delay in (("moderate", 0), ("strong", 8000)):
+        row = next(row for row in rir_rows if row["reverb_group"] == group)
+        impulse = np.zeros(delay + 801)
+        impulse[delay] = .5
+        sf.write(row["path"], impulse, 16000, subtype="PCM_16")
+        row.update(sha256=digest(row["path"]), direct_path_s=delay / 16000)
+        chosen.append(row)
+    rows(root / config["manifests"]["rir_validation"], chosen)
+    baseline = prepare_evaluation(project, root / "reports/old_dry_window", originals=1,
+                                  noise_sections=1, noise_selection="balanced_sources")
+    result = prepare_evaluation(project, root / "reports/joint_reverb_window", originals=1,
+                               noise_sections=1, noise_selection="balanced_sources", reverb_originals=1)
+    again = prepare_evaluation(project, root / "reports/joint_reverb_repeat", originals=1,
+                              noise_sections=1, noise_selection="balanced_sources", reverb_originals=1)
+    old_rows, entries = read_rows(baseline["manifest"]), read_rows(result["manifest"])
+    assert len(entries) == 48
+    assert {row["sample_id"]: row["sha256"] for row in entries} == {
+        row["sample_id"]: row["sha256"] for row in read_rows(again["manifest"])}
+    dry = [row for row in entries if not row.get("rir_applied")]
+    old_env = next(row for row in old_rows if row["category"] == "environment")
+    new_env = next(row for row in dry if row["category"] == "environment")
+    assert old_env["noise_source_id"] == new_env["noise_source_id"]
+    assert old_env["noise_construction"]["offset_attempts"] == 1
+    assert new_env["noise_construction"]["offset_attempts"] == 16
+    assert new_env["noise_construction"]["placement"] == "zero_padded_event_alignment"
+    assert new_env["sha256"] != old_env["sha256"]
+    for condition in (None, "moderate", "strong"):
+        selected = [row for row in entries if row.get("reverb_condition") == condition]
+        clean = next(row for row in selected if row["category"] == "clean")
+        clean_values, rate = sf.read(clean["path"])
+        assert rate == 16000
+        call = clean["calls"][0]
+        active = active_speech_mask(clean_values, call["start_s"], call["end_s"])
+        assert rms(clean_values, active) >= 10 ** (-35 / 20)
+        for row in selected:
+            values, _ = sf.read(row["path"])
+            assert np.max(np.abs(values)) < .981
+            assert row["common_headroom_gain"] == clean["common_headroom_gain"]
+            if row["category"] == "clean":
+                continue
+            dry_row = next(item for item in dry if item["category"] == row["category"]
+                           and item["snr_db"] == row["snr_db"])
+            assert (row["noise_source_id"], row["noise_offset_s"], row["noise_construction"]) == (
+                dry_row["noise_source_id"], dry_row["noise_offset_s"], dry_row["noise_construction"])
+            assert abs(row["measured_snr_db"] - row["snr_db"]) < 1e-8
+            # Quantized mixed PCM still contains the declared SNR. A modest
+            # tolerance accounts for independent 16-bit rounding of each WAV.
+            assert abs(measured_snr(clean_values, values - clean_values, active) - row["snr_db"]) < .03
+            if row.get("rir_applied"):
+                assert row["rir_tail_truncated"] is False
+                assert len(values) == len(sf.read(dry_row["path"])[0]) + row["rir_frames"] - 1
 
 
 def test_rir_missing_or_shared_with_training_never_becomes_a_clean_fallback(project):

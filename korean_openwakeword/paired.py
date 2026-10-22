@@ -25,7 +25,8 @@ def evaluation_recipe(project, split="validation", originals=100, noise_sections
     root, config = load_project(project)
     result = {"kind": "paired_evaluation_recipe_v1", "split": split,
             "noise_selection": "balanced_sources_v1" if noise_selection == "balanced_sources" else "legacy",
-            "noise_window_policy": "bounded_offsets_then_zero_padded_event_v1" if noise_selection == "balanced_sources" else "legacy",
+            "noise_window_policy": ("bounded_offsets_then_zero_padded_event_joint_reverb_v2" if reverb_originals
+                                    else "bounded_offsets_then_zero_padded_event_v1") if noise_selection == "balanced_sources" else "legacy",
             "source_assignment_policy": "seed_sample_id_permutation_v1" if noise_selection == "balanced_sources" else "legacy",
             "requested_originals": originals, "noise_sections": noise_sections, "snrs": list(snrs),
             "seed": config["augmentation"]["seed"],
@@ -43,6 +44,8 @@ def evaluation_recipe(project, split="validation", originals=100, noise_sections
             "background_policy": "same_dry_source_window_and_offset_with_explicit_right_zero_padding",
             "convolution": "full_linear_l2_normalized_no_tail_truncation",
             "rir_manifest_sha256": digest(resolved(root, manifest))}
+        if noise_selection == "balanced_sources":
+            result["reverberation"]["background_feasibility_policy"] = "one_window_valid_for_dry_and_all_selected_rirs_v2"
     return result
 
 
@@ -267,50 +270,112 @@ def _placed_noise(values, length, shift=0):
     return output, count, source_start, destination_start
 
 
-def _balanced_noise_window(root, noise, speech, mask, rng, snrs, peak_cache):
+def _balanced_noise_window(root, noise, speech, mask, rng, snrs, peak_cache, *, contexts=None):
     """Keep the chosen source, SNR and call level; never repeat an impact.
 
     Try at most sixteen original contiguous offsets. If an early/short event
     cannot overlap the call, retain one original excerpt and place it with
     explicit zero padding. No circular join, source replacement, SNR change or
     playback-only gain is allowed. The same construction serves every SNR.
+    When reverberated contexts are supplied, accept one window only if it also
+    satisfies their unchanged active-region SNR and common headroom constraints.
     """
     seconds = len(speech) / 16000
+    contexts = list(contexts or [])
+    policy = ("bounded_offsets_then_zero_padded_event_joint_reverb_v2" if contexts
+              else "bounded_offsets_then_zero_padded_event_v1")
+    all_contexts = [{"id": "dry", "speech": speech, "mask": mask}, *contexts]
+    for context in all_contexts:
+        if (len(context["speech"]) < len(speech) or context["mask"].shape != context["speech"].shape
+                or not np.asarray(context["mask"], dtype=bool).any()):
+            raise ValueError("Paired background feasibility needs nonempty masks and explicit right-padding-compatible contexts")
     failed = []
     def usable(samples):
-        if rms(samples, mask) <= 1e-8:
-            return False, "no_noise_energy_in_call_region"
-        scaled = samples * noise_scale(speech, samples, mask, min(snrs))
-        gain = common_headroom_gain(speech, [scaled])
-        if rms(speech * gain, mask) < 10 ** (-35 / 20):
-            return False, "call_below_minus35dB_after_common_headroom"
-        return True, None
+        if not contexts:
+            # Preserve the established dry-only calculation and evidence.
+            if rms(samples, mask) <= 1e-8:
+                return False, "no_noise_energy_in_call_region", []
+            scaled = samples * noise_scale(speech, samples, mask, min(snrs))
+            gain = common_headroom_gain(speech, [scaled])
+            if rms(speech * gain, mask) < 10 ** (-35 / 20):
+                return False, "call_below_minus35dB_after_common_headroom", []
+            return True, None, []
+        diagnostics, reason = [], None
+        for context in all_contexts:
+            call, active = context["speech"], context["mask"]
+            raw = np.pad(samples, (0, len(call) - len(samples)))
+            noise_rms, call_rms = rms(raw, active), rms(call, active)
+            detail = {"context": context["id"], "call_active_rms_db": 20 * math.log10(max(call_rms, 1e-300)),
+                      "background_active_rms": noise_rms,
+                      "background_peak": float(np.max(np.abs(raw), initial=0)), "snr_db": min(snrs)}
+            detail.update({key: context[key] for key in ("rir_source_id", "rir_sha256") if key in context})
+            if noise_rms <= 1e-8:
+                detail.update(accepted=False, reason="no_noise_energy_in_call_region")
+            else:
+                # With fixed waveforms, the peak bound is convex in noise
+                # amplitude. Clean plus the strongest requested noise bounds
+                # every intermediate SNR without changing any of them.
+                scaled = raw * noise_scale(call, raw, active, min(snrs))
+                gain = common_headroom_gain(call, [scaled])
+                output_rms = rms(call * gain, active)
+                accepted = output_rms >= 10 ** (-35 / 20)
+                detail.update(accepted=accepted, common_headroom_gain=gain,
+                              background_peak_to_active_rms=detail["background_peak"] / noise_rms,
+                              scaled_background_peak=float(np.max(np.abs(scaled), initial=0)),
+                              mixed_peak=float(np.max(np.abs(call + scaled), initial=0)),
+                              output_call_active_rms_db=20 * math.log10(max(output_rms, 1e-300)))
+                if not accepted:
+                    detail["reason"] = "call_below_minus35dB_after_common_headroom"
+            diagnostics.append(detail)
+            if not detail["accepted"] and reason is None:
+                reason = detail["reason"]
+        return reason is None, reason, diagnostics
+
+    def construction_details(diagnostics):
+        return {"validated_contexts": diagnostics} if contexts else {}
+
+    def fail(reason, diagnostics=None):
+        placement = ("and one zero-padded event placement" if diagnostics is not None
+                     else "with no shared active region available for event placement")
+        error = ValueError(f"Evaluation source {source_key(noise)} cannot form an audible paired condition after 16 offsets "
+                           f"{placement}: {reason}; source, SNR and threshold were not changed")
+        if contexts:
+            error.construction_diagnostics = {"policy": policy, "rejected_offsets": failed,
+                                              "event_placement_attempted": diagnostics is not None,
+                                              "event_placement_contexts": diagnostics or [], "reason": reason}
+        raise error
+
     for attempt in range(1, 17):
         values, offset = seek_audio(root, noise, seconds, rng)
         samples, count, source_start, destination_start = _placed_noise(values, len(speech))
-        accepted, reason = usable(samples)
+        accepted, reason, diagnostics = usable(samples)
         if accepted:
-            return samples, offset, {"policy": "bounded_offsets_then_zero_padded_event_v1", "offset_attempts": attempt,
+            return samples, offset, {"policy": policy, "offset_attempts": attempt,
                 "placement": "original_contiguous" if count == len(speech) else "right_zero_padding",
                 "source_read_start_s": offset, "source_read_samples": len(values), "retained_samples": count,
                 "destination_start_sample": destination_start, "source_start_sample": source_start,
-                "repeat_count": 1, "shift_samples": 0, "rejected_offsets": failed}
-        failed.append({"offset_s": offset, "reason": reason})
+                "repeat_count": 1, "shift_samples": 0, "rejected_offsets": failed, **construction_details(diagnostics)}
+        failed.append({"offset_s": offset, "reason": reason, **construction_details(diagnostics)})
     peak = _source_peak_time(root, noise, peak_cache)
-    active_center = int(np.flatnonzero(mask)[len(np.flatnonzero(mask)) // 2])
+    shared_active = np.asarray(mask, dtype=bool).copy()
+    for context in contexts:
+        shared_active &= np.asarray(context["mask"][:len(speech)], dtype=bool)
+    active_indices = np.flatnonzero(shared_active)
+    if not len(active_indices):
+        fail("no_common_active_region_for_one_shared_event_placement")
+    active_center = int(active_indices[len(active_indices) // 2])
     start = max(float(noise.get("start_s", 0)), peak - active_center / 16000)
     values, offset = seek_audio(root, {**noise, "start_s": start}, seconds)
     shift = active_center - round((peak - offset) * 16000)
     samples, count, source_start, destination_start = _placed_noise(values, len(speech), shift)
-    accepted, reason = usable(samples)
+    accepted, reason, diagnostics = usable(samples)
     if not accepted:
-        raise ValueError(f"Evaluation source {source_key(noise)} cannot form an audible paired condition after 16 offsets "
-                         f"and one zero-padded event placement: {reason}; source, SNR and threshold were not changed")
-    return samples, offset, {"policy": "bounded_offsets_then_zero_padded_event_v1", "offset_attempts": 16,
+        fail(reason, diagnostics)
+    return samples, offset, {"policy": policy, "offset_attempts": 16,
         "placement": "zero_padded_event_alignment", "source_peak_time_s": peak,
         "source_read_start_s": offset, "source_read_samples": len(values), "retained_samples": count,
         "destination_start_sample": destination_start, "source_start_sample": source_start,
-        "repeat_count": 1, "shift_samples": shift, "rejected_offsets": failed}
+        "repeat_count": 1, "shift_samples": shift, "rejected_offsets": failed, **construction_details(diagnostics)}
 
 
 def _coverage(pools, selections, entries, recipe, manifest):
@@ -407,6 +472,18 @@ def prepare_evaluation(project, output, split="validation", originals=100, noise
                 "call_id": row["sample_id"], "original_utterance_id": row["sample_id"]}],
             "source_id": source_key(row), "source_generation_gain": gain, "language": "Korean"}
         call_lineage = component_lineage(row, "call")
+        # Select the RIRs before choosing backgrounds. The same dry recording
+        # window must also be feasible under every selected wet active mask;
+        # changing its gain cannot repair a high-crest, out-of-mask event.
+        wet_conditions = {}
+        if pools is not None and row["sample_id"] in reverb_order:
+            for group in ("moderate", "strong"):
+                rir = _reverb_choice(reverb_pools, group, reverb_order[row["sample_id"]], config["augmentation"]["seed"])
+                wet, wet_mask, calls, details = _reverberated_call(root, speech, rir, common["calls"], rir_cache)
+                wet_conditions[group] = (rir, wet, wet_mask, calls, details)
+        feasibility_contexts = [{"id": "reverb_" + group, "speech": values[1], "mask": values[2],
+                                 "rir_source_id": source_key(values[0]), "rir_sha256": values[0]["sha256"]}
+                                for group, values in wet_conditions.items()]
         # One shared headroom gain for all the original's paired variants and clean baseline.
         variants = []
         for category in CATEGORIES:
@@ -423,11 +500,14 @@ def prepare_evaluation(project, output, split="validation", originals=100, noise
                 construction = None
                 if pools is not None:
                     try:
-                        samples, offset, construction = _balanced_noise_window(root, noise, speech, mask, rng, snrs, peak_cache)
+                        feasibility_options = {"contexts": feasibility_contexts} if feasibility_contexts else {}
+                        samples, offset, construction = _balanced_noise_window(root, noise, speech, mask, rng, snrs, peak_cache,
+                                                                            **feasibility_options)
                     except ValueError as error:
                         write_json(output / "noise_construction_failure.json", {"source_id": source_key(noise),
                             "source_sha256": noise["sha256"], "category": category, "eval_type": _noise_type(noise),
                             "original_id": row["sample_id"], "error": str(error), "recipe": recipe,
+                            "construction_diagnostics": getattr(error, "construction_diagnostics", None),
                             "source_dropped": False, "SNR_changed": False, "policy_lowered": False})
                         raise
                 else:
@@ -468,8 +548,11 @@ def prepare_evaluation(project, output, split="validation", originals=100, noise
                                    noise_selection_policy=recipe["noise_selection"], noise_construction=construction)
         if row["sample_id"] in reverb_order:
             for group in ("moderate", "strong"):
-                rir = _reverb_choice(reverb_pools, group, reverb_order[row["sample_id"]], config["augmentation"]["seed"])
-                wet, wet_mask, calls, details = _reverberated_call(root, speech, rir, common["calls"], rir_cache)
+                if group in wet_conditions:
+                    rir, wet, wet_mask, calls, details = wet_conditions[group]
+                else:
+                    rir = _reverb_choice(reverb_pools, group, reverb_order[row["sample_id"]], config["augmentation"]["seed"])
+                    wet, wet_mask, calls, details = _reverberated_call(root, speech, rir, common["calls"], rir_cache)
                 wet_variants = []
                 for category, section, snr, noise, offset, _, source_group, construction, samples in variants:
                     # Exactly the dry recording/window is reused; the full RIR
@@ -479,6 +562,20 @@ def prepare_evaluation(project, output, split="validation", originals=100, noise
                     wet_variants.append((category, section, snr, noise, offset, scaled, source_group, construction))
                 wet_headroom = common_headroom_gain(wet, [variant[5] for variant in wet_variants])
                 if rms(wet * wet_headroom, wet_mask) < 10 ** (-35 / 20):
+                    culprit = max(wet_variants, key=lambda variant: max(np.max(np.abs(wet + variant[5])),
+                                                                       np.max(np.abs(variant[5]))))
+                    write_json(output / "noise_construction_failure.json", {"source_id": source_key(culprit[3]),
+                        "source_sha256": culprit[3]["sha256"], "category": culprit[0], "eval_type": _noise_type(culprit[3]),
+                        "original_id": row["sample_id"], "reverb_condition": group,
+                        "rir_source_id": source_key(rir), "rir_sha256": rir["sha256"],
+                        "error": "Combined common headroom makes the reverberant call quieter than -35 dB RMS",
+                        "call_active_rms_db": 20 * math.log10(rms(wet, wet_mask)),
+                        "output_call_active_rms_db": 20 * math.log10(rms(wet * wet_headroom, wet_mask)),
+                        "common_headroom_gain": wet_headroom, "snr_db": culprit[2],
+                        "scaled_background_peak": float(np.max(np.abs(culprit[5]))),
+                        "mixed_peak": float(np.max(np.abs(wet + culprit[5]))),
+                        "construction": culprit[7], "recipe": recipe,
+                        "source_dropped": False, "SNR_changed": False, "policy_lowered": False})
                     raise ValueError("Reverberant call becomes quieter than -35 dB RMS; do not drop the RIR or change SNR")
                 common_wet = {**common, "calls": calls, "rir_applied": True, "reverb_condition": group,
                     "rir_source_id": source_key(rir), "rir_sha256": rir["sha256"],
