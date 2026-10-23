@@ -398,7 +398,8 @@ class StudioManager:
                                      material_acquisition_policy=settings.get("material_acquisition_policy"),
                                      fma_acquisition_policy=settings.get("fma_acquisition_policy"),
                                      material_review_policy=settings.get("material_review_policy"),
-                                     official_noise_acquisition_policy=settings.get("official_noise_acquisition_policy"))
+                                     official_noise_acquisition_policy=settings.get("official_noise_acquisition_policy"),
+                                     common_download_policy=settings.get("common_download_policy"))
             if key == "production":
                 from .storage_budget import commercial_storage_budget
                 recipe["storage_budget"] = commercial_storage_budget(
@@ -457,6 +458,9 @@ class StudioManager:
                 settings.pop("official_noise_acquisition_policy", None)
                 if config.get("official_noise_acquisition_policy"):
                     settings["official_noise_acquisition_policy"] = config["official_noise_acquisition_policy"]
+                settings.pop("common_download_policy", None)
+                if config.get("common_download_policy"):
+                    settings["common_download_policy"] = config["common_download_policy"]
                 if config.get("audio_storage_policy") != "canonical_flac_only_v1":
                     # Attaching an existing CLI project must not reinterpret
                     # its old WAV/cache/receipt contract as canonical storage.
@@ -482,6 +486,8 @@ class StudioManager:
                     config["fma_acquisition_policy"] = settings["fma_acquisition_policy"]
                 if settings.get("official_noise_acquisition_policy"):
                     config["official_noise_acquisition_policy"] = settings["official_noise_acquisition_policy"]
+                if settings.get("common_download_policy"):
+                    config["common_download_policy"] = settings["common_download_policy"]
                 write_json(project, config)
             state = {"schema_version": 1, "id": project_id, "workspace": str(self.workspace),
                      "storage_workspace": str(self.workspace if target.is_relative_to(self.workspace) else target),

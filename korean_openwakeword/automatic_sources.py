@@ -326,7 +326,8 @@ class PublicSourceBackend:
                     max_download_bytes=max_download_bytes, max_extract_bytes=max_extract_bytes,
                     excluded_track_ids=excluded_track_ids, progress=progress),
                 canonicalize=canonicalize_prepared_source,
-                max_retained_bytes=max_extract_bytes, progress=progress)
+                max_retained_bytes=max_extract_bytes, progress=progress,
+                reuse_raw_shard=candidate["component"] in ("audioset_unbalanced", "mls", "yodas2"))
         return self._prepare(candidate, directory, target_hours=target_hours,
             max_download_bytes=max_download_bytes, max_extract_bytes=max_extract_bytes,
             excluded_track_ids=excluded_track_ids, progress=progress)

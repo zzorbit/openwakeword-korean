@@ -23,6 +23,7 @@ def default_profile():
     # New projects record the sentence explicitly. Do not modify the frozen
     # resource or backfill existing configs: both can bind historical receipts.
     profile["tts"].setdefault("reference_text", DEFAULT_VOICE_SAMPLE_TEXT)
+    profile.setdefault("common_download_policy", "selected_common_zip_v1")
     return profile
 
 
@@ -124,6 +125,8 @@ def validate_project(config):
         raise ValueError("wakeword must be a standalone Korean Hangul word/phrase without a command")
     if config.get("schema_version") != 1 or config.get("language") != "Korean":
         raise ValueError("Unsupported project schema or language")
+    if config.get("common_download_policy") not in (None, "selected_common_zip_v1"):
+        raise ValueError("Unsupported common evaluation download policy")
     if not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", config.get("project_id", "")):
         raise ValueError("project_id needs a safe ASCII name, e.g. bora")
     if config.get("batch") not in (BATCH, LEGACY_BATCH):

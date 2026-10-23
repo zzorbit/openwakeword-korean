@@ -101,7 +101,10 @@ def test_studio_exposes_evidence_without_starting_download_or_final(tmp_path, mo
     assert "storage_budget" not in recipes[0]
     assert "storage_budget" not in recipes[1]
     result = recipes[-1]["storage_budget"]
-    assert result == budget()
+    selected_base_archive_bytes = 25_598_880_509
+    assert recipes[-1]["known_download_bytes"] == selected_base_archive_bytes
+    expected = commercial_storage_budget(preset_settings("production"), base_archive_bytes=selected_base_archive_bytes)
+    assert result == expected
     assert recipes[-1]["estimated_workspace_bytes_scope"] == "legacy_partial_not_total"
     assert recipes[-1]["final_locked"] is True
     assert manager.registry["projects"] == {}

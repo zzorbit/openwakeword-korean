@@ -83,7 +83,7 @@ def _transient_network_error(error):
                               requests.exceptions.ChunkedEncodingError))
 
 
-def download_partial(url, partial, size_bytes, *, progress=None, retries=2):
+def download_partial(url, partial, size_bytes, *, progress=None, retries=2, session=None):
     """Bound transient retries; reopen at the bytes actually persisted on disk."""
     partial = Path(partial)
     if type(retries) is not int or not 0 <= retries <= 5:
@@ -101,7 +101,8 @@ def download_partial(url, partial, size_bytes, *, progress=None, retries=2):
             raise ValueError("Insufficient disk space for this download")
         headers = {"Accept-Encoding": "identity", **({"Range": f"bytes={offset}-"} if offset else {})}
         try:
-            with requests.get(url, headers=headers, stream=True, timeout=(30, 180)) as response:
+            client = session if session is not None else requests
+            with client.get(url, headers=headers, stream=True, timeout=(30, 180)) as response:
                 response.raise_for_status()
                 if response.status_code == 206:
                     match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+|\*)", response.headers.get("Content-Range", ""))
@@ -152,7 +153,7 @@ def dataset_catalog():
     return read_json(files("korean_openwakeword") / "resources/public_datasets.json")
 
 
-def download_checked(url, output, sha256, size_bytes=None, *, progress=None, verification_cache=None):
+def download_checked(url, output, sha256, size_bytes=None, *, progress=None, verification_cache=None, session=None):
     if (not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", sha256)
             or not isinstance(url, str) or not url.startswith("https://")):
         raise ValueError("A pinned SHA256 and HTTPS source are required")
@@ -173,7 +174,8 @@ def download_checked(url, output, sha256, size_bytes=None, *, progress=None, ver
         else:
             reused = False
             partial = output.with_name(output.name + ".part")
-            download_partial(url, partial, size_bytes, progress=progress)
+            options = {"session": session} if session is not None else {}
+            download_partial(url, partial, size_bytes, progress=progress, **options)
             if size_bytes is not None and partial.stat().st_size != size_bytes:
                 raise ValueError("Incomplete/altered asset; preserve .part for diagnosis or resume")
             verified_identity = _file_identity(partial)

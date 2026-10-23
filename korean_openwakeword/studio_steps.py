@@ -106,6 +106,7 @@ def preset_settings(name="check"):
             "gpu_numerical_differences_approved": True,
             "material_acquisition_policy": "automatic_v3",
             "material_review_policy": "library_fixed_sources_v1",
+            "common_download_policy": "selected_common_zip_v1",
             "audio_storage_policy": "canonical_flac_only_v1",
             **({"official_noise_acquisition_policy": "selective_fma_small_v1"} if name in ("check", "trial") else {}),
             **({"fma_acquisition_policy": "per_track_flac_prefetch_v1"} if name == "production" else {}),
@@ -149,6 +150,8 @@ def _validate_settings(settings):
         raise ValueError("Unsupported material acquisition policy")
     if settings.get("material_review_policy") not in (None, "library_fixed_sources_v1"):
         raise ValueError("Unsupported material review policy")
+    if settings.get("common_download_policy") not in (None, "selected_common_zip_v1"):
+        raise ValueError("Unsupported common material download policy")
     if settings.get("audio_storage_policy") not in (None, "canonical_flac_only_v1"):
         raise ValueError("Unsupported canonical audio storage policy")
     if settings.get("fma_acquisition_policy") not in (None, "per_track_flac_prefetch_v1"):
@@ -532,7 +535,9 @@ def run_stage(project, workspace, settings, stage_id, context=None):
                                      **({"material_acquisition_policy": settings["material_acquisition_policy"]}
                                         if settings.get("material_acquisition_policy") else {}),
                                      **({"official_noise_acquisition_policy": settings["official_noise_acquisition_policy"]}
-                                        if settings.get("official_noise_acquisition_policy") else {}))
+                                        if settings.get("official_noise_acquisition_policy") else {}),
+                                     **({"common_download_policy": settings["common_download_policy"]}
+                                        if settings.get("common_download_policy") else {}))
         # Downloaded candidates and reviewed/admitted sources are distinct.
         return _completed(prepared, [q["queue"] for q in prepared.get("review_queues", [])])
 

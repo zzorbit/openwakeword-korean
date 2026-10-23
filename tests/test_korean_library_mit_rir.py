@@ -47,7 +47,8 @@ class Response:
 def mock_downloads(monkeypatch, rows, directory):
     expected = {RESOLVE_ROOT + row["path"]: row for row in rows}
     calls = []
-    def checked(url, target, checksum, size):
+    def checked(url, target, checksum, size, *, session=None):
+        assert session is not None  # Each bounded worker reuses its own connection.
         assert url in expected
         row = expected[url]
         assert Path(target) == directory / row["path"]
@@ -99,7 +100,7 @@ def test_exact_270_wavs_pass_pinned_checks_and_resume_metadata_without_network(t
     file_hashes = {path.name: digest(path) for path in result.glob("*.wav")}
     monkeypatch.setattr(module.requests, "get", lambda *a, **k: pytest.fail("Use pinned metadata cache"))
     assert module._fetch_mit(tmp_path) == result
-    assert calls[:270] == calls[270:]  # Existing WAVs still reach checksum verification.
+    assert sorted(calls[:270]) == sorted(calls[270:])  # Scheduling may differ; every WAV still reaches verification.
     assert manifest.read_bytes() == before
     assert {path.name: digest(path) for path in result.glob("*.wav")} == file_hashes
 

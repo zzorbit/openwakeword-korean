@@ -6,6 +6,7 @@ path invents human listening or changes the existing split and Final rules.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import csv
 import os
 from pathlib import Path, PurePosixPath
@@ -13,6 +14,7 @@ import re
 import shutil
 import stat
 import tarfile
+import threading
 import time
 import zipfile
 
@@ -126,11 +128,13 @@ def _automatic_space_plan(preset, config=None, material_acquisition_policy="auto
 
 def material_recipe(preset="check", workspace=None, evaluation_policy=None, noise_material_policy=None,
                     material_acquisition_policy=None, fma_acquisition_policy=None, material_review_policy=None,
-                    official_noise_acquisition_policy=None):
+                    official_noise_acquisition_policy=None, common_download_policy=None):
     """Preview known downloads and limits without accessing network or audio."""
     preset = _preset(preset)
     if material_review_policy not in (None, "library_fixed_sources_v1"):
         raise ValueError("Unsupported material review policy")
+    if common_download_policy not in (None, "selected_common_zip_v1"):
+        raise ValueError("Unsupported common material download policy")
     if material_acquisition_policy not in (None, "automatic_v1", "automatic_v2", "automatic_v3"):
         raise ValueError("Unsupported material acquisition policy")
     if fma_acquisition_policy not in (None, "per_track_flac_prefetch_v1"):
@@ -233,10 +237,19 @@ def material_recipe(preset="check", workspace=None, evaluation_policy=None, nois
         from .evaluation_rir import common_rir_preview, common_rir_catalog
         common = evaluation_material_catalog()
         shared_hashes = {a["sha256"] for a in assets if a.get("sha256")}
-        extra_download = sum(a["size_bytes"] for a in common["archives"] if a.get("sha256") not in shared_hashes)
-        extra_download += common_rir_catalog()["archive"]["size_bytes"]
+        common_sizes = {a["id"]: a["size_bytes"] for a in common["archives"]}
+        rir_size = common_rir_catalog()["archive"]["size_bytes"]
+        preview_options = {"common_download_policy": common_download_policy} if common_download_policy else {}
+        if common_download_policy:
+            from .evaluation_materials import common_selected_download_preview
+            plan = common_selected_download_preview()
+            common_sizes = {a["id"]: a["selected_download_bytes"] for a in plan["archives"]}
+            rir_size = plan["rir"]["selected_download_bytes"]
+            result["common_download_plan"] = plan
+        extra_download = sum(common_sizes[a["id"]] for a in common["archives"] if a.get("sha256") not in shared_hashes)
+        extra_download += rir_size
         result.update(recipe_version=evaluation_policy["evaluation_materials_recipe"], evaluation_materials_policy=evaluation_policy,
-                      evaluation_sources=evaluation_material_preview() + ([] if strict_common else evaluation_preview()) + [common_rir_preview()],
+                      evaluation_sources=evaluation_material_preview(**preview_options) + ([] if strict_common else evaluation_preview()) + [common_rir_preview(**preview_options)],
                       common_evaluation_catalog=common,
                       evaluation_download_bytes=evaluation["size_bytes"] + extra_download,
                       known_download_bytes=result["known_download_bytes"] + extra_download,
@@ -275,6 +288,8 @@ def material_recipe(preset="check", workspace=None, evaluation_policy=None, nois
         result["limitations"] = [text for text in result["limitations"] if not text.startswith("FMA's original checksum")]
         result["limitations"].append(
             "Official-example music selects the same 120 MP3s and original tracks.csv by pinned ZIP ranges. Original member SHA256 and CRC32 are verified; the whole ZIP SHA1 is not claimed as verified by selective transfer.")
+    if common_download_policy:
+        result["common_download_policy"] = common_download_policy
     return result
 
 
@@ -284,6 +299,27 @@ def _cached_asset(asset, directory):
     candidates = (primary, directory.parent / asset["filename"],
                   directory.parent.parent / "downloads" / asset["filename"])
     return next((p for p in candidates if p.is_file()), primary)
+
+
+def _selected_common_cache_candidates(workspace):
+    """Cheap presence/size hints only; acquisition still rechecks every SHA256."""
+    from .evaluation_materials import evaluation_material_catalog, common_selected_download_catalog
+    shared = Path(workspace).resolve() / "shared"
+    catalog = common_selected_download_catalog()
+    common_id = identity(evaluation_material_catalog())[:16]
+    locations = {
+        "fsd_eval": shared / ("common_evaluation_30h_" + common_id) / "originals" / "fsd_eval",
+        "common_rir": shared / "selected_common_zip_v1" / "common_rir" / "originals"}
+    ready = set()
+    for name, destination in locations.items():
+        if not destination.is_dir():
+            continue
+        destination = destination.resolve()
+        members = catalog["groups"][name]["members"]
+        if members and all((path := _archive_target(destination, row["name"])).is_file()
+                           and path.stat().st_size == row["size_bytes"] for row in members):
+            ready.add(name)
+    return ready
 
 
 def _emit(progress, label, done=None, total=None, unit=None, **details):
@@ -460,7 +496,9 @@ def _extract_zeroth_archive(archive, output, progress=None):
     return extract_archive(archive, output, **options, **({"progress": progress} if progress else {}))
 
 
-def _fetch_mit(shared, progress=None):
+def _fetch_mit(shared, progress=None, *, workers=4):
+    if type(workers) is not int or not 1 <= workers <= 4:
+        raise ValueError("MIT downloads use one to four independent connections")
     directory = shared / "mit_rir"
     directory.mkdir(parents=True, exist_ok=True)
     manifest = directory / "provider_tree.json"
@@ -480,13 +518,38 @@ def _fetch_mit(shared, progress=None):
     entries = [r for r in entries if r.get("type") == "file" and r.get("path", "").endswith(".wav")]
     if len(entries) != MIT_RIR_COUNT or len({r["path"] for r in entries}) != MIT_RIR_COUNT:
         raise ValueError(f"Pinned MIT provider inventory must contain exactly {MIT_RIR_COUNT} WAVs")
-    for order, row in enumerate(entries):
+    requests_by_order = []
+    for row in entries:
         path = _archive_target(directory, row["path"])
         checksum = row.get("lfs", {}).get("oid")
-        if not isinstance(checksum, str) or not re.fullmatch("[0-9a-f]{64}", checksum) or row["size"] > 8 * 1024**2:
+        if (not isinstance(checksum, str) or not re.fullmatch("[0-9a-f]{64}", checksum)
+                or type(row.get("size")) is not int or not 0 < row["size"] <= 8 * 1024**2):
             raise ValueError("MIT provider file lacks bounded LFS SHA256 metadata")
-        download_checked(f"https://huggingface.co/datasets/davidscripka/MIT_environmental_impulse_responses/resolve/{MIT_REV}/{row['path']}", path, checksum, row["size"])
-        _emit(progress, "잔향 자료 확인", order + 1, len(entries), "files")
+        requests_by_order.append((f"https://huggingface.co/datasets/davidscripka/MIT_environmental_impulse_responses/resolve/{MIT_REV}/{row['path']}",
+                                  path, checksum, row["size"]))
+    # A Session is private to its worker thread; it is never used concurrently.
+    # The provider tree and downstream sorted source index keep their original
+    # order. Only acquisition overlaps, with at most four active requests.
+    local, sessions, session_lock = threading.local(), [], threading.Lock()
+    def fetch(request):
+        if not hasattr(local, "session"):
+            local.session = requests.Session()
+            with session_lock:
+                sessions.append(local.session)
+        return download_checked(*request, session=local.session)
+    executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="koww-mit")
+    futures = []
+    try:
+        futures = [executor.submit(fetch, request) for request in requests_by_order]
+        for completed, future in enumerate(as_completed(futures), 1):
+            future.result()
+            _emit(progress, "잔향 자료 확인", completed, len(entries), "files")
+    finally:
+        for future in futures:
+            future.cancel()
+        executor.shutdown(wait=True, cancel_futures=True)
+        for session in sessions:
+            session.close()
     return directory / "16khz"
 
 
@@ -554,7 +617,7 @@ def _candidate_pool_hours(root, queues):
 
 def prepare_materials(project_path, workspace, preset="check", progress=None, evaluation_policy=None,
                       noise_material_policy=None, material_acquisition_policy=None,
-                      official_noise_acquisition_policy=None):
+                      official_noise_acquisition_policy=None, common_download_policy=None):
     """Download, normalize and reserve sources, then return actual review gates."""
     from .preparation import create_source_index, prepare_public_audio
     from .assets import import_generic
@@ -562,6 +625,7 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
 
     project_path = Path(project_path).resolve()
     root, config = load_project(project_path)
+    common_download_policy = common_download_policy or config.get("common_download_policy")
     workspace = Path(workspace).resolve()
     if any(part.lower() == ".codex" for part in workspace.parts):
         raise ValueError("Public learning material must not be stored inside .codex")
@@ -569,7 +633,8 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
     downloads = shared / "downloads"
     recipe = material_recipe(preset, workspace, evaluation_policy, noise_material_policy,
                              material_acquisition_policy, config.get("fma_acquisition_policy"),
-                             official_noise_acquisition_policy=official_noise_acquisition_policy)
+                             official_noise_acquisition_policy=official_noise_acquisition_policy,
+                             common_download_policy=common_download_policy)
     automatic = recipe.get("material_acquisition_policy") in ("automatic_v1", "automatic_v2", "automatic_v3")
     workspace.mkdir(parents=True, exist_ok=True)
     # A minimum preflight before any download; actual per-file checks also run.
@@ -578,15 +643,20 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
     if recipe.get("recipe_version") in (5, 6):
         from .evaluation_rir import common_rir_catalog
         shared_pins = {a["sha256"] for a in recipe["assets"] if a.get("sha256")}
+        selected_sizes = {a["id"]: a["selected_download_bytes"]
+                          for a in recipe.get("common_download_plan", {}).get("archives", [])}
+        cached_groups = _selected_common_cache_candidates(workspace) if common_download_policy else set()
         for asset in recipe["common_evaluation_catalog"]["archives"]:
             if asset.get("sha256") in shared_pins:
                 continue
+            if asset["id"] in ("fsd_eval", "fsd_eval_zip") and "fsd_eval" in cached_groups:
+                continue
             cached = _cached_asset(asset, downloads)
             if not cached or not cached.is_file():
-                missing += asset["size_bytes"]
+                missing += selected_sizes.get(asset["id"], asset["size_bytes"])
         rir_archive = common_rir_catalog()["archive"]
-        if not (downloads / "common_rir" / rir_archive["filename"]).is_file():
-            missing += rir_archive["size_bytes"]
+        if "common_rir" not in cached_groups and not (downloads / "common_rir" / rir_archive["filename"]).is_file():
+            missing += recipe.get("common_download_plan", {}).get("rir", {}).get("selected_download_bytes", rir_archive["size_bytes"])
     reserve = 4 * 1024**3
     if automatic and recipe["preset"] in ("test", "full"):
         space = _automatic_space_plan(recipe["preset"], config, material_acquisition_policy)
@@ -776,6 +846,8 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
         result.update(official_noise_acquisition_policy=official_noise_acquisition_policy,
                       official_music_preparation={"receipt": {"path": selected_music["receipt"], "sha256": digest(selected_music["receipt"])},
                                                   "catalog_sha256": selected_music["request"]["catalog_sha256"]})
+    if common_download_policy:
+        result["common_download_policy"] = common_download_policy
     legacy_result = stage / (f"preparation_result_{material_acquisition_policy}.json" if automatic else "preparation_result.json")
     if not legacy_result.exists():
         write_json(legacy_result, result)

@@ -697,6 +697,21 @@ def test_download_worker_preserves_legacy_policy_and_binds_new_reuse_policy(proj
     assert calls[0]["noise_material_policy"] == (saved_policy or "official_example")
 
 
+@pytest.mark.parametrize("policy", [None, "selected_common_zip_v1"])
+def test_download_worker_keeps_the_saved_common_transport_policy(project, monkeypatch, policy):
+    from korean_openwakeword import studio_data
+    calls = []
+    monkeypatch.setattr(studio_data, "prepare_materials", lambda *args, **kwargs: calls.append(kwargs) or {"review_queues": []})
+    settings = steps.preset_settings("check")
+    if policy is None:
+        settings.pop("common_download_policy", None)
+    result = run(project, "data_download", settings=settings)
+    assert result["state"] == "completed"
+    assert calls[0].get("common_download_policy") == policy
+    if policy is None:
+        assert "common_download_policy" not in calls[0]
+
+
 def test_hard_worker_excludes_whole_discarded_phrase_and_resume_keeps_exact_manifest(project, monkeypatch):
     from korean_openwakeword import pool_review
     root = project.parent

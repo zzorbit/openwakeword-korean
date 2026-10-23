@@ -449,6 +449,10 @@ def prepare_common_evaluation_materials(project, workspace, prepared, progress=N
     from .studio_data import _write_rows, _emit
     root, config = load_project(project)
     version = prepared.get("evaluation_materials_policy", {}).get("evaluation_materials_recipe", 5)
+    acquisition_policy = prepared.get("common_download_policy")
+    if acquisition_policy not in (None, "selected_common_zip_v1"):
+        raise ValueError("Unsupported common material download policy")
+    acquisition_options = {"acquisition_policy": acquisition_policy} if acquisition_policy else {}
     if version not in (5, 6):
         raise ValueError("Unsupported common evaluation material recipe")
     strict_common = version == 6
@@ -474,13 +478,13 @@ def prepare_common_evaluation_materials(project, workspace, prepared, progress=N
             bound_file(root, row)
         return {**receipt, "preparation": {"path": str(path), "sha256": digest(path)}, "resumed": True}
     supplemental = None if strict_common else prepare_evaluation_materials(project, workspace, prepared, progress)
-    common = (prepare_common_sources(project, workspace, prepared, progress, strict_common_pool=True)
-              if strict_common else prepare_common_sources(project, workspace, prepared, progress))
+    common = (prepare_common_sources(project, workspace, prepared, progress, strict_common_pool=True, **acquisition_options)
+              if strict_common else prepare_common_sources(project, workspace, prepared, progress, **acquisition_options))
     if not common["target_met"]:
         raise ValueError("공통 평가 원본 부족: " + str(common["shortages"]))
     rir = prepare_common_rirs(project, output / "rir",
         cache_directory=Path(workspace).resolve() / "shared" / "downloads" / "common_rir",
-        log=lambda value: _emit(progress, value, 0, 1, "steps"))
+        log=lambda value: _emit(progress, value, 0, 1, "steps"), **acquisition_options)
     raw = ([] if strict_common else read_rows(supplemental["artifacts"]["source_manifest"]["path"])) + common["source_rows"]
     audit = assert_held_out(project, raw, prepared)
     # RIRs are filters, never continuous Negative or additive noise.

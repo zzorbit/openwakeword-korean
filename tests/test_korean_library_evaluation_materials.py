@@ -12,7 +12,13 @@ import requests
 import soundfile as sf
 
 from korean_openwakeword import evaluation_materials as module
-from korean_openwakeword.common import digest, read_json
+from korean_openwakeword.common import digest, read_json, write_json
+
+
+def _legacy_project(project):
+    config = read_json(project)
+    config.pop("common_download_policy", None)
+    write_json(project, config)
 
 
 def test_publisher_md5_download_recovers_connection_and_preserves_receipt(tmp_path, monkeypatch):
@@ -270,6 +276,7 @@ def test_source_identity_selection_excludes_known_speaker_artist_recording(tmp_p
 def test_actual_small_preparation_reports_shortage_and_resumes_without_admitting(tmp_path, monkeypatch):
     from korean_openwakeword.project import create_project
     project = create_project(tmp_path / "word", "보라야", "bora")
+    _legacy_project(project)
     rows = []
     for index, bucket in enumerate(module.BUCKET_HOURS):
         source = tmp_path / (bucket + ".wav")
@@ -297,6 +304,7 @@ def test_unified_pool_adds_only_genuine_same_catalog_context_and_keeps_legacy_se
     from korean_openwakeword.project import create_project
     from korean_openwakeword.negative_streams import negative_scoring_budget
     project = create_project(tmp_path / "word", "보라야", "bora")
+    _legacy_project(project)
     # Small real WAVs exercise the exact two-second runtime exclusion without
     # downloading a corpus or claiming that these fixture files were heard.
     monkeypatch.setattr(module, "BUCKET_HOURS", {key: 3/3600 for key in module.BUCKET_HOURS})
@@ -366,6 +374,7 @@ def test_unified_assessment_rejects_legacy_audio_even_with_thirty_reported_hours
 def test_unified_core_quotas_use_original_time_not_resampling_ceiling(tmp_path, monkeypatch):
     from korean_openwakeword.project import create_project
     project = create_project(tmp_path / "word", "보라야", "bora")
+    _legacy_project(project)
     target_s = 20.0024
     monkeypatch.setattr(module, "BUCKET_HOURS", {"environment": target_s/3600})
     rows = []

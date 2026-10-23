@@ -7,6 +7,7 @@ indexes and acquisition receipts remain available after raw audio retirement.
 from __future__ import annotations
 
 import copy
+import math
 import os
 from pathlib import Path
 
@@ -21,6 +22,71 @@ _PENDING = "canonical_pending.json"
 _RECEIPT = "canonical_receipt.json"
 _INTERNAL = {_REQUEST, _ACQUISITION, _PENDING, _RECEIPT, ".canonical_lock/.writer.lock"}
 _AUDIO = {".wav", ".flac", ".mp3", ".ogg", ".opus", ".m4a", ".aac", ".webm"}
+_RAW_SHARD_PROVIDERS = {"audioset_unbalanced", "mls", "yodas2"}
+_RAW_BUDGET_FIELDS = {"target_hours", "excluded_track_ids"}
+
+
+def _raw_shard_request_matches(directory, saved, request):
+    """Reuse a whole raw shard without rewriting its original budget request.
+
+    These three backends consume every indexed member of the pinned selection;
+    target hours stop the *outer* source loop and FMA exclusions are unused.
+    Every other field remains causal/unknown and must match exactly. FMA never
+    enters this exception because its hours/exclusions choose individual songs.
+    """
+    previous = saved.get("request")
+    if not isinstance(previous, dict) or not isinstance(request, dict):
+        return False
+    candidate = request.get("candidate")
+    if (not isinstance(candidate, dict)
+            or candidate.get("component") not in _RAW_SHARD_PROVIDERS
+            or request.get("storage_policy") != "canonical_flac_only_v1"
+            or {k: v for k, v in previous.items() if k not in _RAW_BUDGET_FIELDS}
+               != {k: v for k, v in request.items() if k not in _RAW_BUDGET_FIELDS}):
+        return False
+    for value in (previous, request):
+        hours, exclusions = value.get("target_hours"), value.get("excluded_track_ids")
+        if (isinstance(hours, bool) or not isinstance(hours, (int, float))
+                or not math.isfinite(hours) or hours <= 0
+                or not isinstance(exclusions, list)
+                or any(type(track) is not int or track < 0 for track in exclusions)
+                or exclusions != sorted(set(exclusions))):
+            return False
+
+    # Candidate keys alone do not contain the publisher revision. Require the
+    # retained original resolution and the current fixed provider pins as well.
+    # If an early failure left no resolution, cross-budget reuse fails closed;
+    # resuming the original exact request continues to use the existing path.
+    from .commercial_sources import _validate_resolution
+    resolution_path = _managed(directory, directory / "originals/source_resolution.json")
+    if not resolution_path.is_file():
+        raise ValueError("Raw shared-cache reuse needs pinned source resolution")
+    resolution = read_json(resolution_path)
+    _validate_resolution(resolution)
+    if (resolution.get("source_id") != candidate["component"]
+            or resolution.get("selection") != candidate.get("selection")):
+        raise ValueError("Raw shared-cache publisher selection changed")
+
+    # Conversion receipts survive raw retirement. Check the established PCM
+    # conversion contract, including partial conversions before a pending commit.
+    # The normal transaction below still verifies *all* retained file bindings.
+    conversions = {}
+    for relative, path in _files(directory).items():
+        if relative.startswith("canonical/") and relative.endswith(".flac.json"):
+            converted = read_json(path)
+            if (converted.get("kind") != "canonical_flac_only_v1"
+                    or converted.get("conversion") != "bounded_polyphase_mono16k_pcm16_v1"
+                    or converted.get("pcm_equal") is not True):
+                raise ValueError("Raw shared-cache PCM conversion contract changed")
+            conversions[converted.get("canonical", {}).get("path")] = converted
+    pending_path = directory / _PENDING
+    if pending_path.exists():
+        for mapping in read_json(pending_path).get("converted", []):
+            converted = conversions.get(mapping.get("canonical", {}).get("path"))
+            if (converted is None or converted.get("canonical") != mapping.get("canonical")
+                    or converted.get("original") != mapping.get("original")):
+                raise ValueError("Raw shared-cache PCM conversion evidence is missing or changed")
+    return True
 
 
 def _files(directory):
@@ -238,13 +304,15 @@ def _result(directory, receipt, *, resumed):
     return result
 
 
-def _request(directory, request):
+def _request(directory, request, *, reuse_raw_shard=False):
     expected = {"kind": "canonical_source_request_v1", "directory": str(directory),
                 "request": request}
     path = directory / _REQUEST
     if path.exists():
         saved = read_json(path)
-        if any(saved.get(key) != value for key, value in expected.items()):
+        if (saved.get("kind") != expected["kind"] or saved.get("directory") != expected["directory"]
+                or (saved.get("request") != request
+                    and not (reuse_raw_shard and _raw_shard_request_matches(directory, saved, request)))):
             raise ValueError("Canonical cache belongs to another request")
     else:
         saved = {**expected, "preexisting_files": sorted(_files(directory)), "created_at": now()}
@@ -329,7 +397,8 @@ def stage_canonical_source(directory, *, request, acquire):
 
 
 def prepare_canonical_source(directory, *, request, acquire, canonicalize,
-                             verify=None, max_retained_bytes=None, progress=None):
+                             verify=None, max_retained_bytes=None, progress=None,
+                             reuse_raw_shard=False):
     """Acquire/index, canonicalize, commit, and retire only new private raw audio.
 
     ``acquire()`` returns a normal source-backend result. ``canonicalize`` takes
@@ -339,13 +408,15 @@ def prepare_canonical_source(directory, *, request, acquire, canonicalize,
     Invalid inputs are omitted from ``converted`` and remain available to QC.
     A verified pending commit can resume retirement after a crash without another
     download or decode. The optional verifier receives the prepared result.
+    ``reuse_raw_shard`` is reserved for whole-shard AudioSet/MLS/YODAS2 backends;
+    their budget-only differences do not change the acquired or converted input.
     """
     if max_retained_bytes is not None and (type(max_retained_bytes) is not int or max_retained_bytes <= 0):
         raise ValueError("Canonical retained-byte bound must be a positive integer")
     directory = _directory(directory); directory.mkdir(parents=True, exist_ok=True)
     directory = _directory(directory)
     with writer_lock(directory / ".canonical_lock"):
-        initial, request_binding = _request(directory, request)
+        initial, request_binding = _request(directory, request, reuse_raw_shard=reuse_raw_shard)
         if (directory / _RECEIPT).exists():
             result = verify_canonical_source(directory, verify=verify)
             if max_retained_bytes is not None and result["original_storage_bytes"] > max_retained_bytes:

@@ -617,6 +617,27 @@ function storageBudgetRecipe(overrides = {}) {
     assert.equal(note.includes("원본 제외 최소"), false);
     assert.match(note, /실제 용량은 선정 후 확인합니다/);
   });
+  await test("selected common transfers show download bytes while preserving archive metadata", async () => {
+    const recipe = commonRecipe();
+    for (const row of recipe.evaluation_sources) {
+      if (["common_30h_environment", "common_30h_electronic"].includes(row.id)) {
+        row.selected_download_bytes = 1577998541;
+        row.download_mode = "selected_members";
+      } else if (row.id === "openslr28_common_rir_v1") {
+        row.selected_download_bytes = 5147063;
+        row.download_mode = "selected_members";
+      }
+    }
+    const original = JSON.stringify(recipe);
+    const b = browser({ recipeList: [recipe] }); await flush();
+    const evaluation = b.elements.get("source-preview").children[1];
+    const general = textOf(material(evaluation, "일반 비호출 자료"));
+    const rir = textOf(material(evaluation, "잔향 자료"));
+    assert.match(general, /FSD50K/);
+    assert.match(general, /다운로드 1\.58 GB/);
+    assert.match(rir, /다운로드 5\.1 MB/);
+    assert.equal(JSON.stringify(recipe), original);
+  });
   await test("canonical FLAC storage shows a WAV reference budget without inventing a compression ratio or a minimum", async () => {
     const recipe = commercialRecipeV3();
     Object.assign(recipe, { originals: 100000, rounds: 5, material_acquisition_policy: "automatic_v3",
