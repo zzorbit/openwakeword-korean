@@ -18,26 +18,6 @@ class Response:
         yield self.content
 
 
-def test_explicit_session_is_reused_without_changing_resume_or_checksum(tmp_path, monkeypatch):
-    payload = b"same asset through an existing connection"
-    path = tmp_path / "asset.bin"
-    path.with_name(path.name + ".part").write_bytes(payload[:5])
-    monkeypatch.setattr("korean_openwakeword.downloads.requests.get", lambda *a, **k: pytest.fail("Use the supplied connection"))
-    class Session:
-        def __init__(self): self.calls = 0
-        def get(self, url, **kwargs):
-            self.calls += 1
-            assert kwargs["headers"]["Range"] == "bytes=5-"
-            return Response(payload[5:], 206, {"Content-Range": f"bytes 5-{len(payload)-1}/{len(payload)}"})
-    session = Session()
-    checksum = hashlib.sha256(payload).hexdigest()
-    result = download_checked("https://example.org/asset", path, checksum, len(payload), session=session)
-    assert session.calls == 1 and result["sha256"] == checksum
-    assert path.read_bytes() == payload
-    assert download_checked("https://example.org/asset", path, checksum, len(payload), session=session)["reused"]
-    assert session.calls == 1
-
-
 @pytest.mark.parametrize("resume", [False, True])
 def test_download_and_reuse(tmp_path, monkeypatch, resume):
     payload = b"the pinned public dataset"

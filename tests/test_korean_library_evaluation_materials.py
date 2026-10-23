@@ -21,6 +21,90 @@ def _legacy_project(project):
     write_json(project, config)
 
 
+@pytest.mark.parametrize("kind", ["recordings", "rirs"])
+@pytest.mark.parametrize("policy_location", ["config", "argument"])
+def test_retired_download_policy_stops_before_catalog_download_or_receipt_write(
+        tmp_path, monkeypatch, kind, policy_location):
+    from korean_openwakeword import evaluation_rir
+    from korean_openwakeword.project import create_project
+    project = create_project(tmp_path / "word", "보라야", "bora")
+    _legacy_project(project)
+    if policy_location == "config":
+        config = read_json(project)
+        config["common_download_policy"] = "selected_common_zip_v1"
+        write_json(project, config)
+    before_config = project.read_bytes()
+    output = tmp_path / "existing_materials"
+    output.mkdir()
+    receipt = output / "receipt.json"
+    receipt.write_bytes(b'{"historical":"preserve exactly"}\n')
+    before_receipt = receipt.read_bytes()
+    fail = lambda *a, **k: pytest.fail("Retired policy must stop before acquisition")
+    monkeypatch.setattr(module, "evaluation_material_catalog", fail)
+    monkeypatch.setattr(module, "_download_archive", fail)
+    monkeypatch.setattr(evaluation_rir, "common_rir_catalog", fail)
+    monkeypatch.setattr(evaluation_rir, "download_checked", fail)
+    options = {"acquisition_policy": "selected_common_zip_v1"} if policy_location == "argument" else {}
+    with pytest.raises(ValueError, match="0.16"):
+        if kind == "recordings":
+            module.prepare_common_sources(project, tmp_path / "new_workspace", **options)
+        else:
+            evaluation_rir.prepare_common_rirs(project, output, **options)
+    assert project.read_bytes() == before_config
+    assert receipt.read_bytes() == before_receipt
+    assert not (tmp_path / "new_workspace").exists()
+
+
+def test_retired_recording_receipt_is_preserved_even_without_project_policy(tmp_path, monkeypatch):
+    from korean_openwakeword.common import identity
+    from korean_openwakeword.project import create_project
+    project = create_project(tmp_path / "word", "보라야", "bora")
+    _legacy_project(project)
+    catalog = {"catalog_fixture": "unchanged"}
+    monkeypatch.setattr(module, "evaluation_material_catalog", lambda: catalog)
+    monkeypatch.setattr(module, "_known_train", lambda *a: [])
+    monkeypatch.setattr(module, "_download_archive", lambda *a, **k: pytest.fail("No download"))
+    request = {"catalog_id": identity(catalog)[:16], "known_train": identity([])}
+    output = tmp_path / "shared" / ("common_evaluation_30h_" + request["catalog_id"]) / ("selection_" + identity(request)[:16])
+    output.mkdir(parents=True)
+    receipt = output / "preparation.json"
+    write_json(receipt, {"request": request, "acquisition_policy": "selected_common_zip_v1"})
+    before = receipt.read_bytes()
+    with pytest.raises(ValueError, match="0.16"):
+        module.prepare_common_sources(project, tmp_path)
+    assert receipt.read_bytes() == before
+
+
+def test_retired_rir_receipt_is_preserved_even_without_project_policy(tmp_path, monkeypatch):
+    from korean_openwakeword import evaluation_rir
+    from korean_openwakeword.project import create_project
+    project = create_project(tmp_path / "word", "보라야", "bora")
+    _legacy_project(project)
+    monkeypatch.setattr(evaluation_rir, "_assert_source_separation", lambda *a: None)
+    monkeypatch.setattr(evaluation_rir, "download_checked", lambda *a, **k: pytest.fail("No download"))
+    output = tmp_path / "rir"
+    output.mkdir()
+    receipt = output / "receipt.json"
+    write_json(receipt, {"acquisition_policy": "selected_common_zip_v1"})
+    before = receipt.read_bytes()
+    with pytest.raises(ValueError, match="0.16"):
+        evaluation_rir.prepare_common_rirs(project, output)
+    assert receipt.read_bytes() == before
+
+
+def test_retired_evaluation_admission_does_not_relabel_or_create_evidence(tmp_path):
+    from korean_openwakeword.material_policy import fixed_queue_evidence
+    from korean_openwakeword.project import create_project
+    project = create_project(tmp_path / "word", "보라야", "bora")
+    _legacy_project(project)
+    queue = {"id": "evaluation", "evaluation_only": True}
+    prepared = {"kind": "studio_material_preparation_v1", "project": str(project),
+                "review_queues": [queue], "common_download_policy": "selected_common_zip_v1"}
+    with pytest.raises(ValueError, match="0.16"):
+        fixed_queue_evidence(project, prepared, queue)
+    assert not (project.parent / "review/library_fixed_sources").exists()
+
+
 def test_publisher_md5_download_recovers_connection_and_preserves_receipt(tmp_path, monkeypatch):
     payload, calls, progress = b"exact evaluation archive fixture", [], []
     asset = {"id": "fsd_fixture", "filename": "fixture.zip", "size_bytes": len(payload),

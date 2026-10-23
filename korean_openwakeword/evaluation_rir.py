@@ -1,6 +1,5 @@
 """Pinned common-only room responses; measured and simulated rooms stay explicit."""
 from collections import Counter
-from contextlib import nullcontext
 from importlib.resources import files
 from pathlib import Path, PurePosixPath
 import hashlib
@@ -13,7 +12,7 @@ import soundfile as sf
 
 from .common import bound_file, digest, identity, iter_rows, read_json, resolved, write_json, writer_lock
 from .downloads import download_checked
-from .project import load_project
+from .project import load_project, require_standard_common_download
 from .storage import project_storage, storage_paths
 from .source_identity import partition_keys
 
@@ -53,21 +52,14 @@ def common_rir_catalog():
     return read_json(files("korean_openwakeword") / "resources/evaluation_rirs_v1.json")
 
 
-def common_rir_preview(*, common_download_policy=None):
+def common_rir_preview():
     catalog = common_rir_catalog()
-    result = {"id": catalog["id"], "name": "공통 평가용 공간 울림", "file_count": len(catalog["assets"]),
+    return {"id": catalog["id"], "name": "공통 평가용 공간 울림", "file_count": len(catalog["assets"]),
         "size_bytes": catalog["archive"]["size_bytes"], "download_size_scope": "First download is the whole pinned archive; only selected RIRs are extracted",
         "room_count": len({row["canonical_room_id"] for row in catalog["assets"]}),
         "simulated_room_count": len({row["canonical_room_id"] for row in catalog["assets"] if row["acoustic_source_type"] == "simulated"}),
         "type_labels": ["일반 실내 울림", "강한 실내 울림"], "source_url": catalog["source_url"],
         "license": catalog["license"], "scope": catalog["scope"]}
-    if common_download_policy is not None:
-        from .evaluation_materials import COMMON_DOWNLOAD_POLICY, common_selected_download_preview
-        if common_download_policy != COMMON_DOWNLOAD_POLICY:
-            raise ValueError("Unsupported common RIR acquisition policy")
-        result.update(selected_download_bytes=common_selected_download_preview()["rir"]["selected_download_bytes"],
-            download_mode="selected_members", download_size_scope="Pinned selected original RIR members; whole-archive size is reference only")
-    return result
 
 
 def _assert_source_separation(root, config, catalog):
@@ -106,19 +98,19 @@ def _resumable_output(output, catalog):
 def prepare_common_rirs(project, output, archive=None, log=None, cache_directory=None, acquisition_policy=None):
     """Prepare common RIRs only; never alter Train or reserve/unlock Final."""
     root, config = load_project(project)
-    acquisition_policy = acquisition_policy or config.get("common_download_policy")
-    if acquisition_policy not in (None, "selected_common_zip_v1"):
-        raise ValueError("Unsupported common RIR acquisition policy")
+    require_standard_common_download(acquisition_policy)
+    require_standard_common_download(config.get("common_download_policy"))
     catalog = common_rir_catalog()
     _assert_source_separation(root, config, catalog)
     output = Path(output).resolve()
     with writer_lock(output):
-        return _prepare_common_rirs_locked(root, catalog, output, archive, log, cache_directory, acquisition_policy)
+        return _prepare_common_rirs_locked(root, catalog, output, archive, log, cache_directory)
 
 
-def _prepare_common_rirs_locked(root, catalog, output, archive, log, cache_directory, acquisition_policy=None):
+def _prepare_common_rirs_locked(root, catalog, output, archive, log, cache_directory):
     if (output / "receipt.json").is_file():
         receipt = read_json(output / "receipt.json")
+        require_standard_common_download(receipt.get("acquisition_policy"))
         if receipt.get("catalog_sha256") != identity(catalog):
             raise ValueError("Existing common RIR preparation has another immutable catalog")
         for row in receipt["source_rows"]:
@@ -126,19 +118,7 @@ def _prepare_common_rirs_locked(root, catalog, output, archive, log, cache_direc
         return receipt
     _resumable_output(output, catalog)
     pin = catalog["archive"]
-    selected, acquisition, transport = None, None, None
-    if archive is None and acquisition_policy == "selected_common_zip_v1":
-        from .evaluation_materials import common_selected_download_catalog
-        from .selected_zip import acquire_selected
-        transport = common_selected_download_catalog()
-        directory = Path(cache_directory).resolve() if cache_directory is not None else storage_paths(root)["root"] / "downloads/common_rir"
-        state = directory.parent.parent / "selected_common_zip_v1/common_rir"
-        cached = directory / pin["filename"]
-        acquisition = acquire_selected(transport["groups"]["common_rir"], state / "originals", state,
-            local_volumes={"common_rir": cached} if cached.is_file() else {},
-            progress=(lambda record: log(record["label"])) if log else None)
-        selected = {row["name"]: Path(row["path"]) for row in acquisition["files"]}
-    downloaded_and_verified = archive is None and selected is None
+    downloaded_and_verified = archive is None
     if downloaded_and_verified:
         directory = Path(cache_directory).resolve() if cache_directory is not None else storage_paths(root)["root"] / "downloads" / "common_rir"
         if any(part.lower() == ".codex" for part in directory.parts):
@@ -147,26 +127,19 @@ def _prepare_common_rirs_locked(root, catalog, output, archive, log, cache_direc
         if log:
             log("공통 잔향 원본 archive 준비·무결성 확인")
         download_checked(pin["source_url"], archive, pin["sha256"], pin["size_bytes"])
-    if selected is None:
-        archive = Path(archive).resolve()
-        if archive.stat().st_size != pin["size_bytes"] or (not downloaded_and_verified and digest(archive) != pin["sha256"]):
-            raise ValueError("Common RIR archive differs from its pinned size/SHA256")
+    archive = Path(archive).resolve()
+    if archive.stat().st_size != pin["size_bytes"] or (not downloaded_and_verified and digest(archive) != pin["sha256"]):
+        raise ValueError("Common RIR archive differs from its pinned size/SHA256")
     rows = []
-    with (zipfile.ZipFile(archive) if selected is None else nullcontext()) as source:
+    with zipfile.ZipFile(archive) as source:
         for asset in catalog["assets"]:
             name = PurePosixPath(asset["archive_member"])
             if name.is_absolute() or ".." in name.parts or name.suffix.lower() != ".wav":
                 raise ValueError("Unsafe RIR archive member")
-            if selected is not None:
-                original = selected.get(str(name))
-                if original is None or original.stat().st_size != asset["size_bytes"] or asset["size_bytes"] > 2 * 1024**2:
-                    raise ValueError("Selected RIR member exceeds its exact bounded size")
-                payload = original.read_bytes()
-            else:
-                info = source.getinfo(str(name))
-                if info.file_size != asset["size_bytes"] or info.file_size > 2 * 1024 * 1024:
-                    raise ValueError("RIR archive member exceeds its exact bounded size")
-                payload = source.read(info)
+            info = source.getinfo(str(name))
+            if info.file_size != asset["size_bytes"] or info.file_size > 2 * 1024 * 1024:
+                raise ValueError("RIR archive member exceeds its exact bounded size")
+            payload = source.read(info)
             if hashlib.sha256(payload).hexdigest() != asset["sha256"]:
                 raise ValueError("Common RIR member hash changed")
             destination = output / "audio" / (asset["id"] + ".wav")
@@ -192,18 +165,13 @@ def _prepare_common_rirs_locked(root, catalog, output, archive, log, cache_direc
     manifest = output / "rir_validation.jsonl"
     manifest.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
     receipt = {"kind": "common_rir_preparation_v1", "catalog_sha256": identity(catalog),
+        "archive": {"path": str(archive), "sha256": pin["sha256"], "bytes": pin["size_bytes"]},
         "manifest": {"path": str(manifest), "sha256": digest(manifest)}, "source_rows": rows,
         "coverage": {"rir_sources": len(rows), "room_count": len({r["canonical_room_id"] for r in rows}),
                      "groups": dict(Counter(row["reverb_group"] for row in rows)),
                      "acoustic_source_types": dict(Counter(row["acoustic_source_type"] for row in rows))},
         "human_listening": 0, "content_approved": False, "Final_unlocked": False,
         "scope": catalog["scope"]}
-    if acquisition is not None:
-        receipt.update(acquisition_policy="selected_common_zip_v1", transport_catalog_sha256=identity(transport),
-            selected_zip_acquisition=acquisition["receipt"],
-            archive_reference={**pin, "whole_archive_verified": False})
-    else:
-        receipt["archive"] = {"path": str(archive), "sha256": pin["sha256"], "bytes": pin["size_bytes"]}
     write_json(output / "receipt.json", receipt)
     return receipt
 

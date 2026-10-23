@@ -29,39 +29,6 @@ BUCKET_HOURS = {"korean_conversation": 10, "korean_interview": 5, "korean_read":
 BUCKET_LABELS = {"korean_conversation": "한국어 자연발화 대화", "korean_interview": "한국어 인터뷰",
                  "korean_read": "한국어 낭독", "other_speech": "영어 등 다른 언어의 말소리",
                  "music": "음악·보컬", "environment": "환경·생활음", "electronic": "전자음·알람·경보"}
-COMMON_DOWNLOAD_POLICY = "selected_common_zip_v1"
-
-
-def common_selected_download_catalog():
-    """Separate transport pins; the original source/selection catalogs stay frozen."""
-    catalog = read_json(files("korean_openwakeword") / "resources/common_selected_downloads_v1.json")
-    if catalog.get("schema_version") != 1 or catalog.get("policy") != COMMON_DOWNLOAD_POLICY:
-        raise ValueError("Unsupported common evaluation ZIP transport catalog")
-    common = evaluation_material_catalog()
-    fsd = catalog.get("groups", {}).get("fsd_eval", {})
-    if (fsd.get("source_catalog_sha256") != identity(common)
-            or [row["name"] for row in fsd.get("members", [])]
-               != [row["member"] for row in common["selections"]["fsd_eval"]]):
-        raise ValueError("Selected FSD transport changed the fixed source inventory/order")
-    from .evaluation_rir import common_rir_catalog
-    rir = common_rir_catalog()
-    group = catalog.get("groups", {}).get("common_rir", {})
-    if (group.get("source_catalog_sha256") != identity(rir)
-            or [(row["name"], row["sha256"]) for row in group.get("members", [])]
-               != [(row["archive_member"], row["sha256"]) for row in rir["assets"]]):
-        raise ValueError("Selected RIR transport changed the fixed source inventory/order")
-    return catalog
-
-
-def common_selected_download_preview():
-    """Download bytes with the same selected sources and pinned 256KiB merging."""
-    transport = common_selected_download_catalog()
-    sizes = transport["groups"]["fsd_eval"]["plan"]["download_bytes_by_volume"]
-    return {"policy": COMMON_DOWNLOAD_POLICY,
-        "archives": [{"id": row["id"], "selected_download_bytes": sizes.get(row["id"], row["size_bytes"])}
-                     for row in evaluation_material_catalog()["archives"]],
-        "rir": {"id": "common_rir", "selected_download_bytes":
-                transport["groups"]["common_rir"]["plan"]["selected_download_bytes"]}}
 
 
 def evaluation_material_catalog():
@@ -71,10 +38,10 @@ def evaluation_material_catalog():
     return catalog
 
 
-def evaluation_material_preview(*, common_download_policy=None):
+def evaluation_material_preview():
     catalog = evaluation_material_catalog()
     archives = {row["id"]: row for row in catalog["archives"]}
-    result = [{"id": "common_30h_" + key, "dataset_id": key, "name": BUCKET_LABELS[key],
+    return [{"id": "common_30h_" + key, "dataset_id": key, "name": BUCKET_LABELS[key],
              "role": "held_out_evaluation_material", "split": "validation", "evaluation_only": True,
              "target_hours": hours, "target_hours_not_prepared_hours": True,
              "description": catalog["buckets"][key]["description"],
@@ -83,14 +50,6 @@ def evaluation_material_preview(*, common_download_policy=None):
              "total_bytes": sum(archives[a]["size_bytes"] for a in catalog["buckets"][key]["archives"]),
              "shared_archive_bytes_not_additive": True}
             for key, hours in BUCKET_HOURS.items()]
-    if common_download_policy is not None:
-        if common_download_policy != COMMON_DOWNLOAD_POLICY:
-            raise ValueError("Unsupported common evaluation acquisition policy")
-        sizes = {row["id"]: row["selected_download_bytes"] for row in common_selected_download_preview()["archives"]}
-        for row, key in zip(result, BUCKET_HOURS):
-            row.update(selected_download_bytes=sum(sizes[asset] for asset in catalog["buckets"][key]["archives"]),
-                       download_mode="selected_members" if key in ("environment", "electronic") else "whole_archive")
-    return result
 
 
 def evaluation_material_coverage(rows, strict_common_pool=False):
@@ -419,12 +378,11 @@ def prepare_common_sources(project, workspace, prepared=None, progress=None, str
     Review and admission are owned by the surrounding Studio review workflow.
     Existing frozen experiments are rejected by that caller before this API.
     """
-    from .project import load_project
+    from .project import load_project, require_standard_common_download
     from .studio_data import _emit, _write_rows
     root, config = load_project(project)
-    acquisition_policy = acquisition_policy or config.get("common_download_policy")
-    if acquisition_policy not in (None, COMMON_DOWNLOAD_POLICY):
-        raise ValueError("Unsupported common evaluation acquisition policy")
+    require_standard_common_download(acquisition_policy)
+    require_standard_common_download(config.get("common_download_policy"))
     workspace = Path(workspace).resolve()
     if any(part.lower() == ".codex" for part in workspace.parts):
         raise ValueError("Common evaluation data must stay in the selected project workspace")
@@ -439,48 +397,24 @@ def prepare_common_sources(project, workspace, prepared=None, progress=None, str
             "frame_samples": config["runtime"]["frame_samples"],
             "target_eligible_seconds": sum(BUCKET_HOURS.values()) * 3600,
             "margin_source": "unused_recordings_from_this_same_pinned_catalog_only"})
-    # A completed legacy preparation is reusable evidence for the same fixed
-    # inputs. Never rewrite it merely to attach a new transport policy.
-    legacy_output = stage / ("selection_" + identity(request)[:16])
-    transport = None
-    if acquisition_policy and not (legacy_output / "preparation.json").is_file():
-        transport = common_selected_download_catalog()
-        request.update(acquisition_policy=acquisition_policy, transport_catalog_sha256=identity(transport))
     output = stage / ("selection_" + identity(request)[:16])
     output.mkdir(parents=True, exist_ok=True)
     receipt_path = output / "preparation.json"
     if receipt_path.exists():
         receipt = read_json(receipt_path)
+        require_standard_common_download(receipt.get("acquisition_policy"))
         if receipt.get("request") != request: raise ValueError("Common evaluation selection changed")
         for row in receipt["source_rows"]: bound_file(root, row)
         return {**receipt, "resumed": True}
+    required = catalog["known_download_bytes"] + catalog.get("working_bytes", 12 * 1024**3)
     downloads = workspace / "shared" / "downloads"
-    sizes = ({row["id"]: row["selected_download_bytes"] for row in common_selected_download_preview()["archives"]}
-             if transport else {a["id"]: a["size_bytes"] for a in catalog["archives"]})
-    required = sum(sizes.values()) + catalog.get("working_bytes", 12 * 1024**3)
-    cached = sum(sizes[a["id"]] for a in catalog["archives"] if (downloads / a["filename"]).is_file())
-    if transport and any((workspace / "shared/selected_common_zip_v1/fsd_eval").glob("receipt_*.json")):
-        cached += sum(sizes[a["id"]] for a in catalog["archives"]
-                      if a["id"] in ("fsd_eval", "fsd_eval_zip") and not (downloads / a["filename"]).is_file())
+    cached = sum(a["size_bytes"] for a in catalog["archives"] if (downloads / a["filename"]).is_file())
     if shutil.disk_usage(stage).free < required - cached:
         raise ValueError("Selected workspace lacks space for pinned originals and common evaluation WAVs")
-    selected_originals, acquisitions = {}, {}
-    paths = {a["id"]: _download_archive(a, downloads, progress) for a in catalog["archives"]
-             if not transport or a["id"] not in ("fsd_eval", "fsd_eval_zip")}
-    if transport:
-        from .selected_zip import acquire_selected
-        group = transport["groups"]["fsd_eval"]
-        local = {row["id"]: downloads / row["filename"] for row in group["volumes"]
-                 if (downloads / row["filename"]).is_file()}
-        result = acquire_selected(group, stage / "originals/fsd_eval",
-            workspace / "shared/selected_common_zip_v1/fsd_eval", progress=progress, local_volumes=local)
-        selected_originals["fsd_eval"] = {row["name"]: Path(row["path"]) for row in result["files"]}
-        acquisitions["fsd_eval"] = result["receipt"]
+    paths = {a["id"]: _download_archive(a, downloads, progress) for a in catalog["archives"]}
     rows, failures = [], []
     with writer_lock(output):
-        candidates = (_candidate_rows(catalog, paths, stage, project, workspace, known, progress,
-                                      selected_originals=selected_originals) if transport else
-                      _candidate_rows(catalog, paths, stage, project, workspace, known, progress))
+        candidates = _candidate_rows(catalog, paths, stage, project, workspace, known, progress)
         used = set()
         seconds = Counter()
 
@@ -592,14 +526,11 @@ def prepare_common_sources(project, workspace, prepared=None, progress=None, str
             if shortages:
                 receipt["retry_policy"] = "Insufficient immutable inputs remain a shortage, not an approval. " \
                     "Retry with a revised pinned corpus, Train partition or duration policy; preserve this receipt."
-        if transport:
-            receipt.update(acquisition_policy=COMMON_DOWNLOAD_POLICY,
-                transport_catalog_sha256=identity(transport), selected_zip_acquisitions=acquisitions)
         _write_rows(output / "sources.jsonl", rows); write_json(receipt_path, receipt)
         return {**receipt, "resumed": False}
 
 
-def _candidate_rows(catalog, paths, stage, project, workspace, known, progress, selected_originals=None):
+def _candidate_rows(catalog, paths, stage, project, workspace, known, progress):
     """Resolve source metadata from the pinned catalog and original providers."""
     # The catalog contains only true recording metadata; selection ordering and
     # quota allocation never relabel a read utterance as natural conversation.
@@ -612,11 +543,7 @@ def _candidate_rows(catalog, paths, stage, project, workspace, known, progress, 
         extraction = [part for row in selections for part in row.get("members", [row])]
         from .studio_data import _emit
         _emit(progress, "공통 평가 원본 추출 · " + archive_id, 0, len(extraction), "sources")
-        original_paths = (selected_originals or {}).get(archive_id)
-        if original_paths is None:
-            original_paths = _extract_selected(assets[archive_id], paths, extraction, stage / "originals" / archive_id, progress)
-        elif any(row["member"] not in original_paths for row in extraction):
-            raise ValueError("Selected common evaluation transport lost a catalog member")
+        original_paths = _extract_selected(assets[archive_id], paths, extraction, stage / "originals" / archive_id, progress)
         for row in selections:
             if row.get("members"):
                 source, components = _join_seoul(row, original_paths, stage / "originals" / archive_id / "joined")

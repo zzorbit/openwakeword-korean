@@ -1,9 +1,38 @@
 """Studio duration display uses saved metadata, never scans audio on polling."""
 from copy import deepcopy
+
 import pytest
 
 from korean_openwakeword.studio import StudioManager
 from korean_openwakeword.studio_steps import common_evaluation_policy
+
+
+def test_retired_transport_keeps_completed_preparation_readable_and_refuses_new_work(tmp_path, monkeypatch):
+    from korean_openwakeword import evaluation_materials, evaluation_rir, studio_evaluation_data
+    from korean_openwakeword.common import digest, identity, write_json
+    config = {"wakeword": "보라야", "common_download_policy": "selected_common_zip_v1"}
+    monkeypatch.setattr(studio_evaluation_data, "load_project", lambda project: (tmp_path, config))
+    monkeypatch.setattr(evaluation_materials, "evaluation_material_catalog", lambda: {"fixture_catalog": True})
+    monkeypatch.setattr(evaluation_rir, "common_rir_catalog", lambda: {"fixture_rirs": True})
+    monkeypatch.setattr(evaluation_materials, "prepare_common_sources", lambda *a, **k: pytest.fail("Do not replace retired preparation"))
+    prepared = {"evaluation_materials_policy": common_evaluation_policy(),
+                "common_download_policy": "selected_common_zip_v1"}
+    with pytest.raises(ValueError, match="0.16"):
+        studio_evaluation_data.prepare_common_evaluation_materials("fixture", tmp_path, prepared)
+    assert not (tmp_path / ".studio").exists()
+    catalog_id = identity([{"fixture_catalog": True}, {"fixture_rirs": True},
+                           {"evaluation_source_scope": "common_30h_only"}])[:16]
+    output = tmp_path / ".studio/materials" / ("evaluation_v6_" + catalog_id)
+    output.mkdir(parents=True)
+    manifest = output / "sources.jsonl"
+    manifest.write_text("", encoding="utf-8")
+    path = output / "preparation.json"
+    write_json(path, {"catalog_id": catalog_id, "wakeword": "보라야", "recipe_version": 6,
+                     "evaluation_source_scope": "common_30h_only",
+                     "artifacts": {"source_manifest": {"path": str(manifest), "sha256": digest(manifest)}}})
+    before = path.read_bytes()
+    result = studio_evaluation_data.prepare_common_evaluation_materials("fixture", tmp_path, prepared)
+    assert result["resumed"] and path.read_bytes() == before
 
 
 def _describe(tmp_path, *, version=4, candidate=None, admitted=None):
@@ -62,8 +91,7 @@ def test_old_policy_views_keep_their_original_duration_contract(tmp_path):
     assert set(result["evaluation_materials"]) == {"candidate", "admitted", "scope"}
 
 
-@pytest.mark.parametrize("transport", [None, "selected_common_zip_v1"])
-def test_saved_candidate_budget_survives_preparation_and_studio_result_metadata(tmp_path, monkeypatch, transport):
+def test_saved_candidate_budget_survives_preparation_and_studio_result_metadata(tmp_path, monkeypatch):
     from korean_openwakeword import evaluation_materials, evaluation_rir, studio_data, studio_evaluation_data
     budget = {"eligible_seconds": 108001.6, "eligible_hours": 108001.6 / 3600,
               "scope": "metadata fixture, not scored audio"}
@@ -76,27 +104,15 @@ def test_saved_candidate_budget_survives_preparation_and_studio_result_metadata(
         monkeypatch.setattr(module, "load_project", lambda project: (tmp_path, {"wakeword": "보라야"}))
     monkeypatch.setattr(evaluation_materials, "evaluation_material_catalog", lambda: {"fixture_catalog": True})
     monkeypatch.setattr(evaluation_rir, "common_rir_catalog", lambda: {"fixture_rirs": True})
-    calls = {}
-    def common_sources(*args, **kwargs):
-        calls["sources"] = kwargs
-        return {"source_rows": [source], "target_met": True, "coverage": coverage, "duration_budget": budget}
-    def common_rirs(*args, **kwargs):
-        calls["rirs"] = kwargs
-        return {"source_rows": [], "coverage": {}}
-    monkeypatch.setattr(evaluation_materials, "prepare_common_sources", common_sources)
-    monkeypatch.setattr(evaluation_rir, "prepare_common_rirs", common_rirs)
+    monkeypatch.setattr(evaluation_materials, "prepare_common_sources", lambda *a, **k: {
+        "source_rows": [source], "target_met": True, "coverage": coverage, "duration_budget": budget})
+    monkeypatch.setattr(evaluation_rir, "prepare_common_rirs", lambda *a, **k: {"source_rows": [], "coverage": {}})
     monkeypatch.setattr(studio_evaluation_data, "assert_held_out", lambda *a, **k: {"fixture_only": True})
     prepared = {"evaluation_materials_policy": common_evaluation_policy()}
-    if transport:
-        prepared["common_download_policy"] = transport
     # The waveform helper is intentionally mocked; this checks only the saved
     # metadata handoff used by UI polling, not audio quality or scored hours.
     receipt = studio_evaluation_data.prepare_common_evaluation_materials("fixture", tmp_path, prepared)
     assert receipt["negative_duration_budget"] == budget
-    for call in calls.values():
-        assert call.get("acquisition_policy") == transport
-        if transport is None:
-            assert "acquisition_policy" not in call
     monkeypatch.setattr(studio_evaluation_data, "prepare_common_evaluation_materials", lambda *a, **k: receipt)
     result = studio_data.ensure_evaluation_materials("fixture", tmp_path, prepared)
     assert result["negative_duration_budget"] == budget

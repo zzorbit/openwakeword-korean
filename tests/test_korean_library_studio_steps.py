@@ -45,6 +45,7 @@ def test_presets_are_explicit_not_changes_to_global_defaults(name, counts):
     assert settings["batch"] == BATCH and settings["final_locked"]
     assert settings["noise_material_policy"] == ("reuse_negative_waveforms" if name == "production" else "official_example")
     assert settings["material_review_policy"] == "library_fixed_sources_v1"
+    assert "common_download_policy" not in settings
     settings["batch"]["positive"] = -1
     assert steps.preset_settings(name)["batch"]["positive"] == 100
 
@@ -71,6 +72,31 @@ def test_plan_is_ordered_and_has_no_final_unlock():
     assert ids.index("hard_review") < ids.index("features") < ids.index("training") < ids.index("evaluation")
     assert all(r["kind"] in ("task", "review") and r["label"] for r in plan)
     assert not any("final" in i or "freeze" in i for i in ids)
+
+
+@pytest.mark.parametrize("stage", ["data_download", "data_connect"])
+@pytest.mark.parametrize("policy_location", ["settings", "config"])
+def test_retired_common_download_policy_blocks_new_preparation_without_migration(project, monkeypatch, stage, policy_location):
+    from korean_openwakeword import studio_data
+    settings = steps.preset_settings("check")
+    if policy_location == "settings":
+        settings["common_download_policy"] = "selected_common_zip_v1"
+    else:
+        config = read_json(project)
+        config["common_download_policy"] = "selected_common_zip_v1"
+        write_json(project, config)
+    before = project.read_bytes()
+    monkeypatch.setattr(studio_data, "prepare_materials", lambda *a, **k: pytest.fail("Retired download must not start"))
+    with pytest.raises(ValueError, match="0.16"):
+        run(project, stage, settings=settings)
+    assert project.read_bytes() == before
+    assert not (project.parent / ".studio").exists()
+
+
+def test_retired_saved_common_policy_keeps_completed_workflow_plan_readable():
+    settings = steps.preset_settings("check")
+    settings["common_download_policy"] = "selected_common_zip_v1"
+    assert len(steps.workflow_plan(settings)) == 19
 
 
 def test_fixed_material_policy_keeps_nineteen_stages_and_legacy_review_plan():
@@ -695,21 +721,6 @@ def test_download_worker_preserves_legacy_policy_and_binds_new_reuse_policy(proj
     result = run(project, "data_download", settings=settings)
     assert result["state"] == "completed"
     assert calls[0]["noise_material_policy"] == (saved_policy or "official_example")
-
-
-@pytest.mark.parametrize("policy", [None, "selected_common_zip_v1"])
-def test_download_worker_keeps_the_saved_common_transport_policy(project, monkeypatch, policy):
-    from korean_openwakeword import studio_data
-    calls = []
-    monkeypatch.setattr(studio_data, "prepare_materials", lambda *args, **kwargs: calls.append(kwargs) or {"review_queues": []})
-    settings = steps.preset_settings("check")
-    if policy is None:
-        settings.pop("common_download_policy", None)
-    result = run(project, "data_download", settings=settings)
-    assert result["state"] == "completed"
-    assert calls[0].get("common_download_policy") == policy
-    if policy is None:
-        assert "common_download_policy" not in calls[0]
 
 
 def test_hard_worker_excludes_whole_discarded_phrase_and_resume_keeps_exact_manifest(project, monkeypatch):

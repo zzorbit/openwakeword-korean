@@ -9,7 +9,7 @@ import numpy as np
 import soundfile as sf
 
 from .common import bound_file, digest, identity, now, read_json, read_rows, resolved, write_json, writer_lock
-from .project import load_project
+from .project import load_project, require_standard_common_download
 
 EVALUATION_RECIPE_VERSION = 4
 _TYPE_NAMES = {
@@ -449,10 +449,6 @@ def prepare_common_evaluation_materials(project, workspace, prepared, progress=N
     from .studio_data import _write_rows, _emit
     root, config = load_project(project)
     version = prepared.get("evaluation_materials_policy", {}).get("evaluation_materials_recipe", 5)
-    acquisition_policy = prepared.get("common_download_policy")
-    if acquisition_policy not in (None, "selected_common_zip_v1"):
-        raise ValueError("Unsupported common material download policy")
-    acquisition_options = {"acquisition_policy": acquisition_policy} if acquisition_policy else {}
     if version not in (5, 6):
         raise ValueError("Unsupported common evaluation material recipe")
     strict_common = version == 6
@@ -461,7 +457,6 @@ def prepare_common_evaluation_materials(project, workspace, prepared, progress=N
     catalogs = [evaluation_material_catalog(), common_rir_catalog()]
     catalog_id = identity(catalogs + ([{"evaluation_source_scope": "common_30h_only"}] if strict_common else [evaluation_catalog()]))[:16]
     output = root / ".studio" / "materials" / (f"evaluation_v{version}_" + catalog_id)
-    output.mkdir(parents=True, exist_ok=True)
     path = output / "preparation.json"
     if path.exists():
         receipt = read_json(path)
@@ -477,14 +472,17 @@ def prepare_common_evaluation_materials(project, workspace, prepared, progress=N
         for row in stored_rows:
             bound_file(root, row)
         return {**receipt, "preparation": {"path": str(path), "sha256": digest(path)}, "resumed": True}
+    require_standard_common_download(config.get("common_download_policy"))
+    require_standard_common_download(prepared.get("common_download_policy"))
+    output.mkdir(parents=True, exist_ok=True)
     supplemental = None if strict_common else prepare_evaluation_materials(project, workspace, prepared, progress)
-    common = (prepare_common_sources(project, workspace, prepared, progress, strict_common_pool=True, **acquisition_options)
-              if strict_common else prepare_common_sources(project, workspace, prepared, progress, **acquisition_options))
+    common = (prepare_common_sources(project, workspace, prepared, progress, strict_common_pool=True)
+              if strict_common else prepare_common_sources(project, workspace, prepared, progress))
     if not common["target_met"]:
         raise ValueError("공통 평가 원본 부족: " + str(common["shortages"]))
     rir = prepare_common_rirs(project, output / "rir",
         cache_directory=Path(workspace).resolve() / "shared" / "downloads" / "common_rir",
-        log=lambda value: _emit(progress, value, 0, 1, "steps"), **acquisition_options)
+        log=lambda value: _emit(progress, value, 0, 1, "steps"))
     raw = ([] if strict_common else read_rows(supplemental["artifacts"]["source_manifest"]["path"])) + common["source_rows"]
     audit = assert_held_out(project, raw, prepared)
     # RIRs are filters, never continuous Negative or additive noise.

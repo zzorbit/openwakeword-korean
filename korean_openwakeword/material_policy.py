@@ -9,7 +9,7 @@ import os
 import re
 
 from .common import bound_file, digest, identity, iter_rows, read_json, resolved, write_json
-from .project import load_project
+from .project import load_project, require_standard_common_download
 
 POLICY_ID = "library_fixed_sources_v1"
 ARTIFACT_TYPE = "library_fixed_catalog_technical_validation"
@@ -42,15 +42,14 @@ def _path_key(path):
     return os.path.normcase(os.path.abspath(path))
 
 
-def _catalog_pins(official_noise_acquisition_policy=None, common_download_policy=None):
+def _catalog_pins(official_noise_acquisition_policy=None):
     from . import studio_data
     from .commercial_sources import _PROVIDERS
     package = Path(__file__).parent
     # Adding a source policy must not invalidate existing evidence for the
     # unchanged complete-ZIP policy or unrelated sources.
     resource_paths = [p for p in sorted((package / "resources").glob("*.json"))
-                      if (p.name != "official_fma_small_v1.json" or official_noise_acquisition_policy == "selective_fma_small_v1")
-                      and (p.name != "common_selected_downloads_v1.json" or common_download_policy == "selected_common_zip_v1")]
+                      if p.name != "official_fma_small_v1.json" or official_noise_acquisition_policy == "selective_fma_small_v1"]
     return {"resources": {p.name: digest(p) for p in resource_paths},
             "official_assets": identity(studio_data._official_assets()),
             "official_revisions": {name: getattr(studio_data, name) for name in
@@ -129,30 +128,6 @@ def _extraction(directory, asset, downloads, lineage):
                  and _hash(item.get("sha256")) and _path_key(path) not in result, "invalid extraction member")
         result[_path_key(path)] = item["sha256"]
     return result
-
-
-def _selected_common_lineage(root, workspace, key, binding, destination, lineage):
-    """Validate selective evidence against original member pins, not a marker."""
-    from .evaluation_materials import COMMON_DOWNLOAD_POLICY, common_selected_download_catalog
-    transport = common_selected_download_catalog()
-    group = transport["groups"][key]
-    state = (workspace / "shared/selected_common_zip_v1" / key).resolve()
-    path = resolved(root, binding["path"])
-    _require(path.parent == state and path.name.startswith("receipt_") and path.suffix == ".json",
-             "selected common receipt escaped its acquisition transaction")
-    record = _record(root, binding, lineage)
-    request = {"policy": COMMON_DOWNLOAD_POLICY, "group_sha256": identity(group),
-               "destination": str(destination.resolve())}
-    _require(_metadata_file(state / "request.json", lineage) == request
-             and record.get("kind") == COMMON_DOWNLOAD_POLICY
-             and record.get("request") == request and record.get("group_sha256") == identity(group)
-             and record.get("whole_archive_verified") is False
-             and record.get("original_bytes_preserved") is True
-             and record.get("audio_reencoded") is False and record.get("content_approved") is False,
-             "selected common acquisition lost its exact source/verification scope")
-    expected = [{**item, "path": str((destination / item["name"]).resolve())} for item in group["members"]]
-    _require(record.get("files") == expected, "selected common member inventory, order or hashes changed")
-    return {item["name"]: item for item in expected}
 
 
 def _base_lineage(root, workspace, key, lineage, prepared=None):
@@ -380,7 +355,7 @@ def _evaluation(root, workspace, prepared, queue, lineage):
     _require(bool(rows), "evaluation source manifest is empty")
     known = {r["canonical_source_id"]: r for values in catalog["selections"].values() for r in values}
     rir_pins = {r["canonical_source_id"]: r for r in rir_catalog["assets"]}
-    common_records, selective_fsd = {}, None
+    common_records = {}
     zeroth_originals = None
     for row in rows:
         _require(row.get("provenance") == "public_dataset" and row.get("split") == "validation"
@@ -398,17 +373,11 @@ def _evaluation(root, workspace, prepared, queue, lineage):
         _require(common_path.resolve().is_relative_to(common_stage), "evaluation recording escaped its fixed preparation")
         if str(common_path) not in common_records:
             record = _metadata_file(common_path, lineage)
+            require_standard_common_download(record.get("acquisition_policy"))
             _require(record.get("kind") == "common_evaluation_materials_v2"
                      and record.get("source_pool_scope") == "common_30h_only"
                      and record.get("catalog_id") == common_catalog_id and record.get("target_met") is True,
                      "evaluation source preparation changed")
-            if record.get("acquisition_policy") == "selected_common_zip_v1":
-                from .evaluation_materials import common_selected_download_catalog
-                _require(prepared.get("common_download_policy") == "selected_common_zip_v1"
-                         and record.get("transport_catalog_sha256") == identity(common_selected_download_catalog()),
-                         "selected common transport catalog/policy changed")
-                selective_fsd = _selected_common_lineage(root, workspace, "fsd_eval",
-                    record["selected_zip_acquisitions"]["fsd_eval"], common_stage / "originals/fsd_eval", lineage)
             common_records[str(common_path)] = {r["sample_id"]: r for r in record["source_rows"]}
         original = common_records[str(common_path)].get(row["sample_id"])
         _require(original is not None and all(row.get(k) == value for k, value in original.items()),
@@ -427,27 +396,14 @@ def _evaluation(root, workspace, prepared, queue, lineage):
                      "evaluation recording is absent from the fixed catalog")
             if pin.get("sha256"):
                 _require(row["original_sha256"] == pin["sha256"], "evaluation original pin changed")
-            if selective_fsd is not None and pin.get("member") in selective_fsd:
-                selected_member = selective_fsd[pin["member"]]
-                _require(row["original_sha256"] == selected_member["sha256"]
-                         and _path_key(row["original_path"]) == _path_key(selected_member["path"]),
-                         "selected FSD source differs from its original member pin")
     for asset in catalog["archives"]:
-        if selective_fsd is None or asset["id"] not in ("fsd_eval", "fsd_eval_zip"):
-            _asset_receipt(asset, workspace / "shared/downloads", lineage)
+        _asset_receipt(asset, workspace / "shared/downloads", lineage)
     rir_receipt = _metadata_file(resolved(root, binding["path"]).parent / "rir/receipt.json", lineage)
+    require_standard_common_download(rir_receipt.get("acquisition_policy"))
     _require(rir_receipt.get("kind") == "common_rir_preparation_v1"
              and rir_receipt.get("catalog_sha256") == identity(rir_catalog), "common RIR preparation changed")
-    if rir_receipt.get("acquisition_policy") == "selected_common_zip_v1":
-        from .evaluation_materials import common_selected_download_catalog
-        _require(prepared.get("common_download_policy") == "selected_common_zip_v1"
-                 and rir_receipt.get("transport_catalog_sha256") == identity(common_selected_download_catalog()),
-                 "selected RIR transport catalog/policy changed")
-        _selected_common_lineage(root, workspace, "common_rir", rir_receipt["selected_zip_acquisition"],
-            workspace / "shared/selected_common_zip_v1/common_rir/originals", lineage)
-    else:
-        _asset_receipt({**rir_catalog["archive"], "id": "common_rir", "checksum_algorithm": "sha256"},
-                       workspace / "shared/downloads/common_rir", lineage)
+    _asset_receipt({**rir_catalog["archive"], "id": "common_rir", "checksum_algorithm": "sha256"},
+                   workspace / "shared/downloads/common_rir", lineage)
     return "evaluation", ["evaluation"], binding, source, previews
 
 
@@ -460,6 +416,9 @@ def _payload(project, prepared, queue):
                for q in prepared.get("review_queues", [])):
         return None
     evaluation = queue.get("evaluation_only") is True
+    if evaluation:
+        require_standard_common_download(config.get("common_download_policy"))
+        require_standard_common_download(prepared.get("common_download_policy"))
     entry = None
     component = queue.get("automatic_component")
     if evaluation:
@@ -489,8 +448,6 @@ def _payload(project, prepared, queue):
     recipe = {"kind": prepared["kind"], "project": str(project), "workspace": str(workspace), "review_queues": [selected_queue]}
     if evaluation:
         recipe["evaluation_preparation"] = preparation
-        if prepared.get("common_download_policy"):
-            recipe["common_download_policy"] = prepared["common_download_policy"]
     else:
         recipe["preparations"] = [{"id": source_key, "preparation": preparation, "pools": queue["pools"]}]
         if component:
@@ -501,8 +458,7 @@ def _payload(project, prepared, queue):
     return {"kind": _KIND, "policy_id": POLICY_ID, "project": str(project), "wakeword": config["wakeword"],
             "scope": scope, "allowed_pools": pools, "source_key": source_key,
             "preparation": preparation, "source_manifest": source, "queue": previews,
-            "catalog_pins": _catalog_pins(prepared.get("official_noise_acquisition_policy") if source_key == "fma" else None,
-                                          prepared.get("common_download_policy") if evaluation else None),
+            "catalog_pins": _catalog_pins(prepared.get("official_noise_acquisition_policy") if source_key == "fma" else None),
             "lineage_bindings": sorted(lineage.values(), key=lambda b: b["path"]),
             "human_listening": False, "human_listened_count": 0, "human_answers": None, "recipe": recipe}
 

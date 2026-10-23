@@ -23,8 +23,16 @@ def default_profile():
     # New projects record the sentence explicitly. Do not modify the frozen
     # resource or backfill existing configs: both can bind historical receipts.
     profile["tts"].setdefault("reference_text", DEFAULT_VOICE_SAMPLE_TEXT)
-    profile.setdefault("common_download_policy", "selected_common_zip_v1")
     return profile
+
+
+def require_standard_common_download(policy):
+    """Keep retired transport records readable without silently changing them."""
+    if policy is not None:
+        raise ValueError(
+            "0.16.0의 공통 평가 부분 다운로드 설정은 더 이상 지원하지 않습니다. "
+            "기존 파일과 기록은 보존됩니다. 이 작업은 0.16.0으로 이어서 진행하거나 "
+            "현재 버전에서 새 프로젝트를 만드세요.")
 
 
 def training_batch(config):

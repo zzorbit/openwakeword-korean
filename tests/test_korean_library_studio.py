@@ -104,8 +104,8 @@ def test_create_presets_only_configure_without_work(manager, preset, originals, 
     assert config["training"]["updates"] == updates
     assert config["targets"]["korean_hours"] == pytest.approx(korean)
     assert config["audio_storage_policy"] == "canonical_flac_only_v1"
-    assert state["settings"]["common_download_policy"] == "selected_common_zip_v1"
-    assert config["common_download_policy"] == "selected_common_zip_v1"
+    assert "common_download_policy" not in config
+    assert "common_download_policy" not in state["settings"]
     assert view["status"] == "ready" and not manager.workers.items
     assert not (Path(state["project"]).parent / "final_lock.json").exists()
 
@@ -126,18 +126,19 @@ def test_new_official_example_selection_policy_is_frozen_but_not_added_to_legacy
     assert digest(legacy) == before
 
 
-def test_legacy_attach_does_not_adopt_new_common_download_transport(manager, tmp_path):
-    legacy = create_project(tmp_path / "legacy-common", "다음아", "legacy_common", positive_originals=1000,
-                            augmentation_rounds=1, updates=10000, generic_hours=2000,
-                            korean_hours=1, validation_voice_families=30)
-    config = read_json(legacy)
-    config.pop("common_download_policy", None)  # A project created before selective transport existed.
-    write_json(legacy, config)
-    before = legacy.read_bytes()
-    view = manager.create({"wakeword": "다음아", "preset": "check", "directory": str(legacy.parent)})
-    state = manager._load(view["id"])
-    assert "common_download_policy" not in state["settings"]
-    assert legacy.read_bytes() == before
+def test_retired_common_transport_is_preserved_on_attach_without_rewriting_config(manager, tmp_path):
+    project = create_project(tmp_path / "saved016", "다음아", "saved016", positive_originals=1000,
+                             augmentation_rounds=1, updates=10000, generic_hours=2000,
+                             korean_hours=1, validation_voice_families=30)
+    config = read_json(project)
+    config["common_download_policy"] = "selected_common_zip_v1"
+    write_json(project, config)
+    before = project.read_bytes()
+    view = manager.create({"wakeword": "다음아", "preset": "check", "directory": str(project.parent)})
+    saved = manager._load(view["id"])
+    assert saved["settings"]["common_download_policy"] == "selected_common_zip_v1"
+    assert view["status"] == "ready"
+    assert project.read_bytes() == before
 
 
 def test_automatic_training_view_separates_targets_candidates_admissions_and_nominal_features(manager):

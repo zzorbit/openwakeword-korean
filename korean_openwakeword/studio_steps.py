@@ -14,7 +14,7 @@ import sys
 
 from .common import bound_file, digest, identity, now, read_json, read_rows, resolved, write_json
 from .hard_phrase_policy import validate_noncall_text
-from .project import BATCH, load_project
+from .project import BATCH, load_project, require_standard_common_download
 from .budgets import DEFAULT_GENERIC_HOURS, DEFAULT_KOREAN_HOURS
 
 
@@ -106,7 +106,6 @@ def preset_settings(name="check"):
             "gpu_numerical_differences_approved": True,
             "material_acquisition_policy": "automatic_v3",
             "material_review_policy": "library_fixed_sources_v1",
-            "common_download_policy": "selected_common_zip_v1",
             "audio_storage_policy": "canonical_flac_only_v1",
             **({"official_noise_acquisition_policy": "selective_fma_small_v1"} if name in ("check", "trial") else {}),
             **({"fma_acquisition_policy": "per_track_flac_prefetch_v1"} if name == "production" else {}),
@@ -150,8 +149,10 @@ def _validate_settings(settings):
         raise ValueError("Unsupported material acquisition policy")
     if settings.get("material_review_policy") not in (None, "library_fixed_sources_v1"):
         raise ValueError("Unsupported material review policy")
+    # Saved 0.16 workflows remain readable; preparation refuses their retired
+    # transport at its entry point instead of silently changing the request.
     if settings.get("common_download_policy") not in (None, "selected_common_zip_v1"):
-        raise ValueError("Unsupported common material download policy")
+        raise ValueError("Unsupported saved common material download policy")
     if settings.get("audio_storage_policy") not in (None, "canonical_flac_only_v1"):
         raise ValueError("Unsupported canonical audio storage policy")
     if settings.get("fma_acquisition_policy") not in (None, "per_track_flac_prefetch_v1"):
@@ -480,6 +481,9 @@ def run_stage(project, workspace, settings, stage_id, context=None):
     workspace = root / ".studio"
     if stage_id not in {r[0] for r in _STAGES}:
         raise ValueError("Unknown studio stage: " + str(stage_id))
+    if stage_id in ("data_download", "data_connect"):
+        require_standard_common_download(settings.get("common_download_policy"))
+        require_standard_common_download(config.get("common_download_policy"))
     if config["batch"] != BATCH:
         raise ValueError("Studio requires the declared 768/256/100/100 batch; no silent migration")
     expected = (settings["originals"], settings["rounds"], settings["updates"],
@@ -535,9 +539,7 @@ def run_stage(project, workspace, settings, stage_id, context=None):
                                      **({"material_acquisition_policy": settings["material_acquisition_policy"]}
                                         if settings.get("material_acquisition_policy") else {}),
                                      **({"official_noise_acquisition_policy": settings["official_noise_acquisition_policy"]}
-                                        if settings.get("official_noise_acquisition_policy") else {}),
-                                     **({"common_download_policy": settings["common_download_policy"]}
-                                        if settings.get("common_download_policy") else {}))
+                                        if settings.get("official_noise_acquisition_policy") else {}))
         # Downloaded candidates and reviewed/admitted sources are distinct.
         return _completed(prepared, [q["queue"] for q in prepared.get("review_queues", [])])
 

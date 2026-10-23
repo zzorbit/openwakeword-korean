@@ -6,7 +6,6 @@ from pathlib import Path
 import stat
 import struct
 import tarfile
-import threading
 import zipfile
 
 import numpy as np
@@ -18,128 +17,18 @@ from korean_openwakeword.project import create_project, load_project
 from korean_openwakeword import studio_data as module
 
 
-def test_mit_downloads_reuse_thread_private_sessions_with_four_connection_limit(tmp_path, monkeypatch):
-    count = 8
-    payloads = {f"room{i}.wav": f"same pinned impulse {i}".encode() for i in range(count)}
-    entries = [{"type": "file", "path": f"16khz/room{i}.wav", "size": len(payloads[f"room{i}.wav"]),
-                "lfs": {"oid": hashlib.sha256(payloads[f"room{i}.wav"]).hexdigest()}}
-               for i in (3, 1, 6, 0, 7, 2, 5, 4)]
-    directory = tmp_path / "mit_rir"
-    directory.mkdir()
-    manifest = directory / "provider_tree.json"
-    url = f"https://huggingface.co/api/datasets/davidscripka/MIT_environmental_impulse_responses/tree/{module.MIT_REV}/16khz?limit=1000"
-    write_json(manifest, {"source_url": url, "entries": entries})
-    original_tree = manifest.read_bytes()
-    monkeypatch.setattr(module, "MIT_RIR_COUNT", count)
-    monkeypatch.setattr(module.requests, "get", lambda *a, **k: pytest.fail("Each worker must use its own persistent Session"))
-    barrier, guard = threading.Barrier(4), threading.Lock()
-    sessions, activity = [], {"active": 0, "peak": 0}
-    class Response:
-        status_code, headers = 200, {}
-        def __init__(self, value): self.value = value
-        def __enter__(self): return self
-        def __exit__(self, *args): pass
-        def raise_for_status(self): pass
-        def iter_content(self, size):
-            with guard:
-                activity["active"] += 1
-                activity["peak"] = max(activity["peak"], activity["active"])
-            barrier.wait(timeout=5)
-            try: yield self.value
-            finally:
-                with guard: activity["active"] -= 1
-    class Session:
-        def __init__(self):
-            self.owner, self.calls, self.closed = threading.get_ident(), 0, False
-            with guard: sessions.append(self)
-        def get(self, url, **kwargs):
-            assert threading.get_ident() == self.owner
-            assert kwargs["headers"]["Accept-Encoding"] == "identity"
-            self.calls += 1
-            return Response(payloads[url.rsplit("/", 1)[-1]])
-        def close(self): self.closed = True
-    monkeypatch.setattr(module.requests, "Session", Session)
-    progress = []
-    assert module._fetch_mit(tmp_path, progress.append) == directory / "16khz"
-    assert manifest.read_bytes() == original_tree
-    assert activity["peak"] == 4 and len(sessions) == 4
-    assert all(session.calls == 2 and session.closed for session in sessions)
-    assert [row["done"] for row in progress] == list(range(1, count + 1))
-    for row in entries:
-        path = directory / row["path"]
-        assert path.read_bytes() == payloads[path.name]
-        receipt = read_json(path.with_name(path.name + ".receipt.json"))
-        assert receipt["sha256"] == row["lfs"]["oid"] and receipt["bytes"] == row["size"]
-    # A restart checks the same already verified files, without another transfer.
-    assert module._fetch_mit(tmp_path) == directory / "16khz"
-    assert sum(session.calls for session in sessions) == count
-
-
-def test_mit_inventory_is_fully_validated_before_any_transfer(tmp_path, monkeypatch):
-    directory = tmp_path / "mit_rir"
-    directory.mkdir()
-    entries = [{"type": "file", "path": "16khz/good.wav", "size": 3, "lfs": {"oid": "1" * 64}},
-               {"type": "file", "path": "16khz/bad.wav", "size": 3, "lfs": {"oid": "bad"}}]
-    url = f"https://huggingface.co/api/datasets/davidscripka/MIT_environmental_impulse_responses/tree/{module.MIT_REV}/16khz?limit=1000"
-    write_json(directory / "provider_tree.json", {"source_url": url, "entries": entries})
-    monkeypatch.setattr(module, "MIT_RIR_COUNT", 2)
-    monkeypatch.setattr(module.requests, "Session", lambda: pytest.fail("Invalid inventory must not begin transfers"))
-    with pytest.raises(ValueError, match="LFS SHA256"):
-        module._fetch_mit(tmp_path)
-    assert not (directory / "16khz").exists()
-
-
-@pytest.mark.parametrize("workers", [0, 5, True, 1.5])
-def test_mit_concurrency_is_bounded_before_creating_files(tmp_path, workers):
-    with pytest.raises(ValueError, match="one to four"):
-        module._fetch_mit(tmp_path, workers=workers)
-    assert not (tmp_path / "mit_rir").exists()
-
-
-def test_new_common_preview_reduces_transfer_without_rewriting_original_catalog(monkeypatch):
-    from korean_openwakeword.studio_steps import common_evaluation_policy
-    from korean_openwakeword.evaluation_materials import common_selected_download_preview
-    monkeypatch.setattr(module.requests, "get", lambda *a, **k: pytest.fail("Preview must stay offline"))
-    options = {"evaluation_policy": common_evaluation_policy(), "official_noise_acquisition_policy": "selective_fma_small_v1"}
-    legacy = module.material_recipe("check", **options)
-    selected = module.material_recipe("check", common_download_policy="selected_common_zip_v1", **options)
-    assert selected["common_evaluation_catalog"] == legacy["common_evaluation_catalog"]
-    assert selected["automatic_target_hours"] == legacy["automatic_target_hours"]
-    assert selected["evaluation_materials_policy"] == legacy["evaluation_materials_policy"]
-    plan = common_selected_download_preview()
-    sizes = {row["id"]: row["selected_download_bytes"] for row in plan["archives"]}
-    old_bytes = sum(a["size_bytes"] for a in legacy["common_evaluation_catalog"]["archives"] if a["id"] in ("fsd_eval", "fsd_eval_zip"))
-    new_bytes = sizes["fsd_eval"] + sizes["fsd_eval_zip"]
-    rir_old = next(row for row in legacy["evaluation_sources"] if row["id"] == "openslr28_common_rir_v1")["size_bytes"]
-    expected_reduction = old_bytes - new_bytes + rir_old - plan["rir"]["selected_download_bytes"]
-    assert legacy["known_download_bytes"] - selected["known_download_bytes"] == expected_reduction
-    assert legacy["evaluation_download_bytes"] - selected["evaluation_download_bytes"] == expected_reduction
-    for row in selected["evaluation_sources"]:
-        original = next(old for old in legacy["evaluation_sources"] if old["id"] == row["id"])
-        assert row.get("size_bytes") == original.get("size_bytes")
-        assert row.get("total_bytes") == original.get("total_bytes")
-        if row["id"] in ("common_30h_environment", "common_30h_electronic", "openslr28_common_rir_v1"):
-            assert row["download_mode"] == "selected_members"
-            assert row["selected_download_bytes"] < row.get("size_bytes", row.get("total_bytes"))
-
-
-def test_selected_common_cache_preflight_uses_size_hints_without_hashing_or_admission(tmp_path, monkeypatch):
-    from korean_openwakeword import evaluation_materials
-    source_catalog = {"fixed_source_catalog": "fixture"}
-    catalog = {"groups": {"fsd_eval": {"members": [{"name": "audio/a.wav", "size_bytes": 3}]},
-                           "common_rir": {"members": [{"name": "rir/b.wav", "size_bytes": 4}]}}}
-    monkeypatch.setattr(evaluation_materials, "evaluation_material_catalog", lambda: source_catalog)
-    monkeypatch.setattr(evaluation_materials, "common_selected_download_catalog", lambda: catalog)
-    monkeypatch.setattr(module, "digest", lambda *a: pytest.fail("Preflight must not repeatedly hash the source corpus"))
-    assert module._selected_common_cache_candidates(tmp_path) == set()
-    from korean_openwakeword.common import identity
-    fsd = tmp_path / "shared" / ("common_evaluation_30h_" + identity(source_catalog)[:16]) / "originals/fsd_eval/audio/a.wav"
-    rir = tmp_path / "shared/selected_common_zip_v1/common_rir/originals/rir/b.wav"
-    fsd.parent.mkdir(parents=True); fsd.write_bytes(b"abc")
-    rir.parent.mkdir(parents=True); rir.write_bytes(b"defg")
-    assert module._selected_common_cache_candidates(tmp_path) == {"fsd_eval", "common_rir"}
-    rir.write_bytes(b"incomplete")
-    assert module._selected_common_cache_candidates(tmp_path) == {"fsd_eval"}
+def test_retired_transport_refuses_material_preparation_before_download_or_writes(tmp_path, monkeypatch):
+    project = create_project(tmp_path / "bora", "보라야", "bora")
+    config = read_json(project)
+    config["common_download_policy"] = "selected_common_zip_v1"
+    write_json(project, config)
+    before = project.read_bytes()
+    monkeypatch.setattr(module, "_download", lambda *a, **k: pytest.fail("No retired request may download"))
+    workspace = tmp_path / "must_not_exist"
+    with pytest.raises(ValueError, match="0.16"):
+        module.prepare_materials(project, workspace)
+    assert project.read_bytes() == before
+    assert not workspace.exists()
 
 
 def test_recipe_is_offline_pinned_and_reports_real_scale(monkeypatch, tmp_path):

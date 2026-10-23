@@ -92,8 +92,7 @@ def test_new_commercial_web_project_persists_measured_policy(tmp_path):
         recipes = manager.recipes()["presets"]
         production = next(row for row in recipes if row["id"] == "production")
         assert production["fma_acquisition_policy"] == POLICY
-        assert production["common_download_policy"] == "selected_common_zip_v1"
-        assert production["automatic_space_plan"]["estimated_total_bytes"] == 693_252_877_053
+        assert production["automatic_space_plan"]["estimated_total_bytes"] == 699_246_834_450
         assert all("fma_acquisition_policy" not in row for row in recipes if row["id"] != "production")
         view = manager.create({"wakeword": "보라야", "preset": "production"})
         state = manager._load(view["id"])
