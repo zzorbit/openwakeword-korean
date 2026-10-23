@@ -14,10 +14,13 @@ def _fixture(tmp_path, content=b"", *, task="active-evaluation"):
     log = directory / "output.log"
     log.write_bytes(content)
     manager = object.__new__(studio.StudioManager)
+    manager._implementation_id = "fixture-implementation"
+    manager._timing_receipts = {}
     manager._rates = {}
     manager._job_alive = lambda job: True
     manager.review_descriptors = lambda state: []
     state = {"id": "word", "wakeword": "보라야", "preset": "check", "status": "running",
+        "implementation_id": manager._implementation_id,
         "project": str(root / "project.json"), "index": 1,
         "plan": [{"id": "training", "label": "학습", "kind": "task"},
                  {"id": "evaluation", "label": "성능 평가", "kind": "task"},

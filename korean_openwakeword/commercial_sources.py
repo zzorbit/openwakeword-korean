@@ -382,7 +382,12 @@ def download_commercial_source(record, output, *, max_download_bytes, progress=N
         if progress:
             progress({"label": "원본 자료 다운로드: " + asset["path"], "done": index, "total": len(assets), "unit": "files"})
         if asset["checksum_algorithm"] == "sha256":
-            receipt = download_checked(asset["source_url"], target, asset["sha256"], asset["size_bytes"])
+            def report(record):
+                if progress:
+                    labels = {"download": "원본 자료 다운로드", "hash": "원본 자료 무결성 검사", "retry": "연결 복구 · 이어받기"}
+                    progress({"label": labels[record["phase"]] + ": " + asset["path"], **record})
+            receipt = download_checked(asset["source_url"], target, asset["sha256"], asset["size_bytes"],
+                                       **({"progress": report} if progress else {}))
         else:
             # Reuse the existing resumable original SHA1/Git-blob downloader.
             from .studio_data import _download

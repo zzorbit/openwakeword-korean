@@ -68,7 +68,7 @@ test("summary preserves rank, counts, rates, latency and recorded decisions", ()
   assert.equal(rows("summary")[2][0], "2");
   assert.equal(rows("summary")[3][0], "—");
   assert.equal(rows("summary")[3][7], "충족");
-  assert.equal(elements.get("candidateStatus").textContent, "현재 실행 모델: 앙상블 · 모델 3개 점수 평균");
+  assert.equal(elements.get("candidateStatus").textContent, "평가 당시 실행 모델: 앙상블 · 모델 3개 점수 평균");
   assert.match(elements.get("summary").tBodies[0].children[0].children[6].title, /95%/);
   assert.equal(elements.get("candidateReasons").children[0].textContent, "모델 2: 시간당 오작동 횟수 · 환경소음 성공률 · SNR 5 dB");
   assert.equal(JSON.stringify(report), before);
@@ -77,7 +77,7 @@ test("runtime model and evaluation selection are not conflated", () => {
   const {ui, elements} = browser(), report = sample();
   report.selected_candidate = "member2_seed2";
   ui.renderSummary(report); ui.renderConditions(report);
-  assert.equal(elements.get("candidateStatus").textContent, "현재 실행 모델: 앙상블 · 모델 3개 점수 평균");
+  assert.equal(elements.get("candidateStatus").textContent, "평가 당시 실행 모델: 앙상블 · 모델 3개 점수 평균");
   assert.equal(elements.get("condition-model").value, "member2_seed2");
 });
 test("criteria show frozen targets and compare exact measurements for the selected model", () => {

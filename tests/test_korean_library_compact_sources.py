@@ -49,11 +49,13 @@ class Transport:
     def __init__(self, payloads):
         self.payloads, self.calls = payloads, []
         self.interrupt_once = None
+        self.interrupt_exception = requests.ConnectionError
     def get(self, url, **kwargs):
         self.calls.append((url, kwargs))
         raw = self.payloads[url]
         offset = int(kwargs.get("headers", {}).get("Range", "bytes=0-").split("=")[-1].split("-")[0])
         interrupt = self.interrupt_once == url
+        interrupt_exception = self.interrupt_exception
         if interrupt: self.interrupt_once = None
         class Response:
             status_code = 206 if offset else 200
@@ -64,7 +66,7 @@ class Transport:
             def iter_content(self, size):
                 if interrupt:
                     yield raw[offset:offset + len(raw)//2]
-                    raise requests.ConnectionError("fixture interrupted transfer")
+                    raise interrupt_exception("fixture interrupted transfer")
                 for start in range(offset, len(raw), size): yield raw[start:start+size]
         return Response()
 
@@ -142,13 +144,44 @@ def test_crash_after_extraction_before_part_commit_keeps_archive_and_fixed_extra
 
 
 def test_interrupted_transfer_uses_original_range_resume_before_retirement(setup):
-    directory, resolution, _, transport = setup
+    directory, resolution, raw, transport = setup
     transport.interrupt_once = resolution["assets"][0]["source_url"]
-    with pytest.raises(requests.ConnectionError): prepare(setup)
+    # A process shutdown remains a durable stop. A temporary connection error
+    # is now automatically recovered and is covered separately below.
+    transport.interrupt_exception = KeyboardInterrupt
+    with pytest.raises(KeyboardInterrupt): prepare(setup)
     assert not list((directory / "parts").glob("*.json"))
+    archive = directory / "originals" / resolution["assets"][0]["path"]
+    partial = archive.with_name(archive.name + ".part")
+    assert partial.is_file() and not archive.exists()
+    assert partial.stat().st_size == resolution["assets"][0]["size_bytes"] // 2
     result = prepare(setup)
     assert any("Range" in kwargs.get("headers", {}) for _, kwargs in transport.calls)
     assert result["retired_archive_bytes"] > 0
+    assert all((Path(result["audio_directory"]) / "part_0000" / name).read_bytes() == body for name, body in raw.items())
+    assert module.verify_compact_source(directory)["resumed"]
+
+
+def test_temporary_connection_recovers_before_verified_original_retirement(setup, monkeypatch):
+    directory, resolution, raw, transport = setup
+    url = resolution["assets"][0]["source_url"]
+    transport.interrupt_once = url
+    original_get, resumed = transport.get, []
+    def observed_get(request_url, **kwargs):
+        if request_url == url and "Range" in kwargs.get("headers", {}):
+            # Neither a part commit nor archive retirement may be inferred
+            # merely from the existence of an interrupted transfer.
+            assert not list((directory / "parts").glob("*.json"))
+            partial = directory / "originals" / (resolution["assets"][0]["path"] + ".part")
+            assert partial.stat().st_size == resolution["assets"][0]["size_bytes"] // 2
+            resumed.append(kwargs["headers"]["Range"])
+        return original_get(request_url, **kwargs)
+    monkeypatch.setattr(requests, "get", observed_get)
+    result = prepare(setup)
+    assert resumed == [f"bytes={resolution['assets'][0]['size_bytes']//2}-"]
+    assert result["retired_archive_bytes"] == resolution["assets"][0]["size_bytes"]
+    assert all((Path(result["audio_directory"]) / "part_0000" / name).read_bytes() == body for name, body in raw.items())
+    assert module.verify_compact_source(directory)["resumed"]
 
 
 @pytest.mark.parametrize("target", ["raw", "metadata", "part", "resolution"])

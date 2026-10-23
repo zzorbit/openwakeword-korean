@@ -141,42 +141,30 @@ def _download_archive(asset, downloads, progress=None):
     expected, size = asset["md5"], asset["size_bytes"]
     if not re.fullmatch(r"[0-9a-f]{32}", expected) or not asset["source_url"].startswith("https://"):
         raise ValueError("Publisher checksum and HTTPS are required")
-    def sums(path):
-        md5, sha = hashlib.md5(), hashlib.sha256()
-        with path.open("rb") as stream:
-            for block in iter(lambda: stream.read(8 * 1024**2), b""):
-                md5.update(block); sha.update(block)
-        return md5.hexdigest(), sha.hexdigest()
+    from .downloads import download_partial, verify_checksum
+    def report(record):
+        labels = {"download": "공통 평가 원본 다운로드", "hash": "공통 평가 원본 무결성 검사", "retry": "연결 복구 · 이어받기"}
+        if progress:
+            progress({"label": labels[record["phase"]] + ": " + asset["id"], **record,
+                      "task_id": os.environ.get("KOWW_STUDIO_TASK_ID")})
     with writer_lock(downloads / ("." + target.name + ".download")):
         reused = target.is_file()
-        verified = None
         if not reused:
             partial = target.with_name(target.name + ".part")
-            offset = partial.stat().st_size if partial.exists() else 0
-            if offset > size or shutil.disk_usage(downloads).free < size - offset:
-                raise ValueError("Partial archive size or selected-workspace free space is invalid")
-            if offset < size:
-                headers = {"Accept-Encoding": "identity", **({"Range": f"bytes={offset}-"} if offset else {})}
-                with requests.get(asset["source_url"], headers=headers, stream=True, timeout=(30, 180)) as response:
-                    response.raise_for_status()
-                    if offset and response.status_code == 206:
-                        if response.headers.get("Content-Range", "").split("/", 1) != [f"bytes {offset}-{size-1}", str(size)]:
-                            raise ValueError("Publisher resume range differs from the pinned archive")
-                    elif response.status_code == 200:
-                        offset = 0
-                    else:
-                        raise ValueError("Unexpected partial publisher response")
-                    with partial.open("ab" if offset else "wb") as stream:
-                        for block in response.iter_content(4 * 1024**2):
-                            stream.write(block)
-                            _emit(progress, "공통 평가 원본 다운로드 · " + asset["id"], stream.tell(), size, "bytes")
-            verified = sums(partial) if partial.stat().st_size == size else None
-            if verified is None or verified[0] != expected:
-                raise ValueError("Publisher archive checksum failed; partial source preserved")
+            download_partial(asset["source_url"], partial, size, progress=report if progress else None)
+            try:
+                sha = verify_checksum(partial, "md5", expected, progress=report if progress else None, return_sha256=True)
+            except ValueError as error:
+                raise ValueError("Publisher archive checksum failed; partial source preserved") from error
             partial.replace(target)
-        md5, sha = verified or sums(target)
-        if target.stat().st_size != size or md5 != expected:
-            raise ValueError("Existing publisher archive changed")
+        else:
+            if target.stat().st_size != size:
+                raise ValueError("Existing publisher archive changed")
+            try:
+                sha = verify_checksum(target, "md5", expected, progress=report if progress else None, return_sha256=True)
+            except ValueError as error:
+                raise ValueError("Existing publisher archive changed") from error
+        md5 = expected
         record = {"path": str(target), "bytes": size,
             "publisher_md5": md5, "sha256": sha, "source_url": asset["source_url"],
             "reused": reused, "content_approved": False, "completed_at": now()}

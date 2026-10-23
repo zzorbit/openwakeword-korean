@@ -42,11 +42,15 @@ def _path_key(path):
     return os.path.normcase(os.path.abspath(path))
 
 
-def _catalog_pins():
+def _catalog_pins(official_noise_acquisition_policy=None):
     from . import studio_data
     from .commercial_sources import _PROVIDERS
     package = Path(__file__).parent
-    return {"resources": {p.name: digest(p) for p in sorted((package / "resources").glob("*.json"))},
+    # Adding a source policy must not invalidate existing evidence for the
+    # unchanged complete-ZIP policy or unrelated sources.
+    resource_paths = [p for p in sorted((package / "resources").glob("*.json"))
+                      if p.name != "official_fma_small_v1.json" or official_noise_acquisition_policy == "selective_fma_small_v1"]
+    return {"resources": {p.name: digest(p) for p in resource_paths},
             "official_assets": identity(studio_data._official_assets()),
             "official_revisions": {name: getattr(studio_data, name) for name in
                                    ("AS_REV", "MIT_REV", "FMA_REV", "DNS_REV")},
@@ -126,7 +130,7 @@ def _extraction(directory, asset, downloads, lineage):
     return result
 
 
-def _base_lineage(root, workspace, key, lineage):
+def _base_lineage(root, workspace, key, lineage, prepared=None):
     from .studio_data import _official_assets, MIT_REV, MIT_RIR_COUNT
     assets = {a["id"]: a for a in _official_assets()}
     shared, downloads = workspace / "shared", workspace / "shared/downloads"
@@ -134,7 +138,31 @@ def _base_lineage(root, workspace, key, lineage):
                    "fma": shared / "fma_1h", "mit_rir": shared / "mit_rir/16khz"}
     directory = directories[key]
     metadata_pins = {}
-    if key == "mit_rir":
+    if key == "fma" and (prepared or {}).get("official_noise_acquisition_policy") == "selective_fma_small_v1":
+        from .official_music import POLICY, official_music_catalog
+        catalog = official_music_catalog()
+        expected = {"policy": POLICY, "catalog_sha256": identity(catalog)}
+        state = shared / "official_music_selective_v1"
+        _require(_metadata_file(state / "request.json", lineage) == expected, "selective music request changed")
+        acquisition = prepared.get("official_music_preparation", {})
+        binding = acquisition.get("receipt", {})
+        receipt_path = resolved(root, binding["path"])
+        _require(receipt_path.parent == state.resolve() and receipt_path.name.startswith("receipt_"),
+                 "selective music receipt is outside its source transaction")
+        receipt = _record(root, binding, lineage)
+        _require(acquisition.get("catalog_sha256") == expected["catalog_sha256"]
+                 and receipt.get("kind") == POLICY and receipt.get("request") == expected
+                 and receipt.get("original_bytes_preserved") is True and receipt.get("audio_reencoded") is False
+                 and receipt.get("content_approved") is False, "selective music provenance changed")
+        expected_files, originals = [], {}
+        for source_key in ("metadata", "music"):
+            base = shared / ("fma_1h" if source_key == "music" else "fma_metadata")
+            for item in catalog["archives"][source_key]["members"]:
+                path = (base / item["name"]).resolve()
+                expected_files.append({"path": str(path), **item})
+                (originals if source_key == "music" else metadata_pins)[_path_key(path)] = item["sha256"]
+        _require(receipt.get("files") == expected_files, "selective music source inventory changed")
+    elif key == "mit_rir":
         tree = _metadata_file(shared / "mit_rir/provider_tree.json", lineage)
         expected = f"https://huggingface.co/api/datasets/davidscripka/MIT_environmental_impulse_responses/tree/{MIT_REV}/16khz?limit=1000"
         _require(tree.get("source_url") == expected, "MIT provider revision changed")
@@ -266,7 +294,7 @@ def _train(root, workspace, prepared, queue, entry, component, lineage):
     rows = list(iter_rows(bound_file(root, source)))
     _require(bool(rows), "training source manifest is empty")
     directory, index, originals, metadata_pins = (_automatic_lineage(root, workspace, prepared, key, component, lineage)
-                                                  if component else _base_lineage(root, workspace, key, lineage))
+                                                  if component else _base_lineage(root, workspace, key, lineage, prepared))
     lineage[str(index.resolve())] = _binding(index)
     index_rows = {r.get("canonical_source_id"): r for r in iter_rows(index) if not r.get("excluded")}
     contracts = {(r.get("canonical_source_id"), _path_key(r["path"])): r for r in contract.get("sources", [])}
@@ -419,10 +447,14 @@ def _payload(project, prepared, queue):
         recipe["preparations"] = [{"id": source_key, "preparation": preparation, "pools": queue["pools"]}]
         if component:
             recipe["material_acquisition_policy"] = prepared["material_acquisition_policy"]
+        elif source_key == "fma" and prepared.get("official_noise_acquisition_policy"):
+            recipe.update(official_noise_acquisition_policy=prepared["official_noise_acquisition_policy"],
+                          official_music_preparation=prepared["official_music_preparation"])
     return {"kind": _KIND, "policy_id": POLICY_ID, "project": str(project), "wakeword": config["wakeword"],
             "scope": scope, "allowed_pools": pools, "source_key": source_key,
             "preparation": preparation, "source_manifest": source, "queue": previews,
-            "catalog_pins": _catalog_pins(), "lineage_bindings": sorted(lineage.values(), key=lambda b: b["path"]),
+            "catalog_pins": _catalog_pins(prepared.get("official_noise_acquisition_policy") if source_key == "fma" else None),
+            "lineage_bindings": sorted(lineage.values(), key=lambda b: b["path"]),
             "human_listening": False, "human_listened_count": 0, "human_answers": None, "recipe": recipe}
 
 

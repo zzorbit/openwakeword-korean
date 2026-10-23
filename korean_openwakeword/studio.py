@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlsplit
+import ast
 import hmac
 import json
 import mimetypes
@@ -92,6 +93,105 @@ def _implementation():
     root = Path(__file__).parent
     paths = sorted(root.glob("*.py")) + sorted((root / "resources").glob("*.json"))
     return identity({path.relative_to(root).as_posix(): digest(path) for path in paths})
+
+
+def _execution_contract():
+    """Conservative computation fingerprint, separate from display/orchestration.
+
+    A UI fix may change the worker implementation without changing any input,
+    generation, training or scoring code. A changed computational file remains
+    incompatible: a maintainer must provide an explicit audited migration.
+    """
+    root = Path(__file__).parent
+    presentation = {"__init__.py", "__main__.py", "cli.py", "demo.py", "microphone.py",
+                    "paged_site.py", "site.py", "storage_budget.py", "studio.py", "studio_worker.py", "studio_analysis.py"}
+    paths = [p for p in sorted(root.glob("*.py")) if p.name not in presentation]
+    paths += sorted((root / "resources").glob("*.json"))
+    bindings = {p.relative_to(root).as_posix(): digest(p) for p in paths}
+    # Stage-only modules cannot affect an already finished stage. Unknown new
+    # modules remain shared, so adding a dependency never silently bypasses the
+    # compatibility gate.
+    groups = {
+        "data": {"automatic_sources.py", "canonical_sources.py", "commercial_sources.py", "compact_sources.py",
+                 "downloads.py", "evaluation_materials.py", "fma_download.py", "fma_selection.py", "fma_streaming.py",
+                 "material_policy.py", "provider_index.py", "range_zip.py", "source_waveform_index.py",
+                 "studio_data.py", "studio_evaluation_data.py", "pool_review.py"},
+        "tts": {"reference_bank.py", "hard_tts.py", "tts.py", "tts_runtime.py", "tts_cuda_graph.py",
+                "tts_cuda_predictor.py", "tts_cuda_sampling.py"},
+        "features": {"features.py", "paired.py", "preparation.py"},
+        "training": {"train.py"},
+        "models": {"bundle.py", "final_integrity.py", "runtime.py", "events.py"},
+        "results": {"selection.py", "cache_analysis.py"},
+        "evaluation": {"evaluate.py", "evaluation_backend.py", "evaluation_coverage.py", "evaluation_rir.py",
+                       "evaluation_workers.py", "gpu_evaluation.py", "negative_streams.py", "tune.py"}}
+    stage_groups = {
+        "frontend": set(), "data_download": {"data"}, "data_review": {"data"}, "data_connect": {"data"},
+        "references": {"tts"}, "references_review": {"tts"}, "pilot": {"tts"}, "pilot_review": {"tts"},
+        "positives": {"tts"}, "hard_phrases": {"tts"}, "hard_generation": {"tts"}, "hard_review": {"tts", "data"},
+        "hard_connect": {"tts", "data"}, "features": {"features"}, "training": {"training"},
+        "package": {"models"}, "development": {"data", "evaluation", "models"},
+        "evaluation": {"evaluation", "models"}, "results": {"results", "evaluation", "models"}}
+    tree = ast.parse((root / "studio_steps.py").read_text(encoding="utf-8-sig"))
+    run = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "run_stage")
+    branches = {}
+    shared = []
+    for node in run.body:
+        test = node.test if isinstance(node, ast.If) else None
+        if (isinstance(test, ast.Compare) and isinstance(test.left, ast.Name) and test.left.id == "stage_id"
+                and len(test.comparators) == 1 and isinstance(test.comparators[0], ast.Constant)
+                and isinstance(test.comparators[0].value, str) and isinstance(test.ops[0], ast.Eq)):
+            branches[test.comparators[0].value] = node
+        else:
+            shared.append(node)
+    helpers = [node for node in tree.body if isinstance(node, ast.FunctionDef)
+               and node.name not in ("run_stage", "preset_settings", "workflow_plan", "common_evaluation_policy")]
+    classified = set().union(*groups.values())
+    dependencies = {}
+    for path in paths:
+        if path.suffix != ".py" or path.name == "studio_steps.py":
+            continue
+        parsed = ast.parse(path.read_text(encoding="utf-8-sig"))
+        dependencies[path.name] = {node.module.split(".")[0] + ".py" for node in ast.walk(parsed)
+                                   if isinstance(node, ast.ImportFrom) and node.level == 1 and node.module}
+    stages = {}
+    for stage, needed_groups in stage_groups.items():
+        needed = set().union(*(groups[group] for group in needed_groups)) if needed_groups else set()
+        stage_files = {name: value for name, value in bindings.items()
+                       if name != "studio_steps.py" and (name not in classified or name in needed)}
+        pending = list(stage_files)
+        while pending:
+            for dependency in dependencies.get(pending.pop(), ()):
+                if dependency in bindings and dependency not in stage_files and dependency != "studio_steps.py":
+                    stage_files[dependency] = bindings[dependency]
+                    pending.append(dependency)
+        code = ast.dump(ast.Module(body=shared + helpers + [branches[stage]], type_ignores=[]), include_attributes=False)
+        stages[stage] = identity({"files": stage_files, "stage_code": code})
+    return {"schema_version": 1, "computation_sha256": identity(bindings), "files": bindings, "stages": stages}
+
+
+# Exact 0.14.3 source identity and computational fingerprint, audited before
+# adding migration support. Other snapshot-less versions are never guessed.
+_LEGACY_COMPATIBLE_CONTRACTS = {
+    "9d05b6d391a18920f28c964cf8f12c26faec7c5f98152688c73a5a499b4dd141":
+        "28f88142c4ab88361199fd2fae2ec1fca1ba863412c206fb0cd5e6b5515def14"}
+
+
+def _timestamp(value):
+    try:
+        return datetime.fromisoformat(value).timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def _interval_seconds(intervals):
+    """Union intervals: receipts and the current worker must never double count."""
+    end, seconds = None, 0.0
+    for start, stop in sorted(intervals):
+        if stop <= start:
+            continue
+        seconds += stop - max(start, end if end is not None else start) if end is None or stop > end else 0
+        end = max(end if end is not None else stop, stop)
+    return seconds
 
 
 def _job_log_tail(job, limit=24000):
@@ -185,6 +285,8 @@ class StudioManager:
         self._popen = popen or subprocess.Popen
         self._children = {}
         self._implementation_id = _implementation()
+        self._execution_contract = _execution_contract()
+        self._timing_receipts = {}
         self._microphones = {}
         self._journals = {}
         self._rates = {}
@@ -206,8 +308,71 @@ class StudioManager:
         return state
 
     def _save(self, state):
-        state["updated_at"] = now()
+        stamp = now()
+        # Record observed status boundaries from this version onward. Unknown
+        # legacy/offline intervals stay unclassified instead of becoming CPU
+        # time merely because a status file once said "running".
+        timing = state.setdefault("timing_observations", {"schema_version": 1, "segments": []})
+        segments = timing["segments"]
+        if not segments or segments[-1]["status"] != state["status"]:
+            if segments and "end" not in segments[-1]:
+                segments[-1]["end"] = stamp
+            segments.append({"status": state["status"], "start": stamp})
+        if state["status"] == "completed":
+            segments[-1]["end"] = stamp
+            state.setdefault("completed_at", stamp)
+        state["updated_at"] = stamp
         write_json(self._path(state["id"]), state)
+
+    def _timing(self, state):
+        start = _timestamp(state.get("started_at") or state.get("created_at"))
+        end = time.time()
+        complete = state.get("status") == "completed"
+        if complete:
+            finished = state.get("completed_at")
+            if not finished:
+                finished = next((entry.get("completed_at") for entry in reversed(state.get("history", []))
+                                 if entry.get("completed_at")), state.get("updated_at"))
+            end = _timestamp(finished) or start or end
+        start = min(start if start is not None else end, end)
+        intervals = []
+        for entry in state.get("history", []):
+            key = (entry.get("result"), entry.get("sha256"))
+            if not all(key):
+                continue
+            if key not in self._timing_receipts:
+                try:
+                    result = read_json(key[0])
+                    self._timing_receipts[key] = (_timestamp(result.get("started_at")),
+                                                  _timestamp(result.get("completed_at")))
+                except (OSError, ValueError, TypeError):
+                    self._timing_receipts[key] = (None, None)
+            left, right = self._timing_receipts[key]
+            if left is not None and right is not None:
+                intervals.append((max(start, left), min(end, right)))
+        job = state.get("job") or {}
+        if not complete and job and self._job_alive(job):
+            left = _timestamp(job.get("started_at"))
+            if left is not None:
+                intervals.append((max(start, left), end))
+        active = min(end - start, _interval_seconds(intervals))
+        review_intervals, paused_intervals = [], []
+        for segment in (state.get("timing_observations") or {}).get("segments", []):
+            left = _timestamp(segment.get("start"))
+            right = _timestamp(segment.get("end")) if segment.get("end") else end
+            if left is None or right is None:
+                continue
+            target = review_intervals if segment.get("status") in ("waiting_review", "waiting_input") else paused_intervals
+            if segment.get("status") in ("waiting_review", "waiting_input", "ready", "paused", "interrupted", "error"):
+                target.append((max(start, left), min(end, right)))
+        total = max(0, end - start)
+        review = min(total - active, _interval_seconds(review_intervals))
+        paused = min(total - active - review, _interval_seconds(paused_intervals))
+        unknown = max(0, total - active - review - paused)
+        return {"total_seconds": round(total, 1), "active_seconds": round(active, 1),
+                "review_wait_seconds": round(review, 1), "paused_seconds": round(paused, 1),
+                "unclassified_seconds": round(unknown, 1), "complete": complete,
+                "active_scope": "verified_worker_lifetime", "legacy_estimate": unknown > 1}
 
     def _recover(self):
         for project_id in self.registry["projects"]:
@@ -232,7 +397,8 @@ class StudioManager:
             recipe = material_recipe(key, evaluation_policy=settings["evaluation_policy"],
                                      material_acquisition_policy=settings.get("material_acquisition_policy"),
                                      fma_acquisition_policy=settings.get("fma_acquisition_policy"),
-                                     material_review_policy=settings.get("material_review_policy"))
+                                     material_review_policy=settings.get("material_review_policy"),
+                                     official_noise_acquisition_policy=settings.get("official_noise_acquisition_policy"))
             if key == "production":
                 from .storage_budget import commercial_storage_budget
                 recipe["storage_budget"] = commercial_storage_budget(
@@ -288,6 +454,9 @@ class StudioManager:
                 settings.pop("fma_acquisition_policy", None)
                 if config.get("fma_acquisition_policy"):
                     settings["fma_acquisition_policy"] = config["fma_acquisition_policy"]
+                settings.pop("official_noise_acquisition_policy", None)
+                if config.get("official_noise_acquisition_policy"):
+                    settings["official_noise_acquisition_policy"] = config["official_noise_acquisition_policy"]
                 if config.get("audio_storage_policy") != "canonical_flac_only_v1":
                     # Attaching an existing CLI project must not reinterpret
                     # its old WAV/cache/receipt contract as canonical storage.
@@ -311,6 +480,8 @@ class StudioManager:
                 config["audio_storage_policy"] = settings["audio_storage_policy"]
                 if settings.get("fma_acquisition_policy"):
                     config["fma_acquisition_policy"] = settings["fma_acquisition_policy"]
+                if settings.get("official_noise_acquisition_policy"):
+                    config["official_noise_acquisition_policy"] = settings["official_noise_acquisition_policy"]
                 write_json(project, config)
             state = {"schema_version": 1, "id": project_id, "workspace": str(self.workspace),
                      "storage_workspace": str(self.workspace if target.is_relative_to(self.workspace) else target),
@@ -319,6 +490,8 @@ class StudioManager:
                      "created_at": now(), "status": "ready", "index": 0,
                      "plan": workflow_plan(settings), "results": {}, "inputs": {}, "job": None,
                      "error": None, "next_action": "시작하면 자료 준비부터 자동으로 진행합니다."}
+            state["execution_contract"] = {**self._execution_contract,
+                "settings_sha256": identity(settings), "plan_sha256": identity(state["plan"])}
             selected_cache = os.environ.get("KOWW_CACHE_ROOT")
             state["cache_root"] = str(_safe_root(selected_cache) if selected_cache else Path(state["storage_workspace"]) / "cache")
             self.registry["projects"][project_id] = str(project)
@@ -356,7 +529,10 @@ class StudioManager:
                          and state.get("job") in (None, {}) and state.get("last_job") in (None, {})
                          and not (jobs.exists() and any(jobs.iterdir())) and not _lock_paths(root))
             if not unstarted:
-                raise ValueError("라이브러리 코드가 변경되었습니다. 기존 실행 자료를 보존하고 새 실험을 만드세요.")
+                upgrade = self._migration_view(state)
+                if upgrade and upgrade["state"] == "available":
+                    raise ValueError("라이브러리 코드가 변경되었습니다. 호환되는 업데이트 적용 후 이어가기 버튼을 누르세요. 기존 자료는 보존됩니다.")
+                raise ValueError("라이브러리 코드가 변경되었습니다. " + (upgrade or {}).get("reason", "기존 실행 자료를 보존하고 새 실험을 만드세요."))
             # A configuration made before the first worker has no execution or
             # human decisions to reinterpret. Preserve its exact prior state,
             # then bind only future requests to this implementation. Started
@@ -376,8 +552,77 @@ class StudioManager:
                 "reason": "No workflow execution or human decisions exist; frozen project configuration is unchanged",
                 "preserved_scope": "Existing downloads, audio, approvals, models and evaluation files are unchanged"})
             state["implementation_id"] = self._implementation_id
+            state["execution_contract"] = {**self._execution_contract,
+                "settings_sha256": identity(state["settings"]), "plan_sha256": identity(state["plan"])}
             state.setdefault("migrations", []).append({"path": str(receipt), "sha256": digest(receipt)})
             self._save(state)
+
+    def _migration_view(self, state):
+        if state.get("implementation_id") == self._implementation_id or state.get("status") == "completed":
+            return None
+        def blocked(reason):
+            return {"state": "blocked", "reason": reason, "action": None}
+        if self._job_alive(state.get("job") or {}):
+            return blocked("현재 작업이 끝난 뒤 업데이트 호환성을 다시 확인합니다.")
+        previous = state.get("execution_contract") or {}
+        if previous:
+            if (previous.get("schema_version") != 1 or previous.get("settings_sha256") != identity(state["settings"])
+                    or previous.get("plan_sha256") != identity(state["plan"])):
+                return blocked("저장된 설정 또는 단계 계약이 달라 자동으로 이관할 수 없습니다. 기존 자료는 보존됩니다.")
+            remaining = [entry["id"] for entry in state["plan"][state["index"]:]]
+            changed = [stage for stage in remaining if not previous.get("stages", {}).get(stage)
+                       or previous["stages"][stage] != self._execution_contract["stages"].get(stage)]
+            if changed:
+                return blocked("남은 단계의 자료·생성·학습·채점 코드가 달라 호환 이관할 수 없습니다. 기존 자료를 보존하고 새 실험을 만드세요.")
+        elif (_LEGACY_COMPATIBLE_CONTRACTS.get(state.get("implementation_id"))
+              != self._execution_contract["computation_sha256"]):
+            return blocked("이 구버전에는 검증된 단계 계약이 없습니다. 기존 자료를 보존하고 별도 호환 검증이 필요합니다.")
+        return {"state": "available", "action": "migrate",
+                "reason": "남은 단계의 계산·자료 계약이 같습니다. 기존 설정과 완료 결과를 검증하고 업데이트를 적용할 수 있습니다.",
+                "preserves": ["project_settings", "completed_artifacts", "review_answers", "history"]}
+
+    def migrate(self, project_id):
+        """Explicit, audited compatibility rebind; never an implicit resume."""
+        with self._lock:
+            state = self._load(project_id)
+            if state.get("status") == "completed":
+                return self.describe(state)  # Historical workflows are never rewritten for a UI update.
+            if state.get("implementation_id") == self._implementation_id:
+                return self.describe(state)
+            compatibility = self._migration_view(state)
+            if not compatibility or compatibility["state"] != "available":
+                raise ValueError((compatibility or {}).get("reason", "이 업데이트는 자동 이관할 수 없습니다."))
+            if digest(state["project"]) != state["config_sha256"]:
+                raise ValueError("프로젝트 설정이 변경되어 업데이트를 적용할 수 없습니다.")
+            for other_id in self.registry["projects"]:
+                if self._job_alive(self._load(other_id).get("job") or {}):
+                    raise ValueError("실행 중인 작업이 있습니다. 해당 작업이 끝난 뒤 업데이트를 적용하세요.")
+            self._verify_history(state)
+            self._recover_dead_locks(state)
+            if _lock_paths(Path(state["project"]).parent):
+                raise ValueError("소유자를 확인할 수 없는 자료 잠금이 있어 업데이트를 적용할 수 없습니다.")
+            directory = Path(state["project"]).parent / ".studio" / "migrations" / uuid.uuid4().hex
+            directory.mkdir(parents=True, exist_ok=False)
+            before = directory / "workflow_before.json"
+            before.write_bytes(self._path(project_id).read_bytes())
+            receipt = directory / "receipt.json"
+            write_json(receipt, {"schema_version": 1, "kind": "compatible_workflow_update",
+                "migrated_at": now(), "old_implementation_id": state.get("implementation_id"),
+                "new_implementation_id": self._implementation_id, "config_sha256": state["config_sha256"],
+                "previous_workflow": {"path": str(before), "sha256": digest(before)},
+                "old_execution_contract": state.get("execution_contract"),
+                "new_computation_sha256": self._execution_contract["computation_sha256"],
+                "remaining_stages": [entry["id"] for entry in state["plan"][state["index"]:]],
+                "history_sha256": identity(state.get("history", [])), "inputs_sha256": identity(state.get("inputs", {})),
+                "preserved": compatibility["preserves"]})
+            state["implementation_id"] = self._implementation_id
+            state["execution_contract"] = {**self._execution_contract,
+                "settings_sha256": identity(state["settings"]), "plan_sha256": identity(state["plan"])}
+            state.setdefault("migrations", []).append({"path": str(receipt), "sha256": digest(receipt)})
+            if state.get("status") in ("running", "pausing"):
+                state.update(status="interrupted", auto_continue=False)
+            self._save(state)
+            return self.describe(state)
 
     def _verify_history(self, state):
         for entry in state.get("history", []):
@@ -460,6 +705,9 @@ class StudioManager:
             elif phase == "completed":
                 state["index"] += 1
                 state.update(status="completed" if state["index"] >= len(state["plan"]) else "ready", next_action="다음 단계를 준비합니다.")
+                if state["status"] == "completed":
+                    state["auto_continue"] = False
+                    state["completed_at"] = result.get("completed_at") if _timestamp(result.get("completed_at")) else now()
             else:
                 state.update(status="error", error="지원하지 않는 단계 종료 상태: " + str(phase))
         state.setdefault("history", []).append({"stage": job["stage"], "started_at": job["started_at"],
@@ -470,6 +718,8 @@ class StudioManager:
     def start(self, project_id):
         with self._lock:
             state = self._load(project_id)
+            if state["status"] == "completed":
+                return self.describe(state)
             self._guard_config(state)
             if state["status"] in ("running", "pausing") and self._job_alive(state.get("job") or {}):
                 state["auto_continue"] = True
@@ -477,7 +727,8 @@ class StudioManager:
                 return self.describe(state)
             for other_id in self.registry["projects"]:
                 other = self._load(other_id)
-                if other_id != project_id and (other.get("auto_continue") or self._job_alive(other.get("job") or {})):
+                scheduled = other["status"] in ("ready", "running", "pausing") and other.get("auto_continue")
+                if other_id != project_id and (scheduled or self._job_alive(other.get("job") or {})):
                     raise ValueError("다른 프로젝트가 실행 중입니다. 해당 작업을 먼저 일시정지하세요.")
             if state["status"] == "completed":
                 return self.describe(state)
@@ -694,6 +945,7 @@ class StudioManager:
         index, plan = state["index"], state["plan"]
         stage = plan[index] if index < len(plan) else {"id": "completed", "label": "완료"}
         view = {key: state.get(key) for key in ("id", "wakeword", "preset", "status", "error", "next_action", "created_at")}
+        timing = self._timing(state)
         view.update(directory=str(Path(state["project"]).parent), stage=stage, stage_id=stage["id"],
                     evaluation_policy=state.get("settings", {}).get("evaluation_policy"),
                     evaluation_policy_sha256=identity(state["settings"]["evaluation_policy"]) if state.get("settings", {}).get("evaluation_policy") else None,
@@ -701,7 +953,8 @@ class StudioManager:
                             for i, entry in enumerate(plan)],
                     stage_progress={"done": index, "total": len(plan), "unit": "완료 단계"},
                     progress={"done": index, "total": len(plan), "unit": "완료 단계"},
-                    elapsed_seconds=round(_elapsed(state.get("started_at")), 1), eta_seconds=None)
+                    elapsed_seconds=timing["total_seconds"], timing=timing,
+                    migration=self._migration_view(state), eta_seconds=None)
         job = state.get("job") or {}
         if job:
             view["current_stage_elapsed_seconds"] = round(_elapsed(job.get("started_at")), 1)
@@ -717,6 +970,7 @@ class StudioManager:
                 record = read_json(material_progress)
                 if record.get("stage") == "data_download" and record.get("updated_at", "") >= job["started_at"]:
                     view["progress"] = record
+                    view["eta_seconds"] = record.get("eta_seconds")
             if job["stage"] == "training":
                 progress_files = list((Path(state["project"]).parent / "runs" / "studio_run").glob("member*/progress.json"))
                 records = [read_json(p) for p in progress_files]
@@ -756,9 +1010,10 @@ class StudioManager:
                 elif phase == "finalizing":
                     view["next_action"] = "채점을 마쳤으며 결과를 정리하고 있습니다."
             current = view["progress"]
-            if (job["stage"] != "evaluation" and current.get("total") and current.get("done") is not None
+            if (job["stage"] != "evaluation" and current.get("phase") != "retry"
+                    and view["eta_seconds"] is None and current.get("total") and current.get("done") is not None
                     and current.get("unit") != "완료 단계"):
-                key = (job["task_id"], current.get("label"), current.get("total"))
+                key = (job["task_id"], current.get("phase"), current.get("label"), current.get("total"))
                 baseline = self._rates.setdefault(key, (time.monotonic(), current["done"]))
                 seconds, delta = time.monotonic() - baseline[0], current["done"] - baseline[1]
                 if seconds >= 10 and delta > 0:
@@ -879,6 +1134,14 @@ class StudioManager:
         job = state.get("job") or state.get("last_job") or {}
         return _job_log_tail(job) or "아직 실행 로그가 없습니다."
 
+    @property
+    def analysis(self):
+        with self._lock:
+            if not hasattr(self, "_analysis_service"):
+                from .studio_analysis import StudioAnalysis
+                self._analysis_service = StudioAnalysis(self)
+            return self._analysis_service
+
     def microphone(self, project_id):
         if project_id not in self._microphones:
             with self._lock:
@@ -890,8 +1153,12 @@ class StudioManager:
                 from .microphone import MicrophoneService
                 from .runtime import WakeWordDetector
                 package = state["results"]["package"]
-                bundle = package.get("result", package)["bundle"]
-                self._microphones[project_id] = MicrophoneService(WakeWordDetector(bundle))
+                original_bundle = package.get("result", package)["bundle"]
+                bundle = self.analysis.active_bundle(project_id) or original_bundle
+                original = read_json(Path(original_bundle) / "manifest.json")
+                labels = {Path(row["path"]).stem: f"모델 {index + 1}"
+                          for index, row in enumerate(original["members"])}
+                self._microphones[project_id] = MicrophoneService(WakeWordDetector(bundle), model_labels=labels)
         return self._microphones[project_id]
 
 
@@ -1011,6 +1278,8 @@ def make_studio_server(manager, port=8793):
                     return self.send_file(target)
                 if path.startswith("/mic/"):
                     return self.mic_get(path)
+                if path.startswith("/analysis/"):
+                    return self.analysis_get(path)
                 self.respond({"error": "페이지를 찾을 수 없습니다."}, 404)
             except PermissionError as error:
                 self.respond({"error": str(error)}, 403)
@@ -1034,6 +1303,8 @@ def make_studio_server(manager, port=8793):
             project_id, rest = parts[2], parts[3] if len(parts) > 3 else ""
             prefix = "/mic/" + project_id
             if rest == "api/info":
+                if manager.analysis.busy(project_id):
+                    raise ValueError("모델 비교·선택 작업을 마친 뒤 마이크를 연결하세요.")
                 return self.respond(manager.microphone(project_id).info())
             names = {"": "microphone.html", "microphone.js": "microphone.js", "microphone.css": "microphone.css", "microphone_worklet.js": "microphone_worklet.js"}
             if rest not in names:
@@ -1046,6 +1317,21 @@ def make_studio_server(manager, port=8793):
                 content = content.replace('fetch(path,', 'fetch(' + json.dumps(prefix) + ' + path,').replace('fetch("/api/stop",', 'fetch(' + json.dumps(prefix + "/api/stop") + ',').replace('"/microphone_worklet.js"', json.dumps(prefix + "/microphone_worklet.js"))
             kind = "text/html; charset=utf-8" if name.endswith("html") else "text/css; charset=utf-8" if name.endswith("css") else "text/javascript; charset=utf-8"
             return self.respond(content.encode(), kind=kind)
+
+        def analysis_get(self, path):
+            parts = path.split("/", 3)
+            project_id, rest = parts[2], parts[3] if len(parts) > 3 else ""
+            manager._load(project_id)
+            if rest == "api/status":
+                return self.respond(manager.analysis.status(project_id))
+            if rest.startswith("download/"):
+                return self.send_file(manager.analysis.download(project_id, rest.split("/", 1)[1]))
+            names = {"": "analysis.html", "analysis.js": "analysis.js", "analysis.css": "analysis.css"}
+            if rest not in names:
+                return self.respond({"error": "페이지를 찾을 수 없습니다."}, 404)
+            name = names[rest]
+            kind = "text/html; charset=utf-8" if name.endswith("html") else "text/css; charset=utf-8" if name.endswith("css") else "text/javascript; charset=utf-8"
+            return self.respond((resources / name).read_bytes(), kind=kind)
 
         def do_POST(self):
             try:
@@ -1060,12 +1346,22 @@ def make_studio_server(manager, port=8793):
                         return self.respond(service.process_frame(self.headers.get("X-Koww-Session"), int(self.headers.get("X-Koww-Sequence", "-1")), payload))
                     payload = self.body(max_bytes=4096)
                     if action == "start":
-                        return self.respond(service.start())
+                        with manager._lock:
+                            if manager.analysis.busy(project_id):
+                                raise ValueError("모델 비교·선택 작업을 마친 뒤 마이크를 연결하세요.")
+                            service = manager.microphone(project_id)
+                            self.guard(mutate=True, token=service.token)
+                            return self.respond(service.start())
                     if action == "stop":
                         return self.respond(service.stop(payload.get("session_id")))
                     raise ValueError("Unsupported microphone action")
                 self.guard(mutate=True)
                 payload = self.body()
+                if path.startswith("/analysis/"):
+                    parts = path.split("/")
+                    if len(parts) != 5 or parts[3] != "api" or parts[4] not in ("compare", "select"):
+                        raise ValueError("지원하지 않는 분석 작업입니다.")
+                    return self.respond(manager.analysis.launch(parts[2], parts[4], payload))
                 if path == "/api/projects":
                     return self.respond(manager.create(payload))
                 if path == "/review/save":
@@ -1073,7 +1369,8 @@ def make_studio_server(manager, port=8793):
                     return self.respond(manager.save_review(query["project"][0], query["queue"][0], payload))
                 if path.startswith("/api/projects/"):
                     project_id, action = path.split("/")[3:5]
-                    methods = {"start": manager.start, "resume": manager.start, "pause": manager.pause}
+                    methods = {"start": manager.start, "resume": manager.start, "pause": manager.pause,
+                               "migrate": manager.migrate}
                     if action == "input":
                         return self.respond(manager.submit_input(project_id, payload))
                     if action in methods:

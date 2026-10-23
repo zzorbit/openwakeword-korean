@@ -8,10 +8,54 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import requests
 import soundfile as sf
 
 from korean_openwakeword import evaluation_materials as module
 from korean_openwakeword.common import digest, read_json
+
+
+def test_publisher_md5_download_recovers_connection_and_preserves_receipt(tmp_path, monkeypatch):
+    payload, calls, progress = b"exact evaluation archive fixture", [], []
+    asset = {"id": "fsd_fixture", "filename": "fixture.zip", "size_bytes": len(payload),
+             "checksum_algorithm": "md5", "md5": hashlib.md5(payload).hexdigest(),
+             "source_url": "https://example.org/original.zip"}
+    class Response:
+        def __init__(self, offset):
+            self.offset = offset
+            self.status_code = 206 if offset else 200
+            self.headers = {"Content-Range": f"bytes {offset}-{len(payload)-1}/{len(payload)}"} if offset else {}
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def raise_for_status(self): pass
+        def iter_content(self, count):
+            if self.offset == 0:
+                yield payload[:4]
+                raise requests.exceptions.ChunkedEncodingError("fixture disconnected")
+            yield payload[self.offset:]
+    def get(url, headers, **kwargs):
+        calls.append(headers)
+        return Response(4 if headers.get("Range") else 0)
+    monkeypatch.setattr("korean_openwakeword.downloads.requests.get", get)
+    monkeypatch.setattr("korean_openwakeword.downloads.time.sleep", lambda _: None)
+    target = module._download_archive(asset, tmp_path, progress.append)
+    assert target.read_bytes() == payload and calls[-1]["Range"] == "bytes=4-"
+    assert {r["phase"] for r in progress} == {"download", "retry", "hash"}
+    receipt = target.with_name(target.name+".receipt.json")
+    before = receipt.read_bytes()
+    assert read_json(receipt)["sha256"] == hashlib.sha256(payload).hexdigest()
+    assert module._download_archive(asset, tmp_path) == target
+    assert len(calls) == 2 and receipt.read_bytes() == before
+
+
+def test_publisher_md5_bad_checksum_preserves_original_partial(tmp_path, monkeypatch):
+    partial = tmp_path / "fixture.zip.part"; partial.write_bytes(b"changed")
+    asset = {"id": "fixture", "filename": "fixture.zip", "size_bytes": 7,
+             "checksum_algorithm": "md5", "md5": "0"*32, "source_url": "https://example.org/original.zip"}
+    monkeypatch.setattr("korean_openwakeword.downloads.requests.get", lambda *a, **k: pytest.fail("Complete partial should only be checked"))
+    with pytest.raises(ValueError, match="checksum"):
+        module._download_archive(asset, tmp_path)
+    assert partial.read_bytes() == b"changed" and not (tmp_path / "fixture.zip").exists()
 
 
 def test_common_zeroth_bootstraps_without_training_import_and_reserves_speakers(tmp_path, monkeypatch):

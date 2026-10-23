@@ -7,8 +7,11 @@ from korean_openwakeword.studio_steps import common_evaluation_policy
 
 def _describe(tmp_path, *, version=4, candidate=None, admitted=None):
     manager = object.__new__(StudioManager)
+    manager._implementation_id = "fixture-implementation"
+    manager._timing_receipts = {}
     manager.review_descriptors = lambda state: []
     state = {"id": "fixture", "wakeword": "보라야", "preset": "check", "status": "paused",
+        "implementation_id": manager._implementation_id,
         "project": str(tmp_path / "not_opened/project.json"), "index": 0,
         "plan": [{"id": "data_review", "label": "검수", "kind": "review"}],
         "settings": {"evaluation_policy": common_evaluation_policy(version)},

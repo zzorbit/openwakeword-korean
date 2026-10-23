@@ -108,6 +108,22 @@ def test_create_presets_only_configure_without_work(manager, preset, originals, 
     assert not (Path(state["project"]).parent / "final_lock.json").exists()
 
 
+
+def test_new_official_example_selection_policy_is_frozen_but_not_added_to_legacy_attach(manager, tmp_path):
+    view = create(manager)
+    state = manager._load(view["id"])
+    assert state["settings"]["official_noise_acquisition_policy"] == "selective_fma_small_v1"
+    assert read_json(state["project"])["official_noise_acquisition_policy"] == "selective_fma_small_v1"
+    legacy = create_project(tmp_path / "legacy", "다음아", "legacy", positive_originals=1000,
+                            augmentation_rounds=1, updates=10000, generic_hours=2000,
+                            korean_hours=1, validation_voice_families=30)
+    before = digest(legacy)
+    attached = manager.create({"wakeword": "다음아", "preset": "check", "directory": str(legacy.parent)})
+    attached_state = manager._load(attached["id"])
+    assert "official_noise_acquisition_policy" not in attached_state["settings"]
+    assert digest(legacy) == before
+
+
 def test_automatic_training_view_separates_targets_candidates_admissions_and_nominal_features(manager):
     view = create(manager)
     state = manager._load(view["id"])
@@ -282,6 +298,174 @@ def test_automatic_order_cooperative_pause_and_resume(manager):
     assert [entry["stage"] for entry in manager._load(project["id"])["history"]] == ["frontend", "features", "results"]
 
 
+def test_completed_legacy_project_never_blocks_next_project_or_rewrites_history(manager):
+    first = create(manager)
+    state = put_state(manager, first["id"], status="completed", index=19,
+                      auto_continue=True, implementation_id="historical-version")
+    path = manager._path(first["id"])
+    preserved = path.read_bytes()
+    second = create(manager)
+    assert manager.start(second["id"])["status"] == "running"
+    assert len(manager.workers.items) == 1
+    assert path.read_bytes() == preserved
+    assert manager.start(first["id"])["status"] == "completed"
+    assert path.read_bytes() == preserved
+
+
+def test_last_stage_clears_automatic_schedule_and_fixes_completion_time(manager):
+    view = create(manager)
+    put_state(manager, view["id"], plan=[{"id": "frontend", "label": "one", "kind": "task"}])
+    manager.start(view["id"])
+    finished = manager.workers.items[-1].finish(completed_at="2026-10-23T03:00:00+00:00")
+    manager.tick()
+    state = manager._load(view["id"])
+    assert state["status"] == "completed" and state["auto_continue"] is False
+    assert state["completed_at"] == read_json(finished)["completed_at"]
+
+
+def _paused_after_first_stage(manager):
+    view = create(manager)
+    manager.start(view["id"])
+    manager.pause(view["id"])
+    manager.workers.items[-1].finish()
+    manager.tick()
+    assert manager._load(view["id"])["status"] == "paused"
+    return view
+
+
+def test_compatible_update_is_explicit_hash_verified_and_preserves_existing_outputs(manager):
+    view = _paused_after_first_stage(manager)
+    state = manager._load(view["id"])
+    before = manager._path(view["id"]).read_bytes()
+    project_before = Path(state["project"]).read_bytes()
+    history_before, inputs_before = state["history"], state["inputs"]
+    manager._implementation_id = "compatible-ui-patch"
+    assert manager.describe(state)["migration"]["state"] == "available"
+    with pytest.raises(ValueError, match="업데이트 적용 후 이어가기"):
+        manager.start(view["id"])
+    assert manager._path(view["id"]).read_bytes() == before
+    migrated = manager.migrate(view["id"])
+    after = manager._load(view["id"])
+    assert migrated["migration"] is None and len(manager.workers.items) == 1
+    assert Path(after["project"]).read_bytes() == project_before
+    assert after["history"] == history_before and after["inputs"] == inputs_before
+    evidence = read_json(after["migrations"][-1]["path"])
+    assert digest(after["migrations"][-1]["path"]) == after["migrations"][-1]["sha256"]
+    assert Path(evidence["previous_workflow"]["path"]).read_bytes() == before
+    assert evidence["history_sha256"] == identity(history_before)
+    manager.start(view["id"])
+    assert len(manager.workers.items) == 2
+
+
+def test_compatibility_blocks_changed_future_computation_but_ignores_completed_stage(manager):
+    view = _paused_after_first_stage(manager)
+    state = manager._load(view["id"])
+    manager._execution_contract = json.loads(json.dumps(manager._execution_contract))
+    manager._implementation_id = "changed-code"
+    manager._execution_contract["stages"]["frontend"] = "changed-only-finished-stage"
+    assert manager.describe(state)["migration"]["state"] == "available"
+    manager._execution_contract["stages"]["training"] = "changed-training"
+    assert manager.describe(state)["migration"]["state"] == "blocked"
+    original = manager._path(view["id"]).read_bytes()
+    with pytest.raises(ValueError, match="남은 단계"):
+        manager.migrate(view["id"])
+    assert manager._path(view["id"]).read_bytes() == original
+
+
+@pytest.mark.parametrize("tamper", ["settings", "plan", "history", "project"])
+def test_compatibility_migration_rejects_changed_inputs_or_history(manager, tamper):
+    view = _paused_after_first_stage(manager)
+    state = manager._load(view["id"])
+    manager._implementation_id = "ui-patch"
+    if tamper == "settings":
+        state["settings"]["updates"] += 1
+    elif tamper == "plan":
+        state["plan"][1]["id"] = "another-stage"
+    elif tamper == "history":
+        Path(state["history"][0]["result"]).write_text("{}", encoding="utf-8")
+    else:
+        config = read_json(state["project"])
+        config["training"]["updates"] += 1
+        write_json(state["project"], config)
+    write_json(manager._path(view["id"]), state)
+    before = manager._path(view["id"]).read_bytes()
+    with pytest.raises(ValueError):
+        manager.migrate(view["id"])
+    assert manager._path(view["id"]).read_bytes() == before
+
+
+def test_compatibility_migration_never_runs_while_worker_is_alive(manager):
+    view = create(manager)
+    manager.start(view["id"])
+    before = manager._path(view["id"]).read_bytes()
+    manager._implementation_id = "ui-patch"
+    assert manager.describe(manager._load(view["id"]))["migration"]["state"] == "blocked"
+    with pytest.raises(ValueError, match="현재 작업"):
+        manager.migrate(view["id"])
+    assert manager._path(view["id"]).read_bytes() == before
+
+
+def test_snapshotless_legacy_update_requires_exact_audited_fingerprint(manager, monkeypatch):
+    view = _paused_after_first_stage(manager)
+    state = manager._load(view["id"])
+    state.pop("execution_contract")
+    state["implementation_id"] = "known-audited-release"
+    write_json(manager._path(view["id"]), state)
+    manager._implementation_id = "current-release"
+    assert manager.describe(state)["migration"]["state"] == "blocked"
+    monkeypatch.setattr(studio, "_LEGACY_COMPATIBLE_CONTRACTS", {
+        "known-audited-release": manager._execution_contract["computation_sha256"]})
+    assert manager.describe(state)["migration"]["state"] == "available"
+    assert manager.migrate(view["id"])["migration"] is None
+
+
+def test_completed_time_is_stable_and_legacy_offline_time_is_unclassified(manager, monkeypatch):
+    view = create(manager)
+    state = manager._load(view["id"])
+    result_path = Path(state["project"]).parent / "historical_result.json"
+    write_json(result_path, {"started_at": "2026-10-23T01:00:00+00:00", "completed_at": "2026-10-23T01:10:00+00:00"})
+    state.update(started_at="2026-10-23T00:00:00+00:00", status="completed", index=19,
+                 history=[{"result": str(result_path), "sha256": digest(result_path),
+                           "completed_at": "2026-10-23T02:00:00+00:00"}])
+    state.pop("timing_observations", None)
+    write_json(manager._path(view["id"]), state)
+    preserved = manager._path(view["id"]).read_bytes()
+    monkeypatch.setattr(studio.time, "time", lambda: studio._timestamp("2026-10-24T00:00:00+00:00"))
+    first = manager.describe(state)["timing"]
+    monkeypatch.setattr(studio.time, "time", lambda: studio._timestamp("2026-10-25T00:00:00+00:00"))
+    assert manager.describe(state)["timing"] == first
+    assert first["total_seconds"] == 7200 and first["active_seconds"] == 600
+    assert first["unclassified_seconds"] == 6600 and first["legacy_estimate"] is True
+    assert manager._path(view["id"]).read_bytes() == preserved
+
+
+def test_dead_worker_offline_interval_is_not_counted_as_active(manager, monkeypatch):
+    view = create(manager)
+    state = manager._load(view["id"])
+    state.update(started_at="2026-10-23T00:00:00+00:00", status="running",
+                 job={"started_at": "2026-10-23T00:00:00+00:00", "pid": 99999, "creation_identity": "gone"})
+    state.pop("timing_observations", None)
+    monkeypatch.setattr(studio.time, "time", lambda: studio._timestamp("2026-10-23T02:00:00+00:00"))
+    timing = manager._timing(state)
+    assert timing["active_seconds"] == 0 and timing["unclassified_seconds"] == 7200
+
+
+def test_time_breakdown_distinguishes_review_pause_and_verified_work(manager, monkeypatch):
+    view = create(manager)
+    state = manager._load(view["id"])
+    result_path = Path(state["project"]).parent / "recorded_work.json"
+    write_json(result_path, {"started_at": "2026-10-23T00:00:00+00:00", "completed_at": "2026-10-23T00:10:00+00:00"})
+    state.update(started_at="2026-10-23T00:00:00+00:00", status="paused", history=[{
+        "result": str(result_path), "sha256": digest(result_path)}], timing_observations={"segments": [
+            {"status": "running", "start": "2026-10-23T00:00:00+00:00", "end": "2026-10-23T00:10:00+00:00"},
+            {"status": "waiting_review", "start": "2026-10-23T00:10:00+00:00", "end": "2026-10-23T00:30:00+00:00"},
+            {"status": "paused", "start": "2026-10-23T00:30:00+00:00"}]})
+    monkeypatch.setattr(studio.time, "time", lambda: studio._timestamp("2026-10-23T01:00:00+00:00"))
+    timing = manager._timing(state)
+    assert timing["active_seconds"] == 600 and timing["review_wait_seconds"] == 1200
+    assert timing["paused_seconds"] == 1800 and timing["unclassified_seconds"] == 0
+
+
 @pytest.mark.parametrize("field", ["task_id", "request_sha256", "config_sha256", "result_config_sha256"])
 def test_mismatched_completion_is_an_error_and_does_not_advance(manager, field):
     project = create(manager)
@@ -430,6 +614,16 @@ def test_http_csrf_origin_host_guards_and_valid_create(manager, http_server):
     status, content, _ = http_server("/api/projects", "POST", payload, headers=headers)
     assert status == 200 and json.loads(content)["wakeword"] == "보라야"
     assert len(manager.registry["projects"]) == 1
+
+
+def test_http_compatible_update_requires_token_and_does_not_start_worker(manager, http_server):
+    view = _paused_after_first_stage(manager)
+    manager._implementation_id = "compatible-ui-update"
+    route = f"/api/projects/{view['id']}/migrate"
+    assert http_server(route, "POST", {})[0] == 403
+    status, content, _ = http_server(route, "POST", {}, headers={"X-Koww-Token": manager.token})
+    assert status == 200 and json.loads(content)["migration"] is None
+    assert len(manager.workers.items) == 1
 
 
 @pytest.mark.parametrize("headers,body", [

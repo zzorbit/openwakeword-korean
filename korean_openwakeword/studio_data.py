@@ -7,21 +7,21 @@ path invents human listening or changes the existing split and Final rules.
 from __future__ import annotations
 
 import csv
-import hashlib
 import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
 import stat
 import tarfile
-import threading
+import time
 import zipfile
 
 import requests
 
 from .common import (bound_file, digest, identity, iter_rows, now, read_json, read_rows,
                      resolved, write_json, writer_lock)
-from .downloads import dataset_catalog, download_checked
+from .downloads import (VerificationCache, dataset_catalog, download_checked,
+                        download_partial, verify_checksum)
 from .project import load_project
 from .budgets import DEFAULT_GENERIC_HOURS, DEFAULT_KOREAN_HOURS
 
@@ -125,7 +125,8 @@ def _automatic_space_plan(preset, config=None, material_acquisition_policy="auto
 
 
 def material_recipe(preset="check", workspace=None, evaluation_policy=None, noise_material_policy=None,
-                    material_acquisition_policy=None, fma_acquisition_policy=None, material_review_policy=None):
+                    material_acquisition_policy=None, fma_acquisition_policy=None, material_review_policy=None,
+                    official_noise_acquisition_policy=None):
     """Preview known downloads and limits without accessing network or audio."""
     preset = _preset(preset)
     if material_review_policy not in (None, "library_fixed_sources_v1"):
@@ -140,6 +141,10 @@ def material_recipe(preset="check", workspace=None, evaluation_policy=None, nois
     policy = noise_material_policy or ("reuse_negative_waveforms" if preset == "full" else "official_example")
     if policy not in ("official_example", "reuse_negative_waveforms"):
         raise ValueError("Unsupported training-noise material policy")
+    if official_noise_acquisition_policy not in (None, "selective_fma_small_v1"):
+        raise ValueError("Unsupported official-example music acquisition policy")
+    if official_noise_acquisition_policy and policy != "official_example":
+        raise ValueError("Selective small music applies only to the official-example source policy")
     # Keep smoke pins available for historical receipts, but never request the
     # standalone fan in a new training recipe. Official-example AudioSet stays
     # unfiltered; commercial reuse omits the separate augmentation download.
@@ -152,6 +157,25 @@ def material_recipe(preset="check", workspace=None, evaluation_policy=None, nois
         path = _cached_asset(asset, Path(workspace).resolve() / "shared" / "downloads") if workspace else None
         asset["local_path"] = str(path) if path else None
         asset["availability"] = "cached_requires_integrity_check" if path and path.is_file() else "download_required"
+    if official_noise_acquisition_policy:
+        from .official_music import official_music_catalog, official_music_preview
+        music_catalog = official_music_catalog()
+        for asset in assets:
+            key = {"fma": "music", "fma_metadata": "metadata"}.get(asset["id"])
+            if key:
+                source = music_catalog["archives"][key]
+                selected_bytes = sum(row["compressed_bytes"] for row in source["members"])
+                asset.update(download_mode="selected_members", selected_payload_bytes=selected_bytes,
+                             selected_download_bytes=selected_bytes + source["index_bytes"] + len(source["members"])*1024 + 65536,
+                             selected_original_bytes=sum(row["size_bytes"] for row in source["members"]),
+                             selection="Unchanged 120 licensed original tracks" if key == "music" else "Original tracks.csv only")
+                if workspace:
+                    shared = Path(workspace).resolve() / "shared"
+                    directory = shared / ("fma_1h" if key == "music" else "fma_metadata")
+                    available = all((directory / row["name"]).is_file()
+                                    and (directory / row["name"]).stat().st_size == row["size_bytes"] for row in source["members"])
+                    asset.update(local_path=str(directory),
+                                 availability="cached_requires_integrity_check" if available else "download_required")
     from .studio_evaluation_data import evaluation_catalog, evaluation_preview
     strict_common = bool(evaluation_policy and evaluation_policy.get("evaluation_materials_recipe") == 6)
     # Recipe 6 starts from the common corpus itself. The historical 193 clips
@@ -161,7 +185,7 @@ def material_recipe(preset="check", workspace=None, evaluation_policy=None, nois
             "noise_material_policy": policy, "assets": assets,
             "evaluation_assets": evaluation["assets"], "evaluation_sources": [] if strict_common else evaluation_preview(),
             "evaluation_download_bytes": evaluation["size_bytes"],
-            "known_download_bytes": sum(a["size_bytes"] for a in assets) + evaluation["size_bytes"],
+            "known_download_bytes": sum(a.get("selected_download_bytes", a["size_bytes"]) for a in assets) + evaluation["size_bytes"],
             "additional_download": {"id": "mit_rir", "source_url": f"https://huggingface.co/datasets/davidscripka/MIT_environmental_impulse_responses/tree/{MIT_REV}/16khz",
                 "upstream_revision": MIT_REV, "files": MIT_RIR_COUNT, "size_bytes": None,
                 "license": "Unknown in provider card; preserve MIT original source terms and review before use",
@@ -245,6 +269,12 @@ def material_recipe(preset="check", workspace=None, evaluation_policy=None, nois
             "Downloads and technical QC", "Provider hours, technical usable hours"))]
         result["limitations"].append(
             "Fixed library sources are admitted after pinned provenance, integrity, technical QC and split checks; no user listening is recorded. Custom materials retain human review.")
+    if official_noise_acquisition_policy:
+        result.update(official_noise_acquisition_policy=official_noise_acquisition_policy,
+                      official_music_selection=official_music_preview())
+        result["limitations"] = [text for text in result["limitations"] if not text.startswith("FMA's original checksum")]
+        result["limitations"].append(
+            "Official-example music selects the same 120 MP3s and original tracks.csv by pinned ZIP ranges. Original member SHA256 and CRC32 are verified; the whole ZIP SHA1 is not claimed as verified by selective transfer.")
     return result
 
 
@@ -256,103 +286,50 @@ def _cached_asset(asset, directory):
     return next((p for p in candidates if p.is_file()), primary)
 
 
-def _emit(progress, label, done=None, total=None, unit=None):
+def _emit(progress, label, done=None, total=None, unit=None, **details):
     if progress:
         progress({"label": label, "done": done, "total": total, "unit": unit,
-                  "task_id": os.environ.get("KOWW_STUDIO_TASK_ID")})
+                  "task_id": os.environ.get("KOWW_STUDIO_TASK_ID"), **details})
 
 
-def _checksum(path, algorithm):
-    if algorithm == "sha256":
-        return digest(path)
-    h = hashlib.sha1()
-    if algorithm == "git_sha1":
-        h.update(f"blob {Path(path).stat().st_size}\0".encode("ascii"))
-    with Path(path).open("rb") as stream:
-        for block in iter(lambda: stream.read(8 * 1024**2), b""):
-            h.update(block)
-    return h.hexdigest()
-
-
-def _download(asset, directory, progress=None):
-    """Use existing SHA256 downloader; retain original upstream SHA1 pins too."""
+def _download(asset, directory, progress=None, verification_cache=None):
+    """Pinned transfer with separate network and checksum progress."""
     target = _cached_asset(asset, directory)
     if not asset["source_url"].startswith("https://"):
         raise ValueError("Public-data sources must use HTTPS")
-    _emit(progress, "자료 다운로드·해시 확인: " + asset["id"], 0, asset["size_bytes"], "bytes")
     algorithm = asset["checksum_algorithm"]
-    if algorithm == "sha256" and target.parent != directory:
-        if target.stat().st_size != asset["size_bytes"] or digest(target) != asset["sha256"]:
-            raise ValueError("Existing manual download differs from the pinned asset")
-        result = {"path": str(target), "sha256": asset["sha256"], "bytes": target.stat().st_size,
-                  "reused": True, "completed_at": now(), "content_approved": False}
-    elif algorithm == "sha256":
-        # Keep the already-tested download implementation and expose its
-        # actual partial-file length while it is working, including resume.
-        stopped = threading.Event()
-        def monitor():
-            while not stopped.wait(1):
-                partial = target.with_name(target.name + ".part")
-                try:
-                    size = partial.stat().st_size if partial.is_file() else target.stat().st_size if target.is_file() else 0
-                    _emit(progress, "자료 다운로드·해시 확인: " + asset["id"], size, asset["size_bytes"], "bytes")
-                except OSError:
-                    pass  # Atomic rename may occur between stat and exists.
-        observer = threading.Thread(target=monitor, daemon=True) if progress else None
-        if observer:
-            observer.start()
-        try:
-            result = download_checked(asset["source_url"], target, asset["sha256"], asset["size_bytes"])
-        finally:
-            stopped.set()
-            if observer:
-                observer.join()
+    def report(record):
+        labels = {"download": "자료 다운로드", "hash": "자료 무결성 검사", "retry": "연결 복구 · 이어받기"}
+        if progress:
+            progress({"label": labels[record["phase"]] + ": " + asset["id"], **record,
+                      "task_id": os.environ.get("KOWW_STUDIO_TASK_ID")})
+    if algorithm == "sha256" and target.parent == directory:
+        result = download_checked(asset["source_url"], target, asset["sha256"], asset["size_bytes"],
+                                  progress=report if progress else None, verification_cache=verification_cache)
     else:
         directory.mkdir(parents=True, exist_ok=True)
-        expected = asset[algorithm]
-        if algorithm not in ("sha1", "git_sha1") or not re.fullmatch("[0-9a-f]{40}", expected):
-            raise ValueError("Expected the original upstream SHA1 or Git blob checksum")
+        expected = asset.get(algorithm)
+        length = 64 if algorithm == "sha256" else 40
+        if algorithm not in ("sha256", "sha1", "git_sha1") or not isinstance(expected, str) or not re.fullmatch(f"[0-9a-f]{{{length}}}", expected):
+            raise ValueError("Expected the original upstream pinned checksum")
         with writer_lock(directory / ("." + target.name + ".download")):
             reused = target.is_file()
             partial = target.with_name(target.name + ".part")
             if not reused:
-                offset = partial.stat().st_size if partial.is_file() else 0
-                if offset > asset["size_bytes"]:
-                    raise ValueError("Partial file exceeds pinned upstream size")
-                if offset < asset["size_bytes"]:
-                    if shutil.disk_usage(directory).free < asset["size_bytes"] - offset:
-                        raise ValueError("Insufficient workspace space for public-data download")
-                    headers = {"Accept-Encoding": "identity", **({"Range": f"bytes={offset}-"} if offset else {})}
-                    with requests.get(asset["source_url"], headers=headers, stream=True, timeout=(30, 180)) as response:
-                        response.raise_for_status()
-                        if response.status_code == 206:
-                            match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", response.headers.get("Content-Range", ""))
-                            if not match or int(match[1]) != offset or int(match[3]) != asset["size_bytes"]:
-                                raise ValueError("Mismatched public-data resume range")
-                        elif response.status_code == 200:
-                            offset = 0
-                        else:
-                            raise ValueError("Unexpected public-data response")
-                        with partial.open("ab" if offset else "wb") as stream:
-                            for chunk in response.iter_content(8 * 1024**2):
-                                if not chunk:
-                                    continue
-                                if offset + len(chunk) > asset["size_bytes"]:
-                                    raise ValueError("Public-data response exceeds pinned size")
-                                stream.write(chunk)
-                                offset += len(chunk)
-                                _emit(progress, "자료 다운로드: " + asset["id"], offset, asset["size_bytes"], "bytes")
-                if partial.stat().st_size != asset["size_bytes"] or _checksum(partial, algorithm) != expected:
-                    raise ValueError("Public-data download checksum mismatch; partial is preserved")
+                download_partial(asset["source_url"], partial, asset["size_bytes"], progress=report if progress else None)
+                sha256 = verify_checksum(partial, algorithm, expected, progress=report if progress else None, return_sha256=True)
                 partial.replace(target)
-            if target.stat().st_size != asset["size_bytes"] or _checksum(target, algorithm) != expected:
-                raise ValueError("Existing public-data archive differs from upstream checksum")
-            result = {"path": str(target), "sha256": digest(target), "bytes": target.stat().st_size,
+            if target.stat().st_size != asset["size_bytes"]:
+                raise ValueError("Existing public-data archive differs from upstream size")
+            # Verify the upstream digest and local SHA256 in a single read.
+            if reused:
+                sha256 = verify_checksum(target, algorithm, expected, progress=report if progress else None,
+                                         verification_cache=verification_cache, return_sha256=True)
+            result = {"path": str(target), "sha256": sha256, "bytes": target.stat().st_size,
                       "verified_upstream_algorithm": algorithm, "verified_upstream_checksum": expected,
                       "reused": reused, "completed_at": now(), "content_approved": False}
     result.update(source_url=asset["source_url"], license=asset["license"], upstream_revision=asset.get("upstream_revision"))
-    # A manual download's original receipt can already be bound by another
-    # project. Leave it untouched when reusing the original in place.
+    # Never rewrite another project's receipt when reusing its original file.
     receipt = (target.with_name(target.name + ".receipt.json") if target.parent == directory
                else directory / (target.name + ".reused.receipt.json"))
     write_json(receipt, result)
@@ -372,9 +349,10 @@ def _archive_target(root, name):
     return target
 
 
-def extract_archive(archive, output, *, members=None, max_bytes=40 * 1024**3, include_suffixes=None):
+def extract_archive(archive, output, *, members=None, max_bytes=40 * 1024**3, include_suffixes=None, progress=None):
     """Safely resume exact selected files; never follow links or call extractall."""
     archive, output = Path(archive).resolve(), Path(output).resolve()
+    _emit(progress, "압축 해제 준비: " + archive.name, phase="extract")
     output.mkdir(parents=True, exist_ok=True)
     requested = set(members) if members is not None else None
     request = {"archive": {"path": str(archive), "sha256": digest(archive)},
@@ -432,6 +410,8 @@ def extract_archive(archive, output, *, members=None, max_bytes=40 * 1024**3, in
             if required > max_bytes or shutil.disk_usage(output).free < required:
                 raise ValueError("Insufficient disk space or extraction exceeds recipe budget")
             records = []
+            completed_bytes, started, last_update = 0, time.monotonic(), 0.0
+            _emit(progress, "압축 해제: " + archive.name, 0, required, "bytes", phase="extract")
             for member, target, size in selected:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 partial = target.with_name(target.name + ".part")
@@ -451,12 +431,19 @@ def extract_archive(archive, output, *, members=None, max_bytes=40 * 1024**3, in
                     raise ValueError("Interrupted extraction contains a conflicting file")
                 os.replace(partial, target)
                 records.append({"path": target.relative_to(output).as_posix(), "sha256": actual, "bytes": size})
+                completed_bytes += size
+                elapsed = time.monotonic() - started
+                if elapsed - last_update >= .5 or completed_bytes == required:
+                    rate = completed_bytes / elapsed if elapsed > 0 else None
+                    _emit(progress, "압축 해제: " + archive.name, completed_bytes, required, "bytes", phase="extract",
+                          bytes_per_second=rate, eta_seconds=max(0, (required-completed_bytes)/rate) if rate else None)
+                    last_update = elapsed
         receipt = {"request": request, "files": records, "bytes": required, "completed_at": now(), "content_approved": False}
         write_json(receipt_path, receipt)
         return {**receipt, "resumed": False}
 
 
-def _extract_zeroth_archive(archive, output):
+def _extract_zeroth_archive(archive, output, progress=None):
     """Skip nested archive copies in new runs; preserve existing receipt policy."""
     receipt_path = Path(output) / "extraction_receipt.json"
     options = {"include_suffixes": (".flac", ".txt")}
@@ -470,7 +457,7 @@ def _extract_zeroth_archive(archive, output):
             if not isinstance(selector, dict) or selector.get("version") != 1 or "include_suffixes" not in selector:
                 raise ValueError("Unsupported existing Zeroth archive selector; original receipt preserved")
             options["include_suffixes"] = selector["include_suffixes"]
-    return extract_archive(archive, output, **options)
+    return extract_archive(archive, output, **options, **({"progress": progress} if progress else {}))
 
 
 def _fetch_mit(shared, progress=None):
@@ -566,7 +553,8 @@ def _candidate_pool_hours(root, queues):
 
 
 def prepare_materials(project_path, workspace, preset="check", progress=None, evaluation_policy=None,
-                      noise_material_policy=None, material_acquisition_policy=None):
+                      noise_material_policy=None, material_acquisition_policy=None,
+                      official_noise_acquisition_policy=None):
     """Download, normalize and reserve sources, then return actual review gates."""
     from .preparation import create_source_index, prepare_public_audio
     from .assets import import_generic
@@ -580,11 +568,13 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
     shared = workspace / "shared"
     downloads = shared / "downloads"
     recipe = material_recipe(preset, workspace, evaluation_policy, noise_material_policy,
-                             material_acquisition_policy, config.get("fma_acquisition_policy"))
+                             material_acquisition_policy, config.get("fma_acquisition_policy"),
+                             official_noise_acquisition_policy=official_noise_acquisition_policy)
     automatic = recipe.get("material_acquisition_policy") in ("automatic_v1", "automatic_v2", "automatic_v3")
     workspace.mkdir(parents=True, exist_ok=True)
     # A minimum preflight before any download; actual per-file checks also run.
-    missing = sum(a["size_bytes"] for a in recipe["assets"] if a["availability"] == "download_required")
+    missing = sum(a.get("selected_download_bytes", a["size_bytes"]) for a in recipe["assets"]
+                  if a["availability"] == "download_required")
     if recipe.get("recipe_version") in (5, 6):
         from .evaluation_rir import common_rir_catalog
         shared_pins = {a["sha256"] for a in recipe["assets"] if a.get("sha256")}
@@ -621,17 +611,25 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
     legacy_extra = root / ".studio/materials/extra_source_index.jsonl"
     if recipe.get("recipe_version") != 6 and legacy_extra.exists() and any(r.get("canonical_source_id") in ("freesound:102956", "freesound:13613") for r in read_rows(legacy_extra)):
         assets.update({a["id"]: a for a in _official_assets() if a["id"] in ("dns_door", "electronic_validation")})
-    paths = {key: _download(asset, downloads, progress) for key, asset in assets.items()}
+    verification_cache = VerificationCache()
+    paths = {key: _download(asset, downloads, progress, verification_cache) for key, asset in assets.items()
+             if not (official_noise_acquisition_policy and key in ("fma", "fma_metadata"))}
     if "zeroth" in paths:
-        _extract_zeroth_archive(paths["zeroth"], shared / "zeroth")
+        _extract_zeroth_archive(paths["zeroth"], shared / "zeroth", progress)
     if recipe["noise_material_policy"] == "official_example":
-        extract_archive(paths["audioset"], shared / "audioset")
+        extract_archive(paths["audioset"], shared / "audioset", **({"progress": progress} if progress else {}))
         # The publisher's tracks.csv expands to 260,414,445 bytes. Keep a
         # bounded allowance for that one CSV, excluding the much larger
         # feature tables that also live in the metadata archive.
-        extract_archive(paths["fma_metadata"], shared / "fma_metadata", members=["fma_metadata/tracks.csv"], max_bytes=512 * 1024**2)
-        tracks = shared / "fma_metadata/fma_metadata/tracks.csv"
-        _fma_selection(tracks, paths["fma"], shared / "fma_1h")
+        if official_noise_acquisition_policy:
+            from .official_music import prepare_official_music
+            selected_music = prepare_official_music(shared, progress)
+            tracks = Path(selected_music["metadata"])
+        else:
+            extract_archive(paths["fma_metadata"], shared / "fma_metadata", members=["fma_metadata/tracks.csv"], max_bytes=512 * 1024**2,
+                            **({"progress": progress} if progress else {}))
+            tracks = shared / "fma_metadata/fma_metadata/tracks.csv"
+            _fma_selection(tracks, paths["fma"], shared / "fma_1h")
     mit = _fetch_mit(shared, progress)
     stage = root / ".studio" / "materials"
     stage.mkdir(parents=True, exist_ok=True)
@@ -707,7 +705,7 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
     queues, reserves, preparations = [], [], []
     for order, source in enumerate(sources):
         name = source["id"]
-        _emit(progress, "자료 변환·분리: " + name, order, len(sources), "datasets")
+        _emit(progress, "자료 변환·분리: " + name, order, len(sources), "datasets", phase="convert")
         record = source.get("prepared") or prepare_source(source)
         binding = record["preparation"]
         preparation = binding["path"]
@@ -738,8 +736,13 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
                 raise ValueError("Existing Generic import differs from the studio recipe")
         else:
             _emit(progress, "일반 비호출 특징 전체 검사·연결")
+            def generic_progress(record):
+                if progress:
+                    progress({"label": "일반 비호출 특징 품질 검사" if record["phase"] == "quality" else "일반 비호출 특징 무결성 검사",
+                              **record, "task_id": os.environ.get("KOWW_STUDIO_TASK_ID")})
             metadata = import_generic(paths["generic"], generic_output, {"model_sha256": {
-                "melspectrogram": PINNED_ASSETS["melspectrogram.onnx"], "embedding": PINNED_ASSETS["embedding_model.onnx"]}})
+                "melspectrogram": PINNED_ASSETS["melspectrogram.onnx"], "embedding": PINNED_ASSETS["embedding_model.onnx"]}},
+                verification_cache=verification_cache, **({"progress": generic_progress} if progress else {}))
         generic_import = {"features": str(paths["generic"]), "output": str(generic_output), "imported": True,
                           "publisher_declared_hours": metadata["publisher_declared_hours"], "unique_source_hours": None}
     else:
@@ -769,6 +772,10 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
                       candidate_unique_hours=_candidate_pool_hours(root, queues))
         if automatic_preparation:
             result["automatic_source_preparation"] = {key: value for key, value in automatic_preparation.items() if key != "sources"}
+    if official_noise_acquisition_policy:
+        result.update(official_noise_acquisition_policy=official_noise_acquisition_policy,
+                      official_music_preparation={"receipt": {"path": selected_music["receipt"], "sha256": digest(selected_music["receipt"])},
+                                                  "catalog_sha256": selected_music["request"]["catalog_sha256"]})
     legacy_result = stage / (f"preparation_result_{material_acquisition_policy}.json" if automatic else "preparation_result.json")
     if not legacy_result.exists():
         write_json(legacy_result, result)

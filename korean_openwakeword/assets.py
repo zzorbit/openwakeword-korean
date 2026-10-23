@@ -1,6 +1,7 @@
 """Pinned upstream downloads; sample inference needs no model download."""
 from pathlib import Path
 import shutil
+import time
 import requests
 
 from .common import digest, now, write_json
@@ -61,7 +62,7 @@ def download_generic(output):
     return record
 
 
-def import_generic(path, output, frontend_identity):
+def import_generic(path, output, frontend_identity, *, verification_cache=None, progress=None):
     """Import only the publisher's pinned precomputed Generic feature file.
 
     All rows are scanned; only the pinned full file is supported. No fabricated
@@ -72,12 +73,22 @@ def import_generic(path, output, frontend_identity):
     if output.exists() and any(output.iterdir()):
         raise ValueError("Choose a new Generic metadata/cache namespace")
     array = np.load(path, mmap_mode="r", allow_pickle=False)
-    if array.shape != (5625000, 16, 96) or array.dtype != np.float16 or digest(path) != GENERIC_SHA:
+    if array.shape != (5625000, 16, 96) or array.dtype != np.float16:
         raise ValueError("Legacy bridge only supports the complete checksum-pinned publisher array")
+    from .downloads import verify_checksum
+    verify_checksum(path, "sha256", GENERIC_SHA, verification_cache=verification_cache, progress=progress)
+    started, last_update = time.monotonic(), 0.0
+    if progress:
+        progress({"phase": "quality", "done": 0, "total": len(array), "unit": "rows"})
     for i in range(0, len(array), 4096):
         block = array[i:i+4096]
         if not np.isfinite(block).all() or np.any(np.ptp(block.astype(np.float32), axis=(1, 2)) == 0):
             raise ValueError("Nonfinite/degenerate Generic feature row")
+        elapsed, done = time.monotonic() - started, min(i+4096, len(array))
+        if progress and (elapsed - last_update >= .5 or done == len(array)):
+            progress({"phase": "quality", "done": done, "total": len(array), "unit": "rows",
+                      "eta_seconds": max(0, (len(array)-done)*elapsed/done)})
+            last_update = elapsed
     output.mkdir(parents=True, exist_ok=True)
     meta = {"schema_version": 1, "role": "generic_negative", "split": "train", "feature_path": str(path),
         "feature_rows": len(array), "original_count": None, "rounds": 1, "imported_precomputed": True,

@@ -9,6 +9,7 @@ from .evaluate import adoption, adoption_criteria, candidate_adoptions
 from .project import load_project
 from .runtime import bundle_candidates, deployment_candidate, verify_bundle
 from .storage import project_storage
+from .cache_analysis import FrozenClipRows, RestrictedClipRows, write_clip_array
 
 
 def verified_evaluation(project, bundle, evaluation):
@@ -38,25 +39,33 @@ def verified_evaluation(project, bundle, evaluation):
         raise ValueError("Candidate IDs do not bind the actual model members")
     if report.get("deployment_candidate", deployment_candidate(package)) != deployment_candidate(package):
         raise ValueError("Development deployment identity differs from its source bundle")
-    clips = read_json(evaluation / "clips.json")
-    if any(row.get("provenance") == "human" and row.get("kind") == "positive" for row in clips):
-        raise ValueError("Actual human calls are Final-only, not candidate-selection data")
+    if report.get("adoption_criteria", adoption_criteria(config)) != adoption_criteria(config):
+        raise ValueError("Development adoption criteria differ from the project; preserve the evaluated targets")
+    count = report.get("sessions")
+    if type(count) is not int or count < 0:
+        raise ValueError("Development report needs its exact session count")
+    clips = FrozenClipRows(evaluation / "clips.json", count)
     with np.load(evaluation / "scores.npz", allow_pickle=False) as cache:
         scores, offsets = cache["scores"], cache["offsets"]
         ids = cache["model_ids"].tolist()
     if ids != [row["id"] for row in candidates] or scores.ndim != 2 or scores.shape[1] != len(ids):
         raise ValueError("Cached score columns do not match candidate identities")
-    if (scores.dtype != np.float32 or not np.isfinite(scores).all()
-            or np.any(scores < 0) or np.any(scores > 1)
+    if (scores.dtype != np.float32
             or offsets.dtype.kind not in "iu" or offsets.ndim != 1
             or len(offsets) != len(clips) + 1 or offsets[0] != 0
             or offsets[-1] != len(scores) or np.any(np.diff(offsets) < 0)):
         raise ValueError("Invalid cached Development scores or offsets")
+    for start in range(0, len(scores), 65536):
+        block = scores[start:start + 65536]
+        if not np.isfinite(block).all() or np.any(block < 0) or np.any(block > 1):
+            raise ValueError("Invalid cached Development scores or offsets")
     if len({row["id"] for row in report["models"]}) != len(ids) or {row["id"] for row in report["models"]} != set(ids):
         raise ValueError("Development candidate summaries are incomplete")
-    if any(set(row.get("results", {})) != set(ids) for row in clips):
-        raise ValueError("Development clips do not match cached candidate columns")
     for index, row in enumerate(clips):
+        if row.get("provenance") == "human" and row.get("kind") == "positive":
+            raise ValueError("Actual human calls are Final-only, not candidate-selection data")
+        if set(row.get("results", {})) != set(ids):
+            raise ValueError("Development clips do not match cached candidate columns")
         duration = int(offsets[index + 1] - offsets[index]) * .08
         eligible = max(0, duration - package["runtime"]["warmup_s"])
         if (not np.isclose(row.get("duration_s", -1), duration, atol=1e-8, rtol=0)
@@ -108,9 +117,7 @@ def restrict_evaluation(report, clips, scores, candidates, chosen, config):
     keep = candidates if chosen["kind"] == "ensemble" else [chosen]
     ids = [row["id"] for row in keep]
     columns = [next(i for i, row in enumerate(candidates) if row["id"] == key) for key in ids]
-    rows = deepcopy(clips)
-    for row in rows:
-        row["results"] = {key: row["results"][key] for key in ids}
+    rows = RestrictedClipRows(clips, ids)
     result = deepcopy(report)
     result["models"] = [row for row in result["models"] if row["id"] in ids]
     result["candidate_definitions"] = deepcopy(keep)
@@ -160,7 +167,7 @@ def select_candidate(project, bundle, evaluation, output, candidate):
         np.savez_compressed(selected_dir / "scores.npz", scores=selected_scores, offsets=offsets,
                             model_ids=np.asarray([row["id"] for row in selected_report["candidate_definitions"]]))
         selected_report["score_cache_sha256"] = digest(selected_dir / "scores.npz")
-        write_json(selected_dir / "clips.json", selected_clips)
+        write_clip_array(selected_dir / "clips.json", selected_clips)
         write_json(selected_dir / "report.json", selected_report)
         completion = {"report_sha256": digest(selected_dir / "report.json"),
                       "clips_sha256": digest(selected_dir / "clips.json"),

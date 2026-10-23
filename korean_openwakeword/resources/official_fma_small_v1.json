@@ -1,0 +1,874 @@
+{
+  "schema_version": 1,
+  "selection": "First 120 licensed small-subset tracks in original tracks.csv, sorted by numeric provider track ID; identical to legacy _fma_selection.",
+  "verification_scope": "Frozen archive central directories and selected original member SHA256/CRC32; SHA1 identifies the verified full local source used to create these pins, not a selective-download whole-archive verification.",
+  "archives": {
+    "music": {
+      "source_url": "https://os.unil.cloud.switch.ch/fma/fma_small.zip",
+      "size_bytes": 7679594875,
+      "sha1": "ade154f733639d52e35e32f5593efe5be76c6d70",
+      "etag": "\"0c99b6eda4ec8d7f62f635c4f65d7c9f-1465\"",
+      "index_sha256": "f4b1631de29a42c8a00b8b8e45d90bd27bcbf3fe8fb69feb8d739155d98ba237",
+      "index_bytes": 627703,
+      "members": [
+        {
+          "name": "fma_small/000/000002.mp3",
+          "size_bytes": 960738,
+          "compressed_bytes": 958545,
+          "crc32": "3edded66",
+          "sha256": "879d4ecdd0911c20db8fbd5c6bde2d3647131211d6a190f7232534d52beb9e02"
+        },
+        {
+          "name": "fma_small/000/000005.mp3",
+          "size_bytes": 961580,
+          "compressed_bytes": 956860,
+          "crc32": "a03b6765",
+          "sha256": "b7cbb36c72c887574089105f87739c0745c0fe6b75ac3b16c8763e1902972cc2"
+        },
+        {
+          "name": "fma_small/000/000010.mp3",
+          "size_bytes": 721040,
+          "compressed_bytes": 714546,
+          "crc32": "1e95f4c5",
+          "sha256": "a766844a1aaa69bcc4d7e5892604cbf13e438cf3425a7cafb3d0efb0ac74d432"
+        },
+        {
+          "name": "fma_small/000/000140.mp3",
+          "size_bytes": 480497,
+          "compressed_bytes": 478737,
+          "crc32": "565eb07b",
+          "sha256": "1a9fe4b9bc521c1cfc6fa32cd2979ac30c5a076aad20e3b46840fa70c0b00c86"
+        },
+        {
+          "name": "fma_small/000/000141.mp3",
+          "size_bytes": 480945,
+          "compressed_bytes": 477366,
+          "crc32": "c98582b0",
+          "sha256": "714b1bc525b716d6071302d7459fd2a768d038e7467f2ce915e7a3fc7d7d0e1a"
+        },
+        {
+          "name": "fma_small/000/000148.mp3",
+          "size_bytes": 960721,
+          "compressed_bytes": 956756,
+          "crc32": "43e89f80",
+          "sha256": "0eed59cbf6577230f689af9e75c52e31697e1f4773be6784e253930fc6ea8a6b"
+        },
+        {
+          "name": "fma_small/000/000182.mp3",
+          "size_bytes": 961955,
+          "compressed_bytes": 945736,
+          "crc32": "25098559",
+          "sha256": "4c4e9b47c7a16443c2fa770849739a5bb282ae9d3ba833a9c137d7d0a2f94361"
+        },
+        {
+          "name": "fma_small/000/000190.mp3",
+          "size_bytes": 961577,
+          "compressed_bytes": 960233,
+          "crc32": "2ef01ac2",
+          "sha256": "07c766a3200d0f9e8ea70dff15aa62111b28addb5bf3b61453b4e292b1d97f86"
+        },
+        {
+          "name": "fma_small/000/000193.mp3",
+          "size_bytes": 960739,
+          "compressed_bytes": 958660,
+          "crc32": "f83be78a",
+          "sha256": "7e17dda4dcde547b80bb957af25b40e7065dcb8c439ce114a4235d2134498959"
+        },
+        {
+          "name": "fma_small/000/000194.mp3",
+          "size_bytes": 961579,
+          "compressed_bytes": 959379,
+          "crc32": "807df06e",
+          "sha256": "f7a1121da1fb7a92d9e594c026773f0edd1b13860b18fc28cb161bc96e038fb4"
+        },
+        {
+          "name": "fma_small/000/000197.mp3",
+          "size_bytes": 960733,
+          "compressed_bytes": 958530,
+          "crc32": "9135d714",
+          "sha256": "13558e854da5438b0be3b53571179a43ca271509d1b6e741e6e755ce4b8846d0"
+        },
+        {
+          "name": "fma_small/000/000200.mp3",
+          "size_bytes": 960741,
+          "compressed_bytes": 958063,
+          "crc32": "b5f0f84e",
+          "sha256": "f14c56138932c26f8a1f5f6a19bafd675122013e502dacd32d91ee885aee3b5a"
+        },
+        {
+          "name": "fma_small/000/000203.mp3",
+          "size_bytes": 960737,
+          "compressed_bytes": 959662,
+          "crc32": "b3be3550",
+          "sha256": "71a3e5f095d6c669ff84ab655a7ed31f900915d38fb7e7ed8bcdff6465f78f44"
+        },
+        {
+          "name": "fma_small/000/000204.mp3",
+          "size_bytes": 960734,
+          "compressed_bytes": 959456,
+          "crc32": "69788584",
+          "sha256": "715d223fd0df72cd6e0c63af0f31ae887db3194f68fdf26648c145a0233ef447"
+        },
+        {
+          "name": "fma_small/000/000207.mp3",
+          "size_bytes": 960734,
+          "compressed_bytes": 960027,
+          "crc32": "c9607226",
+          "sha256": "117f9eb82b530f52094ced80d086672a674fe9d4e70bdfb7a4bc17c97e783f99"
+        },
+        {
+          "name": "fma_small/000/000210.mp3",
+          "size_bytes": 961581,
+          "compressed_bytes": 959994,
+          "crc32": "1c359a51",
+          "sha256": "d8f39e6225707a23b2296169add073af8bb581ea674669c983dc370b3f908b1c"
+        },
+        {
+          "name": "fma_small/000/000211.mp3",
+          "size_bytes": 960736,
+          "compressed_bytes": 958013,
+          "crc32": "d1a7834e",
+          "sha256": "5928697928b00c234ac0661ab6533775984088d4993d2514db595333d37dfb34"
+        },
+        {
+          "name": "fma_small/000/000212.mp3",
+          "size_bytes": 960738,
+          "compressed_bytes": 945437,
+          "crc32": "369a1111",
+          "sha256": "bab0086bafe51d0e543cafee489fac8680434ba1b4c404b689d74ed61fbd2e01"
+        },
+        {
+          "name": "fma_small/000/000213.mp3",
+          "size_bytes": 960747,
+          "compressed_bytes": 958690,
+          "crc32": "f2c63539",
+          "sha256": "4ca6e7455802acedc7385be1c54100bc7230fd903d85c51bd5e86beb3af0d46a"
+        },
+        {
+          "name": "fma_small/000/000255.mp3",
+          "size_bytes": 960743,
+          "compressed_bytes": 958318,
+          "crc32": "f392d190",
+          "sha256": "4c5481568b395a9e395aa17187862a9bc4b54630c180a5fc112e878d82bd369f"
+        },
+        {
+          "name": "fma_small/000/000256.mp3",
+          "size_bytes": 960790,
+          "compressed_bytes": 958846,
+          "crc32": "711bfdfd",
+          "sha256": "74e2a7e74639862291cc2f41db2a8df9269b3a4e9ae594a8a7093654e8e98c4d"
+        },
+        {
+          "name": "fma_small/000/000368.mp3",
+          "size_bytes": 961094,
+          "compressed_bytes": 944908,
+          "crc32": "71e1e78e",
+          "sha256": "191ff2495adcef0ba945ea0a5c9802c1ea7201aae881b5af6a17687babbd2912"
+        },
+        {
+          "name": "fma_small/000/000424.mp3",
+          "size_bytes": 961205,
+          "compressed_bytes": 926427,
+          "crc32": "a7e925eb",
+          "sha256": "56da863790c5e671327ba7fcca8c9dd3bcc20fc67c31c8ac35494d62f53fa0ea"
+        },
+        {
+          "name": "fma_small/000/000459.mp3",
+          "size_bytes": 481256,
+          "compressed_bytes": 472912,
+          "crc32": "a3cdbf3e",
+          "sha256": "c7c9d2b45524189c03e530d596e231df37977d35cf7550b8667e66ee1a92ec7d"
+        },
+        {
+          "name": "fma_small/000/000534.mp3",
+          "size_bytes": 480811,
+          "compressed_bytes": 473211,
+          "crc32": "f1e68f13",
+          "sha256": "38b2c7205590bb5ef6201e42b9498b023668fbee26afae2d24d159b56769885f"
+        },
+        {
+          "name": "fma_small/000/000540.mp3",
+          "size_bytes": 480813,
+          "compressed_bytes": 475007,
+          "crc32": "15286380",
+          "sha256": "b95b8a193dccd029dd26a2769586bdce8b93a7c403bf397d8e56779f27679b6c"
+        },
+        {
+          "name": "fma_small/000/000546.mp3",
+          "size_bytes": 480816,
+          "compressed_bytes": 474276,
+          "crc32": "4c1d4b87",
+          "sha256": "5bfa73f0fa8da98661ca832627b67fa402e8e387fe03c286831310968276282f"
+        },
+        {
+          "name": "fma_small/000/000574.mp3",
+          "size_bytes": 901148,
+          "compressed_bytes": 901104,
+          "crc32": "bb21b903",
+          "sha256": "64f9e66c36144743633cb5683c6d051f61949e740050652970d9efde74f9d739"
+        },
+        {
+          "name": "fma_small/000/000602.mp3",
+          "size_bytes": 600542,
+          "compressed_bytes": 595407,
+          "crc32": "403cfd2d",
+          "sha256": "f7d4dd5eabbf5527f2b79bfe36da785ac2e4adacd9b7fb7ef0af10774b4e603e"
+        },
+        {
+          "name": "fma_small/000/000615.mp3",
+          "size_bytes": 961575,
+          "compressed_bytes": 951227,
+          "crc32": "dce2e5d6",
+          "sha256": "381fc35b69754eb36351ab122fa9505dfd4108ec28c5ceabf66053de8fd6e44f"
+        },
+        {
+          "name": "fma_small/000/000620.mp3",
+          "size_bytes": 961074,
+          "compressed_bytes": 946829,
+          "crc32": "fdf18b3f",
+          "sha256": "574f0e857636a5771ed3c146abe38befc003b0a0025de5ba2dee10f1509ece1f"
+        },
+        {
+          "name": "fma_small/000/000621.mp3",
+          "size_bytes": 960732,
+          "compressed_bytes": 958573,
+          "crc32": "c050edda",
+          "sha256": "4abcc599b32a268b52ca6cc6d6ff9a1f4a61c9f586b0d5bf9796e253f2088c6a"
+        },
+        {
+          "name": "fma_small/000/000625.mp3",
+          "size_bytes": 961572,
+          "compressed_bytes": 960143,
+          "crc32": "5c8f863c",
+          "sha256": "389f7e9edd159d5118fb510a4bfdaaddfb2c192a605b9518f6a5576178e6a176"
+        },
+        {
+          "name": "fma_small/000/000666.mp3",
+          "size_bytes": 960889,
+          "compressed_bytes": 536041,
+          "crc32": "cab4dc9f",
+          "sha256": "0df42cb6fdde88887d8cdc5bbf8fc4fad3f3e456db5812a7718e9211ac1cc237"
+        },
+        {
+          "name": "fma_small/000/000667.mp3",
+          "size_bytes": 960083,
+          "compressed_bytes": 556706,
+          "crc32": "7b77506c",
+          "sha256": "8695e5b2800ea5d4ebed7bc6b99c1c8bed0ce057cc55b3c7f4244b0aa1cb9891"
+        },
+        {
+          "name": "fma_small/000/000676.mp3",
+          "size_bytes": 960714,
+          "compressed_bytes": 958486,
+          "crc32": "8c62eeef",
+          "sha256": "248a49c66e8635f5d7c440f0c931151234524efb461dcf518f44eda4070b53ec"
+        },
+        {
+          "name": "fma_small/000/000690.mp3",
+          "size_bytes": 960765,
+          "compressed_bytes": 957753,
+          "crc32": "fdfa520b",
+          "sha256": "2839f85d1122b446e813db351f68beaa7f5dd09cf25417bc25642bf4cca0e6df"
+        },
+        {
+          "name": "fma_small/000/000694.mp3",
+          "size_bytes": 601023,
+          "compressed_bytes": 595494,
+          "crc32": "1db85ed9",
+          "sha256": "866d2bfedd1574e003a72ee98ae79d99a4f98437c98970c4fa7d60c91803e5ae"
+        },
+        {
+          "name": "fma_small/000/000695.mp3",
+          "size_bytes": 600631,
+          "compressed_bytes": 578862,
+          "crc32": "df132a20",
+          "sha256": "d839c49f62c34796f70a08896ea1d00453f3ecdb51e29fdf8a0567da7cbb9971"
+        },
+        {
+          "name": "fma_small/000/000704.mp3",
+          "size_bytes": 960674,
+          "compressed_bytes": 961082,
+          "crc32": "5f069180",
+          "sha256": "bc224f6b237785d44fa3d3df5f8ab887e95c2c7c54a8adfdae456e0758d2e8ef"
+        },
+        {
+          "name": "fma_small/000/000705.mp3",
+          "size_bytes": 960676,
+          "compressed_bytes": 960358,
+          "crc32": "4e246367",
+          "sha256": "27f9c66c9b52d4deecaa3bfe4a59db5da4a2b274e8d50c695b7ce2017f9f47e1"
+        },
+        {
+          "name": "fma_small/000/000706.mp3",
+          "size_bytes": 961513,
+          "compressed_bytes": 961075,
+          "crc32": "bff7eb45",
+          "sha256": "4071bce735c802f936c1d49a4845f0507d3dd17c4524c6a10332ece04e72e738"
+        },
+        {
+          "name": "fma_small/000/000707.mp3",
+          "size_bytes": 960672,
+          "compressed_bytes": 959400,
+          "crc32": "b77a3532",
+          "sha256": "155548c29ba31c8e6bcfef472462588cc416d144422df8f14b930ed40a11a6b3"
+        },
+        {
+          "name": "fma_small/000/000708.mp3",
+          "size_bytes": 960674,
+          "compressed_bytes": 960197,
+          "crc32": "5373cf99",
+          "sha256": "729484e981b839981012255c774bdf6aba19a0bf74a0fb54e3e7bf2e128f97a7"
+        },
+        {
+          "name": "fma_small/000/000709.mp3",
+          "size_bytes": 721504,
+          "compressed_bytes": 715598,
+          "crc32": "77ec9f69",
+          "sha256": "6e0d74bed0d9f8168d3bf868516f4156dfd8bf097ce496705f1d7fa9d643d9c5"
+        },
+        {
+          "name": "fma_small/000/000714.mp3",
+          "size_bytes": 960864,
+          "compressed_bytes": 944988,
+          "crc32": "557ffd28",
+          "sha256": "21456d5d5e96d09a90406777c205cedd376bd02e3d9f8ed5aee37b8d60e1df8d"
+        },
+        {
+          "name": "fma_small/000/000715.mp3",
+          "size_bytes": 960706,
+          "compressed_bytes": 948531,
+          "crc32": "9755fd73",
+          "sha256": "3c81dbd5484d595b75f101df2eca948ee1e61b6d9d8e106e6340345bc22ed53c"
+        },
+        {
+          "name": "fma_small/000/000716.mp3",
+          "size_bytes": 960707,
+          "compressed_bytes": 945997,
+          "crc32": "19699e81",
+          "sha256": "c398daddb2a59d4ea96f6e6de0f14e61477927bd5efcfd2fb101502c8d8302e3"
+        },
+        {
+          "name": "fma_small/000/000718.mp3",
+          "size_bytes": 961559,
+          "compressed_bytes": 946550,
+          "crc32": "3badb4e1",
+          "sha256": "b9be9c44e9e0991ea713d9f5737ca051b5c0a68a89ce547acefde1da79eb1f5d"
+        },
+        {
+          "name": "fma_small/000/000777.mp3",
+          "size_bytes": 960727,
+          "compressed_bytes": 958904,
+          "crc32": "6bad504d",
+          "sha256": "abb01b7af850d69d7ce418489965e9900fae5ead98eb702fc1256dcdd4c318f5"
+        },
+        {
+          "name": "fma_small/000/000814.mp3",
+          "size_bytes": 960748,
+          "compressed_bytes": 958724,
+          "crc32": "7df73bdb",
+          "sha256": "cffc5b6ff95eefc2a78cf007e47b54b9e81c58b883285ff735ce1f0834df6ad6"
+        },
+        {
+          "name": "fma_small/000/000821.mp3",
+          "size_bytes": 961825,
+          "compressed_bytes": 946964,
+          "crc32": "030eed66",
+          "sha256": "9c65bdd33a11591958aac25e35733b6c815980cd975dd66b46eef998d6d7b835"
+        },
+        {
+          "name": "fma_small/000/000822.mp3",
+          "size_bytes": 960998,
+          "compressed_bytes": 949571,
+          "crc32": "fa57ca00",
+          "sha256": "c55f623f929937c0d36cbeddb9c16eaea4a08b529fc350a5abf147b302fba9bd"
+        },
+        {
+          "name": "fma_small/000/000825.mp3",
+          "size_bytes": 479663,
+          "compressed_bytes": 457519,
+          "crc32": "f16d1f9d",
+          "sha256": "5b92652d4f8494128cfa5be551d8ed9b9a1628b55741f4ed32154d792002473c"
+        },
+        {
+          "name": "fma_small/000/000853.mp3",
+          "size_bytes": 961865,
+          "compressed_bytes": 926039,
+          "crc32": "b55160d9",
+          "sha256": "191792c1ab5ebe253eeeb64b8e4a9dbb4df03a767fce6098d448ea5c2cbb7f74"
+        },
+        {
+          "name": "fma_small/000/000890.mp3",
+          "size_bytes": 960773,
+          "compressed_bytes": 954719,
+          "crc32": "f258ed10",
+          "sha256": "3ed16c5d681e31edf4b89c95f04cdf22047be639ec31a4b047d8f44b351d1d18"
+        },
+        {
+          "name": "fma_small/000/000892.mp3",
+          "size_bytes": 960769,
+          "compressed_bytes": 957768,
+          "crc32": "0c1229c2",
+          "sha256": "4dc38e9e4f9db7423b41b28d4c82e678731b61b988221766a8f28a0725229105"
+        },
+        {
+          "name": "fma_small/000/000897.mp3",
+          "size_bytes": 960775,
+          "compressed_bytes": 872435,
+          "crc32": "8a6c23ad",
+          "sha256": "9c0577861a29510a80ffe00cdcc155f365ed8bdca9e64ca19a962da322225667"
+        },
+        {
+          "name": "fma_small/000/000993.mp3",
+          "size_bytes": 961656,
+          "compressed_bytes": 958274,
+          "crc32": "81b7430c",
+          "sha256": "50d638ff9013e293dbd3ae4c06cefe61f2bb8c9a2f8b627a40a0e3fe07c1ded9"
+        },
+        {
+          "name": "fma_small/000/000995.mp3",
+          "size_bytes": 961647,
+          "compressed_bytes": 941325,
+          "crc32": "91ebe5ae",
+          "sha256": "6e2d43f8cd381b45e02dd849c73523eb9f8aa59b6c2d12cd0564743746ce154d"
+        },
+        {
+          "name": "fma_small/000/000997.mp3",
+          "size_bytes": 961640,
+          "compressed_bytes": 958975,
+          "crc32": "42f08e99",
+          "sha256": "267a0322481376f4d4c1e54cde57d91c70078a4cb5abd080533048a55542b695"
+        },
+        {
+          "name": "fma_small/000/000998.mp3",
+          "size_bytes": 960793,
+          "compressed_bytes": 946024,
+          "crc32": "f4c438c4",
+          "sha256": "836932babb7eb50a872213c175373a5b5e96f1aaf58810ff410ce0f797aac20e"
+        },
+        {
+          "name": "fma_small/001/001039.mp3",
+          "size_bytes": 960713,
+          "compressed_bytes": 957829,
+          "crc32": "43305fa6",
+          "sha256": "8bfca735e5b649613088eb4429c7c4bb8ec08bbd59c805e16d78eb86807fe09a"
+        },
+        {
+          "name": "fma_small/001/001040.mp3",
+          "size_bytes": 720662,
+          "compressed_bytes": 704811,
+          "crc32": "0e8b245e",
+          "sha256": "2b27c142e1a0ab66a03ea496307a49cb3d27e2388b93467f1a5b470072ec0d12"
+        },
+        {
+          "name": "fma_small/001/001066.mp3",
+          "size_bytes": 721580,
+          "compressed_bytes": 704316,
+          "crc32": "b450c1e3",
+          "sha256": "85ef61e46f3a6f6a1eaf2aff973a7cd8d0da9dbfcce33f38e748e8dc050db935"
+        },
+        {
+          "name": "fma_small/001/001069.mp3",
+          "size_bytes": 720957,
+          "compressed_bytes": 713679,
+          "crc32": "a5ed925f",
+          "sha256": "21d60b9c660893ecd2e7fc7ca9c78399caa5d1869534930cde26b22621710862"
+        },
+        {
+          "name": "fma_small/001/001073.mp3",
+          "size_bytes": 721572,
+          "compressed_bytes": 715767,
+          "crc32": "471f10d7",
+          "sha256": "bf2330431d3403b022d27b99229a939e1715815750a141265381b685f1901b04"
+        },
+        {
+          "name": "fma_small/001/001075.mp3",
+          "size_bytes": 720947,
+          "compressed_bytes": 704534,
+          "crc32": "c003c8ca",
+          "sha256": "8a39f8b67b2f01a49d61e040d118cc79d1ac8bfa29c9b0ba1bb92807030564ab"
+        },
+        {
+          "name": "fma_small/001/001082.mp3",
+          "size_bytes": 961803,
+          "compressed_bytes": 935648,
+          "crc32": "fddeaa44",
+          "sha256": "62867195b035492489125b29f0ea93076cd9cdaf19f828a5036737a4be420018"
+        },
+        {
+          "name": "fma_small/001/001083.mp3",
+          "size_bytes": 720652,
+          "compressed_bytes": 714059,
+          "crc32": "92198184",
+          "sha256": "d720711d1309b1d2c9022370e038b4153e8f4ccf7673f29d11484a17d4186d89"
+        },
+        {
+          "name": "fma_small/001/001087.mp3",
+          "size_bytes": 961876,
+          "compressed_bytes": 957625,
+          "crc32": "b6cfce42",
+          "sha256": "07c98ed0e09253b2697c5a65b8194b06c495ff911cfd64b54296dedf70505e88"
+        },
+        {
+          "name": "fma_small/001/001102.mp3",
+          "size_bytes": 961639,
+          "compressed_bytes": 959267,
+          "crc32": "4160fb3f",
+          "sha256": "8a71387786b3376a3cc154d648b9c374928aa8cf5417fa0f7be3bc0bd76396d7"
+        },
+        {
+          "name": "fma_small/001/001193.mp3",
+          "size_bytes": 721490,
+          "compressed_bytes": 713106,
+          "crc32": "9d27fd02",
+          "sha256": "204ab7d92f5d25d2315b77f214842ba7a215912071bd0acdead8120313fe21d2"
+        },
+        {
+          "name": "fma_small/001/001195.mp3",
+          "size_bytes": 721484,
+          "compressed_bytes": 711092,
+          "crc32": "734939fe",
+          "sha256": "8ba3adaf30a12e5a63a4c798b52c0e97b27d8e805029c0c6c6ed2d19c61547a4"
+        },
+        {
+          "name": "fma_small/001/001196.mp3",
+          "size_bytes": 721481,
+          "compressed_bytes": 713133,
+          "crc32": "6990972a",
+          "sha256": "1df3868d6a29fa3dc5be7733fdbc2489aeab09e372e35cafcf31a34265272fc7"
+        },
+        {
+          "name": "fma_small/001/001197.mp3",
+          "size_bytes": 720850,
+          "compressed_bytes": 711991,
+          "crc32": "07e1e5a0",
+          "sha256": "1c0c6f26e5b66172e3472fc12eb935791082c3358b9b5527a323e8a7d3ce03a9"
+        },
+        {
+          "name": "fma_small/001/001249.mp3",
+          "size_bytes": 961062,
+          "compressed_bytes": 925357,
+          "crc32": "8f50462a",
+          "sha256": "29592fd5a61650116a8fc3c9e3057b788390c96f83ae266360655e59f2075f25"
+        },
+        {
+          "name": "fma_small/001/001259.mp3",
+          "size_bytes": 961066,
+          "compressed_bytes": 947054,
+          "crc32": "efad89e8",
+          "sha256": "8118e70411a9d60cef0b0832d5f5c791db43417e4e06021741b227d196660064"
+        },
+        {
+          "name": "fma_small/001/001270.mp3",
+          "size_bytes": 480906,
+          "compressed_bytes": 472504,
+          "crc32": "b7775f54",
+          "sha256": "19a707395b3df1d944a966a00f58c3bf84cd15a0bf9878a6e5e7ad176186d295"
+        },
+        {
+          "name": "fma_small/001/001276.mp3",
+          "size_bytes": 961585,
+          "compressed_bytes": 954151,
+          "crc32": "a45e1b12",
+          "sha256": "5f1ec1e52615020a7789eb541a2f4280b23bda3ed743153ab2189b60534bfb63"
+        },
+        {
+          "name": "fma_small/001/001277.mp3",
+          "size_bytes": 960746,
+          "compressed_bytes": 951596,
+          "crc32": "f022437f",
+          "sha256": "d11768aecfe3933c24e9ed305aa617e8a69e6670b6ddf1f5e518f810b736300a"
+        },
+        {
+          "name": "fma_small/001/001278.mp3",
+          "size_bytes": 961921,
+          "compressed_bytes": 959856,
+          "crc32": "deeaee14",
+          "sha256": "2ded9608fe4416da822af985e52bfc20ae1607197632d2f068e9b6ae3a3599e7"
+        },
+        {
+          "name": "fma_small/001/001417.mp3",
+          "size_bytes": 961180,
+          "compressed_bytes": 950340,
+          "crc32": "f7b3b470",
+          "sha256": "31530c0dfd7740eaf06c867d7981055ed78f89cef4608aa8c7cd85a75e9a10f5"
+        },
+        {
+          "name": "fma_small/001/001427.mp3",
+          "size_bytes": 481020,
+          "compressed_bytes": 475241,
+          "crc32": "235fe99b",
+          "sha256": "ffd55c98fa3d0fbd20eb395075fda0a7964ad1a5fa73b1c1e03e72af45f98b38"
+        },
+        {
+          "name": "fma_small/001/001443.mp3",
+          "size_bytes": 720626,
+          "compressed_bytes": 715972,
+          "crc32": "776124a4",
+          "sha256": "aa237b75e55758ce23f5385eb1672265e2ee630432e8ba7baa8ff682648b63a8"
+        },
+        {
+          "name": "fma_small/001/001482.mp3",
+          "size_bytes": 960701,
+          "compressed_bytes": 959504,
+          "crc32": "1fec240d",
+          "sha256": "7c3b30ff9e6b9131b1f491aa235392fd739855ebf34cc7a587b77cebfade7705"
+        },
+        {
+          "name": "fma_small/001/001510.mp3",
+          "size_bytes": 960754,
+          "compressed_bytes": 958049,
+          "crc32": "16d0910b",
+          "sha256": "34755b4e70d85ccda36cddf74511e234fca6eb0435d64b2d82c23165016ba354"
+        },
+        {
+          "name": "fma_small/001/001544.mp3",
+          "size_bytes": 961592,
+          "compressed_bytes": 933435,
+          "crc32": "aaca5275",
+          "sha256": "8d9365764def67504d7857c92e7ce56438f68b4a69f21537a73e970286d662bb"
+        },
+        {
+          "name": "fma_small/001/001642.mp3",
+          "size_bytes": 961013,
+          "compressed_bytes": 892433,
+          "crc32": "c58170ce",
+          "sha256": "6b945d4c8f2929227ce57f285238c20e91b8b44361e42aeafb9caf8691f42a71"
+        },
+        {
+          "name": "fma_small/001/001644.mp3",
+          "size_bytes": 961019,
+          "compressed_bytes": 914880,
+          "crc32": "5696d3dc",
+          "sha256": "801949018b2327e50a16c8f31a5644c4cc9624178c9b446d41545ddbf2e26304"
+        },
+        {
+          "name": "fma_small/001/001649.mp3",
+          "size_bytes": 961020,
+          "compressed_bytes": 861321,
+          "crc32": "774f6494",
+          "sha256": "ff002839534fdc7f74280b672349771b767ff535db7cd3129cbe76b5a5ee2548"
+        },
+        {
+          "name": "fma_small/001/001661.mp3",
+          "size_bytes": 961038,
+          "compressed_bytes": 912723,
+          "crc32": "51a8a2fe",
+          "sha256": "88af1faf3cb1ae6f5eeb885e53b6906f4bd322431a858f1d776caa34b4a0f5e0"
+        },
+        {
+          "name": "fma_small/001/001663.mp3",
+          "size_bytes": 721538,
+          "compressed_bytes": 710877,
+          "crc32": "bff00f5e",
+          "sha256": "458febc741824061492a17b8d038cafb8f0c5c7d5c0110739ec9d597a83ffe12"
+        },
+        {
+          "name": "fma_small/001/001666.mp3",
+          "size_bytes": 720930,
+          "compressed_bytes": 715391,
+          "crc32": "f5fb0be1",
+          "sha256": "c9341d9563a8c54f5cba7c8c5d4c76cbd3b790d7ae96df9f7122dcd1b5fe33b3"
+        },
+        {
+          "name": "fma_small/001/001673.mp3",
+          "size_bytes": 721741,
+          "compressed_bytes": 713958,
+          "crc32": "7271f336",
+          "sha256": "a2e17368d441e1b2a9bd377db15a5938cda4ec04c465e4df628520c3baeb564e"
+        },
+        {
+          "name": "fma_small/001/001680.mp3",
+          "size_bytes": 960815,
+          "compressed_bytes": 948142,
+          "crc32": "a37fd52a",
+          "sha256": "0da99feab09e57602e06e008dfd9b4748ba9613205e9fd884acac41166bd1821"
+        },
+        {
+          "name": "fma_small/001/001681.mp3",
+          "size_bytes": 961209,
+          "compressed_bytes": 949459,
+          "crc32": "5562d795",
+          "sha256": "107e924f21608bba57fb47df3f8e2f1f07c168022f42cc384bac324d6e18f96f"
+        },
+        {
+          "name": "fma_small/001/001682.mp3",
+          "size_bytes": 961210,
+          "compressed_bytes": 947502,
+          "crc32": "e4554142",
+          "sha256": "e77a6f86602344963c3f0a7b4bcaa858c35826f89178e83e1c2eae042c4fd417"
+        },
+        {
+          "name": "fma_small/001/001683.mp3",
+          "size_bytes": 962042,
+          "compressed_bytes": 948986,
+          "crc32": "82f88bf6",
+          "sha256": "956763b8bb6eaac4ff50aba509cd2e4381659f58ac484db37f3553436b6ce724"
+        },
+        {
+          "name": "fma_small/001/001684.mp3",
+          "size_bytes": 961211,
+          "compressed_bytes": 948491,
+          "crc32": "2440a45f",
+          "sha256": "9b74d10ebd2b04b9e3d2b669c12eaf8176df12fbd47723fd53b0f0a97face7f6"
+        },
+        {
+          "name": "fma_small/001/001685.mp3",
+          "size_bytes": 961205,
+          "compressed_bytes": 947945,
+          "crc32": "d15f5be0",
+          "sha256": "890d80119a9c71595d0da0672d9793c1f065faeeeac2906f070a033ddfedc41c"
+        },
+        {
+          "name": "fma_small/001/001686.mp3",
+          "size_bytes": 961198,
+          "compressed_bytes": 953269,
+          "crc32": "71ee6ada",
+          "sha256": "8ed52d5ec575cacb4f230f5111978d9306757361dd1408648a30d13535c6962b"
+        },
+        {
+          "name": "fma_small/001/001687.mp3",
+          "size_bytes": 961209,
+          "compressed_bytes": 947157,
+          "crc32": "d7a2a874",
+          "sha256": "6a471fff1207fd157c639b7e9289458247263887823c24569468bc01ca11a371"
+        },
+        {
+          "name": "fma_small/001/001688.mp3",
+          "size_bytes": 962037,
+          "compressed_bytes": 951823,
+          "crc32": "3ec64c9d",
+          "sha256": "865fd10fdc53b0077d6ab3c04da63dbf2b4a5f1f8a289803f24976bb540e488a"
+        },
+        {
+          "name": "fma_small/001/001689.mp3",
+          "size_bytes": 962035,
+          "compressed_bytes": 953470,
+          "crc32": "e653e38e",
+          "sha256": "58d6a2a692aaf6cbc1df8b040a79129b03fa746583c1b7d666252ebfdb4f0d72"
+        },
+        {
+          "name": "fma_small/001/001701.mp3",
+          "size_bytes": 960762,
+          "compressed_bytes": 957600,
+          "crc32": "242913d1",
+          "sha256": "a2a6ff8e2ec772e8ba39fb141962784de30a22492ded453914d64bf93568f115"
+        },
+        {
+          "name": "fma_small/001/001702.mp3",
+          "size_bytes": 961608,
+          "compressed_bytes": 959298,
+          "crc32": "824972d7",
+          "sha256": "b283eb64033efb7b2a262bf5379716fdd2445982b862de5d1484a9c3d6513e8e"
+        },
+        {
+          "name": "fma_small/001/001703.mp3",
+          "size_bytes": 960775,
+          "compressed_bytes": 956784,
+          "crc32": "74549363",
+          "sha256": "cf45d498852d1def1cc0be6ac3899c6c211e5d231cff33a7d3f546aca97feee0"
+        },
+        {
+          "name": "fma_small/001/001704.mp3",
+          "size_bytes": 961604,
+          "compressed_bytes": 959366,
+          "crc32": "a5ee96eb",
+          "sha256": "c234f323ccd8d0eadca101b52584c3db6846fadfaadbbfa16f0197f67b412d3a"
+        },
+        {
+          "name": "fma_small/001/001706.mp3",
+          "size_bytes": 479469,
+          "compressed_bytes": 472401,
+          "crc32": "98ffc02d",
+          "sha256": "b5707a502c161cf437523efb27459d9e6e362a42b84d120e20024a618fa5910d"
+        },
+        {
+          "name": "fma_small/001/001720.mp3",
+          "size_bytes": 720707,
+          "compressed_bytes": 713041,
+          "crc32": "0a4d4893",
+          "sha256": "1a007b37b2133f1f6037d1bf51a33016b2d2348ff4b19769451c1b9a7aa08e4f"
+        },
+        {
+          "name": "fma_small/001/001732.mp3",
+          "size_bytes": 962035,
+          "compressed_bytes": 942991,
+          "crc32": "d9b97ac7",
+          "sha256": "4c6d3c203b986c38571871b33b10ec10e738254c247f1b811ded3aebbce80445"
+        },
+        {
+          "name": "fma_small/001/001733.mp3",
+          "size_bytes": 962021,
+          "compressed_bytes": 949272,
+          "crc32": "e74ff213",
+          "sha256": "d480f85c57863278a67b173636fe4bd9cc1997e84cbedff1ae2fd465583ac3ac"
+        },
+        {
+          "name": "fma_small/001/001735.mp3",
+          "size_bytes": 961195,
+          "compressed_bytes": 945940,
+          "crc32": "a52e3f8b",
+          "sha256": "50502add1f63842c18583be64c7000f67998f2157ac2a65c84ac1aad1ff33e8f"
+        },
+        {
+          "name": "fma_small/001/001736.mp3",
+          "size_bytes": 961190,
+          "compressed_bytes": 933149,
+          "crc32": "3b675863",
+          "sha256": "515bbb2840f921c4a19b961546b775f57eb3418e66ab6209bb7a96965a3775cd"
+        },
+        {
+          "name": "fma_small/001/001883.mp3",
+          "size_bytes": 601060,
+          "compressed_bytes": 589915,
+          "crc32": "454de539",
+          "sha256": "2141fe39e71f9e8993994a406ce886d2465bb460f44e06f6f344a683615b7a5e"
+        },
+        {
+          "name": "fma_small/001/001891.mp3",
+          "size_bytes": 720648,
+          "compressed_bytes": 663796,
+          "crc32": "8fc07cbc",
+          "sha256": "068c614e44d37563bdd3c929a9264eb7e0d037e0fa7e89fef676482845160546"
+        },
+        {
+          "name": "fma_small/001/001893.mp3",
+          "size_bytes": 463469,
+          "compressed_bytes": 460835,
+          "crc32": "0e80f661",
+          "sha256": "8254c99307e1340f4dea9467452021e14765f39b176647798848682d02035304"
+        },
+        {
+          "name": "fma_small/001/001924.mp3",
+          "size_bytes": 480519,
+          "compressed_bytes": 477251,
+          "crc32": "ac0fb512",
+          "sha256": "5ed7035e27ec755467d844abad80f23af7ea60e4cb0b725cd738f727e021e436"
+        },
+        {
+          "name": "fma_small/001/001925.mp3",
+          "size_bytes": 480981,
+          "compressed_bytes": 473013,
+          "crc32": "f9beedff",
+          "sha256": "f85450c0271fed34aefd93bec5243053c924423c4d038bbb84164461bb4591d7"
+        }
+      ]
+    },
+    "metadata": {
+      "source_url": "https://os.unil.cloud.switch.ch/fma/fma_metadata.zip",
+      "size_bytes": 358412441,
+      "sha1": "f0df49ffe5f2a6008d7dc83c6915b31835dfe733",
+      "etag": "\"64dd28f582705ace094de08c63643be6-69\"",
+      "index_sha256": "21685dd1aa7d260c3f69720c2c290b5ace9dac634caf36423037bccd5d7e7a98",
+      "index_bytes": 860,
+      "members": [
+        {
+          "name": "fma_metadata/tracks.csv",
+          "size_bytes": 260414445,
+          "compressed_bytes": 19496284,
+          "crc32": "5e6f68ec",
+          "sha256": "f73260fd112b8cd42bcd4f7c8918fc66b19d9d4c7b97f4faedce524b59e95d6b"
+        }
+      ]
+    }
+  }
+}

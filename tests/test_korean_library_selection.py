@@ -15,6 +15,8 @@ from korean_openwakeword.evaluate import adoption, adoption_criteria, candidate_
 from korean_openwakeword.tune import replay, tune, select_runtime
 from korean_openwakeword.selection import select_candidate, verified_evaluation
 from korean_openwakeword.bundle import freeze
+from korean_openwakeword.cache_analysis import FrozenClipRows
+from korean_openwakeword.tune import compare_cached, select_cached_configuration, _analysis_rows
 
 
 @pytest.fixture
@@ -237,3 +239,96 @@ def test_actual_single_head_scores_and_events_match_original_evaluation(experime
             assert actual["event"] == decision["event"]
             seen += 1
     assert seen > 25
+
+
+def test_verified_evaluation_streams_large_metadata_and_selection_preserves_it(experiment, tmp_path, monkeypatch):
+    project, bundle, evaluation, ids = experiment
+    clips = read_json(evaluation / "clips.json")
+    for index, row in enumerate(clips):
+        row["unrecognized_source_metadata"] = {"notes": "x" * 700000, "index": index}
+    write_json(evaluation / "clips.json", clips)
+    _receipt(evaluation, bundle)
+    from korean_openwakeword import selection
+    original_read = selection.read_json
+    def no_whole_archive(path):
+        assert Path(path).name != "clips.json", "Large source archives must be streamed"
+        return original_read(path)
+    monkeypatch.setattr(selection, "read_json", no_whole_archive)
+    verified = verified_evaluation(project, bundle, evaluation)
+    assert isinstance(verified[4], FrozenClipRows)
+    assert len(verified[4]) == len(clips)
+    result = select_candidate(project, bundle, evaluation, tmp_path / "streamed", ids[1])
+    from korean_openwakeword.paged_site import iter_clip_array
+    for before, after in zip(clips, iter_clip_array(Path(result["evaluation"]) / "clips.json")):
+        assert after == dict(before, results={ids[1]: before["results"][ids[1]]})
+
+
+def test_compact_replay_retains_exact_all_model_statistics(experiment):
+    project, bundle, evaluation, ids = experiment
+    _, config, package, _, clips, scores, offsets, candidates = verified_evaluation(project, bundle, evaluation)
+    runtime = dict(package["runtime"], threshold=.5)
+    full = replay(clips, scores, offsets, ids, runtime)
+    compact = _analysis_rows(clips, scores, offsets, ids, runtime)
+    assert summarize(compact, config, candidates) == summarize(full, config, candidates)
+    assert "calls" not in compact[0] and "events_s" not in compact[0]["results"][ids[1]]
+    assert next(iter(clips))["results"] != compact[0]["results"]
+
+
+def test_compare_is_explicit_read_only_and_reuses_current_summary(experiment, tmp_path, monkeypatch):
+    project, bundle, evaluation, ids = experiment
+    report = read_json(evaluation / "report.json")
+    before = {path: digest(path) for directory in (bundle, evaluation) for path in directory.rglob("*") if path.is_file()}
+    before[project] = digest(project)
+    from korean_openwakeword import tune as module
+    monkeypatch.setattr(module, "_analysis_rows", lambda *args, **kwargs: pytest.fail("Unchanged scores should reuse their frozen summary"))
+    result = compare_cached(project, bundle, evaluation, tmp_path / "comparison", [report["runtime"]["threshold"]], candidate=ids[1])
+    assert result["selection_applied"] is False and result["network_rerun"] is False
+    assert result["comparisons"][0]["models"] == [next(row for row in report["models"] if row["id"] == ids[1])]
+    assert not (tmp_path / "comparison/bundle").exists()
+    assert before == {path: digest(path) for path in before}
+
+
+def test_compare_changed_settings_matches_exact_selected_column(experiment, tmp_path):
+    project, bundle, evaluation, ids = experiment
+    result = compare_cached(project, bundle, evaluation, tmp_path / "comparison", [.5], consecutive=[1], candidate=ids[1])
+    _, config, package, _, clips, scores, offsets, candidates = verified_evaluation(project, bundle, evaluation)
+    runtime = dict(package["runtime"], threshold=.5, consecutive_frames=1)
+    expected = summarize(replay(clips, scores[:, [1]], offsets, [ids[1]], runtime), config, [candidates[1]])
+    assert result["comparisons"][0]["models"] == expected
+    selected = select_cached_configuration(project, bundle, evaluation, tmp_path / "explicit", ids[1], .5, 1, comparison=result["comparison"])
+    assert selected["runtime"] == runtime and selected["network_rerun"] is False
+    assert read_json(project)["runtime"] == package["runtime"]
+    exported = read_json(Path(selected["evaluation"]) / "report.json")
+    assert exported["models"] == expected
+    verified_evaluation(project, selected["bundle"], selected["evaluation"])
+
+
+@pytest.mark.parametrize("change", ["unmeasured", "candidate", "tamper", "project"])
+def test_selection_requires_exact_bound_comparison_choice(experiment, tmp_path, change):
+    project, bundle, evaluation, ids = experiment
+    result = compare_cached(project, bundle, evaluation, tmp_path / "comparison", [.5], consecutive=[1], candidate=ids[1])
+    threshold, candidate = .5, ids[1]
+    if change == "unmeasured":
+        threshold = .6
+    elif change == "candidate":
+        candidate = ids[0]
+    elif change == "tamper":
+        value = read_json(result["comparison"])
+        value["comparisons"][0]["runtime"]["threshold"] = .6
+        write_json(result["comparison"], value)
+    else:
+        value = read_json(project)
+        value["runtime"]["threshold"] = .6
+        write_json(project, value)
+    with pytest.raises(ValueError):
+        select_cached_configuration(project, bundle, evaluation, tmp_path / "forbidden", candidate, threshold, 1, comparison=result["comparison"])
+    assert not (tmp_path / "forbidden").exists()
+
+
+def test_changed_settings_require_comparison_and_final_stays_locked(experiment, tmp_path):
+    project, bundle, evaluation, ids = experiment
+    with pytest.raises(ValueError, match="Compare changed"):
+        select_cached_configuration(project, bundle, evaluation, tmp_path / "uncompared", ids[1], .5, 1)
+    write_json(Path(project).parent / "final_lock.json", {"frozen": True})
+    with pytest.raises(ValueError, match="frozen"):
+        compare_cached(project, bundle, evaluation, tmp_path / "final_forbidden", [.5], candidate=ids[1])

@@ -306,12 +306,12 @@
     const policy = recipe.evaluation_policy || recipe.evaluation_materials_policy || {};
     const assets = recipe.assets || [], sources = recipe.sources || assets;
     const asset = id => sources.find(item => item.id === id) || assets.find(item => item.id === id);
-    const size = item => item?.bytes ?? item?.size_bytes ?? item?.total_bytes ?? item?.totalbytes;
+    const size = item => item?.selected_download_bytes ?? item?.bytes ?? item?.size_bytes ?? item?.total_bytes ?? item?.totalbytes;
     const bundleSize = ids => {
       const values = ids.map(id => size(asset(id))).filter(Number.isFinite);
       return values.length ? values.reduce((sum, value) => sum + value, 0) : undefined;
     };
-    const source = (name, content, amount, rank, record, fileBytes = size(record)) => ({ name, content, amount, rank, bytes: fileBytes, url: record?.url || record?.source_url });
+    const source = (name, content, amount, rank, record, fileBytes = size(record)) => ({ name, content, amount, rank, bytes: fileBytes, bytesLabel: record?.download_mode === "selected_members" ? "다운로드" : "원본", url: record?.url || record?.source_url });
     const fallback = record => {
       const time = record.target_hours ?? record.hours;
       return source(record.display_name || record.name || record.id || record.dataset_id || "공개 자료",
@@ -462,7 +462,7 @@
           if (href) { name.href = href; name.target = "_blank"; name.rel = "noopener"; }
           text.append(name, element("span", source.content, "source-content"));
           const size = originalSize(source.bytes);
-          if (size) quantity.append(element("span", `원본 ${size}`, "file-size"));
+          if (size) quantity.append(element("span", `${source.bytesLabel || "원본"} ${size}`, "file-size"));
           row.append(text, quantity); sources.append(row);
         }
         panel.append(sources); row.append(button, panel); list.append(row);
@@ -683,21 +683,25 @@
   function renderResultFrame(project) {
     const result = project.results || {};
     const resultUrl = localUrl(result.url || project.results_url), micUrl = localUrl(result.mic_url || project.mic_url);
+    const analysisUrl = resultUrl ? `/analysis/${encodeURIComponent(project.id)}/` : "";
     const show = Boolean(resultUrl);
     $("results-section").hidden = !show;
     if (!show) { if (resultIdentity) frameSource($("result-frame"), ""); $("evaluation-coverage").hidden = true; resultIdentity = ""; resultMode = "results"; return; }
     if (resultIdentity !== project.id + ":" + resultUrl) { resultMode = "results"; resultIdentity = project.id + ":" + resultUrl; }
-    if (!micUrl) resultMode = "results";
+    if (!micUrl && resultMode === "mic") resultMode = "results";
     $("mic-tab").hidden = !micUrl;
+    $("analysis-tab").hidden = !analysisUrl;
+    $("analysis-tab").className = "tab" + (resultMode === "analysis" ? " active" : "");
+    $("analysis-tab").setAttribute("aria-selected", String(resultMode === "analysis"));
     $("result-tab").className = "tab" + (resultMode === "results" ? " active" : "");
     $("mic-tab").className = "tab" + (resultMode === "mic" ? " active" : "");
     $("result-tab").setAttribute("aria-selected", String(resultMode === "results")); $("mic-tab").setAttribute("aria-selected", String(resultMode === "mic"));
-    const url = resultMode === "mic" ? micUrl : resultUrl;
+    const url = resultMode === "mic" ? micUrl : resultMode === "analysis" ? analysisUrl : resultUrl;
     frameSource($("result-frame"), url); $("result-open").href = url;
-    $("result-frame").title = resultMode === "mic" ? "마이크로 호출어 시험" : "성능과 평가 오디오";
-    $("results-note").textContent = resultMode === "mic" ? "마이크를 허용한 뒤 호출어를 말해보세요." : "같은 시험 오디오에서 모델별 성능을 비교한 결과입니다.";
+    $("result-frame").title = resultMode === "mic" ? "마이크로 호출어 시험" : resultMode === "analysis" ? "모델 선택과 감지 민감도 비교" : "성능과 평가 오디오";
+    $("results-note").textContent = resultMode === "mic" ? "마이크를 허용한 뒤 호출어를 말해보세요." : resultMode === "analysis" ? "선택한 모델과 감지 설정을 별도로 저장해 시험합니다." : "같은 시험 오디오에서 모델별 성능을 비교한 결과입니다.";
     const assessment = result.common_evaluation_assessment;
-    $("evaluation-coverage").hidden = !assessment || resultMode === "mic";
+    $("evaluation-coverage").hidden = !assessment || resultMode !== "results";
     if (assessment) {
       const shortages = Array.isArray(assessment.shortages) ? assessment.shortages : [];
       $("evaluation-coverage-summary").textContent = assessment.coverage_targets_passed ? "시험 자료 준비 완료" : `시험 자료 확인 필요 · ${number(shortages.length)}개 항목`;
@@ -720,9 +724,14 @@
     $("current-description").textContent = project.next_action || project.description || (waiting ? "아래에서 필요한 확인을 마치면 이어서 진행합니다." : complete ? "아래에서 결과를 확인하고 호출어를 시험할 수 있습니다." : running ? "진행 상태를 자동으로 갱신합니다." : "시작하면 준비된 작업부터 순서대로 진행합니다.");
     if (complete) $("current-description").textContent = "아래에서 모델 성능을 비교하고 시험 오디오를 들어보세요.";
     $("resume-note").hidden = complete;
+    const migration = project.migration;
+    $("migration-note").hidden = !migration;
+    $("migration-reason").textContent = migration?.reason || "";
+    $("migrate").hidden = migration?.state !== "available";
+    $("migrate").disabled = busy || running;
     if (evaluating(project) && project.progress?.phase === "summary") $("current-description").textContent = "채점을 마쳤습니다. 통계와 결과 파일을 정리하고 있습니다.";
-    $("start").hidden = running || complete || waiting || project.status === "paused" || project.status === "failed" || project.status === "error";
-    $("resume").hidden = running || complete || waiting || !["paused", "failed", "error", "interrupted"].includes(project.status);
+    $("start").hidden = Boolean(migration) || running || complete || waiting || project.status === "paused" || project.status === "failed" || project.status === "error";
+    $("resume").hidden = Boolean(migration) || running || complete || waiting || !["paused", "failed", "error", "interrupted"].includes(project.status);
     $("pause").hidden = !running;
     for (const id of ["start", "resume", "pause"]) $(id).disabled = busy || project.status === "pausing";
     const progress = progressValue(project);
@@ -737,7 +746,23 @@
     }
     const currentElapsed = duration(project.current_stage_elapsed_seconds), elapsed = duration(project.elapsed_seconds), remaining = eta(project.eta_seconds);
     $("elapsed").textContent = currentElapsed ? `이 작업 경과 ${currentElapsed}${elapsed ? " · 전체 경과 " + elapsed : ""}` : elapsed ? `전체 경과 ${elapsed}` : "";
+    if (project.timing) {
+      const measured = project.timing;
+      const parts = [`전체 ${duration(measured.total_seconds) || "0초"}`];
+      if (Number.isFinite(measured.active_seconds)) parts.push(`실제 처리 ${duration(measured.active_seconds)}`);
+      if (measured.review_wait_seconds > 0) parts.push(`사용자 확인 대기 ${duration(measured.review_wait_seconds)}`);
+      if (measured.paused_seconds > 0) parts.push(`일시정지 ${duration(measured.paused_seconds)}`);
+      if (measured.unclassified_seconds > 0) parts.push(`기타 경과 ${duration(measured.unclassified_seconds)}`);
+      $("elapsed").textContent = parts.join(" · ");
+      if (measured.legacy_estimate) $("elapsed").title = "과거 기록에서 확인 가능한 구간만 분리했습니다.";
+    }
     $("eta").textContent = remaining ? `이 작업 예상 남은 시간 ${remaining}` : running ? "예상 시간: 처리 속도를 측정한 뒤 표시합니다" : "";
+    const transfer = project.progress || {};
+    if (transfer.bytes_per_second > 0 && Number.isFinite(transfer.bytes_per_second)) {
+      const speed = `${bytes(transfer.bytes_per_second)}/초`;
+      $("eta").textContent = remaining ? `${speed} · 이 작업 예상 남은 시간 ${remaining}` : speed;
+    }
+    if (transfer.phase === "retry") $("eta").textContent = `연결 재시도 ${number(transfer.attempt)} / ${number(transfer.retry_limit)}`;
     if (evaluating(project)) $("eta").textContent = progress && !/단계/.test(progress.unit) ? "음원 수 기준 · 긴 비호출 음원은 더 오래 걸립니다." : "평가 음원의 무결성과 형식을 확인하고 있습니다.";
     $("project-error").hidden = !project.error;
     $("project-error").textContent = project.error && typeof project.error === "object" ? project.error.message || JSON.stringify(project.error) : project.error || "";
@@ -860,11 +885,12 @@
     $("source-pool").addEventListener("change", () => renderInputMode(selectedProject()));
     $("project-select").addEventListener("change", () => { selectedId = $("project-select").value; newProject = !selectedId; message(""); render(); });
     $("new-project").addEventListener("click", () => { newProject = true; message(""); render(); $("wakeword").focus(); });
-    for (const action of ["start", "pause", "resume"]) $(action).addEventListener("click", () => runAction(action));
+    for (const action of ["start", "pause", "resume", "migrate"]) $(action).addEventListener("click", () => runAction(action));
     $("refresh-log").addEventListener("click", loadLog);
     $("log-details").addEventListener("toggle", loadLog);
     $("result-tab").addEventListener("click", () => { resultMode = "results"; if (selectedProject()) renderResultFrame(selectedProject()); });
     $("mic-tab").addEventListener("click", () => { resultMode = "mic"; if (selectedProject()) renderResultFrame(selectedProject()); });
+    $("analysis-tab").addEventListener("click", () => { resultMode = "analysis"; if (selectedProject()) renderResultFrame(selectedProject()); });
     document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
     await refresh();
     try {

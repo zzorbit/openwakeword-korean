@@ -36,7 +36,7 @@ function browser({ noBoot = false, initialState, recipeError = false, recipeOver
       state.value.projects.push(project); state.value.active_project_id = project.id;
       return json(project);
     }
-    if (/\/api\/projects\/bora\/(start|resume|pause|input)$/.test(url)) return json({ ok: true });
+    if (/\/api\/projects\/bora\/(start|resume|pause|input|migrate)$/.test(url)) return json({ ok: true });
     if (url.endsWith("/log")) { if (logError) throw new Error("optional log unavailable"); return json({ log: logResponse }); }
     throw new Error("Unexpected route " + url);
   };
@@ -1144,6 +1144,29 @@ function storageBudgetRecipe(overrides = {}) {
     assert.match(b.elements.get("current-description").textContent, /통계와 결과 파일/);
     assert.equal(b.elements.get("project-status").textContent, "진행 중");
     assert.equal(b.calls.filter(call => call.url.endsWith("/log")).length, 0);
+  });
+  await test("completed timing stays explicit and separates processing from waits", async () => {
+    const project = {id:"bora",wakeword:"보라야",status:"completed",timing:{total_seconds:7200,active_seconds:1200,review_wait_seconds:1800,paused_seconds:600,unclassified_seconds:3600,legacy_estimate:true}};
+    const b=browser({initialState:{projects:[project]}});await flush();
+    const value=b.elements.get("elapsed").textContent;
+    assert.match(value,/전체 2시간/);assert.match(value,/실제 처리 20분/);assert.match(value,/사용자 확인 대기 30분/);assert.match(value,/일시정지 10분/);assert.match(value,/기타 경과 1시간/);
+  });
+  await test("a compatible update needs an explicit action and hides ordinary resume", async () => {
+    const project={id:"bora",status:"paused",migration:{state:"available",reason:"완료 자료를 보존하고 업데이트할 수 있습니다."}};
+    const b=browser({initialState:{projects:[project]}});await flush();
+    assert.equal(b.elements.get("migration-note").hidden,false);assert.equal(b.elements.get("migrate").hidden,false);assert.equal(b.elements.get("resume").hidden,true);
+    assert.equal(b.calls.some(call=>call.url.endsWith("/migrate")),false);await b.click("migrate");await flush();assert.ok(b.calls.some(call=>call.url.endsWith("/migrate")&&call.options.method==="POST"));
+  });
+  await test("result selection tab opens an independent page and survives polling", async () => {
+    const project={id:"bora",status:"completed",results_url:"/results/bora/"};
+    const b=browser({initialState:{projects:[project]}});await flush();b.click("analysis-tab");await flush();
+    assert.equal(b.elements.get("result-frame").getAttribute("src"),"/analysis/bora/");await b.tick();
+    assert.equal(b.elements.get("result-frame").getAttribute("src"),"/analysis/bora/");assert.equal(b.calls.some(call=>call.options.method==="POST"),false);
+  });
+  await test("download speed and retry information describe the current operation", async () => {
+    const project={id:"bora",status:"running",stage:{id:"data_download"},progress:{done:100,total:1000,unit:"bytes",phase:"download",bytes_per_second:1048576},eta_seconds:90};
+    const b=browser({initialState:{projects:[project]}});await flush();assert.match(b.elements.get("eta").textContent,/1 MiB\/초/);assert.match(b.elements.get("eta").textContent,/이 작업 예상 남은 시간/);
+    project.progress={done:100,total:1000,unit:"bytes",phase:"retry",attempt:2,retry_limit:3};await b.tick();assert.match(b.elements.get("eta").textContent,/연결 재시도 2 \/ 3/);
   });
   console.log(`Studio UI: ${tests.length} tests passed`);
   for (const name of tests) console.log("  ✓ " + name);

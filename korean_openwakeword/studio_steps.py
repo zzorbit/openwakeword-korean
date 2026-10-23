@@ -107,6 +107,7 @@ def preset_settings(name="check"):
             "material_acquisition_policy": "automatic_v3",
             "material_review_policy": "library_fixed_sources_v1",
             "audio_storage_policy": "canonical_flac_only_v1",
+            **({"official_noise_acquisition_policy": "selective_fma_small_v1"} if name in ("check", "trial") else {}),
             **({"fma_acquisition_policy": "per_track_flac_prefetch_v1"} if name == "production" else {}),
             "final_locked": True, "positive_text_policy": "standalone_only"}
 
@@ -529,7 +530,9 @@ def run_stage(project, workspace, settings, stage_id, context=None):
                                      evaluation_policy=settings.get("evaluation_policy"),
                                      noise_material_policy=settings.get("noise_material_policy", "official_example"),
                                      **({"material_acquisition_policy": settings["material_acquisition_policy"]}
-                                        if settings.get("material_acquisition_policy") else {}))
+                                        if settings.get("material_acquisition_policy") else {}),
+                                     **({"official_noise_acquisition_policy": settings["official_noise_acquisition_policy"]}
+                                        if settings.get("official_noise_acquisition_policy") else {}))
         # Downloaded candidates and reviewed/admitted sources are distinct.
         return _completed(prepared, [q["queue"] for q in prepared.get("review_queues", [])])
 

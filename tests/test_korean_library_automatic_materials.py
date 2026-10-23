@@ -112,6 +112,10 @@ def test_production_uses_qualified_raw_sources_without_legacy_generic_or_zeroth(
     from korean_openwakeword import automatic_sources
     monkeypatch.setattr(automatic_sources, "prepare_automatic_sources", automatic)
     settings = steps.preset_settings("production")
+    # These procedural sources deliberately have no real publisher tree or
+    # download pins. Exercise the custom-material listening path, not the
+    # library's fixed-source automatic-admission policy.
+    settings.pop("material_review_policy", None)
     settings.update(generic_hours=7 / 3600, korean_hours=2 / 3600)
     downloaded = steps.run_stage(project, workspace, settings, "data_download")
     assert downloaded["state"] == "completed"

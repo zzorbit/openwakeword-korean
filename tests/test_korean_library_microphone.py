@@ -89,6 +89,16 @@ def test_info_preserves_bundle_rules_without_starting_stream(service, detector):
     assert detector.resets == 0 and detector.frames == []
 
 
+def test_active_capture_and_selected_model_labels_keep_original_identity(detector):
+    service = MicrophoneService(detector, model_labels={"head1": "모델 2"})
+    assert service.info()["models"][0]["label"] == "모델 2"
+    assert not service.active()
+    started = service.start()
+    assert service.active()
+    service.stop(started["session_id"])
+    assert not service.active()
+
+
 def test_exact_little_endian_pcm_and_model_responses_are_not_modified(service, detector):
     started = service.start()
     samples = np.resize(np.array([-32768, -1234, 0, 1234, 32767], dtype="<i2"), 1280)

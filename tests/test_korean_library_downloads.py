@@ -1,6 +1,7 @@
 """HTTP resume/corruption handling without downloading the production corpus."""
 import hashlib
 import pytest
+import requests
 from korean_openwakeword.downloads import download_checked, dataset_catalog
 
 
@@ -116,3 +117,106 @@ def test_catalog_contains_actual_pins_no_local_paths():
     for row in catalog["assets"].values():
         assert len(row["sha256"]) == 64 and row["size_bytes"] > 0
         assert row["source_url"].startswith("https://") and "path" not in row
+
+
+def test_transient_disconnect_resumes_written_bytes_automatically(tmp_path, monkeypatch):
+    payload = b"same pinned original bytes"
+    output = tmp_path / "asset"
+    calls, progress = [], []
+    class Interrupted(Response):
+        def iter_content(self, block):
+            yield payload[:5]
+            raise requests.exceptions.ChunkedEncodingError("fixture disconnected")
+    def get(url, headers, **kwargs):
+        calls.append(headers)
+        if len(calls) == 1:
+            return Interrupted(b"")
+        assert headers["Range"] == "bytes=5-"
+        return Response(payload[5:], 206, {"Content-Range": f"bytes 5-{len(payload)-1}/{len(payload)}"})
+    monkeypatch.setattr("korean_openwakeword.downloads.requests.get", get)
+    monkeypatch.setattr("korean_openwakeword.downloads.time.sleep", lambda _: None)
+    download_checked("https://example.org/fixture", output, hashlib.sha256(payload).hexdigest(), len(payload), progress=progress.append)
+    assert output.read_bytes() == payload and len(calls) == 2
+    assert {p["phase"] for p in progress} == {"download", "retry", "hash"}
+    assert progress[-1]["phase"] == "hash" and progress[-1]["done"] == len(payload)
+
+
+def test_retry_exhaustion_preserves_partial_for_next_invocation(tmp_path, monkeypatch):
+    partial, attempts = tmp_path / "asset.part", []
+    class Interrupted(Response):
+        def iter_content(self, block):
+            yield b"a"
+            raise requests.exceptions.ReadTimeout("fixture timeout")
+    def get(url, headers, **kwargs):
+        offset = len(attempts)
+        attempts.append(headers)
+        return Interrupted(b"", 206 if offset else 200,
+                           {"Content-Range": f"bytes {offset}-9/10"} if offset else {})
+    monkeypatch.setattr("korean_openwakeword.downloads.requests.get", get)
+    monkeypatch.setattr("korean_openwakeword.downloads.time.sleep", lambda _: None)
+    with pytest.raises(requests.exceptions.ReadTimeout):
+        download_checked("https://example.org/fixture", tmp_path / "asset", "0"*64, 10)
+    assert len(attempts) == 3 and partial.read_bytes() == b"aaa"
+    assert attempts[-1]["Range"] == "bytes=2-"
+
+
+@pytest.mark.parametrize("status", [408, 429, 500, 503])
+def test_temporary_http_status_has_bounded_retry(tmp_path, monkeypatch, status):
+    payload, attempts = b"original", []
+    def get(*args, **kwargs):
+        attempts.append(1)
+        if len(attempts) == 1:
+            response = requests.Response(); response.status_code = status
+            raise requests.exceptions.HTTPError("fixture temporary server status", response=response)
+        return Response(payload)
+    monkeypatch.setattr("korean_openwakeword.downloads.requests.get", get)
+    monkeypatch.setattr("korean_openwakeword.downloads.time.sleep", lambda _: None)
+    path = tmp_path / "asset"
+    download_checked("https://example.org/fixture", path, hashlib.sha256(payload).hexdigest(), len(payload))
+    assert path.read_bytes() == payload and len(attempts) == 2
+
+
+@pytest.mark.parametrize("failure", ["certificate", "not_found", "permissions"])
+def test_permanent_errors_are_not_retried(tmp_path, monkeypatch, failure):
+    calls = []
+    def get(*args, **kwargs):
+        calls.append(1)
+        if failure == "certificate":
+            raise requests.exceptions.SSLError("fixture certificate error")
+        if failure == "not_found":
+            response = requests.Response(); response.status_code = 404
+            raise requests.exceptions.HTTPError("fixture not found", response=response)
+        raise PermissionError("fixture disk permission error")
+    monkeypatch.setattr("korean_openwakeword.downloads.requests.get", get)
+    with pytest.raises((requests.exceptions.RequestException, PermissionError)):
+        download_checked("https://example.org/fixture", tmp_path / "asset", "0"*64, 10)
+    assert len(calls) == 1
+
+
+def test_checksum_cache_is_execution_local_and_invalidates_file_changes(tmp_path):
+    from korean_openwakeword.downloads import VerificationCache, verify_checksum
+    path = tmp_path / "asset"; path.write_bytes(b"original")
+    expected = hashlib.sha256(path.read_bytes()).hexdigest()
+    cache, observed = VerificationCache(), []
+    verify_checksum(path, "sha256", expected, verification_cache=cache, progress=observed.append)
+    assert not observed[-1].get("verification_reused")
+    observed.clear()
+    verify_checksum(path, "sha256", expected, verification_cache=cache, progress=observed.append)
+    assert observed == [{"phase": "hash", "done": 8, "total": 8, "unit": "bytes", "verification_reused": True, "eta_seconds": 0}]
+    fresh = []
+    verify_checksum(path, "sha256", expected, verification_cache=VerificationCache(), progress=fresh.append)
+    assert fresh[0]["done"] == 0  # No trust survives another preparation call.
+    path.write_bytes(b"changed and longer")
+    with pytest.raises(ValueError, match="checksum"):
+        verify_checksum(path, "sha256", expected, verification_cache=cache)
+
+
+def test_completed_transfer_cache_can_be_reused_without_another_scan(tmp_path, monkeypatch):
+    from korean_openwakeword.downloads import VerificationCache, verify_checksum
+    payload = b"pinned feature payload"
+    sha, cache, progress = hashlib.sha256(payload).hexdigest(), VerificationCache(), []
+    monkeypatch.setattr("korean_openwakeword.downloads.requests.get", lambda *a, **k: Response(payload))
+    path = tmp_path / "asset"
+    download_checked("https://example.org/fixture", path, sha, len(payload), verification_cache=cache)
+    verify_checksum(path, "sha256", sha, verification_cache=cache, progress=progress.append)
+    assert progress[-1]["verification_reused"] is True

@@ -25,7 +25,7 @@ class MicrophoneError(ValueError):
 
 class MicrophoneService:
     """One ordered microphone stream; callers cannot interleave model history."""
-    def __init__(self, detector, idle_timeout=60, clock=time.monotonic):
+    def __init__(self, detector, idle_timeout=60, clock=time.monotonic, model_labels=None):
         if idle_timeout <= 0:
             raise ValueError("Idle timeout must be positive")
         self.detector = detector
@@ -33,7 +33,8 @@ class MicrophoneService:
         if self.runtime["sample_rate"] != 16000 or self.runtime["frame_samples"] != 1280:
             raise ValueError("Microphone input requires the canonical 16kHz / 80ms runtime")
         self.token = secrets.token_urlsafe(32)
-        self.models = [{"id": key, "label": f"단일 모델 {i + 1}", "kind": "single"}
+        labels = model_labels or {}
+        self.models = [{"id": key, "label": labels.get(key, f"단일 모델 {i + 1}"), "kind": "single"}
                        for i, key in enumerate(detector.keys)]
         self._ensemble_id = None
         if len(detector.keys) == 3:
@@ -76,6 +77,12 @@ class MicrophoneService:
     def expire(self):
         with self._lock:
             return self._expire()
+
+    def active(self):
+        """Check capture ownership without exposing session IDs or microphone audio."""
+        with self._lock:
+            self._expire()
+            return self._session is not None
 
     def start(self):
         with self._lock:

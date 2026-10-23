@@ -253,6 +253,17 @@ def test_tar_bounded_extraction(tmp_path):
     assert receipt["content_approved"] is False
 
 
+def test_extraction_progress_is_separate_from_download_and_preserves_exact_files(tmp_path):
+    archive = tmp_path / "source.zip"
+    _zip(archive, [("a.wav", b"original audio"), ("b.wav", b"other original")])
+    observed = []
+    result = module.extract_archive(archive, tmp_path / "out", progress=observed.append)
+    assert all(row["phase"] == "extract" for row in observed)
+    assert observed[-1]["done"] == observed[-1]["total"] == result["bytes"]
+    assert (tmp_path / "out/a.wav").read_bytes() == b"original audio"
+    assert (tmp_path / "out/b.wav").read_bytes() == b"other original"
+
+
 class _Response:
     status_code = 200
     headers = {}
@@ -426,7 +437,7 @@ def test_full_preparation_recipe_uses_real_qc_and_never_auto_approves(tmp_path, 
         asset.update(size_bytes=paths[asset["id"]].stat().st_size, license="fixture only")
     monkeypatch.setattr(module, "_official_assets", lambda: assets)
     requested_assets = []
-    def download(asset, directory, progress=None):
+    def download(asset, directory, progress=None, verification_cache=None):
         requested_assets.append(asset["id"])
         return paths[asset["id"]]
     monkeypatch.setattr(module, "_download", download)
@@ -437,7 +448,7 @@ def test_full_preparation_recipe_uses_real_qc_and_never_auto_approves(tmp_path, 
         return directory
     monkeypatch.setattr(module, "_fetch_mit", mit)
     import korean_openwakeword.assets as generic
-    def fake_import(path, output, frontend_identity):
+    def fake_import(path, output, frontend_identity, *, verification_cache=None):
         meta = {"publisher_declared_hours": 2000, "feature_path": str(path),
                 "feature_sha256": assets[0]["sha256"], "canonical_frontend_assets": frontend_identity["model_sha256"]}
         write_json(Path(output) / "metadata.json", meta)
