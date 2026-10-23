@@ -18,7 +18,7 @@ import shutil
 import requests
 import soundfile as sf
 
-from .common import digest, identity, now, read_json, read_rows, write_json, writer_lock
+from .common import digest, identity, now, read_json, read_rows, write_immutable_rows, write_json, writer_lock
 from .budgets import DEFAULT_GENERIC_HOURS, DEFAULT_KOREAN_HOURS, generic_source_hours
 from .project import load_project
 
@@ -168,14 +168,10 @@ def _frozen(path, record):
 
 
 def _rows(path, rows):
-    data = "".join(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n" for row in rows)
-    if path.exists():
-        if path.read_text(encoding="utf-8") != data:
-            raise ValueError("Frozen automatic source index changed")
-    else:
-        temporary = path.with_suffix(".tmp")
-        temporary.write_text(data, encoding="utf-8")
-        os.replace(temporary, path)
+    try:
+        write_immutable_rows(path, rows)
+    except FileExistsError as error:
+        raise ValueError("Frozen automatic source index changed") from error
     return _binding(path)
 
 

@@ -509,8 +509,8 @@ function storageBudgetRecipe(overrides = {}) {
     assert.match(textOf(restored), /선택 다운로드.*원본 MP3 보존/);
   });
   await test("new trial projects show automatically selected Korean sources without a manual shortage or legacy Zeroth", async () => {
-    const recipe = commonRecipe({ id: "trial", korean_hours: 2000 / 3, material_acquisition_policy: "automatic_v1",
-      automatic_source_plan: { version: 1, enabled: true, components: [{ id: "korean", provider: "yodas2", pool: "korean_negative", target_hours: 2000 / 3 }] } });
+    const recipe = commonRecipe({ id: "trial", korean_hours: 2000 / 3, material_acquisition_policy: "automatic_v3",
+      automatic_source_plan: { version: 3, enabled: true, components: [{ id: "korean", provider: "yodas2", pool: "korean_negative", target_hours: 2000 / 3 }] } });
     recipe.assets = recipe.assets.filter(item => item.id !== "zeroth");
     const b = browser({ recipeList: [recipe] }); await flush();
     const training = b.elements.get("source-preview").children[0], korean = material(training, "한국어 비호출 자료");
@@ -529,8 +529,8 @@ function storageBudgetRecipe(overrides = {}) {
   });
   await test("automatic production omits unused legacy downloads and never presents a planned corpus as admitted", async () => {
     const recipe = commercialRecipeV3();
-    recipe.material_acquisition_policy = "automatic_v1";
-    recipe.automatic_source_plan = { version: 1, enabled: true, components: recipe.training_negative_plan.components.map(item => ({ ...item, provider: item.sources[0].id })) };
+    recipe.material_acquisition_policy = "automatic_v3";
+    recipe.automatic_source_plan = { version: 3, enabled: true, components: recipe.training_negative_plan.components.map(item => ({ ...item, provider: item.sources[0].id })) };
     recipe.assets = recipe.assets.filter(item => !["generic", "zeroth", "audioset", "fma", "fma_metadata", "audioset_segments", "audioset_ontology"].includes(item.id));
     const b = browser({ recipeList: [recipe] }); await flush();
     const training = b.elements.get("source-preview").children[0];
@@ -546,56 +546,9 @@ function storageBudgetRecipe(overrides = {}) {
     assert.match(textOf(material(b.elements.get("source-preview").children[0], "한국어 비호출 자료")), /직접 준비할/);
     assert.equal(b.elements.get("source-plan-note").hidden, true);
   });
-  await test("minimum storage uses known payloads and updates with custom N, rounds and source hours", async () => {
-    const recipe = commercialRecipeV3();
-    Object.assign(recipe, { originals: 100000, rounds: 5, material_acquisition_policy: "automatic_v1",
-      automatic_source_plan: { version: 1, enabled: true, components: [{ pool: "generic_negative" }, { pool: "korean_negative" }] },
-      automatic_space_plan: { base_archive_bytes: 1000, base_working_bytes: 2000, future_buffer_bytes: 3000, estimated_original_archive_bytes: 99 * 1024 ** 4 } });
-    const before = JSON.stringify(recipe);
-    const b = browser({ recipeList: [recipe], initialState: { projects: [], system: { free_bytes: 1000 } } }); await flush();
-    const expected = (generic, korean, originals, rounds) => 6000 + Math.ceil((generic + korean) * 3600 * 32000)
-      + Math.ceil((generic + korean) * 3600 / 2) * 6144 + Math.ceil(originals * rounds * 6144);
-    assert.equal(b.helpers.minimumStorage(recipe), expected(7000, 3000, 100000, 5));
-    assert.equal(b.helpers.bytes(1024 ** 4), "1 TiB");
-    assert.match(b.elements.get("source-plan-note").textContent, /최소 저장 공간 .*TiB \+ 원본·압축파일 추가/);
-    assert.match(b.elements.get("source-plan-note").textContent, /현재 여유 공간보다 큽니다/);
-    b.elements.get("adv-generic").value = "3500"; b.elements.get("adv-generic").handlers.input();
-    b.elements.get("adv-korean").value = "1500"; b.elements.get("adv-korean").handlers.input();
-    b.elements.get("adv-originals").value = "1000"; b.elements.get("adv-originals").handlers.input();
-    b.elements.get("adv-rounds").value = "1"; b.elements.get("adv-rounds").handlers.input();
-    assert.match(b.elements.get("source-plan-note").textContent, new RegExp(b.helpers.bytes(expected(3500, 1500, 1000, 1)).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-    assert.equal(JSON.stringify(recipe), before);
-    assert.equal(b.helpers.minimumStorage(commonRecipe()), null);
-  });
-  await test("compact storage shows retained-source estimate and one temporary archive budget with custom scaling", async () => {
-    const recipe = commercialRecipeV3();
-    Object.assign(recipe, { originals: 100000, rounds: 5, material_acquisition_policy: "automatic_v2",
-      automatic_source_plan: { version: 2, enabled: true, components: recipe.training_negative_plan.components.map(item => ({ ...item,
-        provider: { mixed: "audioset_unbalanced", multilingual: "mls", korean_web: "yodas2" }[item.id] || item.sources[0].id })) },
-      automatic_space_plan: { base_archive_bytes: 1000, base_working_bytes: 2000, future_buffer_bytes: 3000,
-        transient_archive_bytes: 8 * 1024 ** 3, estimated_original_archive_bytes: 99 * 1024 ** 4 } });
-    const original = JSON.stringify(recipe);
-    const b = browser({ recipeList: [recipe], initialState: { projects: [], system: { free_bytes: 2 * 1024 ** 4 } } }); await flush();
-    const estimate = b.helpers.storageEstimate(recipe);
-    assert.equal(estimate.retained, 2585000000000);
-    assert.equal(estimate.minimum, 6000 + 8 * 1024 ** 3 + 1152000000000 + 110592000000 + 3072000000);
-    assert.equal(estimate.total, estimate.minimum + 2585000000000);
-    assert.match(b.elements.get("source-plan-note").textContent, /예상 필요 공간 .*묶음 임시 8 GiB 예산 포함/);
-    assert.match(b.elements.get("source-plan-note").textContent, /원본 제외 최소/);
-    const small = { genericHours: 3500, koreanHours: 1500, originals: 1000, rounds: 1 };
-    assert.equal(b.helpers.storageEstimate(recipe, small).retained, 1292500000000);
-    for (const [id, value] of [["adv-generic", "3500"], ["adv-korean", "1500"], ["adv-originals", "1000"], ["adv-rounds", "1"]]) {
-      b.elements.get(id).value = value; b.elements.get(id).handlers.input();
-    }
-    assert.ok(b.elements.get("source-plan-note").textContent.includes(b.helpers.bytes(b.helpers.storageEstimate(recipe, small).total)));
-    assert.equal(JSON.stringify(recipe), original);
-    assert.equal(b.helpers.storageEstimate({ ...recipe, material_acquisition_policy: "automatic_v1" }), null);
-    assert.equal(b.helpers.storageEstimate({ ...recipe, automatic_space_plan: { ...recipe.automatic_space_plan, transient_archive_bytes: undefined } }), null);
-    assert.equal(b.helpers.storageEstimate({ ...recipe, automatic_source_plan: { components: [{ provider: "unknown", pool: "generic_negative", target_hours: 1 }] } }), null);
-  });
-  await test("compact trial still selects YODAS automatically and does not change the legacy source display", async () => {
-    const recipe = commonRecipe({ id: "trial", korean_hours: 2000 / 3, material_acquisition_policy: "automatic_v2",
-      automatic_source_plan: { version: 2, enabled: true, components: [{ id: "yodas2", provider: "yodas2", pool: "korean_negative", target_hours: 2000 / 3 }] } });
+  await test("current trial selects YODAS automatically and preserves fixed source details", async () => {
+    const recipe = commonRecipe({ id: "trial", korean_hours: 2000 / 3, material_acquisition_policy: "automatic_v3",
+      automatic_source_plan: { version: 3, enabled: true, components: [{ id: "yodas2", provider: "yodas2", pool: "korean_negative", target_hours: 2000 / 3 }] } });
     recipe.assets = recipe.assets.filter(item => item.id !== "zeroth");
     const b = browser({ recipeList: [recipe] }); await flush();
     const training = b.elements.get("source-preview").children[0];
@@ -604,18 +557,16 @@ function storageBudgetRecipe(overrides = {}) {
     assert.equal(textOf(training).includes("Zeroth"), false);
     assert.equal(b.elements.get("source-plan-note").hidden, false);
   });
-  await test("compact check omits empty temporary and duplicate minimum amounts", async () => {
-    const recipe = commonRecipe({ id: "check", originals: 1000, rounds: 1, generic_hours: 2000, korean_hours: 1,
-      material_acquisition_policy: "automatic_v2",
-      automatic_source_plan: { version: 2, enabled: true, components: [] },
-      automatic_space_plan: { base_archive_bytes: 57880940221, base_working_bytes: 16106127360,
-        future_buffer_bytes: 8589934592, transient_archive_bytes: 0 } });
-    const b = browser({ recipeList: [recipe] }); await flush();
-    const note = b.elements.get("source-plan-note").textContent;
-    assert.match(note, /예상 필요 공간 76\.9 GiB/);
-    assert.equal(note.includes("묶음 임시"), false);
-    assert.equal(note.includes("원본 제외 최소"), false);
-    assert.match(note, /실제 용량은 선정 후 확인합니다/);
+  await test("new setup does not calculate or display obsolete v1/v2 storage forecasts", async () => {
+    for (const policy of ["automatic_v1", "automatic_v2"]) {
+      const recipe = commonRecipe({ material_acquisition_policy: policy,
+        automatic_source_plan: { version: Number(policy.at(-1)), enabled: true, components: [] },
+        automatic_space_plan: { base_archive_bytes: 1, base_working_bytes: 2, future_buffer_bytes: 3, transient_archive_bytes: 0 } });
+      const b = browser({ recipeList: [recipe] }); await flush();
+      assert.equal(b.helpers.storageEstimate(recipe), null);
+      assert.equal(b.elements.get("source-plan-note").hidden, true);
+      assert.equal(b.calls.some(call => /download|prepare/.test(call.url)), false);
+    }
   });
   await test("canonical FLAC storage shows a WAV reference budget without inventing a compression ratio or a minimum", async () => {
     const recipe = commercialRecipeV3();
@@ -628,7 +579,7 @@ function storageBudgetRecipe(overrides = {}) {
     const before = JSON.stringify(recipe);
     const b = browser({ recipeList: [recipe], initialState: { projects: [], system: { free_bytes: 10 ** 12 } } }); await flush();
     const estimate = b.helpers.storageEstimate(recipe), note = b.elements.get("source-plan-note").textContent;
-    assert.equal(b.helpers.minimumStorage(recipe), null);
+    assert.equal(b.helpers.minimumStorage, undefined);
     assert.equal(estimate.basis, "wav_reference");
     assert.equal(estimate.retained, 0);
     assert.equal(estimate.reference, 1152000000000);
@@ -1108,16 +1059,8 @@ function storageBudgetRecipe(overrides = {}) {
     assert.equal(failed.elements.get("project-switch").hidden, true);
     assert.equal(failed.elements.get("create").disabled, true); assert.match(failed.elements.get("message").textContent, /recipe failure/);
   });
-  await test("evaluation progress parses CPU and CUDA logs without treating aggregation as workflow completion", async () => {
-    const b = browser({ noBoot: true });
-    assert.equal(b.helpers.evaluationProgress("Evaluate development: 8/10 (CPU workers=4)\n").label, "성능 평가 · CPU");
-    const result = b.helpers.evaluationProgress("Evaluate development: 4/10 (CUDA batch=128, CPU rechecked=2)\r\nEvaluate development: 10/10 (CUDA batch=128, CPU rechecked=2)\r\n");
-    assert.equal(result.done, 10); assert.equal(result.phase, "summary");
-    assert.equal(b.helpers.evaluationProgress("Evaluate development: 11/10\nEvaluate development: 0/0\n"), null);
-    assert.equal(b.helpers.evaluationProgress("validating WAV headers"), null);
-  });
-  await test("running evaluation updates its gauge while the job log remains collapsed", async () => {
-    const project = { id: "bora", wakeword: "보라야", status: "running", stage: { id: "evaluation" }, progress: { done: 17, total: 19, unit: "완료 단계" } };
+  await test("running evaluation consumes structured progress and fetches logs only on request", async () => {
+    const project = { id: "bora", wakeword: "보라야", status: "running", stage: { id: "evaluation" }, progress: { done: 80, total: 100, unit: "개 음원", phase: "scoring", label: "성능 평가 · GPU" } };
     const b = browser({ initialState: { projects: [project] }, logResponse: "Evaluate development: 80/100 (CUDA batch=128, CPU rechecked=8)\n" });
     await flush();
     assert.equal(b.elements.get("log-details").open, false);
@@ -1125,20 +1068,26 @@ function storageBudgetRecipe(overrides = {}) {
     assert.equal(b.elements.get("progress-percent").textContent, "80.0%");
     assert.match(b.elements.get("progress-label").textContent, /80 \/ 100/);
     const before = b.calls.filter(call => call.url.endsWith("/log")).length;
+    assert.equal(before, 0);
     b.elements.get("log-details").open = true;
     await b.tick();
     assert.equal(b.calls.filter(call => call.url.endsWith("/log")).length, before + 1);
     assert.equal(b.elements.get("connection").hidden, true);
   });
-  await test("evaluation validation and optional log failures never invent a zero-percent score", async () => {
-    const project = { id: "bora", status: "running", stage: { id: "evaluation" }, progress: { done: 17, total: 19, unit: "완료 단계" } };
+  await test("evaluation validation does not poll logs or invent a score; manual log errors stay isolated", async () => {
+    const project = { id: "bora", status: "running", stage: { id: "evaluation" }, progress: { done: null, total: null, phase: "validation", label: "평가 음원 검증 중" } };
     const b = browser({ initialState: { projects: [project] }, logError: true }); await flush();
-    assert.equal(b.elements.get("progress").hidden, true);
+    assert.equal(b.elements.get("progress-section").hidden, true);
     assert.match(b.elements.get("eta").textContent, /무결성과 형식/);
+    assert.equal(b.elements.get("connection").hidden, true);
+    await b.tick();
+    assert.equal(b.calls.filter(call => call.url.endsWith("/log")).length, 0);
+    b.elements.get("log-details").open = true; await b.tick();
+    assert.match(b.elements.get("log").textContent, /optional log unavailable/);
     assert.equal(b.elements.get("connection").hidden, true);
   });
   await test("a server evaluation progress record needs no extra closed-log request", async () => {
-    const project = { id: "bora", status: "running", stage: { id: "evaluation" }, progress: { done: 100, total: 100, unit: "개 음원", phase: "summary" } };
+    const project = { id: "bora", status: "running", stage: { id: "evaluation" }, progress: { done: 100, total: 100, unit: "개 음원", phase: "finalizing" } };
     const b = browser({ initialState: { projects: [project] } }); await flush();
     assert.equal(b.elements.get("progress").value, 100);
     assert.match(b.elements.get("current-description").textContent, /통계와 결과 파일/);

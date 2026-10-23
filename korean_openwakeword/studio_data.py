@@ -19,9 +19,9 @@ import zipfile
 import requests
 
 from .common import (bound_file, digest, identity, iter_rows, now, read_json, read_rows,
-                     resolved, write_json, writer_lock)
+                     resolved, write_immutable_rows, write_json, writer_lock)
 from .downloads import (VerificationCache, dataset_catalog, download_checked,
-                        download_partial, verify_checksum)
+                        verified_asset)
 from .project import load_project, require_standard_common_download
 from .budgets import DEFAULT_GENERIC_HOURS, DEFAULT_KOREAN_HOURS
 
@@ -309,22 +309,9 @@ def _download(asset, directory, progress=None, verification_cache=None):
     else:
         directory.mkdir(parents=True, exist_ok=True)
         expected = asset.get(algorithm)
-        length = 64 if algorithm == "sha256" else 40
-        if algorithm not in ("sha256", "sha1", "git_sha1") or not isinstance(expected, str) or not re.fullmatch(f"[0-9a-f]{{{length}}}", expected):
-            raise ValueError("Expected the original upstream pinned checksum")
         with writer_lock(directory / ("." + target.name + ".download")):
-            reused = target.is_file()
-            partial = target.with_name(target.name + ".part")
-            if not reused:
-                download_partial(asset["source_url"], partial, asset["size_bytes"], progress=report if progress else None)
-                sha256 = verify_checksum(partial, algorithm, expected, progress=report if progress else None, return_sha256=True)
-                partial.replace(target)
-            if target.stat().st_size != asset["size_bytes"]:
-                raise ValueError("Existing public-data archive differs from upstream size")
-            # Verify the upstream digest and local SHA256 in a single read.
-            if reused:
-                sha256 = verify_checksum(target, algorithm, expected, progress=report if progress else None,
-                                         verification_cache=verification_cache, return_sha256=True)
+            sha256, reused = verified_asset(asset["source_url"], target, algorithm, expected,
+                asset["size_bytes"], progress=report if progress else None, verification_cache=verification_cache)
             result = {"path": str(target), "sha256": sha256, "bytes": target.stat().st_size,
                       "verified_upstream_algorithm": algorithm, "verified_upstream_checksum": expected,
                       "reused": reused, "completed_at": now(), "content_approved": False}
@@ -520,16 +507,12 @@ def _fma_selection(metadata, archive, output):
 
 
 def _write_rows(path, rows):
-    import json
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    value = "".join(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n" for row in rows)
-    if path.exists() and path.stat().st_size and path.read_text(encoding="utf-8") != value:
-        raise ValueError("Existing studio manifest differs from immutable prepared sources")
-    if not path.exists() or not path.stat().st_size:
-        temporary = path.with_suffix(".tmp")
-        temporary.write_text(value, encoding="utf-8")
-        os.replace(temporary, path)
+    try:
+        write_immutable_rows(path, rows, replace_empty=True)
+    except FileExistsError as error:
+        raise ValueError("Existing studio manifest differs from immutable prepared sources") from error
     return {"path": str(path.resolve()), "sha256": digest(path)}
 
 

@@ -40,77 +40,37 @@
     const unit = Math.min(4, Math.floor(Math.log(size) / Math.log(1024)));
     return `${(size / 1024 ** unit).toLocaleString("ko-KR", { maximumFractionDigits: 1 })} ${["B", "KiB", "MiB", "GiB", "TiB"][unit]}`;
   }
-  function minimumStorage(recipe, selected = {}) {
-    // FLAC size depends on the selected audio. Its WAV reference is not a
-    // minimum-space requirement and must not be shown as one.
-    if (recipe.material_acquisition_policy === "automatic_v3") return null;
+  function storageEstimate(recipe, selected = {}) {
+    // This preview configures new projects. Historical workflow processing
+    // remains on the server; it is not a second set of setup presets.
+    if (recipe.material_acquisition_policy !== "automatic_v3") return null;
     const space = recipe.automatic_space_plan, components = recipe.automatic_source_plan?.components;
     if (!space || !Array.isArray(components)) return null;
     const fixed = [space.base_archive_bytes, space.base_working_bytes, space.future_buffer_bytes];
-    if (recipe.material_acquisition_policy === "automatic_v2") fixed.push(space.transient_archive_bytes);
     const originals = selected.originals ?? recipe.originals, rounds = selected.rounds ?? recipe.rounds;
-    const generic = selected.genericHours ?? recipe.generic_hours, korean = selected.koreanHours ?? recipe.korean_hours;
-    if (![...fixed, originals, rounds, generic, korean].every(value => Number.isFinite(value) && value >= 0)) return null;
-    const rawGeneric = components.some(item => item.pool === "generic_negative") ? generic : 0;
-    const rawKorean = components.some(item => item.pool === "korean_negative") ? korean : 0;
-    const seconds = (rawGeneric + rawKorean) * 3600;
-    // Same known-payload arithmetic as automatic_sources.automatic_storage_plan;
-    // raw codec/archive forecasts are deliberately excluded from this minimum.
-    return fixed.reduce((sum, value) => sum + value, 0) + Math.ceil(seconds * 16000 * 2)
-      + Math.ceil(seconds / 2) * 16 * 96 * 4 + Math.ceil(originals * rounds * 16 * 96 * 4);
-  }
-  function storageEstimate(recipe, selected = {}) {
-    if (recipe.material_acquisition_policy === "automatic_v3") {
-      const space = recipe.automatic_space_plan, components = recipe.automatic_source_plan?.components;
-      if (!space || !Array.isArray(components)) return null;
-      const fixed = [space.base_archive_bytes, space.base_working_bytes, space.future_buffer_bytes];
-      const originals = selected.originals ?? recipe.originals, rounds = selected.rounds ?? recipe.rounds;
-      const targets = { generic_negative: selected.genericHours ?? recipe.generic_hours,
-        korean_negative: selected.koreanHours ?? recipe.korean_hours };
-      const archive = space.transient_source_working_bytes;
-      if (![...fixed, originals, rounds, ...Object.values(targets), archive].every(value => Number.isFinite(value) && value >= 0)) return null;
-      const totals = {}, providers = new Set(["audioset_unbalanced", "mls", "fma_full", "yodas2"]);
-      for (const item of components) {
-        if (!providers.has(item.provider || item.id) || !Object.hasOwn(targets, item.pool)
-          || !Number.isFinite(item.target_hours) || item.target_hours < 0) return null;
-        totals[item.pool] = (totals[item.pool] || 0) + item.target_hours;
-      }
-      const rawHours = Object.keys(totals).reduce((sum, pool) => sum + targets[pool], 0);
-      const seconds = rawHours * 3600;
-      const reference = Math.ceil(seconds * 16000 * 2);
-      const known = Math.ceil(seconds / 2) * 16 * 96 * 4 + Math.ceil(originals * rounds * 16 * 96 * 4);
-      const fmaRate = space.source_forecast_bytes_per_hour?.fma_full ?? 125000000;
-      if (!Number.isFinite(fmaRate) || fmaRate < 0) return null;
-      const fmaPolicy = recipe.fma_acquisition_policy ?? space.fma_acquisition_policy;
-      if (fmaPolicy !== undefined && fmaPolicy !== "per_track_flac_prefetch_v1") return null;
-      const fmaBytes = components.reduce((sum, item) => (item.provider || item.id) === "fma_full" && totals[item.pool] > 0
-        ? sum + targets[item.pool] * item.target_hours / totals[item.pool] * fmaRate : sum, 0);
-      const transient = Math.ceil(Math.max(archive, fmaPolicy ? 0 : fmaBytes));
-      return { basis: "wav_reference", reference, known, retained: 0, transient,
-        total: fixed.reduce((sum, value) => sum + value, 0) + reference + known + transient };
-    }
-    if (recipe.material_acquisition_policy !== "automatic_v2") return null;
-    const minimum = minimumStorage(recipe, selected), space = recipe.automatic_space_plan;
-    const components = recipe.automatic_source_plan?.components;
-    if (minimum === null || !Number.isFinite(space?.transient_archive_bytes) || space.transient_archive_bytes < 0) return null;
-    const rates = space.source_forecast_bytes_per_hour || {
-      audioset_unbalanced: 500000000, mls: 140000000, fma_full: 125000000, yodas2: 180000000
-    };
     const targets = { generic_negative: selected.genericHours ?? recipe.generic_hours,
       korean_negative: selected.koreanHours ?? recipe.korean_hours };
-    const totals = {};
+    const archive = space.transient_source_working_bytes;
+    if (![...fixed, originals, rounds, ...Object.values(targets), archive].every(value => Number.isFinite(value) && value >= 0)) return null;
+    const totals = {}, providers = new Set(["audioset_unbalanced", "mls", "fma_full", "yodas2"]);
     for (const item of components) {
-      if (!Object.hasOwn(targets, item.pool) || !Number.isFinite(item.target_hours) || item.target_hours < 0) return null;
+      if (!providers.has(item.provider || item.id) || !Object.hasOwn(targets, item.pool)
+        || !Number.isFinite(item.target_hours) || item.target_hours < 0) return null;
       totals[item.pool] = (totals[item.pool] || 0) + item.target_hours;
     }
-    let retained = 0;
-    for (const item of components) {
-      const rate = rates[item.provider || item.id];
-      if (!Number.isFinite(rate) || rate < 0 || !Number.isFinite(targets[item.pool])) return null;
-      if (totals[item.pool] > 0) retained += targets[item.pool] * item.target_hours / totals[item.pool] * rate;
-    }
-    return { minimum, retained: Math.ceil(retained), transient: space.transient_archive_bytes,
-      total: minimum + Math.ceil(retained) };
+    const rawHours = Object.keys(totals).reduce((sum, pool) => sum + targets[pool], 0);
+    const seconds = rawHours * 3600;
+    const reference = Math.ceil(seconds * 16000 * 2);
+    const known = Math.ceil(seconds / 2) * 16 * 96 * 4 + Math.ceil(originals * rounds * 16 * 96 * 4);
+    const fmaRate = space.source_forecast_bytes_per_hour?.fma_full ?? 125000000;
+    if (!Number.isFinite(fmaRate) || fmaRate < 0) return null;
+    const fmaPolicy = recipe.fma_acquisition_policy ?? space.fma_acquisition_policy;
+    if (fmaPolicy !== undefined && fmaPolicy !== "per_track_flac_prefetch_v1") return null;
+    const fmaBytes = components.reduce((sum, item) => (item.provider || item.id) === "fma_full" && totals[item.pool] > 0
+      ? sum + targets[item.pool] * item.target_hours / totals[item.pool] * fmaRate : sum, 0);
+    const transient = Math.ceil(Math.max(archive, fmaPolicy ? 0 : fmaBytes));
+    return { basis: "wav_reference", reference, known, retained: 0, transient,
+      total: fixed.reduce((sum, value) => sum + value, 0) + reference + known + transient };
   }
   function storageBudget(recipe, selected = {}) {
     const budget = recipe.storage_budget;
@@ -179,16 +139,6 @@
     if (!Number.isFinite(done) || !Number.isFinite(total) || done < 0 || total <= 0) return null;
     return { done, total, unit: progress.unit || "개", label: progress.label || "", percent: Math.min(100, Math.max(0, done / total * 100)) };
   }
-  function evaluationProgress(log) {
-    let latest = null;
-    for (const match of String(log || "").matchAll(/^Evaluate (?:development|final): (\d+)\/(\d+)(?: \(([^\r\n]*)\))?\s*$/gm)) {
-      const done = Number(match[1]), total = Number(match[2]);
-      if (!Number.isSafeInteger(done) || !Number.isSafeInteger(total) || total < 1 || done < 0 || done > total) continue;
-      const backend = /CUDA/.test(match[3] || "") ? "GPU" : /CPU/.test(match[3] || "") ? "CPU" : "";
-      latest = { done, total, unit: "개 음원", label: `성능 평가${backend ? " · " + backend : ""}`, phase: done === total ? "summary" : "scoring" };
-    }
-    return latest;
-  }
   function evaluating(project) {
     return project && activeStatuses.has(project.status) && (project.stage_id || (typeof project.stage === "object" ? project.stage?.id : project.stage)) === "evaluation";
   }
@@ -247,7 +197,6 @@
   let snapshot = { projects: [] }, recipes = [], selectedId = "", selectedPreset = "check";
   let newProject = false, busy = false, refreshing = false, pollTimer = null, recipeReady = false;
   let reviewIdentity = "", inputIdentity = "", resultIdentity = "", resultMode = "results", logProject = "";
-  let recentLog = null;
   const selectedProject = () => (snapshot.projects || []).find(project => project.id === selectedId);
 
   async function api(path, method = "GET", payload) {
@@ -322,7 +271,7 @@
     const suppliedGeneric = recipe.automatic_target_hours?.generic_nominal ?? asset("generic")?.hours ?? 0;
     const suppliedKorean = recipe.automatic_target_hours?.korean_train ?? asset("zeroth")?.hours ?? 0;
     const negativePlan = recipe.training_negative_plan;
-    const automaticPlan = ["automatic_v1", "automatic_v2", "automatic_v3"].includes(recipe.material_acquisition_policy) && [1, 2, 3].includes(recipe.automatic_source_plan?.version)
+    const automaticPlan = recipe.material_acquisition_policy === "automatic_v3" && recipe.automatic_source_plan?.version === 3
       && recipe.automatic_source_plan.enabled === true && Array.isArray(recipe.automatic_source_plan.components) ? recipe.automatic_source_plan : null;
     const hasNegativePlan = ((negativePlan?.id === "commercial_negative_v1" && negativePlan.version === 1)
       || (negativePlan?.id === "commercial_negative_v2" && negativePlan.version === 2)
@@ -517,19 +466,15 @@
       }
       return;
     }
-    const automatic = ["automatic_v1", "automatic_v2", "automatic_v3"].includes(recipe.material_acquisition_policy);
+    const automatic = recipe.material_acquisition_policy === "automatic_v3";
     $("source-plan-note").hidden = !automatic;
     if (automatic) {
       const known = bytes(recipe.known_download_bytes);
       const additional = recipe.automatic_source_plan?.components?.length > 0;
-      const minimum = minimumStorage(recipe, values), estimate = storageEstimate(recipe, values);
+      const estimate = storageEstimate(recipe, values);
       const free = snapshot.system?.free_bytes ?? snapshot.system?.disk_free_bytes;
       $("source-plan-note").textContent = estimate?.basis === "wav_reference"
         ? `WAV 기준 참고 예산 ${bytes(estimate.total)}${estimate.transient > 0 ? "(임시 " + bytes(estimate.transient) + " 포함)" : ""}. 학습 음원은 무손실 FLAC으로 보관하며 실제 용량은 변환 후 확인합니다.${Number.isFinite(free) && estimate.total > free ? " 현재 여유가 참고 예산보다 적습니다." : ""} 다운로드량은 같으며 원본 재처리 시 다시 받습니다.`
-        : estimate !== null
-        ? `예상 필요 공간 ${bytes(estimate.total)}${estimate.transient > 0 ? "(묶음 임시 " + bytes(estimate.transient) + " 예산 포함)" : ""}.${estimate.retained > 0 ? " 원본 제외 최소 " + bytes(minimum) + "." : ""}${Number.isFinite(free) && minimum > free ? " 현재 여유 공간보다 큽니다." : Number.isFinite(free) && estimate.total > free ? " 현재 여유가 예상량보다 적습니다." : ""} 실제 용량은 선정 후 확인합니다.`
-        : minimum !== null
-        ? `최소 저장 공간 ${bytes(minimum)}${additional ? recipe.material_acquisition_policy === "automatic_v2" ? " + 원본 추가" : " + 원본·압축파일 추가" : ""}.${Number.isFinite(free) && minimum > free ? " 현재 여유 공간보다 큽니다." : ""} 원본 목록 확정 후 실제 용량을 확인합니다.`
         : additional
         ? `목표량에 맞춰 원본을 자동 선정합니다.${known ? " 고정 자료 " + known + " 외" : ""} 추가 다운로드 용량은 목록 확정 후 확인합니다.`
         : `필요한 공개 자료를 자동 준비합니다.${known ? " 고정 다운로드 " + known + "." : ""} 실제 준비량과 검수 승인은 별도로 확인합니다.`;
@@ -729,7 +674,7 @@
     $("migration-reason").textContent = migration?.reason || "";
     $("migrate").hidden = migration?.state !== "available";
     $("migrate").disabled = busy || running;
-    if (evaluating(project) && project.progress?.phase === "summary") $("current-description").textContent = "채점을 마쳤습니다. 통계와 결과 파일을 정리하고 있습니다.";
+    if (evaluating(project) && ["summary", "finalizing"].includes(project.progress?.phase)) $("current-description").textContent = "채점을 마쳤습니다. 통계와 결과 파일을 정리하고 있습니다.";
     $("start").hidden = Boolean(migration) || running || complete || waiting || project.status === "paused" || project.status === "failed" || project.status === "error";
     $("resume").hidden = Boolean(migration) || running || complete || waiting || !["paused", "failed", "error", "interrupted"].includes(project.status);
     $("pause").hidden = !running;
@@ -790,18 +735,6 @@
       if (!Array.isArray(snapshot.projects)) snapshot.projects = [];
       if (!newProject && !snapshot.projects.some(project => project.id === selectedId)) selectedId = snapshot.active_project_id || snapshot.projects[0]?.id || "";
       $("connection").hidden = true; render();
-      const project = selectedProject(), receivedSnapshot = snapshot;
-      if (evaluating(project) && (!progressValue(project) || /단계/.test(progressValue(project).unit))) {
-        try {
-          const result = await api(`/api/projects/${encodeURIComponent(project.id)}/log`);
-          if (snapshot === receivedSnapshot && selectedId === project.id && evaluating(selectedProject()) && !newProject) {
-            const text = typeof result === "string" ? result : result.text || result.log || "";
-            recentLog = { id: project.id, text, at: Date.now() };
-            const progress = evaluationProgress(text);
-            if (progress) { project.progress = progress; project.eta_seconds = null; renderProject(project); }
-          }
-        } catch (_) { /* The valid state remains visible if the optional log request fails. */ }
-      }
     } catch (error) {
       const delayed = error.code === "request_timeout";
       $("connection").hidden = false;
@@ -865,7 +798,6 @@
   async function loadLog() {
     const id = selectedId; if (!id || !$("log-details").open) return;
     try {
-      if (recentLog?.id === id && Date.now() - recentLog.at < 2500) { $("log").textContent = recentLog.text; return; }
       const result = await api(`/api/projects/${encodeURIComponent(id)}/log`);
       if (id === selectedId) $("log").textContent = typeof result === "string" ? result : result.text || result.log || (Array.isArray(result.lines) ? result.lines.join("\n") : "아직 작업 기록이 없습니다.");
     } catch (error) { if (id === selectedId) $("log").textContent = error.message; }
@@ -903,6 +835,6 @@
     pollTimer = setInterval(async () => { if (!document.hidden) { await refresh(); if ($("log-details").open) await loadLog(); } }, 3000);
     window.addEventListener("pagehide", () => clearInterval(pollTimer), { once: true });
   }
-  window.KowwStudio = Object.freeze({ duration, bytes, minimumStorage, storageEstimate, storageBudget, eta, progressValue, evaluationProgress, requestBody, localUrl, webUrl });
+  window.KowwStudio = Object.freeze({ duration, bytes, storageEstimate, storageBudget, eta, progressValue, requestBody, localUrl, webUrl });
   if (!window.KOWW_STUDIO_TEST) boot();
 })();

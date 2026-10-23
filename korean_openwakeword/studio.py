@@ -26,6 +26,7 @@ import uuid
 
 from .common import digest, identity, now, read_json, read_rows, resolved, write_json
 from .project import create_project, load_project
+from .web_page import render_page_config
 
 
 def process_identity(pid):
@@ -104,7 +105,7 @@ def _execution_contract():
     """
     root = Path(__file__).parent
     presentation = {"__init__.py", "__main__.py", "cli.py", "demo.py", "microphone.py",
-                    "paged_site.py", "site.py", "storage_budget.py", "studio.py", "studio_worker.py", "studio_analysis.py"}
+                    "paged_site.py", "site.py", "storage_budget.py", "studio.py", "studio_worker.py", "studio_analysis.py", "web_page.py"}
     paths = [p for p in sorted(root.glob("*.py")) if p.name not in presentation]
     paths += sorted((root / "resources").glob("*.json"))
     bindings = {p.relative_to(root).as_posix(): digest(p) for p in paths}
@@ -1238,10 +1239,9 @@ def make_studio_server(manager, port=8793):
                     base = f"?project={project_id}&queue={quote(queue_id)}"
                     if path == "/review/":
                         html = (resources / "review.html").read_text(encoding="utf-8")
-                        html = html.replace("fetch('/queue')", "fetch(" + json.dumps("/review/queue" + base) + ")")
-                        html = html.replace("fetch('/save',", "fetch(" + json.dumps("/review/save" + base) + ",")
-                        html = html.replace("headers:{'Content-Type':'application/json'}", "headers:{'Content-Type':'application/json','X-Koww-Token':" + json.dumps(manager.token) + "}")
-                        html = html.replace("저장 완료 · 채팅에서 완료했다고 알려주세요.", "저장 완료 · 다음 단계를 준비합니다.")
+                        html = render_page_config(html, {"queue_url": "/review/queue" + base,
+                            "save_url": "/review/save" + base, "token": manager.token,
+                            "saved_message": "저장 완료 · 다음 단계를 준비합니다."})
                         return self.respond(html.encode(), kind="text/html; charset=utf-8")
                     if path == "/review/queue":
                         purpose = "합성 목소리가 자연스럽고 서로 다른지 확인하세요." if review["kind"] == "references" else f"'{state['wakeword']}'만 명확하게 들리고 다른 말이 없는지 확인하세요."
@@ -1306,6 +1306,13 @@ def make_studio_server(manager, port=8793):
             parts = path.split("/", 3)
             project_id, rest = parts[2], parts[3] if len(parts) > 3 else ""
             prefix = "/mic/" + project_id
+            if not rest and not path.endswith("/"):
+                self.send_response(308)
+                self.send_header("Location", "/mic/" + quote(project_id, safe="") + "/")
+                self.send_header("Content-Length", "0")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                return
             if rest == "api/info":
                 if manager.analysis.busy(project_id):
                     raise ValueError("모델 비교·선택 작업을 마친 뒤 마이크를 연결하세요.")
@@ -1314,13 +1321,12 @@ def make_studio_server(manager, port=8793):
             if rest not in names:
                 return self.respond({"error": "Not found"}, 404)
             name = names[rest]
-            content = (resources / name).read_text(encoding="utf-8")
+            content = (resources / name).read_bytes()
             if name == "microphone.html":
-                content = content.replace('href="/microphone.css"', 'href="' + prefix + '/microphone.css"').replace('src="/microphone.js"', 'src="' + prefix + '/microphone.js"')
-            elif name == "microphone.js":
-                content = content.replace('fetch(path,', 'fetch(' + json.dumps(prefix) + ' + path,').replace('fetch("/api/stop",', 'fetch(' + json.dumps(prefix + "/api/stop") + ',').replace('"/microphone_worklet.js"', json.dumps(prefix + "/microphone_worklet.js"))
+                content = render_page_config(content.decode("utf-8"), {"api_base": prefix,
+                    "worklet_url": prefix + "/microphone_worklet.js"}).encode("utf-8")
             kind = "text/html; charset=utf-8" if name.endswith("html") else "text/css; charset=utf-8" if name.endswith("css") else "text/javascript; charset=utf-8"
-            return self.respond(content.encode(), kind=kind)
+            return self.respond(content, kind=kind)
 
         def analysis_get(self, path):
             parts = path.split("/", 3)

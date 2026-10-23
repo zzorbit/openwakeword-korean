@@ -7,7 +7,6 @@ parts and a byte budget; they do not extract, classify, admit or train audio.
 from __future__ import annotations
 
 import math
-import hashlib
 from pathlib import Path, PurePosixPath
 import re
 import shutil
@@ -16,7 +15,7 @@ from urllib.parse import quote, urlparse
 import requests
 
 from .common import digest, identity, now, read_json, write_json
-from .downloads import download_checked
+from .downloads import download_checked, verify_checksum
 from .budgets import DEFAULT_GENERIC_HOURS, DEFAULT_KOREAN_HOURS, generic_source_hours
 
 
@@ -422,16 +421,7 @@ def download_commercial_source(record, output, *, max_download_bytes, progress=N
 def _verify_cached_original(path, asset):
     """Check receipt SHA256 and the publisher checksum with one sequential read."""
     algorithm = asset["checksum_algorithm"]
-    sha256 = hashlib.sha256()
-    original = hashlib.sha1() if algorithm != "sha256" else None
-    if algorithm == "git_sha1":
-        original.update(f"blob {asset['size_bytes']}\0".encode("ascii"))
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
-            sha256.update(chunk)
-            if original is not None:
-                original.update(chunk)
-    checksum = sha256.hexdigest() if original is None else original.hexdigest()
-    if checksum != asset[algorithm]:
-        raise ValueError("Cached original differs from the publisher checksum")
-    return sha256.hexdigest()
+    try:
+        return verify_checksum(path, algorithm, asset[algorithm], return_sha256=True)
+    except ValueError as error:
+        raise ValueError("Cached original differs from the publisher checksum") from error

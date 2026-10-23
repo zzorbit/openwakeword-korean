@@ -12,7 +12,7 @@ prune scripts
 include scripts/Use-ProjectStorage.ps1
 include scripts/Start-Web.ps1 scripts/Start-Web.cmd
 include scripts/package_library.py
-recursive-include tests test_korean_library*.py check_microphone_ui.cjs
-include tests/check_studio_ui.cjs
+include scripts/check_browser.py
+recursive-include tests test_korean_library*.py check_*.cjs
 recursive-include validation *.json
 recursive-include examples/library_demo_site *.html *.js *.css *.json *.wav

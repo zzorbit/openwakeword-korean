@@ -6,15 +6,16 @@ const vm = require("node:vm");
 const html = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources/review.html"), "utf8");
 const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 
-async function screen(queue, search, saved = {}) {
+async function screen(queue, search, saved = {}, config = {}) {
   const nodes = new Map([...html.matchAll(/id="([^"]+)"/g)].map(match => [match[1], { textContent: "", innerHTML: "", children: [], append(node) { this.children.push(node); } }]));
   const calls = [], writes = [];
+  nodes.set("koww-page-config", { textContent: JSON.stringify(config) });
   const existing = JSON.stringify(saved);
   const context = vm.createContext({
     document: { getElementById: id => nodes.get(id), createElement: () => ({}) },
     URLSearchParams, location: { search },
     localStorage: { getItem(key) { assert.equal(key, "koww:" + queue.queue_sha256); return existing; }, setItem(...args) { writes.push(args); } },
-    fetch: async (url, options) => { calls.push({ url, options }); return { json: async () => queue }; }
+    fetch: async (url, options) => { calls.push({ url, options }); return { ok: true, json: async () => options?.method === "POST" ? { state: "saved" } : queue }; }
   });
   vm.runInContext(script, context);
   for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve));
@@ -47,5 +48,19 @@ async function screen(queue, search, saved = {}) {
   assert.equal(content.nodes.get("policy").hidden, false);
   assert.equal(content.nodes.get("policy-text").textContent, "묶음 사용 동의");
   assert.match(content.nodes.get("criteria").innerHTML, /안내에 맞고/);
+  const heard = { one: { decision: "keep", listened: true }, two: { decision: "keep", listened: true } };
+  const config = { queue_url: "/review/queue?project=bora&queue=pilot", save_url: "/review/save?project=bora&queue=pilot", token: "studio-review-token", saved_message: "저장 완료 · 다음 단계를 준비합니다." };
+  const nested = await screen(queue, "?queue=pilot", heard, config);
+  await nested.nodes.get("save").onclick();
+  assert.equal(nested.calls[0].url, config.queue_url);
+  assert.equal(nested.calls[1].url, config.save_url);
+  assert.equal(nested.calls[1].options.headers["X-Koww-Token"], config.token);
+  assert.deepEqual(JSON.parse(nested.calls[1].options.body), heard);
+  assert.equal(nested.nodes.get("saved").textContent, config.saved_message);
+  const standalone = await screen(queue, "?queue=pilot", heard);
+  await standalone.nodes.get("save").onclick();
+  assert.equal(standalone.calls[1].url, "/save");
+  assert.equal(standalone.calls[1].options.headers["X-Koww-Token"], undefined);
+  assert.deepEqual(JSON.parse(standalone.calls[1].options.body), heard);
   console.log("Review UI: voice purpose, saved decisions, unheard gate and other review types passed");
 })().catch(error => { console.error(error); process.exitCode = 1; });

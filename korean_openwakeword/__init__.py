@@ -1,5 +1,5 @@
 """Stable public API; training/TTS dependencies are loaded only when requested."""
-__version__ = "0.16.1"
+__version__ = "0.16.2"
 
 from .project import create_project, load_project, save_configuration, workload_summary
 from .runtime import WakeWordDetector, sample_bundle

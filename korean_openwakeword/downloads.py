@@ -152,6 +152,38 @@ def dataset_catalog():
     return read_json(files("korean_openwakeword") / "resources/public_datasets.json")
 
 
+def verified_asset(url, output, algorithm, expected, size_bytes=None, *, progress=None, verification_cache=None):
+    """Fetch/verify one pinned asset; the caller owns its lock and receipt."""
+    length = 64 if algorithm == "sha256" else 40
+    if (algorithm not in ("sha256", "sha1", "git_sha1")
+            or not isinstance(expected, str) or not re.fullmatch(f"[0-9a-f]{{{length}}}", expected)
+            or not isinstance(url, str) or not url.startswith("https://")):
+        raise ValueError("A supported pinned checksum and HTTPS source are required")
+    if size_bytes is not None and (type(size_bytes) is not int or size_bytes <= 0):
+        raise ValueError("Pinned asset size must be a positive integer")
+    output = Path(output)
+    if output.exists():
+        if not output.is_file() or size_bytes is not None and output.stat().st_size != size_bytes:
+            raise ValueError("Existing download differs from the pinned size or checksum")
+        sha256 = verify_checksum(output, algorithm, expected, progress=progress,
+                                 verification_cache=verification_cache, return_sha256=True)
+        return sha256, True
+    partial = output.with_name(output.name + ".part")
+    download_partial(url, partial, size_bytes, progress=progress)
+    if size_bytes is not None and partial.stat().st_size != size_bytes:
+        raise ValueError("Incomplete/altered asset; preserve .part for diagnosis or resume")
+    verified_identity = _file_identity(partial)
+    sha256 = verify_checksum(partial, algorithm, expected, progress=progress, return_sha256=True)
+    partial.replace(output)
+    if verification_cache is not None:
+        published_identity = _file_identity(output)
+        if published_identity[:4] != verified_identity[:4]:
+            raise ValueError("File identity changed after verified download publication")
+        verification_cache.record(output, algorithm, expected, published_identity)
+        verification_cache.record(output, "sha256", sha256, published_identity)
+    return sha256, False
+
+
 def download_checked(url, output, sha256, size_bytes=None, *, progress=None, verification_cache=None):
     if (not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", sha256)
             or not isinstance(url, str) or not url.startswith("https://")):
@@ -162,27 +194,13 @@ def download_checked(url, output, sha256, size_bytes=None, *, progress=None, ver
     output.parent.mkdir(parents=True, exist_ok=True)
     # A separate lock for each asset permits unrelated downloads in parallel.
     with writer_lock(output.parent / ("." + output.name + ".download")):
-        if output.exists():
-            if not output.is_file() or size_bytes is not None and output.stat().st_size != size_bytes:
-                raise ValueError("Existing download differs from the pinned size or checksum")
-            try:
-                verify_checksum(output, "sha256", sha256, progress=progress, verification_cache=verification_cache)
-            except ValueError as error:
+        try:
+            _, reused = verified_asset(url, output, "sha256", sha256, size_bytes,
+                                       progress=progress, verification_cache=verification_cache)
+        except ValueError as error:
+            if output.exists():
                 raise ValueError("Existing download differs from the pinned size or checksum") from error
-            reused = True
-        else:
-            reused = False
-            partial = output.with_name(output.name + ".part")
-            download_partial(url, partial, size_bytes, progress=progress)
-            if size_bytes is not None and partial.stat().st_size != size_bytes:
-                raise ValueError("Incomplete/altered asset; preserve .part for diagnosis or resume")
-            verified_identity = _file_identity(partial)
-            verify_checksum(partial, "sha256", sha256, progress=progress)
-            partial.replace(output)
-            if verification_cache is not None:
-                if _file_identity(output)[:4] != verified_identity[:4]:
-                    raise ValueError("File identity changed after verified download publication")
-                verification_cache.record(output, "sha256", sha256, _file_identity(output))
+            raise
         record = {"path": str(output), "sha256": sha256, "bytes": output.stat().st_size,
                   "source_url": url, "completed_at": now(), "reused": reused,
                   "content_approved": False}

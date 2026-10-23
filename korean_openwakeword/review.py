@@ -6,6 +6,7 @@ import json
 
 from .common import digest, identity, now, read_json, read_rows, resolved, write_json, snapshot_json
 from .project import load_project
+from .web_page import render_page_config
 
 
 def apply_review(project, queue, decisions, kind):
@@ -148,7 +149,8 @@ def serve_review(project, queue, kind="pilot", port=8790, pool_manifest=None):
             path = urlparse(self.path).path
             if path == "/":
                 from importlib.resources import files
-                body = (files("korean_openwakeword") / "resources" / "review.html").read_bytes()
+                template = (files("korean_openwakeword") / "resources" / "review.html").read_text(encoding="utf-8")
+                body = render_page_config(template).encode("utf-8")
                 self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.end_headers(); self.wfile.write(body)
             elif path == "/queue":
                 self.send_response(200); self.send_header("Content-Type", "application/json; charset=utf-8"); self.end_headers(); self.wfile.write(json.dumps(payload, ensure_ascii=False).encode())

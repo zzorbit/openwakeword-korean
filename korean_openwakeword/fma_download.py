@@ -16,7 +16,7 @@ import soundfile as sf
 
 from .commercial_sources import _FMA_FILES
 from .budgets import DEFAULT_FMA_HOURS
-from .common import digest, now, read_json, write_json
+from .common import digest, now, read_json, write_immutable_rows, write_json
 
 _FULL_URL = "https://os.unil.cloud.switch.ch/fma/fma_full.zip"
 _META_URL = "https://os.unil.cloud.switch.ch/fma/fma_metadata.zip"
@@ -116,21 +116,10 @@ def _same_or_write(path, value):
 
 
 def _publish_rows(path, rows):
-    import json
-    from tempfile import NamedTemporaryFile
-    with NamedTemporaryFile(mode="w", encoding="utf-8", newline="\n", dir=path.parent,
-                            prefix=path.name + ".", suffix=".tmp", delete=False) as stream:
-        temporary = Path(stream.name)
-        for row in rows:
-            stream.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n")
     try:
-        if path.exists():
-            if digest(path) != digest(temporary):
-                raise ValueError("Completed selective track manifest changed")
-        else:
-            os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
+        write_immutable_rows(path, rows, exact_bytes=True)
+    except FileExistsError as error:
+        raise ValueError("Completed selective track manifest changed") from error
 
 
 def _remaining_bytes(rows, directory):

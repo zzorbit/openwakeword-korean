@@ -2,17 +2,23 @@
 import http.client
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
 import threading
 import wave
+from urllib.parse import urljoin
 
 import pytest
 
 from korean_openwakeword import studio
 from korean_openwakeword.common import digest, identity, now, read_json, write_json
 from korean_openwakeword.project import create_project, load_project
+
+
+def page_config(page):
+    return json.loads(re.search(r'<script id="koww-page-config" type="application/json">(.*?)</script>', page).group(1))
 
 
 class Worker:
@@ -662,8 +668,9 @@ def test_http_review_audio_guard_and_integrated_fetch_save_endpoints(manager, ht
     status, content, _ = http_server("/review/" + query)
     assert status == 200
     page = content.decode()
-    assert "/review/queue" + query in page and "/review/save" + query in page
-    assert "채팅에서 완료했다고" not in page and "X-Koww-Token" in page
+    assert page_config(page) == {"queue_url": "/review/queue" + query,
+        "save_url": "/review/save" + query, "token": manager.token,
+        "saved_message": "저장 완료 · 다음 단계를 준비합니다."}
     status, content, _ = http_server("/review/queue" + query)
     queue = json.loads(content)
     status, original, _ = http_server(queue["items"][0]["audio"])
@@ -671,6 +678,15 @@ def test_http_review_audio_guard_and_integrated_fetch_save_endpoints(manager, ht
     assert http_server("/review/audio/-1" + query)[0] == 400
     audio.write_bytes(b"changed")
     assert http_server(queue["items"][0]["audio"])[0] == 400
+    audio.write_bytes(original)
+    answers = {"fixture-1": {"decision": "keep", "listened": True}}
+    assert http_server("/review/save" + query, "POST", answers)[0] == 403
+    assert http_server("/review/save" + query, "POST", answers,
+        headers={"X-Koww-Token": manager.token, "Origin": "https://foreign.invalid"})[0] == 403
+    status, body, _ = http_server("/review/save" + query, "POST", answers,
+        headers={"X-Koww-Token": manager.token})
+    assert status == 200 and json.loads(body)["kept"] == 1
+    assert read_json(audio.parent.parent / "review/references_results.json")["decisions"] == answers
 
 
 def test_http_result_traversal_is_rejected_and_regular_report_is_served(manager, http_server):
@@ -699,16 +715,22 @@ def test_http_mic_assets_use_integrated_prefix_and_their_own_token(manager, http
 
     microphone = Microphone()
     monkeypatch.setattr(manager, "microphone", lambda project_id: microphone)
+    status, content, headers = http_server(prefix)
+    assert status == 308 and content == b"" and headers["Location"] == prefix + "/"
     status, content, _ = http_server(prefix + "/")
     page = content.decode()
-    assert status == 200 and prefix + "/microphone.js" in page and prefix + "/microphone.css" in page
+    assert status == 200 and 'src="microphone.js"' in page and 'href="microphone.css"' in page
+    assert page_config(page) == {"api_base": prefix, "worklet_url": prefix + "/microphone_worklet.js"}
+    for asset in ("microphone.js", "microphone.css"):
+        assert http_server(urljoin(headers["Location"], asset))[0] == 200
     status, content, _ = http_server(prefix + "/microphone.js")
-    assert status == 200 and json.dumps(prefix) + " + path" in content.decode()
-    assert prefix + "/microphone_worklet.js" in content.decode()
-    assert 'fetch("/api/stop",' not in content.decode()
-    assert 'fetch(' + json.dumps(prefix + "/api/stop") + ',' in content.decode()
+    from importlib.resources import files
+    assert status == 200 and content == (files("korean_openwakeword") / "resources/microphone.js").read_bytes()
+    assert http_server(prefix + "/microphone_worklet.js")[0] == 200
     assert http_server(prefix + "/api/info")[0] == 200
     assert http_server(prefix + "/api/start", "POST", {}, headers={"X-Koww-Token": manager.token})[0] == 403
+    assert http_server(prefix + "/api/start", "POST", {},
+        headers={"X-Koww-Token": microphone.token, "Origin": "https://foreign.invalid"})[0] == 403
     assert http_server(prefix + "/api/start", "POST", {}, headers={"X-Koww-Token": microphone.token})[0] == 200
     status, content, _ = http_server(prefix + "/api/frame", "POST", raw=b"\x00" * 2560,
         headers={"Content-Type": "application/octet-stream", "X-Koww-Token": microphone.token,

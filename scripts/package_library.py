@@ -41,17 +41,13 @@ def stage_library(repository, output, inventory):
     for name in GUIDES:
         shutil.copyfile(repository / "docs" / name, output / "docs" / name)
     (output / "scripts").mkdir()
-    for name in ("Use-ProjectStorage.ps1", "Start-Web.ps1", "Start-Web.cmd", "package_library.py"):
+    for name in ("Use-ProjectStorage.ps1", "Start-Web.ps1", "Start-Web.cmd", "package_library.py", "check_browser.py"):
         shutil.copyfile(repository / "scripts" / name, output / "scripts" / name)
     (output / "tests").mkdir()
     for source in sorted((repository / "tests").glob("test_korean_library*.py")):
         shutil.copyfile(source, output / "tests" / source.name)
-    node_tests = repository / "tests/check_microphone_ui.cjs"
-    if node_tests.is_file():
-        shutil.copyfile(node_tests, output / "tests" / node_tests.name)
-    studio_tests = repository / "tests/check_studio_ui.cjs"
-    if studio_tests.is_file():
-        shutil.copyfile(studio_tests, output / "tests" / studio_tests.name)
+    for source in sorted((repository / "tests").glob("check_*.cjs")):
+        shutil.copyfile(source, output / "tests" / source.name)
     (output / "validation").mkdir()
     for source in sorted((repository / "validation").glob("*.json")):
         shutil.copyfile(source, output / "validation" / source.name)

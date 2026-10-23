@@ -36,10 +36,8 @@ jobs:
           python -m pip install openwakeword==0.6.0 --no-deps
       - name: Portable contracts and actual small model training
         run: python -m pytest tests -m "not legacy_parity" -q --junitxml=test-results.xml
-      - name: Microphone browser and PCM frame regression
-        run: node tests/check_microphone_ui.cjs .test-tmp/microphone-ui.json
-      - name: Training studio browser regression
-        run: node tests/check_studio_ui.cjs
+      - name: Browser and PCM frame regressions
+        run: python scripts/check_browser.py --output .test-tmp/browser-checks
       - name: Build wheel and source archive
         run: python -m build
       - uses: actions/upload-artifact@v4
@@ -49,4 +47,4 @@ jobs:
           path: |
             test-results.xml
             dist/*
-            .test-tmp/microphone-ui.json
+            .test-tmp/browser-checks/*

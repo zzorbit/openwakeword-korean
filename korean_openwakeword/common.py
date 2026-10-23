@@ -74,6 +74,34 @@ def read_rows(path):
     return list(iter_rows(path))
 
 
+def write_immutable_rows(path, rows, *, replace_empty=False, exact_bytes=False):
+    """Stream JSONL, preserving existing row bytes and caller newline rules.
+
+    Ordinary manifests compare universal-newline text as before. FMA uses LF
+    and exact bytes. Callers own concurrent access and may replace an empty
+    placeholder only when their existing contract explicitly permits it.
+    """
+    path = Path(path)
+    temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+    try:
+        with temporary.open("w", encoding="utf-8", newline="\n" if exact_bytes else None) as stream:
+            for row in rows:
+                stream.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n")
+        if path.exists() and not (replace_empty and path.stat().st_size == 0):
+            options = {} if exact_bytes else {"encoding": "utf-8"}
+            with path.open("rb" if exact_bytes else "r", **options) as existing, temporary.open(
+                    "rb" if exact_bytes else "r", **options) as candidate:
+                while True:
+                    block = existing.read(1024**2)
+                    if block != candidate.read(1024**2):
+                        raise FileExistsError("Existing immutable rows differ")
+                    if not block:
+                        return
+        _retry_windows_sharing(lambda: os.replace(temporary, path))
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def append_row(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

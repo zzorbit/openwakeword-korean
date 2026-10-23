@@ -338,6 +338,9 @@ def test_local_static_assets_and_public_info_only(web):
         status, headers, body = request("GET", path)
         assert status == 200 and body
         assert headers.get("Access-Control-Allow-Origin") is None
+        if path == "/":
+            assert '<script id="koww-page-config" type="application/json">{}</script>' in body.decode()
+            assert 'src="microphone.js"' in body.decode() and 'href="microphone.css"' in body.decode()
     status, _, body = request("GET", "/api/info")
     assert status == 200
     assert json.loads(body)["token"] == service.info()["token"]

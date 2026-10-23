@@ -40,6 +40,8 @@ function browser(config = {}) {
   }
   const devices = [{ kind: "audioinput", deviceId: "mic1", label: "모의 마이크" }];
   const document = { hidden: false, title: "", getElementById(id) { if (!elements.has(id)) elements.set(id, new Element(id)); return elements.get(id); }, createElement: () => new Element(), addEventListener(name, handler) { listeners[name] = handler; } };
+  const pageConfig = config.pageConfig || {};
+  document.getElementById("koww-page-config").textContent = JSON.stringify(pageConfig);
   const mediaDevices = { enumerateDevices: async () => {
     if (state.enumerationError) throw state.enumerationError;
     const active = streams.some(stream => !stream.track.stopped);
@@ -48,7 +50,7 @@ function browser(config = {}) {
   }, getUserMedia(constraints) { state.permissionCalls++; state.constraints = constraints; if (state.permissionError) return Promise.reject(state.permissionError); if (state.deferredPermission) return state.deferredPermission.promise; return Promise.resolve(makeStream()); }, addEventListener(name, handler) { mediaListeners[name] = handler; } };
   class Node { constructor() { this.disconnected = false; } connect() {} disconnect() { this.disconnected = true; } }
   class Context {
-    constructor() { this.sampleRate = state.audioRate; this.state = "suspended"; this.destination = {}; this.audioWorklet = { addModule: async url => { assert.equal(url, "/microphone_worklet.js"); } }; contexts.push(this); }
+    constructor() { this.sampleRate = state.audioRate; this.state = "suspended"; this.destination = {}; this.audioWorklet = { addModule: async url => { assert.equal(url, pageConfig.worklet_url || "/microphone_worklet.js"); } }; contexts.push(this); }
     createMediaStreamSource() { return new Node(); }
     createGain() { const node = new Node(); node.gain = { value: 1 }; return node; }
     async resume() { this.state = "running"; }
@@ -59,6 +61,7 @@ function browser(config = {}) {
   const json = (data, status = 200) => ({ ok: status < 400, status, json: async () => data });
   const fetch = async (url, options = {}) => {
     calls.push({ url, options });
+    if (pageConfig.api_base) { assert.ok(url.startsWith(pageConfig.api_base + "/api/")); url = url.slice(pageConfig.api_base.length); }
     if (url === "/api/info") {
       if (state.failInfo) return json({ error: "모의 모델 연결 오류" }, 500);
       if (state.deferredInfo) return new Promise((resolve, reject) => {
@@ -127,6 +130,17 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
     const b = browser(); await flush();
     assert.equal(b.state.permissionCalls, 0); assert.equal(b.elements.get("start").disabled, false);
     assert.equal(b.elements.get("wakeword").textContent, "‘보라야’");
+  });
+  await test("nested Studio config routes info, start, PCM frames, stop and worklet without rewriting JavaScript", async () => {
+    const prefix = "/mic/bora", b = browser({ pageConfig: { api_base: prefix, worklet_url: prefix + "/microphone_worklet.js" } });
+    await flush(); await b.click("start"); await flush();
+    b.frame(); await flush(); await b.click("stop"); await flush();
+    assert.deepEqual(b.calls.map(call => call.url), [prefix + "/api/info", prefix + "/api/start", prefix + "/api/frame", prefix + "/api/stop"]);
+    const frame = b.calls.find(call => call.url.endsWith("/frame"));
+    assert.equal(frame.options.body.byteLength, 2560);
+    assert.equal(frame.options.headers["X-Koww-Token"], b.info.token);
+    assert.equal(frame.options.headers["X-Koww-Sequence"], "0");
+    assert.equal(b.streams.every(stream => stream.track.stopped), true);
   });
   await test("explicit microphone connection reveals device names while capture is active then releases every probe track", async () => {
     const b = browser({ hideDeviceNames: true }); await flush();

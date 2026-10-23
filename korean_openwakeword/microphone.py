@@ -15,6 +15,7 @@ import time
 import numpy as np
 
 from .events import EventDetector
+from .web_page import render_page_config
 
 
 class MicrophoneError(ValueError):
@@ -235,7 +236,10 @@ def make_server(service, port=8792):
                 if path not in routes:
                     raise MicrophoneError("Not found", 404)
                 name, content_type = routes[path]
-                return self._respond(200, (resources / name).read_bytes(), content_type)
+                body = (resources / name).read_bytes()
+                if name == "microphone.html":
+                    body = render_page_config(body.decode("utf-8")).encode("utf-8")
+                return self._respond(200, body, content_type)
             except MicrophoneError as error:
                 self._respond(error.status, {"error": str(error)})
 

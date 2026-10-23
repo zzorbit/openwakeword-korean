@@ -2,6 +2,8 @@
 
 (() => {
   const $ = id => document.getElementById(id);
+  const config = JSON.parse($("koww-page-config")?.textContent || "{}");
+  const apiUrl = path => (config.api_base || "") + path;
   const ui = Object.fromEntries(["wakeword", "microphone", "connect", "refresh", "retry", "deviceHint", "start", "stop", "connection", "statusHeading", "statusText", "statusDot", "level", "levelText", "elapsed", "frameCount", "lastEvent", "lastEventTime", "models", "threshold", "captureSettings"].map(id => [id, $(id)]));
   const rows = new Map();
   let info = null;
@@ -29,7 +31,7 @@
   async function request(path, options = {}, timeoutMs = 5000, controller = new AbortController(), timeoutMessage = "서버 응답이 늦어 시험을 중지했습니다. 서버 상태를 확인한 뒤 다시 시작하세요.") {
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const response = await fetch(path, { ...options, signal: controller.signal, cache: "no-store" });
+      const response = await fetch(apiUrl(path), { ...options, signal: controller.signal, cache: "no-store" });
       let data;
       try { data = await response.json(); } catch (_) { throw new Error("서버 응답을 읽을 수 없습니다. 터미널의 서버 상태를 확인하세요."); }
       if (!response.ok) {
@@ -155,7 +157,7 @@
 
   function notifyStop(sessionId, keepalive = false) {
     if (!sessionId || !info) return Promise.resolve();
-    return fetch("/api/stop", { method: "POST", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify({ session_id: sessionId }), keepalive }).catch(() => {});
+    return fetch(apiUrl("/api/stop"), { method: "POST", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify({ session_id: sessionId }), keepalive }).catch(() => {});
   }
 
   function stop(message = "마이크 사용을 중지했습니다. 다시 시작하면 새 시험이 시작됩니다.", error = false, keepalive = false) {
@@ -261,7 +263,7 @@
       const context = new AudioContext({ sampleRate: info.sample_rate, latencyHint: "interactive" });
       target.context = context;
       if (context.sampleRate !== 16000) throw new Error("이 브라우저가 16 kHz 마이크 분석을 지원하지 않습니다. 최신 Chrome 또는 Edge에서 열어주세요.");
-      await context.audioWorklet.addModule("/microphone_worklet.js");
+      await context.audioWorklet.addModule(config.worklet_url || "/microphone_worklet.js");
       if (!isCurrent(target)) return;
       const session = await request("/api/start", { method: "POST", headers: headers({ "Content-Type": "application/json" }), body: "{}" });
       if (!session.session_id) throw new Error("시험 연결 정보를 읽을 수 없습니다.");
