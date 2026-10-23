@@ -179,6 +179,19 @@
     if (!Number.isFinite(done) || !Number.isFinite(total) || done < 0 || total <= 0) return null;
     return { done, total, unit: progress.unit || "개", label: progress.label || "", percent: Math.min(100, Math.max(0, done / total * 100)) };
   }
+  function evaluationProgress(log) {
+    let latest = null;
+    for (const match of String(log || "").matchAll(/^Evaluate (?:development|final): (\d+)\/(\d+)(?: \(([^\r\n]*)\))?\s*$/gm)) {
+      const done = Number(match[1]), total = Number(match[2]);
+      if (!Number.isSafeInteger(done) || !Number.isSafeInteger(total) || total < 1 || done < 0 || done > total) continue;
+      const backend = /CUDA/.test(match[3] || "") ? "GPU" : /CPU/.test(match[3] || "") ? "CPU" : "";
+      latest = { done, total, unit: "개 음원", label: `성능 평가${backend ? " · " + backend : ""}`, phase: done === total ? "summary" : "scoring" };
+    }
+    return latest;
+  }
+  function evaluating(project) {
+    return project && activeStatuses.has(project.status) && (project.stage_id || (typeof project.stage === "object" ? project.stage?.id : project.stage)) === "evaluation";
+  }
   function requestBody(form, preset) {
     const result = { wakeword: form.wakeword.trim(), preset };
     if (form.directory.trim()) result.directory = form.directory.trim();
@@ -234,6 +247,7 @@
   let snapshot = { projects: [] }, recipes = [], selectedId = "", selectedPreset = "check";
   let newProject = false, busy = false, refreshing = false, pollTimer = null, recipeReady = false;
   let reviewIdentity = "", inputIdentity = "", resultIdentity = "", resultMode = "results", logProject = "";
+  let recentLog = null;
   const selectedProject = () => (snapshot.projects || []).find(project => project.id === selectedId);
 
   async function api(path, method = "GET", payload) {
@@ -704,6 +718,7 @@
     const voiceTitle = { references: "합성 목소리 만들기", references_review: "합성 목소리 확인" }[stageId];
     $("current-title").textContent = voiceTitle || project.stage_label || project.title || stageLabel || (complete ? "학습과 평가를 마쳤습니다" : waiting ? "안내를 확인해주세요" : "시작할 준비가 되었습니다");
     $("current-description").textContent = project.next_action || project.description || (waiting ? "아래에서 필요한 확인을 마치면 이어서 진행합니다." : complete ? "아래에서 결과를 확인하고 호출어를 시험할 수 있습니다." : running ? "진행 상태를 자동으로 갱신합니다." : "시작하면 준비된 작업부터 순서대로 진행합니다.");
+    if (evaluating(project) && project.progress?.phase === "summary") $("current-description").textContent = "채점을 마쳤습니다. 통계와 결과 파일을 정리하고 있습니다.";
     $("start").hidden = running || complete || waiting || project.status === "paused" || project.status === "failed" || project.status === "error";
     $("resume").hidden = running || complete || waiting || !["paused", "failed", "error", "interrupted"].includes(project.status);
     $("pause").hidden = !running;
@@ -721,6 +736,7 @@
     const currentElapsed = duration(project.current_stage_elapsed_seconds), elapsed = duration(project.elapsed_seconds), remaining = eta(project.eta_seconds);
     $("elapsed").textContent = currentElapsed ? `이 작업 경과 ${currentElapsed}${elapsed ? " · 전체 경과 " + elapsed : ""}` : elapsed ? `전체 경과 ${elapsed}` : "";
     $("eta").textContent = remaining ? `이 작업 예상 남은 시간 ${remaining}` : running ? "예상 시간: 처리 속도를 측정한 뒤 표시합니다" : "";
+    if (evaluating(project)) $("eta").textContent = progress && !/단계/.test(progress.unit) ? "음원 수 기준 · 긴 비호출 음원은 더 오래 걸립니다." : "평가 음원의 무결성과 형식을 확인하고 있습니다.";
     $("project-error").hidden = !project.error;
     $("project-error").textContent = project.error && typeof project.error === "object" ? project.error.message || JSON.stringify(project.error) : project.error || "";
     renderCounts(project); renderReview(project); renderInput(project); renderResultFrame(project);
@@ -747,6 +763,18 @@
       if (!Array.isArray(snapshot.projects)) snapshot.projects = [];
       if (!newProject && !snapshot.projects.some(project => project.id === selectedId)) selectedId = snapshot.active_project_id || snapshot.projects[0]?.id || "";
       $("connection").hidden = true; render();
+      const project = selectedProject(), receivedSnapshot = snapshot;
+      if (evaluating(project) && (!progressValue(project) || /단계/.test(progressValue(project).unit))) {
+        try {
+          const result = await api(`/api/projects/${encodeURIComponent(project.id)}/log`);
+          if (snapshot === receivedSnapshot && selectedId === project.id && evaluating(selectedProject()) && !newProject) {
+            const text = typeof result === "string" ? result : result.text || result.log || "";
+            recentLog = { id: project.id, text, at: Date.now() };
+            const progress = evaluationProgress(text);
+            if (progress) { project.progress = progress; project.eta_seconds = null; renderProject(project); }
+          }
+        } catch (_) { /* The valid state remains visible if the optional log request fails. */ }
+      }
     } catch (error) {
       const delayed = error.code === "request_timeout";
       $("connection").hidden = false;
@@ -810,6 +838,7 @@
   async function loadLog() {
     const id = selectedId; if (!id || !$("log-details").open) return;
     try {
+      if (recentLog?.id === id && Date.now() - recentLog.at < 2500) { $("log").textContent = recentLog.text; return; }
       const result = await api(`/api/projects/${encodeURIComponent(id)}/log`);
       if (id === selectedId) $("log").textContent = typeof result === "string" ? result : result.text || result.log || (Array.isArray(result.lines) ? result.lines.join("\n") : "아직 작업 기록이 없습니다.");
     } catch (error) { if (id === selectedId) $("log").textContent = error.message; }
@@ -846,6 +875,6 @@
     pollTimer = setInterval(async () => { if (!document.hidden) { await refresh(); if ($("log-details").open) await loadLog(); } }, 3000);
     window.addEventListener("pagehide", () => clearInterval(pollTimer), { once: true });
   }
-  window.KowwStudio = Object.freeze({ duration, bytes, minimumStorage, storageEstimate, storageBudget, eta, progressValue, requestBody, localUrl, webUrl });
+  window.KowwStudio = Object.freeze({ duration, bytes, minimumStorage, storageEstimate, storageBudget, eta, progressValue, evaluationProgress, requestBody, localUrl, webUrl });
   if (!window.KOWW_STUDIO_TEST) boot();
 })();

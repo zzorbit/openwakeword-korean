@@ -183,6 +183,12 @@ def test_automatic_install_refuses_global_python(project, monkeypatch):
 
 def test_explicit_install_uses_current_venv_and_project_cache_only(project, monkeypatch):
     import os
+    from korean_openwakeword import gpu_runtime_install
+    gpu_calls = []
+    def gpu_setup(root):
+        gpu_calls.append(root)
+        return {"state": "ready", "target": str(root / "cache/gpu_runtime")}
+    monkeypatch.setattr(gpu_runtime_install, "setup_gpu_runtime", gpu_setup)
     monkeypatch.setattr(steps.sys, "prefix", str(project.parent / ".venv"))
     monkeypatch.delenv("KOWW_CACHE_ROOT", raising=False)
     monkeypatch.setattr(steps, "_installed_dependencies", lambda: {})
@@ -195,6 +201,7 @@ def test_explicit_install_uses_current_venv_and_project_cache_only(project, monk
         commands.append(command)
     monkeypatch.setattr(steps.subprocess, "run", pip)
     result = steps._install_dependencies(project.parent, "cu128")
+    assert gpu_calls == [project.parent] and result["evaluation_gpu_runtime"]["state"] == "ready"
     assert result["state"] == "completed" and len(commands) == 3
     assert commands[0][-1] == "https://download.pytorch.org/whl/cu128"
 

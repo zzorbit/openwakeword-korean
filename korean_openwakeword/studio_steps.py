@@ -102,6 +102,8 @@ def preset_settings(name="check"):
     return {"preset": name, **deepcopy(_PRESETS[name]),
             **{key: policy[key] for key in ("validation_references", "validation_originals", "noise_sections")},
             "evaluation_policy": policy, "batch": dict(BATCH),
+            "evaluation_backend": "auto", "gpu_batch_size": 128, "gpu_boundary_margin": .001,
+            "gpu_numerical_differences_approved": True,
             "material_acquisition_policy": "automatic_v3",
             "material_review_policy": "library_fixed_sources_v1",
             "audio_storage_policy": "canonical_flac_only_v1",
@@ -123,10 +125,10 @@ def workflow_plan(settings):
 
 def _validate_settings(settings):
     backend = settings.get("evaluation_backend", "cpu")
-    if backend not in ("cpu", "cuda"):
-        raise ValueError("Evaluation backend must be cpu or cuda")
-    if backend == "cuda":
-        if settings.get("gpu_numerical_differences_approved") is not True:
+    if backend not in ("auto", "cpu", "cuda"):
+        raise ValueError("Evaluation backend must be auto, cpu or cuda")
+    if backend in ("auto", "cuda"):
+        if backend == "cuda" and settings.get("gpu_numerical_differences_approved") is not True:
             raise ValueError("CUDA evaluation requires explicit numerical-difference approval")
         batch = settings.get("gpu_batch_size", 128)
         margin = settings.get("gpu_boundary_margin", .001)
@@ -238,6 +240,19 @@ def _installed_dependencies():
     return versions
 
 
+def _recommended_dependency_backend():
+    """Detect NVIDIA hardware before a CUDA build of PyTorch is installed."""
+    try:
+        result = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=3, check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        if result.returncode == 0 and result.stdout.strip():
+            return "cu128"
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return "cpu"
+
+
 def _onnx_ready(version):
     try:
         major, minor = (int(x) for x in version.split(".")[:2])
@@ -282,9 +297,26 @@ def _install_dependencies(root, backend):
         for command in commands:
             print("필요한 학습 패키지 설치: " + " ".join(command[6:]), flush=True)
             subprocess.run(command, cwd=str(root), check=True)
+        gpu_runtime = None
+        if backend == "cu128":
+            gpu_runtime = _prepare_evaluation_runtime(root)
     importlib.invalidate_caches()
     return {"state": "completed", "backend": backend, "commands_run": commands,
+            "evaluation_gpu_runtime": gpu_runtime,
             "scope": "Current virtual environment only; project-owned download/temp cache"}
+
+
+def _prepare_evaluation_runtime(root):
+    from .gpu_runtime_install import setup_gpu_runtime
+    try:
+        return setup_gpu_runtime(root)
+    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
+        # Training CUDA and evaluation CUDA have different native requirements.
+        # Auto evaluation records a CPU reason if its optional runtime fails;
+        # an explicit CUDA evaluation still fails its own capability check.
+        reason = "평가용 GPU 도구를 준비하지 못했습니다: " + str(error)
+        print(reason + "; 공통 평가는 사용 가능한 연산 장치를 다시 확인합니다.", flush=True)
+        return {"state": "unavailable", "reason": reason, "default_evaluation_backend": "auto"}
 
 
 def _result(context, key):
@@ -476,8 +508,15 @@ def run_stage(project, workspace, settings, stage_id, context=None):
                 or not checked["onnx_export_ready"]):
             return _waiting("학습 패키지 설치 방식에서 CPU 또는 NVIDIA GPU를 선택하세요. 설치 후 다시 확인합니다.",
                             input_kind="dependency_setup", check=checked,
+                            recommended_backend=_recommended_dependency_backend(),
                             required_dependencies=["torch==2.8.0", "torchaudio==2.8.0", "qwen-tts==0.1.1", "onnx>=1.16", "openwakeword==0.6.0"],
                             installation=installation)
+        if settings.get("evaluation_backend") == "auto" and checked.get("cuda_available") and backend != "cpu":
+            # Manually prepared CUDA training packages need the same managed
+            # evaluation runtime as packages installed through this screen.
+            if not installation or not installation.get("evaluation_gpu_runtime"):
+                runtime = _prepare_evaluation_runtime(root)
+                installation = dict(installation or {}, evaluation_gpu_runtime=runtime)
         destination = resolved(root, config["frontend_dir"])
         receipt = prepare_frontend(destination)
         return _completed({"check": checked, "frontend": receipt, "installation": installation}, [destination / "receipt.json"])
@@ -812,7 +851,7 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         directory, existing = _next_directory(root / "reports/studio_evaluation", "receipt.json",
             lambda p: (read_json(p / "report.json").get("manifest_sha256") == digest(manifest)
                        and read_json(p / "report.json").get("bundle_manifest_sha256") == digest(Path(bundle) / "manifest.json")
-                       and (backend == "cpu" and read_json(p / "report.json").get("execution", {}).get("backend", "cpu") == "cpu"
+                       and (backend == "auto" or backend == "cpu" and read_json(p / "report.json").get("execution", {}).get("backend", "cpu") == "cpu"
                             or read_json(p / "report.json").get("evaluation_binding") == expected)))
         if existing:
             verified_evaluation(project, bundle, directory)
@@ -833,14 +872,20 @@ def run_stage(project, workspace, settings, stage_id, context=None):
                         checkpoint = read_json(partial / "_evaluation_work/checkpoint.json")
                     except (OSError, ValueError):
                         continue  # Preserve malformed/unrelated work; never claim it is reusable.
-                    if isinstance(checkpoint, dict) and checkpoint.get("schema_version") == 1 and checkpoint.get("binding") == expected:
-                        directory, resume = partial, True
+                    for selected_backend in (("cpu", "cuda") if backend == "auto" else (backend,)):
+                        selected_binding = (evaluation_binding(project, bundle, manifest, smoke=scoring_smoke,
+                            backend=selected_backend, gpu_batch_size=gpu_batch_size, boundary_margin=boundary_margin,
+                            cpu_prefix=cpu_prefix if selected_backend == "cuda" else None) if backend == "auto" else expected)
+                        if isinstance(checkpoint, dict) and checkpoint.get("schema_version") == 1 and checkpoint.get("binding") == selected_binding:
+                            directory, resume, backend = partial, True, selected_backend
+                            break
+                    if resume:
                         break
             report = evaluate(project, bundle, directory, manifest=manifest,
                               smoke=scoring_smoke, workers="auto", resume=resume, backend=backend,
                               gpu_batch_size=gpu_batch_size, boundary_margin=boundary_margin,
                               cpu_prefix_import=import_path,
-                              numerical_differences_approved=settings.get("gpu_numerical_differences_approved", False))
+                              numerical_differences_approved=settings.get("gpu_numerical_differences_approved"))
         assessment = None
         artifacts = [directory / "receipt.json", directory / "report.json", directory / "clips.json"]
         if settings.get("evaluation_policy"):

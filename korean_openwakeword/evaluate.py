@@ -372,10 +372,16 @@ def _verified_gpu_items(root, sources, paths, offsets, start):
             raise ValueError("Evaluation audio changed during GPU consumption")
 
 
+def _gpu_sessions_with_environment(environment, *args, **kwargs):
+    from .gpu_evaluation import evaluation_runtime_environment, score_gpu_sessions
+    with evaluation_runtime_environment(environment):
+        yield from score_gpu_sessions(*args, **kwargs)
+
+
 @project_storage
 def evaluate(project, bundle, output, stage="development", manifest=None, smoke=False, candidate=None, workers="auto", resume=False,
-             *, backend="cpu", gpu_batch_size=128, boundary_margin=.001, cpu_prefix_import=None,
-             numerical_differences_approved=False):
+             *, backend="auto", gpu_batch_size=128, boundary_margin=.001, cpu_prefix_import=None,
+             numerical_differences_approved=None):
     root, config = load_project(project)
     directory = Path(bundle).resolve()
     package = verify_bundle(directory)
@@ -388,12 +394,36 @@ def evaluate(project, bundle, output, stage="development", manifest=None, smoke=
         raise ValueError("Candidate word differs from this project")
     if stage not in ("development", "final"):
         raise ValueError("Unknown evaluation stage")
-    if backend not in ("cpu", "cuda"):
-        raise ValueError("Evaluation backend must be cpu or cuda")
+    if backend not in ("auto", "cpu", "cuda"):
+        raise ValueError("Evaluation backend must be auto, cpu or cuda")
+    if backend == "cuda" and stage != "development":
+        raise ValueError("CUDA evaluation is qualified for Development only; independent Final remains on its frozen reference protocol")
+    if backend == "cuda" and numerical_differences_approved is False:
+        raise ValueError("CUDA FP32 requires explicit approval of small numerical score differences")
+    manifest = Path(manifest).resolve() if manifest else resolved(root, config["manifests"][stage])
+    output = Path(output).resolve()
+    resume_backend = "cuda" if cpu_prefix_import else None
+    if resume and not cpu_prefix_import:
+        checkpoint_path = output / "_evaluation_work/checkpoint.json"
+        if not checkpoint_path.is_file():
+            raise ValueError("No resumable evaluation checkpoint")
+        saved_binding = read_json(checkpoint_path).get("binding")
+        for saved_backend in ("cpu", "cuda"):
+            if saved_binding == evaluation_binding(project, directory, manifest, stage, candidate, smoke,
+                    backend=saved_backend, gpu_batch_size=gpu_batch_size, boundary_margin=boundary_margin):
+                resume_backend = saved_backend
+                break
+        if resume_backend is None:
+            raise ValueError("Evaluation resume model, inputs or scoring protocol changed")
+    from .evaluation_backend import resolve_evaluation_backend
+    selection = resolve_evaluation_backend(backend, stage=stage, bundle=directory,
+        resume_backend=resume_backend, project_root=root)
+    backend = selection["backend"]
+    print("Evaluation device: " + ("GPU" if backend == "cuda" else "CPU") + " · " + selection["reason"], flush=True)
     if backend == "cuda":
         if stage != "development":
             raise ValueError("CUDA evaluation is qualified for Development only; independent Final remains on its frozen reference protocol")
-        if numerical_differences_approved is not True:
+        if numerical_differences_approved is False:
             raise ValueError("CUDA FP32 requires explicit approval of small numerical score differences")
         if type(gpu_batch_size) is not int or not 1 <= gpu_batch_size <= 128:
             raise ValueError("GPU batch size must be an integer from 1 to 128")
@@ -409,9 +439,7 @@ def evaluate(project, bundle, output, stage="development", manifest=None, smoke=
             raise ValueError("Final model/runtime/project changed after freeze")
         if smoke:
             raise ValueError("Final cannot be a smoke run")
-    manifest = Path(manifest).resolve() if manifest else resolved(root, config["manifests"][stage])
     sources = read_rows(manifest)
-    output = Path(output).resolve()
     imported = validate_cpu_prefix_import(project, directory, manifest, output, stage, candidate, smoke,
         backend, gpu_batch_size, boundary_margin, cpu_prefix_import, sources=sources) if cpu_prefix_import else None
     # Reuse this operation's full hash/header checks from the split audit in
@@ -475,6 +503,7 @@ def evaluate(project, bundle, output, stage="development", manifest=None, smoke=
         gpu_batch_size=gpu_batch_size, boundary_margin=boundary_margin,
         cpu_prefix=imported["prefix"] if imported else None)
     execution["backend"] = backend
+    execution["backend_selection"] = selection
     if backend == "cuda":
         execution["gpu"] = {}
         execution["input_validation"] = ("Prior CPU prefix verified by immutable import proof; current metadata audit and header plan; remaining WAVs fully hashed and checked before consumption"
@@ -489,9 +518,8 @@ def evaluate(project, bundle, output, stage="development", manifest=None, smoke=
             execution["resumed_sessions"] = journal.resumed_sessions
             items = ((index, sources[index], paths[index]) for index in range(journal.resumed_sessions, len(sources)))
             if backend == "cuda":
-                from .gpu_evaluation import score_gpu_sessions
                 items = _verified_gpu_items(root, sources, paths, offsets, journal.resumed_sessions)
-                scored = score_gpu_sessions(directory, model_ids, items, batch_size=gpu_batch_size,
+                scored = _gpu_sessions_with_environment(selection["runtime_environment"], directory, model_ids, items, batch_size=gpu_batch_size,
                     boundary_margin=boundary_margin,
                     qualification={"user_approved_numerical_differences": True,
                                    "cpu_prefix_import_sha256": digest(cpu_prefix_import) if imported else None},

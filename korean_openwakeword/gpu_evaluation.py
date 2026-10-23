@@ -5,6 +5,7 @@ graph prevents independent sessions from sharing the original global dB floor.
 CUDA FP32 is a separately qualified backend, not bitwise CPU arithmetic.
 """
 from concurrent.futures import ProcessPoolExecutor
+from contextlib import contextmanager
 from copy import deepcopy
 import hashlib
 import io
@@ -13,6 +14,7 @@ import multiprocessing
 import os
 from pathlib import Path
 import sys
+import threading
 import time
 
 import numpy as np
@@ -25,6 +27,40 @@ from .runtime import WakeWordDetector, bundle_candidates
 
 _CPU_REFERENCE = None
 _CPU_MODEL_IDS = None
+_RUNTIME_ENVIRONMENT_LOCK = threading.RLock()
+
+
+@contextmanager
+def evaluation_runtime_environment(environment):
+    """Scope managed GPU DLL/runtime settings to one evaluation consumer.
+
+    Loaded native libraries cannot be swapped or unloaded safely; the resolver
+    checks compatibility before this context is entered. Studio uses a fresh
+    worker for each stage, and Python callers must do the same after importing
+    a different ONNX Runtime build.
+    """
+    environment = dict(environment or {})
+    allowed = {"KOWW_GPU_RUNTIME_PATH", "KOWW_GPU_DLL_PATHS"}
+    if any(key not in allowed or not isinstance(value, str) or not value for key, value in environment.items()):
+        raise ValueError("GPU runtime environment must contain only nonempty runtime and DLL paths")
+    with _RUNTIME_ENVIRONMENT_LOCK:
+        previous = {key: os.environ.get(key) for key in allowed | {"PATH", "PYTHONDONTWRITEBYTECODE"}}
+        previous_bytecode = sys.dont_write_bytecode
+        try:
+            os.environ.update(environment)
+            # The managed runtime inventory is immutable after installation.
+            # Prevent imports here and in spawned CPU recheck workers from
+            # creating bytecode inside the verified package directory.
+            sys.dont_write_bytecode = True
+            os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+            yield
+        finally:
+            sys.dont_write_bytecode = previous_bytecode
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
 
 def _cuda_runtime():
@@ -37,7 +73,8 @@ def _cuda_runtime():
         existing = sys.modules.get("onnxruntime")
         if existing is not None and not Path(existing.__file__).resolve().is_relative_to(target):
             raise RuntimeError("A different ONNX Runtime is already loaded; start a separate GPU worker with its package path first")
-        sys.path.insert(0, str(target))
+        if str(target) not in sys.path:
+            sys.path.insert(0, str(target))
     directories = []
     explicit = os.environ.get("KOWW_GPU_DLL_PATHS")
     if explicit:

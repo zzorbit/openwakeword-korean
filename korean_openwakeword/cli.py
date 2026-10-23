@@ -198,6 +198,8 @@ def parser():
     a.add_argument("--reverb-selection", choices=["legacy", "metadata_axes"], default="legacy", help="잔향 원본 선별: 새 공통 평가에는 metadata_axes 사용; 기존 recipe는 legacy 유지")
     a.add_argument("--noise-selection", choices=("legacy", "balanced_sources"), default="legacy",
                    help="legacy: 기존 원본 선택 / balanced_sources: 소음 세부 종류와 원본 균형 선택")
+    a = sub.add_parser("setup-gpu", help="평가용 GPU 도구를 프로젝트 캐시에 준비")
+    a.add_argument("--project", type=Path, required=True)
     a = sub.add_parser("evaluate", help="동일 WAV의 단일·평균 모델 평가")
     a.add_argument("--project", type=Path, required=True); a.add_argument("--bundle", type=Path, required=True)
     a.add_argument("--manifest", type=Path); a.add_argument("--stage", choices=("development", "final"), default="development")
@@ -205,10 +207,10 @@ def parser():
     a.add_argument("--candidate", help="채택 판정을 확인할 모델 ID; 생략하면 현재 bundle의 실제 출력")
     a.add_argument("--workers", choices=("auto", "1", "2", "4"), default="auto", help="독립 음원 단위 CPU 병렬 평가")
     a.add_argument("--resume", action="store_true", help="입력 해시가 같은 중단된 평가만 재개")
-    a.add_argument("--backend", choices=("cpu", "cuda"), default="cpu", help="평가 연산 장치; CUDA는 FP32 배치·CPU 경계 재확인")
+    a.add_argument("--backend", choices=("auto", "cpu", "cuda"), default="auto", help="평가 장치: 기본은 GPU 우선 자동 선택, CUDA는 FP32 배치·CPU 경계 재확인")
     a.add_argument("--gpu-batch-size", type=int, default=128)
     a.add_argument("--gpu-boundary-margin", type=float, default=.001)
-    a.add_argument("--accept-gpu-numerical-differences", action="store_true", help="GPU의 미세한 점수 차이를 명시적으로 허용")
+    a.add_argument("--accept-gpu-numerical-differences", action="store_true", default=None, help="이전 명령 호환 옵션; GPU 평가의 미세한 점수 차이는 기본 허용하고 경계는 CPU 재확인")
     a.add_argument("--cpu-prefix-import", type=Path, help="검증된 CPU 완료분을 보존하는 명시적 이관 증빙")
     a = sub.add_parser("select-candidate", help="저장된 개발 평가로 단일/앙상블 실행 묶음 선택")
     a.add_argument("--project", type=Path, required=True); a.add_argument("--bundle", type=Path, required=True)
@@ -441,6 +443,9 @@ def dispatch(a):
         return prepare_evaluation(a.project, a.output, a.split, a.originals, a.noise_sections,
                                   noise_selection=a.noise_selection, reverb_originals=a.reverb_originals,
                                   reverb_selection=a.reverb_selection)
+    if a.command == "setup-gpu":
+        from .gpu_runtime_install import setup_gpu_runtime
+        return setup_gpu_runtime(a.project.resolve().parent)
     if a.command == "evaluate":
         from .evaluate import evaluate
         return evaluate(a.project, a.bundle, a.output, a.stage, a.manifest, a.smoke, a.candidate,

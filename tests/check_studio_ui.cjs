@@ -9,7 +9,7 @@ const flush = async () => { for (let index = 0; index < 12; index++) await new P
 const tests = [];
 async function test(name, action) { await action(); tests.push(name); }
 
-function browser({ noBoot = false, initialState, recipeError = false, recipeOverrides = {}, recipeList } = {}) {
+function browser({ noBoot = false, initialState, recipeError = false, recipeOverrides = {}, recipeList, logResponse = "ready", logError = false } = {}) {
   const elements = new Map(), calls = [], intervals = [];
   class Element {
     constructor(tag = "div") { this.tagName = tag; this.value = ""; this.textContent = ""; this.children = []; this.handlers = {}; this.attributes = {}; this.hidden = false; this.disabled = false; this.open = false; this.srcWrites = 0; }
@@ -37,7 +37,7 @@ function browser({ noBoot = false, initialState, recipeError = false, recipeOver
       return json(project);
     }
     if (/\/api\/projects\/bora\/(start|resume|pause|input)$/.test(url)) return json({ ok: true });
-    if (url.endsWith("/log")) return json({ text: "ready" });
+    if (url.endsWith("/log")) { if (logError) throw new Error("optional log unavailable"); return json({ log: logResponse }); }
     throw new Error("Unexpected route " + url);
   };
   const context = vm.createContext({ document: doc, fetch, URL, AbortController, console, setTimeout, clearTimeout, setInterval: callback => { intervals.push(callback); return intervals.length; }, clearInterval() {} });
@@ -1105,6 +1105,43 @@ function storageBudgetRecipe(overrides = {}) {
     const failed = browser({ recipeError: true }); await flush();
     assert.equal(failed.elements.get("project-switch").hidden, true);
     assert.equal(failed.elements.get("create").disabled, true); assert.match(failed.elements.get("message").textContent, /recipe failure/);
+  });
+  await test("evaluation progress parses CPU and CUDA logs without treating aggregation as workflow completion", async () => {
+    const b = browser({ noBoot: true });
+    assert.equal(b.helpers.evaluationProgress("Evaluate development: 8/10 (CPU workers=4)\n").label, "성능 평가 · CPU");
+    const result = b.helpers.evaluationProgress("Evaluate development: 4/10 (CUDA batch=128, CPU rechecked=2)\r\nEvaluate development: 10/10 (CUDA batch=128, CPU rechecked=2)\r\n");
+    assert.equal(result.done, 10); assert.equal(result.phase, "summary");
+    assert.equal(b.helpers.evaluationProgress("Evaluate development: 11/10\nEvaluate development: 0/0\n"), null);
+    assert.equal(b.helpers.evaluationProgress("validating WAV headers"), null);
+  });
+  await test("running evaluation updates its gauge while the job log remains collapsed", async () => {
+    const project = { id: "bora", wakeword: "보라야", status: "running", stage: { id: "evaluation" }, progress: { done: 17, total: 19, unit: "완료 단계" } };
+    const b = browser({ initialState: { projects: [project] }, logResponse: "Evaluate development: 80/100 (CUDA batch=128, CPU rechecked=8)\n" });
+    await flush();
+    assert.equal(b.elements.get("log-details").open, false);
+    assert.equal(b.elements.get("progress").hidden, false); assert.equal(b.elements.get("progress").value, 80);
+    assert.equal(b.elements.get("progress-percent").textContent, "80.0%");
+    assert.match(b.elements.get("progress-label").textContent, /80 \/ 100/);
+    const before = b.calls.filter(call => call.url.endsWith("/log")).length;
+    b.elements.get("log-details").open = true;
+    await b.tick();
+    assert.equal(b.calls.filter(call => call.url.endsWith("/log")).length, before + 1);
+    assert.equal(b.elements.get("connection").hidden, true);
+  });
+  await test("evaluation validation and optional log failures never invent a zero-percent score", async () => {
+    const project = { id: "bora", status: "running", stage: { id: "evaluation" }, progress: { done: 17, total: 19, unit: "완료 단계" } };
+    const b = browser({ initialState: { projects: [project] }, logError: true }); await flush();
+    assert.equal(b.elements.get("progress").hidden, true);
+    assert.match(b.elements.get("eta").textContent, /무결성과 형식/);
+    assert.equal(b.elements.get("connection").hidden, true);
+  });
+  await test("a server evaluation progress record needs no extra closed-log request", async () => {
+    const project = { id: "bora", status: "running", stage: { id: "evaluation" }, progress: { done: 100, total: 100, unit: "개 음원", phase: "summary" } };
+    const b = browser({ initialState: { projects: [project] } }); await flush();
+    assert.equal(b.elements.get("progress").value, 100);
+    assert.match(b.elements.get("current-description").textContent, /통계와 결과 파일/);
+    assert.equal(b.elements.get("project-status").textContent, "진행 중");
+    assert.equal(b.calls.filter(call => call.url.endsWith("/log")).length, 0);
   });
   console.log(`Studio UI: ${tests.length} tests passed`);
   for (const name of tests) console.log("  ✓ " + name);

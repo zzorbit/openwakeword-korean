@@ -14,6 +14,7 @@ import hmac
 import json
 import mimetypes
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -91,6 +92,47 @@ def _implementation():
     root = Path(__file__).parent
     paths = sorted(root.glob("*.py")) + sorted((root / "resources").glob("*.json"))
     return identity({path.relative_to(root).as_posix(): digest(path) for path in paths})
+
+
+def _job_log_tail(job, limit=24000):
+    """Read a bounded tail from this task's own log, never another attempt."""
+    if not job.get("task_id") or not job.get("log"):
+        return ""
+    path = Path(job["log"])
+    directory = Path(job.get("directory", path.parent))
+    if (directory.name != job["task_id"] or path.name != "output.log"
+            or path.parent.resolve() != directory.resolve()):
+        return ""
+    try:
+        with path.open("rb") as handle:
+            length = handle.seek(0, 2)
+            handle.seek(max(0, length - limit))
+            return handle.read(limit).decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _evaluation_log_progress(job):
+    """Session counts only; polling never opens score caches or evaluation WAVs."""
+    pattern = (r"(?m)^Evaluate (?:development|final): (\d+)/(\d+) "
+               r"\((?:CPU workers=(\d+)|CUDA batch=(\d+), CPU rechecked=(\d+))\)\r?$")
+    for match in reversed(list(re.finditer(pattern, _job_log_tail(job)))):
+        done, total = int(match[1]), int(match[2])
+        if not 0 <= done <= total or total == 0:
+            continue
+        cuda = match[4] is not None
+        result = {"done": done, "total": total, "unit": "개 음원",
+                  "label": "성능 평가 · GPU" if cuda else "성능 평가 · CPU",
+                  "phase": "finalizing" if done == total else "scoring",
+                  "source": "current_task_log", "task_id": job["task_id"],
+                  "backend": "cuda" if cuda else "cpu"}
+        if cuda:
+            result.update(batch_size=int(match[4]), cpu_rechecked_sessions=int(match[5]))
+        else:
+            result["workers"] = int(match[3])
+        return result
+    return {"done": None, "total": None, "unit": "개 음원", "label": "평가 음원 검증 중",
+            "phase": "validation", "source": "current_task_log", "task_id": job.get("task_id")}
 
 
 @contextmanager
@@ -657,6 +699,7 @@ class StudioManager:
                     evaluation_policy_sha256=identity(state["settings"]["evaluation_policy"]) if state.get("settings", {}).get("evaluation_policy") else None,
                     stages=[{**entry, "status": "completed" if i < index else state["status"] if i == index else "pending"}
                             for i, entry in enumerate(plan)],
+                    stage_progress={"done": index, "total": len(plan), "unit": "완료 단계"},
                     progress={"done": index, "total": len(plan), "unit": "완료 단계"},
                     elapsed_seconds=round(_elapsed(state.get("started_at")), 1), eta_seconds=None)
         job = state.get("job") or {}
@@ -703,8 +746,18 @@ class StudioManager:
                 if matches:
                     role, done, total = matches[-1]
                     view["progress"] = {"done": int(done), "total": int(total), "unit": "개 특징", "label": role}
+            if job["stage"] == "evaluation":
+                view["progress"] = _evaluation_log_progress(job)
+                view["progress_note"] = "음원 수 기준이며, 긴 비호출 음원은 더 오래 걸립니다."
+                view["eta_seconds"] = None
+                phase = view["progress"]["phase"]
+                if phase == "validation":
+                    view["next_action"] = "평가 음원의 무결성과 형식을 확인하고 있습니다."
+                elif phase == "finalizing":
+                    view["next_action"] = "채점을 마쳤으며 결과를 정리하고 있습니다."
             current = view["progress"]
-            if current.get("total") and current.get("done") is not None and current.get("unit") != "완료 단계":
+            if (job["stage"] != "evaluation" and current.get("total") and current.get("done") is not None
+                    and current.get("unit") != "완료 단계"):
                 key = (job["task_id"], current.get("label"), current.get("total"))
                 baseline = self._rates.setdefault(key, (time.monotonic(), current["done"]))
                 seconds, delta = time.monotonic() - baseline[0], current["done"] - baseline[1]
@@ -824,12 +877,7 @@ class StudioManager:
     def log(self, project_id):
         state = self._load(project_id)
         job = state.get("job") or state.get("last_job") or {}
-        path = Path(job["log"]) if job.get("log") else None
-        if path and path.exists():
-            with path.open("rb") as handle:
-                handle.seek(max(0, path.stat().st_size - 24000))
-                return handle.read().decode("utf-8", errors="replace")
-        return "아직 실행 로그가 없습니다."
+        return _job_log_tail(job) or "아직 실행 로그가 없습니다."
 
     def microphone(self, project_id):
         if project_id not in self._microphones:
