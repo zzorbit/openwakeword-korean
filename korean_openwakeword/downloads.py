@@ -12,6 +12,7 @@ import time
 import requests
 
 from .common import now, read_json, write_json, writer_lock
+from .download_control import AdaptiveConcurrency
 
 
 def _file_identity(path):
@@ -46,13 +47,19 @@ def download_many(items, worker, *, progress=None, max_workers=None):
     checks. Only this caller invokes ``progress``; workers enqueue their events.
     The caller must reserve disk space for the combined pending downloads.
     """
+    automatic = False
     if max_workers is None:
-        setting = os.environ.get("KOWW_DOWNLOAD_WORKERS", "3")
-        if not re.fullmatch(r"[1-4]", setting):
-            raise ValueError("KOWW_DOWNLOAD_WORKERS must be an integer from 1 to 4")
+        setting = os.environ.get("KOWW_DOWNLOAD_WORKERS", "auto")
+        automatic = setting == "auto"
+        if automatic:
+            setting = os.environ.get("KOWW_DOWNLOAD_MAX_WORKERS", "16")
+        if not re.fullmatch(r"(?:[1-9]|[12][0-9]|3[0-2])", setting):
+            name = "KOWW_DOWNLOAD_MAX_WORKERS" if automatic else "KOWW_DOWNLOAD_WORKERS"
+            raise ValueError(name + " must be an integer from 1 to 32 (WORKERS also accepts auto)")
         max_workers = int(setting)
-    if type(max_workers) is not int or not 1 <= max_workers <= 4:
-        raise ValueError("Download workers must be an integer from 1 to 4")
+    if type(max_workers) is not int or not 1 <= max_workers <= 32:
+        raise ValueError("Download workers must be an integer from 1 to 32")
+    controller = AdaptiveConcurrency(ceiling=max_workers) if automatic else None
     items = list(items)
     identifiers = [item["id"] for item in items]
     if any(not isinstance(key, str) or not key for key in identifiers) or len(set(identifiers)) != len(items):
@@ -62,17 +69,39 @@ def download_many(items, worker, *, progress=None, max_workers=None):
         raise ValueError("Pinned asset size must be a positive integer")
     byte_total = sum(sizes) if all(size is not None for size in sizes) else None
     available, results = [0] * len(items), [None] * len(items)
+    received, reading, writing = ([0.0] * len(items) for _ in range(3))
+    networking = [False] * len(items)
     events, failed = queue.SimpleQueue(), threading.Event()
     pending, verified, next_index, first_error = {}, 0, 0, None
+    last_emit, last_signature = -float("inf"), None
+
+    def target():
+        return controller.limit if controller else max_workers
+
+    def update_control(timestamp=None, *, retry=False):
+        if controller:
+            controller.update(time.monotonic() if timestamp is None else timestamp, sum(received),
+                network_active=sum(networking), read_seconds=sum(reading), write_seconds=sum(writing),
+                retry=retry, backlog=next_index < len(items))
 
     def emit(index=None, event=None, *, completed=False):
+        nonlocal last_emit, last_signature
         if progress:
-            progress({"phase": "download_many", "label": f"자료 다운로드 · 무결성 확인: {verified}/{len(items)}개 확인",
+            timestamp = time.monotonic()
+            signature = (target(), verified, len(pending), completed, (event or {}).get("phase"))
+            if timestamp - last_emit < .25 and signature == last_signature:
+                return
+            last_emit, last_signature = timestamp, signature
+            mode = "자동" if automatic else "고정"
+            progress({"phase": "download_many", "label": f"자료 다운로드 · {mode} {target()}개 · {verified}/{len(items)}개 확인",
                       "done": sum(available) if byte_total is not None else verified,
                       "total": byte_total if byte_total is not None else len(items),
                       "unit": "bytes" if byte_total is not None else "개",
                       "verified_count": verified, "asset_count": len(items), "active_count": len(pending),
                       "max_workers": max_workers, "completed": completed, "eta_seconds": None,
+                      "download_mode": "auto" if automatic else "fixed", "target_workers": target(),
+                      "adjustment_reason": controller.reason if controller else "fixed",
+                      "network_bytes": sum(received), "active_network": sum(networking),
                       "current_asset": identifiers[index] if index is not None else None,
                       "current_event": event})
 
@@ -88,11 +117,22 @@ def download_many(items, worker, *, progress=None, max_workers=None):
                 count = event.get("total") if event.get("phase") == "hash" else event.get("done")
                 if isinstance(count, (int, float)) and not isinstance(count, bool) and count >= 0:
                     available[index] = max(available[index], min(count, sizes[index]) if sizes[index] else count)
+            for key, values in (("network_bytes", received), ("read_seconds", reading), ("write_seconds", writing)):
+                value = event.get(key)
+                if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+                    values[index] = max(values[index], value)
+            if isinstance(event.get("network_active"), bool):
+                networking[index] = event["network_active"]
+            elif event.get("phase") in ("hash", "retry"):
+                networking[index] = False
+            update_control(event.get("observed_at"), retry=event.get("phase") == "retry")
             emit(index, event)
 
     def run(index):
         try:
-            return worker(items[index], lambda event: events.put((index, dict(event))))
+            def report(event):
+                events.put((index, {"observed_at": time.monotonic(), **event}))
+            return worker(items[index], report)
         except BaseException:
             failed.set()
             raise
@@ -101,7 +141,7 @@ def download_many(items, worker, *, progress=None, max_workers=None):
     with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="koww-download") as executor:
         try:
             while next_index < len(items) or pending:
-                while next_index < len(items) and len(pending) < max_workers and not failed.is_set():
+                while next_index < len(items) and len(pending) < target() and not failed.is_set():
                     pending[executor.submit(run, next_index)] = next_index
                     next_index += 1
                 if not pending:
@@ -110,6 +150,7 @@ def download_many(items, worker, *, progress=None, max_workers=None):
                 drain()
                 for future in done:
                     index = pending.pop(future)
+                    networking[index] = False
                     try:
                         results[index] = future.result()
                     except BaseException as error:
@@ -119,6 +160,7 @@ def download_many(items, worker, *, progress=None, max_workers=None):
                         verified += 1
                         if sizes[index] is not None:
                             available[index] = sizes[index]
+                update_control()
                 if done:
                     emit()
             drain()
@@ -192,6 +234,12 @@ def download_partial(url, partial, size_bytes, *, progress=None, retries=2):
         raise ValueError("Transient download retries must be between zero and five")
     if size_bytes is not None and (type(size_bytes) is not int or size_bytes <= 0):
         raise ValueError("Pinned asset size must be a positive integer")
+    network_bytes, read_seconds, write_seconds = 0, 0.0, 0.0
+    def report(record, active):
+        if progress:
+            progress({**record, "network_bytes": network_bytes, "read_seconds": read_seconds,
+                      "write_seconds": write_seconds, "network_active": active,
+                      "observed_at": time.monotonic()})
     for attempt in range(retries + 1):
         offset = partial.stat().st_size if partial.exists() else 0
         if size_bytes is not None and offset > size_bytes:
@@ -203,7 +251,11 @@ def download_partial(url, partial, size_bytes, *, progress=None, retries=2):
             raise ValueError("Insufficient disk space for this download")
         headers = {"Accept-Encoding": "identity", **({"Range": f"bytes={offset}-"} if offset else {})}
         try:
+            report({"phase": "download", "done": offset, "total": size_bytes, "unit": "bytes",
+                    "attempt": attempt + 1}, True)
+            request_started = time.monotonic()
             with requests.get(url, headers=headers, stream=True, timeout=(30, 180)) as response:
+                read_seconds += time.monotonic() - request_started
                 response.raise_for_status()
                 if response.status_code == 206:
                     match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+|\*)", response.headers.get("Content-Range", ""))
@@ -219,34 +271,51 @@ def download_partial(url, partial, size_bytes, *, progress=None, retries=2):
                 if response.headers.get("Content-Encoding", "identity") != "identity":
                     raise ValueError("Encoded download response cannot preserve pinned byte ranges")
                 started, initial, emitted = time.monotonic(), offset, -1.0
-                if progress:
-                    progress({"phase": "download", "done": offset, "total": size_bytes, "unit": "bytes",
-                              "attempt": attempt + 1})
+                report({"phase": "download", "done": offset, "total": size_bytes, "unit": "bytes",
+                        "attempt": attempt + 1}, True)
                 with partial.open("ab" if offset else "wb") as handle:
-                    for chunk in response.iter_content(8 * 1024**2):
+                    chunks = iter(response.iter_content(64 * 1024))
+                    while True:
+                        read_started = time.monotonic()
+                        try:
+                            chunk = next(chunks)
+                        except StopIteration:
+                            read_seconds += time.monotonic() - read_started
+                            break
+                        read_seconds += time.monotonic() - read_started
                         if not chunk:
                             continue
+                        network_bytes += len(chunk)
                         if size_bytes is not None and offset + len(chunk) > size_bytes:
                             raise ValueError("Download response exceeds the pinned asset size; partial preserved")
+                        write_started = time.monotonic()
                         handle.write(chunk)
+                        write_seconds += time.monotonic() - write_started
                         offset += len(chunk)
                         elapsed = time.monotonic() - started
                         if progress and (elapsed - emitted >= .5 or offset == size_bytes):
                             rate = (offset - initial) / elapsed if elapsed > 0 else None
-                            progress({"phase": "download", "done": offset, "total": size_bytes, "unit": "bytes",
-                                      "attempt": attempt + 1, "bytes_per_second": rate,
-                                      "eta_seconds": max(0, (size_bytes - offset) / rate) if rate and size_bytes else None})
+                            report({"phase": "download", "done": offset, "total": size_bytes, "unit": "bytes",
+                                    "attempt": attempt + 1, "bytes_per_second": rate,
+                                    "eta_seconds": max(0, (size_bytes - offset) / rate) if rate and size_bytes else None}, True)
                             emitted = elapsed
+                    write_started = time.monotonic()
+                    handle.flush()
+                    write_seconds += time.monotonic() - write_started
                 if size_bytes is not None and offset != size_bytes:
                     raise requests.exceptions.ChunkedEncodingError("Incomplete pinned download response")
+            report({"phase": "download", "done": offset, "total": size_bytes, "unit": "bytes",
+                    "attempt": attempt + 1}, False)
             return
         except requests.exceptions.RequestException as error:
             if not _transient_network_error(error) or attempt == retries:
+                report({"phase": "download", "done": partial.stat().st_size if partial.exists() else 0,
+                        "total": size_bytes, "unit": "bytes", "attempt": attempt + 1, "failed": True}, False)
                 raise
-            if progress:
-                progress({"phase": "retry", "done": partial.stat().st_size if partial.exists() else 0,
-                          "total": size_bytes, "unit": "bytes", "attempt": attempt + 2,
-                          "retry_limit": retries + 1, "retry_reason": type(error).__name__})
+            report({"phase": "retry", "done": partial.stat().st_size if partial.exists() else 0,
+                    "total": size_bytes, "unit": "bytes", "attempt": attempt + 2,
+                    "retry_limit": retries + 1, "retry_reason": type(error).__name__,
+                    "http_status": getattr(getattr(error, "response", None), "status_code", None)}, False)
             time.sleep(min(.5 * 2**attempt, 2.0))
 
 

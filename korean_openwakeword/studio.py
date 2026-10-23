@@ -114,7 +114,7 @@ def _execution_contract():
     # compatibility gate.
     groups = {
         "data": {"automatic_sources.py", "canonical_sources.py", "commercial_sources.py", "compact_sources.py",
-                 "downloads.py", "evaluation_materials.py", "fma_download.py", "fma_selection.py", "fma_streaming.py",
+                 "downloads.py", "download_control.py", "evaluation_materials.py", "fma_download.py", "fma_selection.py", "fma_streaming.py",
                  "material_policy.py", "provider_index.py", "range_zip.py", "source_waveform_index.py",
                  "studio_data.py", "studio_evaluation_data.py", "pool_review.py"},
         "tts": {"reference_bank.py", "hard_tts.py", "tts.py", "tts_runtime.py", "tts_cuda_graph.py",

@@ -34,21 +34,21 @@ def test_real_concurrency_is_bounded_and_results_keep_input_order(monkeypatch):
         assert threading.get_ident() == caller
         observed.append(record)
 
-    assert download_many(assets(6), worker, progress=progress) == [f"result-{i}" for i in range(6)]
+    assert download_many(assets(6), worker, progress=progress, max_workers=3) == [f"result-{i}" for i in range(6)]
     assert peak == 3 and caller not in threads
     assert observed[-1]["completed"] and observed[-1]["verified_count"] == 6
     assert observed[-1]["active_count"] == 0 and observed[-1]["done"] == 60
     assert all(record["eta_seconds"] is None and "bytes_per_second" not in record for record in observed)
 
 
-@pytest.mark.parametrize("value", ["0", "5", "two", "", "3.0", "-1"])
+@pytest.mark.parametrize("value", ["0", "33", "two", "", "3.0", "-1"])
 def test_invalid_environment_is_rejected_before_start(monkeypatch, value):
     monkeypatch.setenv("KOWW_DOWNLOAD_WORKERS", value)
     with pytest.raises(ValueError, match="KOWW_DOWNLOAD_WORKERS"):
         download_many(assets(2), lambda *_: pytest.fail("Invalid override must not start a worker"))
 
 
-@pytest.mark.parametrize("value", [0, 5, True, 2.5, "2"])
+@pytest.mark.parametrize("value", [0, 33, True, 2.5, "2"])
 def test_invalid_explicit_worker_limit(value):
     with pytest.raises(ValueError, match="workers"):
         download_many(assets(1), lambda *_: None, max_workers=value)
@@ -65,7 +65,10 @@ def test_environment_can_select_serial_and_explicit_limit_overrides_it(monkeypat
     assert download_many([], lambda *_: None, max_workers=2) == []
 
 
-def test_failure_stops_new_submissions_and_waits_for_active_files(tmp_path):
+@pytest.mark.parametrize("worker_limit", [None, 3])
+def test_failure_stops_new_submissions_and_waits_for_active_files(tmp_path, monkeypatch, worker_limit):
+    monkeypatch.delenv("KOWW_DOWNLOAD_WORKERS", raising=False)
+    monkeypatch.delenv("KOWW_DOWNLOAD_MAX_WORKERS", raising=False)
     barrier, release = threading.Barrier(3), threading.Event()
     started, records = [], []
 
@@ -86,7 +89,7 @@ def test_failure_stops_new_submissions_and_waits_for_active_files(tmp_path):
             release.set()
 
     with pytest.raises(ValueError, match="fixture transfer failed"):
-        download_many(assets(8), worker, progress=progress, max_workers=3)
+        download_many(assets(8), worker, progress=progress, max_workers=worker_limit)
     assert sorted(started) == ["0", "1", "2"]
     assert (tmp_path / "0.part").read_bytes() == b"resume me"
     assert (tmp_path / "1").is_file() and (tmp_path / "2").is_file()
