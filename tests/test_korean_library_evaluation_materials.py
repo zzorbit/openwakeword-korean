@@ -357,6 +357,37 @@ def test_source_identity_selection_excludes_known_speaker_artist_recording(tmp_p
     assert result == [] and captured == []
 
 
+def test_common_sources_download_batch_preserves_catalog_order_before_selection(tmp_path, monkeypatch):
+    from korean_openwakeword.project import create_project
+    project = create_project(tmp_path / "word", "보라야", "bora")
+    archives = [{"id": name, "filename": name + ".zip", "size_bytes": 1} for name in ("first", "second")]
+    monkeypatch.setattr(module, "evaluation_material_catalog", lambda: {
+        "archives": archives, "known_download_bytes": 2, "working_bytes": 0})
+    monkeypatch.setattr(module, "_known_train", lambda *args: [])
+    acquired, batches = [], []
+    def acquire(asset, downloads, progress=None):
+        acquired.append(asset["id"])
+        assert callable(progress)
+        return downloads / asset["filename"]
+    monkeypatch.setattr(module, "_download_archive", acquire)
+    def download_batch(items, worker, *, progress=None, max_workers=None):
+        assert items == archives
+        batches.append(list(items))
+        results = {asset["id"]: worker(asset, lambda event: None) for asset in reversed(items)}
+        return [results[asset["id"]] for asset in items]
+    monkeypatch.setattr(module, "download_many", download_batch)
+    class SelectionReached(Exception):
+        pass
+    def select(catalog, paths, *args):
+        assert len(batches) == 1 and acquired == ["second", "first"]
+        assert list(paths) == ["first", "second"]
+        assert [path.name for path in paths.values()] == ["first.zip", "second.zip"]
+        raise SelectionReached
+    monkeypatch.setattr(module, "_candidate_rows", select)
+    with pytest.raises(SelectionReached):
+        module.prepare_common_sources(project, tmp_path / "workspace")
+
+
 def test_actual_small_preparation_reports_shortage_and_resumes_without_admitting(tmp_path, monkeypatch):
     from korean_openwakeword.project import create_project
     project = create_project(tmp_path / "word", "보라야", "bora")

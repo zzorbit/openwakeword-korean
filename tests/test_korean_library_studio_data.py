@@ -451,10 +451,17 @@ def test_full_preparation_recipe_uses_real_qc_and_never_auto_approves(tmp_path, 
         asset.update(size_bytes=paths[asset["id"]].stat().st_size, license="fixture only")
     monkeypatch.setattr(module, "_official_assets", lambda: assets)
     requested_assets = []
+    download_batches = []
     def download(asset, directory, progress=None, verification_cache=None):
         requested_assets.append(asset["id"])
         return paths[asset["id"]]
     monkeypatch.setattr(module, "_download", download)
+    def download_batch(items, worker, *, progress=None, max_workers=None):
+        items = list(items)
+        download_batches.append([asset["id"] for asset in items])
+        completed = {asset["id"]: worker(asset, lambda record: None) for asset in reversed(items)}
+        return [completed[asset["id"]] for asset in items]
+    monkeypatch.setattr(module, "download_many", download_batch)
     def mit(shared, progress=None):
         directory = shared / "mit_fixture"
         directory.mkdir(parents=True, exist_ok=True)
@@ -481,6 +488,7 @@ def test_full_preparation_recipe_uses_real_qc_and_never_auto_approves(tmp_path, 
     expected = {"zeroth", "mit_rir"} if preset == "full" else {"zeroth", "audioset", "fma", "mit_rir"}
     assert len(result["review_queues"]) == len(expected)
     assert "dns_fan" not in requested_assets
+    assert len(download_batches) == 1 and requested_assets == list(reversed(download_batches[0]))
     assert {row["id"] for row in result["preparations"]} == expected
     assert result["noise_material_policy"] == ("reuse_negative_waveforms" if preset == "full" else "official_example")
     if preset == "full":

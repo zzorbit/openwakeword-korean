@@ -127,3 +127,18 @@ def test_log_api_uses_the_same_current_task_tail_and_preserves_last_job_fallback
     assert manager.log("word") == "current output\n"
     log.unlink()
     assert manager.log("word") == "아직 실행 로그가 없습니다."
+
+
+def test_parallel_download_progress_does_not_turn_cached_bytes_into_a_network_eta(tmp_path, monkeypatch):
+    manager, state, _ = _fixture(tmp_path)
+    state["job"].update(stage="data_download", started_at="2026-01-01T00:00:00+00:00")
+    record = {"stage": "data_download", "phase": "download_many", "label": "자료 다운로드 · 무결성 확인",
+              "done": 500, "total": 1000, "unit": "bytes", "eta_seconds": None,
+              "updated_at": "2026-01-02T00:00:00+00:00", "verified_count": 1, "asset_count": 3}
+    studio.write_json(Path(state["project"]).parent / ".studio/progress.json", record)
+    monkeypatch.setattr(studio.time, "monotonic", lambda: 100.0)
+    key = (state["job"]["task_id"], record["phase"], record["label"], record["total"])
+    manager._rates[key] = (50.0, 0)
+    result = manager.describe(state)
+    assert result["progress"] == record
+    assert result["eta_seconds"] is None

@@ -47,7 +47,7 @@ class Response:
 def mock_downloads(monkeypatch, rows, directory):
     expected = {RESOLVE_ROOT + row["path"]: row for row in rows}
     calls = []
-    def checked(url, target, checksum, size):
+    def checked(url, target, checksum, size, *, progress=None):
         assert url in expected
         row = expected[url]
         assert Path(target) == directory / row["path"]
@@ -60,6 +60,8 @@ def mock_downloads(monkeypatch, rows, directory):
         if not target.exists():
             target.write_bytes(body)
         assert digest(target) == checksum
+        if progress:
+            progress({"phase": "hash", "done": size, "total": size, "unit": "bytes"})
         calls.append((url, str(target), checksum, size))
         return {"path": str(target), "sha256": checksum, "bytes": size}
     monkeypatch.setattr(module, "download_checked", checked)
@@ -87,19 +89,28 @@ def test_exact_270_wavs_pass_pinned_checks_and_resume_metadata_without_network(t
         return Response(provider_rows)
     monkeypatch.setattr(module.requests, "get", get)
     calls = mock_downloads(monkeypatch, rows, tmp_path / "mit_rir")
+    batches = []
+    real_download_many = module.download_many
+    def download_batch(items, worker, **kwargs):
+        batches.append(list(items))
+        return real_download_many(items, worker, **kwargs)
+    monkeypatch.setattr(module, "download_many", download_batch)
     progress = []
     result = module._fetch_mit(tmp_path, progress=progress.append)
     assert result == tmp_path / "mit_rir/16khz"
     assert len(calls) == 270 and fetches == [API_URL]
     assert len(list(result.glob("*.wav"))) == 270
     assert progress[-1]["done"] == progress[-1]["total"] == 270
+    assert [item["id"] for item in batches[0]] == [row["path"] for row in rows]
+    assert any((event.get("current_event") or {}).get("phase") == "hash" for event in progress)
     manifest = tmp_path / "mit_rir/provider_tree.json"
     before = manifest.read_bytes()
     assert read_json(manifest)["entries"] == provider_rows
     file_hashes = {path.name: digest(path) for path in result.glob("*.wav")}
     monkeypatch.setattr(module.requests, "get", lambda *a, **k: pytest.fail("Use pinned metadata cache"))
     assert module._fetch_mit(tmp_path) == result
-    assert calls[:270] == calls[270:]  # Existing WAVs still reach checksum verification.
+    assert sorted(calls[:270]) == sorted(calls[270:])  # Existing WAVs still reach checksum verification.
+    assert batches[0] == batches[1]
     assert manifest.read_bytes() == before
     assert {path.name: digest(path) for path in result.glob("*.wav")} == file_hashes
 
@@ -130,6 +141,24 @@ def test_changed_cached_revision_fails_without_overwriting_metadata_or_network(t
     with pytest.raises(ValueError, match="MIT cached provider revision changed"):
         module._fetch_mit(tmp_path)
     assert manifest.read_bytes() == before
+
+
+def test_mit_batch_checks_all_missing_bytes_before_audio_and_counts_partial_resume(tmp_path, monkeypatch):
+    rows = inventory()
+    monkeypatch.setattr(module.requests, "get", lambda *args, **kwargs: Response(rows))
+    monkeypatch.setattr(module, "download_many", lambda *args, **kwargs: pytest.fail("Space preflight must finish first"))
+    expected = sum(row["size"] for row in rows)
+    usage_type = type(module.shutil.disk_usage(tmp_path))
+    monkeypatch.setattr(module.shutil, "disk_usage", lambda path: usage_type(expected * 2, expected, expected - 1))
+    with pytest.raises(ValueError, match="space for the pinned MIT"):
+        module._fetch_mit(tmp_path)
+    target = tmp_path / "mit_rir" / rows[0]["path"]
+    target.parent.mkdir(parents=True)
+    target.with_name(target.name + ".part").write_bytes(b"x")
+    batches = []
+    monkeypatch.setattr(module, "download_many", lambda items, worker, **kwargs: batches.append(list(items)))
+    assert module._fetch_mit(tmp_path) == tmp_path / "mit_rir/16khz"
+    assert len(batches) == 1 and len(batches[0]) == 270
 
 
 def test_paginated_inventory_fails_before_cache_commit_or_audio(tmp_path, monkeypatch):

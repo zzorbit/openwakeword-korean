@@ -1,9 +1,13 @@
 """Checksum-pinned public assets with resumable downloads and no silent approval."""
 from importlib.resources import files
 from pathlib import Path
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import hashlib
+import os
+import queue
 import re
 import shutil
+import threading
 import time
 import requests
 
@@ -19,16 +23,114 @@ class VerificationCache:
     """Hash evidence owned by one preparation call, never a persistent trust cache."""
     def __init__(self):
         self._verified = {}
+        self._lock = threading.Lock()
 
     def matches(self, path, algorithm, expected):
         path = Path(path).resolve()
-        return self._verified.get((str(path), algorithm, expected)) == _file_identity(path)
+        identity = _file_identity(path)
+        with self._lock:
+            return self._verified.get((str(path), algorithm, expected)) == identity
 
     def record(self, path, algorithm, expected, observed_identity):
         path = Path(path).resolve()
         if _file_identity(path) != observed_identity:
             raise ValueError("File changed during checksum verification")
-        self._verified[(str(path), algorithm, expected)] = observed_identity
+        with self._lock:
+            self._verified[(str(path), algorithm, expected)] = observed_identity
+
+
+def download_many(items, worker, *, progress=None, max_workers=None):
+    """Run independent whole-file downloads in order, with bounded concurrency.
+
+    ``worker(item, report)`` retains the existing per-file lock, resume and hash
+    checks. Only this caller invokes ``progress``; workers enqueue their events.
+    The caller must reserve disk space for the combined pending downloads.
+    """
+    if max_workers is None:
+        setting = os.environ.get("KOWW_DOWNLOAD_WORKERS", "3")
+        if not re.fullmatch(r"[1-4]", setting):
+            raise ValueError("KOWW_DOWNLOAD_WORKERS must be an integer from 1 to 4")
+        max_workers = int(setting)
+    if type(max_workers) is not int or not 1 <= max_workers <= 4:
+        raise ValueError("Download workers must be an integer from 1 to 4")
+    items = list(items)
+    identifiers = [item["id"] for item in items]
+    if any(not isinstance(key, str) or not key for key in identifiers) or len(set(identifiers)) != len(items):
+        raise ValueError("Parallel download items require distinct nonempty IDs")
+    sizes = [item.get("size_bytes") for item in items]
+    if any(size is not None and (type(size) is not int or size <= 0) for size in sizes):
+        raise ValueError("Pinned asset size must be a positive integer")
+    byte_total = sum(sizes) if all(size is not None for size in sizes) else None
+    available, results = [0] * len(items), [None] * len(items)
+    events, failed = queue.SimpleQueue(), threading.Event()
+    pending, verified, next_index, first_error = {}, 0, 0, None
+
+    def emit(index=None, event=None, *, completed=False):
+        if progress:
+            progress({"phase": "download_many", "label": f"자료 다운로드 · 무결성 확인: {verified}/{len(items)}개 확인",
+                      "done": sum(available) if byte_total is not None else verified,
+                      "total": byte_total if byte_total is not None else len(items),
+                      "unit": "bytes" if byte_total is not None else "개",
+                      "verified_count": verified, "asset_count": len(items), "active_count": len(pending),
+                      "max_workers": max_workers, "completed": completed, "eta_seconds": None,
+                      "current_asset": identifiers[index] if index is not None else None,
+                      "current_event": event})
+
+    def drain():
+        while True:
+            try:
+                index, event = events.get_nowait()
+            except queue.Empty:
+                return
+            # Hashing starts after the local bytes are present. Its zero-based
+            # counter must not reset the download total or pretend to be a rate.
+            if event.get("unit") == "bytes":
+                count = event.get("total") if event.get("phase") == "hash" else event.get("done")
+                if isinstance(count, (int, float)) and not isinstance(count, bool) and count >= 0:
+                    available[index] = max(available[index], min(count, sizes[index]) if sizes[index] else count)
+            emit(index, event)
+
+    def run(index):
+        try:
+            return worker(items[index], lambda event: events.put((index, dict(event))))
+        except BaseException:
+            failed.set()
+            raise
+
+    emit()
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="koww-download") as executor:
+        try:
+            while next_index < len(items) or pending:
+                while next_index < len(items) and len(pending) < max_workers and not failed.is_set():
+                    pending[executor.submit(run, next_index)] = next_index
+                    next_index += 1
+                if not pending:
+                    break
+                done, _ = wait(pending, timeout=.05, return_when=FIRST_COMPLETED)
+                drain()
+                for future in done:
+                    index = pending.pop(future)
+                    try:
+                        results[index] = future.result()
+                    except BaseException as error:
+                        if first_error is None:
+                            first_error = error
+                    else:
+                        verified += 1
+                        if sizes[index] is not None:
+                            available[index] = sizes[index]
+                if done:
+                    emit()
+            drain()
+        except BaseException:
+            # Stop scheduling and let already running writes finish safely. No
+            # queue callback runs here, so the original callback error survives.
+            failed.set()
+            raise
+    if first_error is not None:
+        raise first_error
+    emit(completed=True)
+    return results
 
 
 def verify_checksum(path, algorithm, expected, *, progress=None, verification_cache=None, return_sha256=False):

@@ -1015,7 +1015,7 @@ class StudioManager:
                 elif phase == "finalizing":
                     view["next_action"] = "채점을 마쳤으며 결과를 정리하고 있습니다."
             current = view["progress"]
-            if (job["stage"] != "evaluation" and current.get("phase") != "retry"
+            if (job["stage"] != "evaluation" and current.get("phase") not in ("retry", "download_many")
                     and view["eta_seconds"] is None and current.get("total") and current.get("done") is not None
                     and current.get("unit") != "완료 단계"):
                 key = (job["task_id"], current.get("phase"), current.get("label"), current.get("total"))

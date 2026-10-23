@@ -23,6 +23,7 @@ import soundfile as sf
 from scipy.signal import resample_poly
 
 from .common import bound_file, digest, identity, now, read_json, read_rows, write_json, writer_lock
+from .downloads import download_many
 
 BUCKET_HOURS = {"korean_conversation": 10, "korean_interview": 5, "korean_read": 3,
                 "other_speech": 4, "music": 3, "environment": 4, "electronic": 1}
@@ -411,7 +412,10 @@ def prepare_common_sources(project, workspace, prepared=None, progress=None, str
     cached = sum(a["size_bytes"] for a in catalog["archives"] if (downloads / a["filename"]).is_file())
     if shutil.disk_usage(stage).free < required - cached:
         raise ValueError("Selected workspace lacks space for pinned originals and common evaluation WAVs")
-    paths = {a["id"]: _download_archive(a, downloads, progress) for a in catalog["archives"]}
+    archives = catalog["archives"]
+    downloaded = download_many(archives,
+        lambda asset, report: _download_archive(asset, downloads, report), progress=progress)
+    paths = {asset["id"]: path for asset, path in zip(archives, downloaded)}
     rows, failures = [], []
     with writer_lock(output):
         candidates = _candidate_rows(catalog, paths, stage, project, workspace, known, progress)

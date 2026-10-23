@@ -20,7 +20,7 @@ import requests
 
 from .common import (bound_file, digest, identity, iter_rows, now, read_json, read_rows,
                      resolved, write_immutable_rows, write_json, writer_lock)
-from .downloads import (VerificationCache, dataset_catalog, download_checked,
+from .downloads import (VerificationCache, dataset_catalog, download_checked, download_many,
                         verified_asset)
 from .project import load_project, require_standard_common_download
 from .budgets import DEFAULT_GENERIC_HOURS, DEFAULT_KOREAN_HOURS
@@ -474,12 +474,25 @@ def _fetch_mit(shared, progress=None):
         if (not isinstance(checksum, str) or not re.fullmatch("[0-9a-f]{64}", checksum)
                 or type(row.get("size")) is not int or not 0 < row["size"] <= 8 * 1024**2):
             raise ValueError("MIT provider file lacks bounded LFS SHA256 metadata")
-        requests_by_order.append((f"https://huggingface.co/datasets/davidscripka/MIT_environmental_impulse_responses/resolve/{MIT_REV}/{row['path']}",
-                                  path, checksum, row["size"]))
+        requests_by_order.append({"id": row["path"], "size_bytes": row["size"], "request": (
+            f"https://huggingface.co/datasets/davidscripka/MIT_environmental_impulse_responses/resolve/{MIT_REV}/{row['path']}",
+            path, checksum, row["size"])})
     # Validate the complete pinned inventory before acquiring any member.
-    for order, request in enumerate(requests_by_order):
-        download_checked(*request)
-        _emit(progress, "잔향 자료 확인", order + 1, len(entries), "files")
+    pending_bytes = 0
+    for item in requests_by_order:
+        target = item["request"][1]
+        if not target.is_file():
+            partial = target.with_name(target.name + ".part")
+            pending_bytes += max(0, item["size_bytes"] - (partial.stat().st_size if partial.is_file() else 0))
+    if shutil.disk_usage(directory).free < pending_bytes:
+        raise ValueError("Selected workspace lacks space for the pinned MIT WAV downloads")
+    def acquire(item, report):
+        def file_progress(record):
+            labels = {"download": "잔향 자료 다운로드", "hash": "잔향 자료 무결성 검사", "retry": "연결 복구 · 이어받기"}
+            report({"label": labels[record["phase"]] + ": " + item["id"], **record})
+        return download_checked(*item["request"], progress=file_progress)
+    download_many(requests_by_order, acquire, progress=progress)
+    _emit(progress, "잔향 자료 확인", len(entries), len(entries), "files")
     return directory / "16khz"
 
 
@@ -602,8 +615,11 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
     if recipe.get("recipe_version") != 6 and legacy_extra.exists() and any(r.get("canonical_source_id") in ("freesound:102956", "freesound:13613") for r in read_rows(legacy_extra)):
         assets.update({a["id"]: a for a in _official_assets() if a["id"] in ("dns_door", "electronic_validation")})
     verification_cache = VerificationCache()
-    paths = {key: _download(asset, downloads, progress, verification_cache) for key, asset in assets.items()
-             if not (official_noise_acquisition_policy and key in ("fma", "fma_metadata"))}
+    selected_assets = [asset for key, asset in assets.items()
+                       if not (official_noise_acquisition_policy and key in ("fma", "fma_metadata"))]
+    downloaded = download_many(selected_assets,
+        lambda asset, report: _download(asset, downloads, report, verification_cache), progress=progress)
+    paths = {asset["id"]: path for asset, path in zip(selected_assets, downloaded)}
     if "zeroth" in paths:
         _extract_zeroth_archive(paths["zeroth"], shared / "zeroth", progress)
     if recipe["noise_material_policy"] == "official_example":
