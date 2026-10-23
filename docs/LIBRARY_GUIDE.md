@@ -237,6 +237,8 @@ koww select-runtime --project projects/bora/project.json --bundle projects/bora/
 
 `candidate_adoptions`는 모든 단일 모델·앙상블 각각의 통과 여부이며 `adoption`은 지정한 후보의 판정입니다. `select-candidate`의 위 ID는 예시이므로 실제 결과에 표시된 ID로 바꾸세요. `mean`을 고르면 세 모델 평균, 단일 ID를 고르면 해당 모델 하나만 실행 묶음에 들어갑니다. 저장된 점수와 같은 채점 오디오를 재사용하며 자동 재학습은 없습니다. 목표 미달이면 이유를 확인하고 필요한 부분을 보완하세요. 표본 모델의 임계값을 새 호출어에 그대로 확정하지 않습니다. 기준은 [학습 계획](../plan.md#5-평가-목표)에서 확인합니다.
 
+CUDA를 지원하는 ONNX Runtime 실행 환경과 `onnx`가 준비되어 있다면 공통 평가에 `--backend cuda --accept-gpu-numerical-differences`를 추가할 수 있습니다. 기본 배치128로 여러 음원을 함께 계산하고, 임계값 근처 음원은 CPU로 다시 확인합니다. CPU와의 작은 점수 차이를 허용하는 선택이며, 기존 CPU 평가 폴더를 그대로 GPU로 재개하지 않습니다. 대표 입력으로 속도와 판정을 확인한 뒤 같은 비교 실험에서는 연산 정책을 고정하세요. [GPU 검증·설치 조건](VALIDATION.md#0130-cuda-배치-평가)을 참고하세요.
+
 ## 8. 모델·설정 확정 후 최종 평가하기
 
 개발용 평가를 통과한 모델과 실행 설정을 고정합니다.

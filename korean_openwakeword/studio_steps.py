@@ -122,6 +122,18 @@ def workflow_plan(settings):
 
 
 def _validate_settings(settings):
+    backend = settings.get("evaluation_backend", "cpu")
+    if backend not in ("cpu", "cuda"):
+        raise ValueError("Evaluation backend must be cpu or cuda")
+    if backend == "cuda":
+        if settings.get("gpu_numerical_differences_approved") is not True:
+            raise ValueError("CUDA evaluation requires explicit numerical-difference approval")
+        batch = settings.get("gpu_batch_size", 128)
+        margin = settings.get("gpu_boundary_margin", .001)
+        if type(batch) is not int or not 1 <= batch <= 128:
+            raise ValueError("GPU batch size must be an integer from 1 to 128")
+        if isinstance(margin, bool) or not isinstance(margin, (int, float)) or not math.isfinite(margin) or not 0 < margin < 1:
+            raise ValueError("GPU boundary margin must be positive and finite below one")
     for key in ("originals", "updates", "train_references", "validation_references",
                 "validation_originals", "hard_originals", "noise_sections"):
         if type(settings.get(key)) is not int or settings[key] < 1:
@@ -788,9 +800,20 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         from .selection import verified_evaluation
         bundle = _result(context, "package")["bundle"]
         manifest = _result(context, "development")["manifest"]
+        scoring_smoke = settings["functional_check_only"] and not settings.get("evaluation_policy")
+        backend = settings.get("evaluation_backend", "cpu")
+        gpu_batch_size = settings.get("gpu_batch_size", 128)
+        boundary_margin = settings.get("gpu_boundary_margin", .001)
+        import_path = settings.get("gpu_cpu_prefix_import")
+        cpu_prefix = read_json(import_path)["prefix"] if import_path else None
+        expected = (evaluation_binding(project, bundle, manifest, smoke=scoring_smoke, backend=backend,
+            gpu_batch_size=gpu_batch_size, boundary_margin=boundary_margin, cpu_prefix=cpu_prefix)
+            if backend == "cuda" else None)
         directory, existing = _next_directory(root / "reports/studio_evaluation", "receipt.json",
             lambda p: (read_json(p / "report.json").get("manifest_sha256") == digest(manifest)
-                       and read_json(p / "report.json").get("bundle_manifest_sha256") == digest(Path(bundle) / "manifest.json")))
+                       and read_json(p / "report.json").get("bundle_manifest_sha256") == digest(Path(bundle) / "manifest.json")
+                       and (backend == "cpu" and read_json(p / "report.json").get("execution", {}).get("backend", "cpu") == "cpu"
+                            or read_json(p / "report.json").get("evaluation_binding") == expected)))
         if existing:
             verified_evaluation(project, bundle, directory)
             report = read_json(directory / "report.json")
@@ -802,9 +825,9 @@ def run_stage(project, workspace, settings, stage_id, context=None):
                 key=lambda p: int(p.name[len(base.name + "_attempt"):]))
             partials = [p for p in attempts if not (p / "receipt.json").exists()
                         and (p / "_evaluation_work/checkpoint.json").is_file()]
-            scoring_smoke = settings["functional_check_only"] and not settings.get("evaluation_policy")
             if partials:
-                expected = evaluation_binding(project, bundle, manifest, smoke=scoring_smoke)
+                if expected is None:
+                    expected = evaluation_binding(project, bundle, manifest, smoke=scoring_smoke)
                 for partial in partials:
                     try:
                         checkpoint = read_json(partial / "_evaluation_work/checkpoint.json")
@@ -814,7 +837,10 @@ def run_stage(project, workspace, settings, stage_id, context=None):
                         directory, resume = partial, True
                         break
             report = evaluate(project, bundle, directory, manifest=manifest,
-                              smoke=scoring_smoke, workers="auto", resume=resume)
+                              smoke=scoring_smoke, workers="auto", resume=resume, backend=backend,
+                              gpu_batch_size=gpu_batch_size, boundary_margin=boundary_margin,
+                              cpu_prefix_import=import_path,
+                              numerical_differences_approved=settings.get("gpu_numerical_differences_approved", False))
         assessment = None
         artifacts = [directory / "receipt.json", directory / "report.json", directory / "clips.json"]
         if settings.get("evaluation_policy"):

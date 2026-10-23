@@ -205,6 +205,11 @@ def parser():
     a.add_argument("--candidate", help="채택 판정을 확인할 모델 ID; 생략하면 현재 bundle의 실제 출력")
     a.add_argument("--workers", choices=("auto", "1", "2", "4"), default="auto", help="독립 음원 단위 CPU 병렬 평가")
     a.add_argument("--resume", action="store_true", help="입력 해시가 같은 중단된 평가만 재개")
+    a.add_argument("--backend", choices=("cpu", "cuda"), default="cpu", help="평가 연산 장치; CUDA는 FP32 배치·CPU 경계 재확인")
+    a.add_argument("--gpu-batch-size", type=int, default=128)
+    a.add_argument("--gpu-boundary-margin", type=float, default=.001)
+    a.add_argument("--accept-gpu-numerical-differences", action="store_true", help="GPU의 미세한 점수 차이를 명시적으로 허용")
+    a.add_argument("--cpu-prefix-import", type=Path, help="검증된 CPU 완료분을 보존하는 명시적 이관 증빙")
     a = sub.add_parser("select-candidate", help="저장된 개발 평가로 단일/앙상블 실행 묶음 선택")
     a.add_argument("--project", type=Path, required=True); a.add_argument("--bundle", type=Path, required=True)
     a.add_argument("--evaluation", type=Path, required=True); a.add_argument("--output", type=Path, required=True)
@@ -439,7 +444,10 @@ def dispatch(a):
     if a.command == "evaluate":
         from .evaluate import evaluate
         return evaluate(a.project, a.bundle, a.output, a.stage, a.manifest, a.smoke, a.candidate,
-                        workers=a.workers, resume=a.resume)
+                        workers=a.workers, resume=a.resume, backend=a.backend,
+                        gpu_batch_size=a.gpu_batch_size, boundary_margin=a.gpu_boundary_margin,
+                        numerical_differences_approved=a.accept_gpu_numerical_differences,
+                        cpu_prefix_import=a.cpu_prefix_import)
     if a.command == "select-candidate":
         from .selection import select_candidate
         return select_candidate(a.project, a.bundle, a.evaluation, a.output, a.candidate)
