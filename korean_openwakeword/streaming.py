@@ -1,5 +1,5 @@
 """Temporary disk indexes for exact audits of large window manifests."""
-from collections import OrderedDict
+from collections import OrderedDict, namedtuple
 from contextlib import contextmanager
 import json
 import math
@@ -7,6 +7,52 @@ import sqlite3
 from tempfile import TemporaryDirectory
 
 from .storage import storage_environment
+
+
+_VerifiedAudioInfo = namedtuple("_VerifiedAudioInfo", "frames duration samplerate channels subtype")
+
+
+class VerifiedAudioFiles:
+    """Share exact file checks only within one evaluation preflight.
+
+    Each new operation creates a new instance; no entry is loaded from disk or
+    trusted across runs. A cache hit still checks filesystem identity. Replaced
+    or touched files are hashed and inspected again, and a change during the
+    initial hash/header read is rejected. Call ``clear`` before scoring to
+    release the temporary per-file facts.
+    """
+    def __init__(self):
+        self._files = {}
+
+    @staticmethod
+    def _identity(path):
+        value = path.stat()
+        return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns
+
+    def inspect(self, root, row):
+        import soundfile as sf
+        from .common import bound_file, resolved
+
+        path = resolved(root, row["path"])
+        key = str(path), row["sha256"]
+        before = self._identity(path)
+        cached = self._files.get(key)
+        if cached is not None and cached[0] == before:
+            return path, cached[1]
+        # Failed revalidation must not leave a formerly usable cache entry.
+        self._files.pop(key, None)
+        checked = bound_file(root, row)
+        original = sf.info(checked)
+        after = self._identity(path)
+        if before != after:
+            raise ValueError(f"Audio changed during hash/header verification: {path}")
+        info = _VerifiedAudioInfo(original.frames, original.duration, original.samplerate,
+                                  original.channels, original.subtype)
+        self._files[key] = after, info
+        return checked, info
+
+    def clear(self):
+        self._files.clear()
 
 
 def _key(value):

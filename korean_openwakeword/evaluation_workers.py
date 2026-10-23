@@ -50,7 +50,9 @@ def available_memory_bytes():
 def worker_plan(requested, sessions, *, logical_cpus=None, available_bytes=None):
     """Use measured-safe CPU concurrency, capped by cores and free RAM.
 
-    Auto avoids spawn overhead for fewer than 64 sessions. One GiB per worker
+    Auto avoids spawn overhead for fewer than 64 sessions and uses at most
+    eight workers, bounded by half the logical cores and available RAM.
+    One GiB per worker
     and two GiB left for the caller are conservative allocation limits, not a
     promise about arbitrary third-party model peak memory.
     """
@@ -60,7 +62,7 @@ def worker_plan(requested, sessions, *, logical_cpus=None, available_bytes=None)
     cpus = max(1, logical_cpus if logical_cpus is not None else (os.cpu_count() or 1))
     available = available_memory_bytes() if available_bytes is None else available_bytes
     memory_limit = max(1, (available - 2 * 1024 ** 3) // 1024 ** 3) if available is not None else 1
-    wanted = min(4, max(1, cpus // 2)) if requested == "auto" else int(requested)
+    wanted = min(8, max(1, cpus // 2)) if requested == "auto" else int(requested)
     if requested == "auto" and sessions < 64:
         wanted = 1
     selected = min(wanted, cpus, memory_limit, max(1, sessions))

@@ -7,7 +7,6 @@ from collections import defaultdict
 from pathlib import Path
 import time
 import numpy as np
-import soundfile as sf
 
 from .common import bound_file, digest, identity, now, read_json, read_rows, resolved, write_json, writer_lock, require_final_lock
 from .data import CATEGORIES, audit_project, source_key
@@ -16,6 +15,7 @@ from .project import load_project
 from .runtime import WakeWordDetector, verify_bundle, bundle_candidates, deployment_candidate
 from .storage import project_storage
 from .evaluation_workers import EvaluationJournal, score_sessions, worker_plan
+from .streaming import VerifiedAudioFiles
 
 
 def reverb_condition(row):
@@ -183,7 +183,11 @@ def evaluate(project, bundle, output, stage="development", manifest=None, smoke=
             raise ValueError("Final cannot be a smoke run")
     manifest = Path(manifest).resolve() if manifest else resolved(root, config["manifests"][stage])
     sources = read_rows(manifest)
-    audit = audit_project(project, include_final_files=stage == "final", extra_rows=sources)
+    # Reuse this operation's full hash/header checks from the split audit in
+    # the format/offset pass below. No evidence is reused across evaluations.
+    verified_files = VerifiedAudioFiles()
+    audit = audit_project(project, include_final_files=stage == "final", extra_rows=sources,
+                          verified_files=verified_files)
     if not audit["passed"]:
         raise ValueError("Source/family split audit failed: " + str(audit["errors"][:3]))
     if not sources:
@@ -216,12 +220,12 @@ def evaluate(project, bundle, output, stage="development", manifest=None, smoke=
             if key in negative_sources or row["sha256"] in negative_hashes:
                 raise ValueError("Repeated Negative originals cannot inflate independent evaluation hours")
             negative_sources.add(key); negative_hashes.add(row["sha256"])
-        path = bound_file(root, row)
-        info = sf.info(path)
+        path, info = verified_files.inspect(root, row)
         if info.samplerate != 16000 or info.channels != 1 or info.subtype != "PCM_16":
             raise ValueError("Scored WAV must already be mono16kHz PCM16; no playback-only gain")
         paths.append(path)
         offsets.append(offsets[-1] + info.frames // 1280)
+    verified_files.clear()
     output = Path(output).resolve()
     if output.exists() and any(output.iterdir()):
         if not resume or (output / "receipt.json").exists():

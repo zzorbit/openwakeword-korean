@@ -12,7 +12,8 @@ from korean_openwakeword.evaluation_workers import EvaluationJournal, worker_pla
 def test_auto_cpu_workers_are_small_for_short_runs_and_memory_bounded():
     ample = 12 * 1024 ** 3
     assert worker_plan("auto", 20, logical_cpus=16, available_bytes=ample)["workers"] == 1
-    assert worker_plan("auto", 100000, logical_cpus=16, available_bytes=ample)["workers"] == 4
+    assert worker_plan("auto", 100000, logical_cpus=16, available_bytes=ample)["workers"] == 8
+    assert worker_plan("auto", 100000, logical_cpus=64, available_bytes=ample)["workers"] == 8
     assert worker_plan("auto", 100000, logical_cpus=2, available_bytes=ample)["workers"] == 1
     assert worker_plan("auto", 100000, logical_cpus=16, available_bytes=3 * 1024 ** 3)["workers"] == 1
     assert worker_plan("16", 3, logical_cpus=8, available_bytes=ample)["workers"] == 3

@@ -48,7 +48,7 @@ def coverage_interval(row, start, end):
     return source_key(row), (start, end)
 
 
-def audit_project(project, check_files=True, include_final_files=False, extra_rows=None):
+def audit_project(project, check_files=True, include_final_files=False, extra_rows=None, *, verified_files=None):
     root, config = load_project(project)
     errors, totals = [], {}
     collections = [(pool, iter_rows(resolved(root, manifest))) for pool, manifest in config["manifests"].items()]
@@ -96,7 +96,8 @@ def audit_project(project, check_files=True, include_final_files=False, extra_ro
                     try:
                         candidate = resolved(root, row["path"])
                         frames, duration = index.file_info((str(candidate), row["sha256"]),
-                                                          lambda: sf.info(bound_file(root, row)))
+                            lambda: sf.info(bound_file(root, row)) if verified_files is None
+                            else verified_files.inspect(root, row)[1])
                         if frames == 0:
                             errors.append(f"{pool}/{sid}: empty audio")
                         start, end = float(row.get("start_s", 0)), float(row.get("end_s", duration))
