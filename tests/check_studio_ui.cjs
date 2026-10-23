@@ -840,12 +840,14 @@ function storageBudgetRecipe(overrides = {}) {
     assert.equal(/0시간|0개|0 B/.test(textOf(row)), false);
     assert.equal(descendants(row).some(node => node.tagName === "a"), false);
   });
-  await test("result view shows measured scope and missing coverage without implying Final approval", async () => {
+  await test("result view uses plain language and retains the actual missing-data list", async () => {
     const project = { id: "bora", wakeword: "보라야", status: "completed", results: { url: "/results/bora/", scope: "비호출 실측 0.25시간 · 독립 최종 평가 미완료", common_evaluation_assessment: { coverage_targets_passed: false, shortages: ["연속 비호출 평가 0.25/20시간", "평가 음색 계열 2/10개"] } } };
     const b = browser({ initialState: { projects: [project] } }); await flush();
-    assert.match(b.elements.get("results-note").textContent, /0.25시간.*최종 평가 미완료/);
+    assert.equal(b.elements.get("results-note").textContent, "같은 시험 오디오에서 모델별 성능을 비교한 결과입니다.");
+    assert.equal(b.elements.get("resume-note").hidden, true);
+    assert.match(b.elements.get("current-description").textContent, /모델 성능을 비교/);
     assert.equal(b.elements.get("evaluation-coverage").hidden, false);
-    assert.match(b.elements.get("evaluation-coverage-summary").textContent, /미충족.*2개/);
+    assert.match(b.elements.get("evaluation-coverage-summary").textContent, /확인 필요.*2개/);
     assert.equal(b.elements.get("evaluation-shortages").children.length, 2);
   });
   await test("v4 material progress separates core quotas, startup margin and eligible time without inventing admission", async () => {

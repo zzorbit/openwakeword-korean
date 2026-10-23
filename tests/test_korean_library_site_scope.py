@@ -39,23 +39,24 @@ def test_scope_counts_originals_once_and_uses_eligible_negative_hours_not_model_
         {"sample_id": "negative", "kind": "negative", "category": "environment", "duration_s": 999},
     ]
     before = json.dumps({"report": report, "clips": clips}, sort_keys=True)
-    assert _scope(report, clips) == "개발 평가 (Final 아님) · 합성 호출 원본 2개 · 소음 변형 2개 · 비호출 평가 12.00분 · 장시간 기준 미달"
+    assert _scope(report, clips) == "합성 호출어 2개 · 호출 시험 4회 · 오작동 시험 12.00분"
     assert json.dumps({"report": report, "clips": clips}, sort_keys=True) == before
 
 
-@pytest.mark.parametrize("passed,label", [(True, "장시간 기준 통과"), (False, "장시간 기준 미달")])
-def test_final_duration_status_comes_from_actual_final_report_boolean(passed, label):
+@pytest.mark.parametrize("passed", [True, False])
+def test_final_scope_keeps_measured_duration_without_stage_or_gate_copy(passed):
     text = _scope({"stage": "final", "final_negative_duration_passed": passed,
                    "models": [{"negative": {"hours": 123.456}}]}, [])
-    assert text == f"동결 모델 Final 평가 · 호출 원본 0개 · 소음 변형 0개 · 비호출 평가 123.46시간 · {label}"
-    assert "Final 아님" not in text
+    assert text == "호출어 원본 0개 · 호출 시험 0회 · 오작동 시험 123.46시간"
 
 
-def test_missing_scope_evidence_is_unmeasured_not_assumed_passing():
-    text = _scope({"stage": "development", "models": [], "smoke_test_only": True}, [])
-    assert "비호출 평가 시간 미측정" in text
-    assert "장시간 기준 미확인" in text
-    assert text.endswith("기능 시험용 결과")
+@pytest.mark.parametrize("smoke_test_only", [True, False])
+def test_missing_scope_evidence_is_unknown_and_smoke_copy_requires_smoke_flag(smoke_test_only):
+    text = _scope({"stage": "development", "models": [], "smoke_test_only": smoke_test_only}, [])
+    expected = "호출어 원본 0개 · 호출 시험 0회 · 오작동 시험 시간 정보 없음"
+    if smoke_test_only:
+        expected += " · 간단한 동작 시험"
+    assert text == expected
 
 
 def test_multi_call_original_ids_and_human_provenance_remain_truthful():
@@ -63,8 +64,14 @@ def test_multi_call_original_ids_and_human_provenance_remain_truthful():
               "calls": [{"original_utterance_id": "one"}, {"original_utterance_id": "two"}]}]
     text = _scope({"stage": "development", "models": [{"negative": {"hours": 25}}],
                    "adoption": {"passed": True}}, clips)
-    assert "호출 원본 2개" in text and "합성" not in text
-    assert "장시간 기준 통과" in text
+    assert text == "호출어 원본 2개 · 호출 시험 1회 · 오작동 시험 25.00시간"
+
+
+def test_zero_negative_hours_are_measured_without_using_other_model_or_clip_duration():
+    report = {"models": [{"negative": {}}, {"negative": {"hours": 0}},
+                         {"negative": {"hours": 25}}]}
+    clips = [{"sample_id": "negative", "kind": "negative", "duration_s": 999}]
+    assert _scope(report, clips) == "호출어 원본 0개 · 호출 시험 0회 · 오작동 시험 0.00분"
 
 
 def _coverage(clips):
@@ -87,16 +94,16 @@ def test_noise_coverage_does_not_count_snr_variants_or_negative_sessions_as_new_
               {"kind": "negative", "category": "environment", "noise_source_group_id": "not-a-positive-background",
                "noise_eval_type": "traffic"}]
     original = json.dumps(clips, sort_keys=True)
-    assert _coverage(clips) == "시험에 사용한 배경 음원: 환경음 원본 2개 · 2종"
+    assert _coverage(clips) == "시험에 사용한 배경 음원: 환경소음 원본 2개 · 2종"
     assert json.dumps(clips, sort_keys=True) == original
 
 
 def test_legacy_noise_coverage_uses_recorded_source_ids_without_inventing_subtypes():
     assert _coverage([{"kind": "positive", "category": "music", "noise_source_id": "original"}]) == \
-        "시험에 사용한 배경 음원: 음악·전자음 원본 1개 · 세부 종류 미기록"
+        "시험에 사용한 배경 음원: 음악·전자음 원본 1개 · 종류 정보 없음"
     assert _coverage([{"kind": "positive", "category": "competing_speech"}]) == \
-        "시험에 사용한 배경 음원: 겹치는 말소리 원본 수 미기록 · 세부 종류 미기록"
-    assert _coverage([]) == "시험에 사용한 배경 음원: 미측정"
+        "시험에 사용한 배경 음원: 다른 사람 말소리 음원 수 정보 없음 · 종류 정보 없음"
+    assert _coverage([]) == "시험에 사용한 배경 음원: 정보 없음"
 
 
 def test_background_detail_uses_actual_recorded_type_without_inventing_a_speech_style():
@@ -114,7 +121,7 @@ def test_background_detail_uses_actual_recorded_type_without_inventing_a_speech_
         "process.stdin.on('end',()=>process.stdout.write(JSON.stringify(JSON.parse(s).map(evaluationBackgroundTypeText))));"
     result = subprocess.run([node, "-e", code], input=json.dumps(clips), text=True,
                             encoding="utf-8", capture_output=True, check=True)
-    assert json.loads(result.stdout) == ["한국어 낭독", "한국어 시장 대화", "한국어 교통 안내방송", "unknown_provider_type", "",
+    assert json.loads(result.stdout) == ["한국어 낭독", "한국어 시장 대화", "한국어 교통 안내방송", "기타 배경", "",
                                         "실제 기록된 빗소리 조건", "재즈", "기침", "영화풍 관현악"]
 
 
@@ -134,8 +141,10 @@ def test_export_adds_scope_asset_without_changing_scores_or_scored_audio(tmp_pat
     export_site(evaluation, site)
     assert {path: digest(path) for path in protected} == protected
     assert (site / "results_scope.js").read_bytes() == SCOPE_SCRIPT.read_bytes()
+    assert (site / "results_ui.js").read_bytes() == (SCOPE_SCRIPT.parent / "results_ui.js").read_bytes()
     html = (site / "index.html").read_text(encoding="utf-8")
     assert html.index('src="results_scope.js"') < html.index('src="results.js"')
+    assert html.index('src="results_ui.js"') < html.index('src="results.js"')
     payload = (site / "results-data.js").read_text(encoding="utf-8")
     exported = json.loads(payload.removeprefix("window.KOWW_RESULTS=").removesuffix(";\n"))
     assert exported["report"] == report

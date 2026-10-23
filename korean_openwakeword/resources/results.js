@@ -1,33 +1,24 @@
 /* Portable frozen result viewer: no API, no inference, no hidden audio gain. */
 "use strict";
 const {report,clips}=window.KOWW_RESULTS;
-const $=id=>document.getElementById(id), pct=x=>x==null?"미측정":`${(x*100).toFixed(2)}%`, num=(x,n=4)=>x==null?"미측정":Number(x).toFixed(n);
-const labels={clean:"Clean",environment:"환경소음",music:"음악·전자음",competing_speech:"겹치는 말소리"};
-const reverbs={none:"잔향 추가 없음",moderate:"일반 실내 울림",strong:"강한 실내 울림"};
-const cell=(tr,value)=>{const td=document.createElement("td");td.textContent=value;tr.append(td);};
-$("title").textContent=`${report.wakeword} · 학습 결과`;
+const ui=window.KowwResultsUI;
+const $=id=>document.getElementById(id);
+const labels={clean:"Clean",environment:"환경소음",music:"음악·전자음",competing_speech:"다른 사람 말소리"};
+$("title").textContent=`${report.wakeword} · 성능 시험 결과`;
 $("scope").textContent=evaluationScopeText(report,clips);
 $("noiseCoverage").textContent=evaluationNoiseCoverageText(clips);
-const decisions=report.candidate_adoptions||{};
-const decisionFor=id=>decisions[id]||(report.adoption?.candidate===id?report.adoption:null);
-const reasonText=value=>value.includes("FP duration below")?"비호출 평가 시간 부족":value.includes("Clean recall")?"Clean 성공률 미달 또는 미측정":value.includes("FA/hour")?"시간당 오호출 기준 미달 또는 미측정":value.includes("Latency")?"감지 지연 기준 미달 또는 미측정":value.replace("environment","환경소음").replace("music","음악").replace("competing_speech","겹치는 말소리").replace("below target or unmeasured","기준 미달 또는 미측정");
-$("candidateStatus").textContent=`채택 판정 후보: ${report.selected_candidate||report.adoption?.candidate||"미선택"} · 선택은 해당 모델을 자동 배포하거나 Final 통과를 뜻하지 않습니다.`;
-for(const m of report.models){const tr=document.createElement("tr");if(m.kind==="ensemble")tr.className="ensemble";const decision=decisionFor(m.id);[m.kind==="ensemble"?"앙상블":m.rank,m.id,`${m.primary.successes}/${m.primary.calls} · ${pct(m.primary.recall)}`,pct(m.clean.recall),pct(m.noise_cell_mean),`${m.negative.events}회 / ${m.negative.hours.toFixed(2)}h · ${num(m.negative.fa_per_hour,3)}/h`,m.primary.latency_p95_s==null?"미측정":`${Math.round(m.primary.latency_p95_s*1000)}ms`,!decision?"미검증":decision.passed?"통과":"미달"].forEach(v=>cell(tr,v));$("summary").tBodies[0].append(tr);
-if(decision&&!decision.passed){const p=document.createElement("p");p.textContent=`${m.id}: ${(decision.reasons||[]).map(reasonText).join(" · ")}`;$("candidateReasons").append(p);}
-const byReverb=m.reverb_conditions;
-for(const [k,v] of Object.entries(m.conditions)){const r=document.createElement("tr");[m.id,k,`${v.successes}/${v.calls}`,pct(v.recall)].forEach(x=>cell(r,x));$("conditions").tBodies[0].append(r);}
-if(byReverb)for(const [group,result] of Object.entries(byReverb)){if(group==="none")continue;for(const [condition,v] of Object.entries(result.conditions||{})){const r=document.createElement("tr");[m.id,`${reverbs[group]||group} · ${condition}`,`${v.successes}/${v.calls}`,pct(v.recall)].forEach(x=>cell(r,x));$("conditions").tBodies[0].append(r);}}}
-$("denominators").textContent="소음 평균: 잔향을 추가하지 않은 환경·음악·말소리 × SNR20/15/10/5 조건의 균등 평균. 공간 울림 결과는 조건별로 따로 표시합니다. 같은 비호출 자료를 여러 모델이 평가해도 독립 시간을 합산하지 않습니다.";
+ui.renderSummary(report);
+ui.renderConditions(report);
 let queue=[],index=0,continuous=false,token=0;
 const audio=$("audio");
 const opt=(select,value,text)=>{const o=document.createElement("option");o.value=value;o.textContent=text;select.append(o);};
 const levels=[...new Set(clips.filter(c=>c.kind==="positive"&&c.category!=="clean").map(c=>c.snr_db))].sort((a,b)=>b-a);
-levels.forEach(s=>opt($("snr"),s,`SNR ${s} dB${s===0?" · 한계 진단":""}`));
+levels.forEach(s=>opt($("snr"),s,ui.snrLabel(s)));
 if(levels.includes(10))$("snr").value="10";
 for(const option of $("reverb").options)option.disabled=!clips.some(c=>c.kind==="positive"&&(c.reverb_condition||"none")===option.value);
-function rebuild(){continuous=false;token++;audio.pause();queue=clips.filter(c=>c.kind==="positive"&&c.category!=="clean"&&Number(c.snr_db)===Number($("snr").value)&&($("category").value==="all"||c.category===$("category").value)&&(c.reverb_condition||"none")===$("reverb").value);queue.sort((a,b)=>(a.original_order||0)-(b.original_order||0)||String(a.original_id).localeCompare(String(b.original_id))||["environment","music","competing_speech"].indexOf(a.category)-["environment","music","competing_speech"].indexOf(b.category)||(a.noise_section||0)-(b.noise_section||0));index=0;$("item").replaceChildren();$("original").replaceChildren();queue.forEach((c,i)=>opt($("item"),i,`${i+1} · 원본 ${c.original_order||c.original_id} · ${labels[c.category]} · 구간 ${c.noise_section||1}`));const seen=new Set();queue.forEach((c,i)=>{const key=c.original_id||c.sample_id;if(!seen.has(key)){seen.add(key);opt($("original"),i,`원본 ${c.original_order||key}`);}});if(queue.length)show(queue[0]);else $("clipTitle").textContent="해당 소음·울림 조건의 평가 오디오가 없습니다.";progress();}
-function progress(){$("queue").textContent=queue.length?`${index+1} / ${queue.length} · 선택한 SNR 고정 · 남은 오디오 약 ${Math.ceil(queue.slice(index).reduce((s,c)=>s+c.duration_s,0)/60)}분`:"목록 없음";$("prev").disabled=index<=0;$("next").disabled=index>=queue.length-1;$("item").value=String(index);}
-function show(c){audio.src=c.path;$("clipTitle").textContent=`${c.sample_id} · ${labels[c.category]||c.category}`;const background=evaluationBackgroundTypeText(c);$("clipInfo").textContent=`전체 ${c.duration_s.toFixed(2)}초${c.calls?.length?` · 호출 ${c.calls[0].start_s.toFixed(2)}–${c.calls[0].end_s.toFixed(2)}초`:" · 비호출"}${c.snr_db!=null?` · SNR ${c.snr_db} dB`:""}${background?` · 배경: ${background}`:""}`;$("download").href=c.path;$("download").download="";$("hash").textContent=`SHA256 ${c.sha256}`;$("responses").tBodies[0].replaceChildren();for(const [id,r]of Object.entries(c.results)){const tr=document.createElement("tr");[id,c.kind==="negative"?`오호출 ${r.false_activations}회`:r.success?"감지":"누락",num(r.max_score),num(r.clean_score_drop),r.latency_s==null?"—":`${Math.round(r.latency_s*1000)}ms`].forEach(v=>cell(tr,v));$("responses").tBodies[0].append(tr);}}
+function rebuild(){continuous=false;token++;audio.pause();queue=clips.filter(c=>c.kind==="positive"&&c.category!=="clean"&&Number(c.snr_db)===Number($("snr").value)&&($("category").value==="all"||c.category===$("category").value)&&(c.reverb_condition||"none")===$("reverb").value);queue.sort((a,b)=>(a.original_order||0)-(b.original_order||0)||String(a.original_id).localeCompare(String(b.original_id))||["environment","music","competing_speech"].indexOf(a.category)-["environment","music","competing_speech"].indexOf(b.category)||(a.noise_section||0)-(b.noise_section||0));index=0;$("item").replaceChildren();$("original").replaceChildren();queue.forEach((c,i)=>opt($("item"),i,`${i+1} · 음성 ${c.original_order||c.original_id} · ${labels[c.category]} · 구간 ${c.noise_section||1}`));const seen=new Set();queue.forEach((c,i)=>{const key=c.original_id||c.sample_id;if(!seen.has(key)){seen.add(key);opt($("original"),i,`음성 ${c.original_order||key}`);}});if(queue.length)show(queue[0]);else $("clipTitle").textContent="선택한 조건으로 시험한 오디오가 없습니다.";progress();}
+function progress(){$("queue").textContent=queue.length?`${(index+1).toLocaleString("ko-KR")} / ${queue.length.toLocaleString("ko-KR")}개`:"목록 없음";$("prev").disabled=index<=0;$("next").disabled=index>=queue.length-1;$("item").value=String(index);}
+function show(c){audio.src=c.path;$("clipTitle").textContent=ui.clipLabel(c);const background=evaluationBackgroundTypeText(c);$("clipInfo").textContent=`${c.duration_s.toFixed(2)}초${c.calls?.length?` · 호출어 위치 ${c.calls[0].start_s.toFixed(2)}–${c.calls[0].end_s.toFixed(2)}초`:" · 호출어 없음"}${background?` · 배경: ${background}`:""}`;$("download").href=c.path;$("download").download="";$("hash").textContent=`SHA256 ${c.sha256}`;$("sample-id").textContent=`파일 이름: ${c.sample_id}`;ui.renderResponses(report,c);}
 async function playCurrent(resume=false){if(!queue.length)return;const mine=++token;if(!resume)show(queue[index]);progress();try{await audio.play();if(mine===token)$("playState").textContent="재생 중 · 마지막 항목에서 종료합니다.";}catch(e){continuous=false;$("playState").textContent=`재생 실패: ${e.message}. 이어 듣기를 눌러 다시 시작하세요.`;}}
 $("start").onclick=()=>{index=0;continuous=true;playCurrent();};$("resume").onclick=()=>{continuous=true;playCurrent(true);};$("pause").onclick=()=>{continuous=false;token++;audio.pause();$("playState").textContent="일시정지";};
 audio.onended=()=>{if(!continuous)return;if(index+1<queue.length){index++;playCurrent();}else{continuous=false;$("playState").textContent="선택한 목록을 모두 들었습니다.";}};
@@ -35,6 +26,6 @@ audio.onerror=()=>{continuous=false;$("playState").textContent="오디오를 불
 $("prev").onclick=()=>{if(index>0){index--;continuous?playCurrent():(show(queue[index]),progress());}};$("next").onclick=()=>{if(index+1<queue.length){index++;continuous?playCurrent():(show(queue[index]),progress());}};
 for(const id of ["item","original"])$(id).onchange=()=>{index=Number($(id).value);continuous?playCurrent():(show(queue[index]),progress());};
 $("snr").onchange=rebuild;$("category").onchange=rebuild;$("reverb").onchange=rebuild;
-clips.filter(c=>c.category==="clean"||c.kind==="negative").forEach(c=>opt($("extra"),c.sample_id,`${c.sample_id} · ${labels[c.category]}`));
+clips.filter(c=>c.category==="clean"||c.kind==="negative").forEach(c=>opt($("extra"),c.sample_id,ui.clipLabel(c)));
 $("extra").onchange=()=>{const c=clips.find(c=>c.sample_id===$("extra").value);if(c){continuous=false;token++;audio.pause();show(c);$("playState").textContent="추가 자료 · 재생 버튼을 눌러 들으세요.";}};
 rebuild();

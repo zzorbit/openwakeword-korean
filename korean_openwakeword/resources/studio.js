@@ -695,12 +695,12 @@
     const url = resultMode === "mic" ? micUrl : resultUrl;
     frameSource($("result-frame"), url); $("result-open").href = url;
     $("result-frame").title = resultMode === "mic" ? "마이크로 호출어 시험" : "성능과 평가 오디오";
-    $("results-note").textContent = resultMode === "mic" ? "마이크 허용 후 시작하세요. 이 시험 음성을 학습이나 설정 조정에 자동 사용하지 않습니다." : result.note || result.scope || "채점 결과와 실제 평가 오디오를 함께 확인하세요. 이 결과만으로 모든 화자와 환경의 성능을 보장하지 않습니다.";
+    $("results-note").textContent = resultMode === "mic" ? "마이크를 허용한 뒤 호출어를 말해보세요." : "같은 시험 오디오에서 모델별 성능을 비교한 결과입니다.";
     const assessment = result.common_evaluation_assessment;
     $("evaluation-coverage").hidden = !assessment || resultMode === "mic";
     if (assessment) {
       const shortages = Array.isArray(assessment.shortages) ? assessment.shortages : [];
-      $("evaluation-coverage-summary").textContent = assessment.coverage_targets_passed ? "공통 평가의 자료·표본 기준 충족 · 독립 최종 평가는 별도" : `공통 평가의 자료·표본 기준 미충족 · 부족 항목 ${number(shortages.length)}개 보기`;
+      $("evaluation-coverage-summary").textContent = assessment.coverage_targets_passed ? "시험 자료 준비 완료" : `시험 자료 확인 필요 · ${number(shortages.length)}개 항목`;
       replace($("evaluation-shortages"), shortages.map(item => element("li", item)));
     }
   }
@@ -718,6 +718,8 @@
     const voiceTitle = { references: "합성 목소리 만들기", references_review: "합성 목소리 확인" }[stageId];
     $("current-title").textContent = voiceTitle || project.stage_label || project.title || stageLabel || (complete ? "학습과 평가를 마쳤습니다" : waiting ? "안내를 확인해주세요" : "시작할 준비가 되었습니다");
     $("current-description").textContent = project.next_action || project.description || (waiting ? "아래에서 필요한 확인을 마치면 이어서 진행합니다." : complete ? "아래에서 결과를 확인하고 호출어를 시험할 수 있습니다." : running ? "진행 상태를 자동으로 갱신합니다." : "시작하면 준비된 작업부터 순서대로 진행합니다.");
+    if (complete) $("current-description").textContent = "아래에서 모델 성능을 비교하고 시험 오디오를 들어보세요.";
+    $("resume-note").hidden = complete;
     if (evaluating(project) && project.progress?.phase === "summary") $("current-description").textContent = "채점을 마쳤습니다. 통계와 결과 파일을 정리하고 있습니다.";
     $("start").hidden = running || complete || waiting || project.status === "paused" || project.status === "failed" || project.status === "error";
     $("resume").hidden = running || complete || waiting || !["paused", "failed", "error", "interrupted"].includes(project.status);

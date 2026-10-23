@@ -1,14 +1,34 @@
 <!doctype html>
-<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>한국어 호출어 학습 결과</title><link rel="stylesheet" href="results.css"></head>
-<body><main><header><span class="eyebrow">KOREAN OPENWAKEWORD</span><h1 id="title">학습 결과</h1><p id="scope"></p></header>
-<section><h2>채점 요약</h2><p>단일 모델은 같은 평가 자료의 호출 성공률 순입니다. 앙상블은 별도로 표시합니다. 기준 통과 여부와 선택 후보를 함께 확인하세요.</p><div class="scroll"><table id="summary"><thead><tr><th>순위</th><th>모델</th><th>호출 성공</th><th>Clean</th><th>소음 평균</th><th>오호출 / 시간</th><th>지연 p95</th><th>기준 통과</th></tr></thead><tbody></tbody></table></div><p id="candidateStatus"></p><details><summary>후보별 미달·미측정 사유</summary><div id="candidateReasons"></div></details><p id="denominators"></p></section>
-<section><h2>오디오 듣기 · 모델 반응</h2><p>소음 수준을 고르고 시작하세요. 원본별로 배경과 소음 구간을 바꾸며 끝까지 자동 재생합니다.</p><p id="noiseCoverage"></p>
-<div class="controls"><label>소음 수준 <select id="snr"></select></label><label>배경 음원 <select id="category"><option value="all">전체 배경</option><option value="environment">환경소음</option><option value="music">음악·전자음</option><option value="competing_speech">겹치는 말소리</option></select></label><label>공간 울림 <select id="reverb"><option value="none">잔향 추가 없음</option><option value="moderate">일반 실내 울림</option><option value="strong">강한 실내 울림</option></select></label></div>
+<html lang="ko">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>호출어 성능 시험 결과</title><link rel="stylesheet" href="results.css"></head>
+<body><main>
+<header><h1 id="title">호출어 성능 시험 결과</h1><p id="scope"></p></header>
+<section aria-labelledby="summary-title">
+<h2 id="summary-title">모델별 성능</h2><p class="section-hint">호출 성공률이 높은 단일 모델부터 표시합니다.</p>
+<div class="scroll"><table id="summary"><thead><tr><th>순위</th><th>모델</th><th>종합 성공률</th><th>조용할 때</th><th>소음 평균</th><th>시간당 오작동</th><th title="호출이 끝난 뒤, 감지된 호출의 95%가 이 시간 안에 반응했습니다.">반응 시간</th><th>목표 충족</th></tr></thead><tbody></tbody></table></div>
+<p id="candidateStatus" class="selected-model"></p><p id="denominators" class="table-note"></p>
+<details><summary>목표에 못 미친 항목</summary><div id="candidateReasons"></div></details>
+</section>
+<section aria-labelledby="audio-title">
+<h2 id="audio-title">시험 오디오 듣기</h2><p class="section-hint">소음과 울림을 고른 뒤 연속 듣기를 누르세요.</p>
+<details class="coverage-details"><summary>시험에 쓴 배경 소리</summary><p id="noiseCoverage"></p></details>
+<div class="controls">
+<label>소음 크기 <select id="snr"></select></label>
+<label>배경 종류 <select id="category"><option value="all">모든 배경 순서대로</option><option value="environment">환경소음</option><option value="music">음악·전자음</option><option value="competing_speech">다른 사람 말소리</option></select></label>
+<label>공간 울림 <select id="reverb"><option value="none">울림 추가 없음</option><option value="moderate">보통 울림</option><option value="strong">강한 울림</option></select></label>
+</div>
 <div class="controls"><button id="start" class="primary">처음부터 연속 듣기</button><button id="resume">여기부터 이어 듣기</button><button id="pause">일시정지</button><button id="prev">이전</button><button id="next">다음</button></div>
-<p id="queue"></p><div class="controls"><label>원본 <select id="original"></select></label><label>항목 <select id="item"></select></label></div>
+<p id="queue"></p><div class="controls"><label>음성 번호 <select id="original"></select></label><label>오디오 <select id="item"></select></label></div>
 <h3 id="clipTitle"></h3><p id="clipInfo"></p><audio id="audio" controls preload="metadata"></audio><p id="playState" role="status"></p>
-<div class="scroll"><table id="responses"><thead><tr><th>모델</th><th>결과</th><th>최대 점수</th><th>Clean 대비 하락</th><th>발화 끝 기준 지연</th></tr></thead><tbody></tbody></table></div>
-<details><summary>Clean·비호출 원본과 파일 정보</summary><select id="extra"><option value="">추가 자료 선택</option></select><p><a id="download">채점한 WAV 내려받기</a></p><code id="hash"></code></details></section>
-<section><h2>조건별 결과</h2><p>SNR0은 한계 진단입니다. 표본 수가 없는 조건은 미측정으로 표시합니다.</p><div class="scroll"><table id="conditions"><thead><tr><th>모델</th><th>조건</th><th>성공 / 표본 수</th><th>성공률</th></tr></thead><tbody></tbody></table></div></section>
-<footer>재생 파일은 실제 채점 WAV와 SHA256이 동일합니다. 합성 평가를 실제 다수 화자 성능으로 해석하지 않습니다.</footer>
-</main><script src="results-data.js"></script><script src="results_scope.js"></script><script src="results.js"></script></body></html>
+<div class="scroll"><table id="responses"><thead><tr><th>모델</th><th>감지 결과</th><th>반응 시간</th></tr></thead><tbody></tbody></table></div>
+<details><summary>상세 점수와 파일 정보</summary><div class="scroll"><table id="scores"><thead><tr><th>모델</th><th>최대 감지 점수</th><th>조용한 원본과의 점수 차이</th></tr></thead><tbody></tbody></table></div><p id="sample-id"></p><p><a id="download">이 오디오 내려받기</a></p><code id="hash"></code></details>
+<details><summary>조용한 원본 · 호출어 없는 오디오</summary><select id="extra" aria-label="조용한 원본과 호출어 없는 오디오"><option value="">오디오 선택</option></select></details>
+</section>
+<section aria-labelledby="conditions-title">
+<h2 id="conditions-title">소음 크기별 성공률</h2>
+<div class="controls"><label>모델 <select id="condition-model"></select></label><label>공간 울림 <select id="condition-reverb"></select></label></div>
+<p id="condition-clean" class="clean-result"></p>
+<div class="scroll"><table id="conditions"><thead><tr><th>배경 소리</th><th>아주 작음<small>SNR 20 dB</small></th><th>작음<small>SNR 15 dB</small></th><th>중간<small>SNR 10 dB</small></th><th>큼<small>SNR 5 dB</small></th><th>목소리와 같은 크기<small>SNR 0 dB</small></th></tr></thead><tbody></tbody></table></div>
+<p class="table-note">각 칸은 성공률과 감지 횟수 / 시험 횟수입니다. 소음 크기는 목소리를 기준으로 표시합니다.</p>
+</section>
+</main><script src="results-data.js"></script><script src="results_scope.js"></script><script src="results_ui.js"></script><script src="results.js"></script></body></html>

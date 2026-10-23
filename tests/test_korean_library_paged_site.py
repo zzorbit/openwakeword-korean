@@ -134,6 +134,8 @@ def test_paged_viewer_projects_exact_display_values_without_mutating_archive_obj
     boot = _boot(tmp_path)
     assert boot == {"report": report, "viewer": {"schema_version": 1,
                     "index_path": "viewer-index.json", "page_size": 128}}
+    assert _read(tmp_path / "viewer-index.json")["scope_text"] == (
+        "합성 호출어 2개 · 호출 시험 2회 · 오작동 시험 시간 정보 없음")
     assert "<보라야>" not in (tmp_path / "results-data.js").read_text(encoding="utf-8")
     detail = _read(tmp_path / "clips/page-000000.json")
     assert detail["start"] == 0
@@ -210,10 +212,9 @@ def test_scope_and_noise_coverage_use_all_original_evidence_before_projection(tm
     before = copy.deepcopy((report, rows))
     write_paged_viewer(report, iter(rows), tmp_path, page_size=2)
     index = _read(tmp_path / "viewer-index.json")
-    assert index["scope_text"] == ("개발 평가 (Final 아님) · 호출 원본 4개 · 소음 변형 7개 · "
-                                   "비호출 평가 12.00분 · 장시간 기준 미달")
-    assert index["noise_coverage_text"] == ("시험에 사용한 배경 음원: 환경음 원본 1개 · 1종 / "
-        "음악·전자음 원본 1개 · 세부 종류 미기록 / 겹치는 말소리 원본 수 미기록 · 세부 종류 미기록")
+    assert index["scope_text"] == "호출어 원본 4개 · 호출 시험 8회 · 오작동 시험 12.00분"
+    assert index["noise_coverage_text"] == ("시험에 사용한 배경 음원: 환경소음 원본 1개 · 1종 / "
+        "음악·전자음 원본 1개 · 종류 정보 없음 / 다른 사람 말소리 음원 수 정보 없음 · 종류 정보 없음")
     assert len(index["clips"]) == len(rows)
     assert (report, rows) == before
 
@@ -221,15 +222,23 @@ def test_scope_and_noise_coverage_use_all_original_evidence_before_projection(tm
 @pytest.mark.parametrize("report,expected", [
     ({"stage": "final", "final_negative_duration_passed": True,
       "models": [{"negative": {"hours": 123.456}}]},
-     "동결 모델 Final 평가 · 호출 원본 0개 · 소음 변형 0개 · 비호출 평가 123.46시간 · 장시간 기준 통과"),
+     "호출어 원본 0개 · 호출 시험 0회 · 오작동 시험 123.46시간"),
+    ({"stage": "final", "final_negative_duration_passed": False,
+      "models": [{"negative": {"hours": 123.456}}]},
+     "호출어 원본 0개 · 호출 시험 0회 · 오작동 시험 123.46시간"),
     ({"stage": "development", "models": [], "smoke_test_only": True},
-     "개발 평가 (Final 아님) · 호출 원본 0개 · 소음 변형 0개 · 비호출 평가 시간 미측정 · 장시간 기준 미확인 · 기능 시험용 결과"),
+     "호출어 원본 0개 · 호출 시험 0회 · 오작동 시험 시간 정보 없음 · 간단한 동작 시험"),
+    ({"stage": "development", "models": [], "smoke_test_only": False},
+     "호출어 원본 0개 · 호출 시험 0회 · 오작동 시험 시간 정보 없음"),
+    ({"models": [{"negative": {}}, {"negative": {"hours": 0}},
+                 {"negative": {"hours": 25}}]},
+     "호출어 원본 0개 · 호출 시험 0회 · 오작동 시험 0.00분"),
 ])
-def test_empty_viewer_records_unmeasured_scope_and_report_duration_truth(tmp_path, report, expected):
+def test_empty_viewer_records_actual_duration_and_optional_smoke_copy(tmp_path, report, expected):
     summary = write_paged_viewer(report, iter(()), tmp_path)
     index = _read(tmp_path / "viewer-index.json")
     assert index["scope_text"] == expected
-    assert index["noise_coverage_text"] == "시험에 사용한 배경 음원: 미측정"
+    assert index["noise_coverage_text"] == "시험에 사용한 배경 음원: 정보 없음"
     assert index["clips"] == []
     assert summary["audio_files"] == 0 and summary["detail_pages"] == 0
 
@@ -278,3 +287,6 @@ def test_export_uses_pages_for_large_count_or_large_archive_without_changing_sco
     assert [row["results"]["head"]["max_score"] for row in exported] == [0.0] * count
     assert all(row["path"] == "audio/" + checksum + ".wav" for row in exported)
     assert (output / "results-data.js").stat().st_size < 4096
+    assert (output / "results_ui.js").is_file()
+    html = (output / "index.html").read_text(encoding="utf-8")
+    assert html.index('src="results_ui.js"') < html.index('src="results_paged.js"')

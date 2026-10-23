@@ -121,29 +121,19 @@ class _Scope:
         hours = next((model["negative"]["hours"] for model in report.get("models", [])
                       if type((model.get("negative") or {}).get("hours")) in (int, float)
                       and math.isfinite(model["negative"]["hours"])), None)
-        adoption = report.get("adoption") or {}
-        duration_gate = "장시간 기준 미확인"
-        if report.get("stage") == "final" and type(report.get("final_negative_duration_passed")) is bool:
-            duration_gate = "장시간 기준 통과" if report["final_negative_duration_passed"] else "장시간 기준 미달"
-        elif any(isinstance(reason, str) and reason.startswith("Development FP duration below ")
-                 for reason in adoption.get("reasons", [])):
-            duration_gate = "장시간 기준 미달"
-        elif hours is not None and adoption.get("passed") is True:
-            duration_gate = "장시간 기준 통과"
-        time = "시간 미측정" if hours is None else f"{hours * 60:.2f}분" if hours < 1 else f"{hours:.2f}시간"
-        parts = ["동결 모델 Final 평가" if report.get("stage") == "final" else "개발 평가 (Final 아님)",
-            f"{'합성 ' if self.positive and self.synthetic else ''}호출 원본 {len(self.originals):,}개",
-            f"소음 변형 {self.variants:,}개", f"비호출 평가 {time}", duration_gate]
+        time = "시간 정보 없음" if hours is None else f"{hours * 60:.2f}분" if hours < 1 else f"{hours:.2f}시간"
+        parts = [f"{'합성 호출어' if self.positive and self.synthetic else '호출어 원본'} {len(self.originals):,}개",
+            f"호출 시험 {self.positive:,}회", f"오작동 시험 {time}"]
         if report.get("smoke_test_only"):
-            parts.append("기능 시험용 결과")
-        labels = {"environment": "환경음", "music": "음악·전자음", "competing_speech": "겹치는 말소리"}
+            parts.append("간단한 동작 시험")
+        labels = {"environment": "환경소음", "music": "음악·전자음", "competing_speech": "다른 사람 말소리"}
         coverage = []
         for category, values in self.noise.items():
             if values["count"]:
-                sources = f"원본 {len(values['sources']):,}개" if values["sources"] else "원본 수 미기록"
-                types = f"{len(values['types']):,}종" if values["types"] else "세부 종류 미기록"
+                sources = f"원본 {len(values['sources']):,}개" if values["sources"] else "음원 수 정보 없음"
+                types = f"{len(values['types']):,}종" if values["types"] else "종류 정보 없음"
                 coverage.append(f"{labels[category]} {sources} · {types}")
-        return " · ".join(parts), "시험에 사용한 배경 음원: " + (" / ".join(coverage) or "미측정")
+        return " · ".join(parts), "시험에 사용한 배경 음원: " + (" / ".join(coverage) or "정보 없음")
 
 
 def write_paged_viewer(report, clips, output, page_size=PAGE_SIZE):
