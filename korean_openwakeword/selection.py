@@ -5,7 +5,7 @@ import shutil
 import numpy as np
 
 from .common import bound_file, digest, now, read_json, write_json, writer_lock
-from .evaluate import adoption, candidate_adoptions
+from .evaluate import adoption, adoption_criteria, candidate_adoptions
 from .project import load_project
 from .runtime import bundle_candidates, deployment_candidate, verify_bundle
 from .storage import project_storage
@@ -118,6 +118,7 @@ def restrict_evaluation(report, clips, scores, candidates, chosen, config):
     result["deployment_candidate"] = deepcopy(chosen)
     result["candidate_adoptions"] = candidate_adoptions(result["models"], config)
     result["adoption"] = adoption(result["models"], config, chosen["id"])
+    result["adoption_criteria"] = adoption_criteria(config)
     return result, rows, np.ascontiguousarray(scores[:, columns])
 
 
@@ -143,7 +144,7 @@ def select_candidate(project, bundle, evaluation, output, candidate):
                 "source_clips_sha256": digest(evaluation / "clips.json"),
                 "source_score_cache_sha256": digest(evaluation / "scores.npz"),
                 "project_config_sha256": digest(project), "runtime": deepcopy(package["runtime"]),
-                "adoption": selected_report["adoption"],
+                "adoption": selected_report["adoption"], "adoption_criteria": selected_report["adoption_criteria"],
                 "source_models": deepcopy(report["models"]),
                 "Final_used_for_selection": False, "network_rerun": False}
     with writer_lock(output):

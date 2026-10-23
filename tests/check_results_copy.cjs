@@ -11,8 +11,8 @@ function browser() {
     replaceChildren(...nodes) { this.children = nodes; }
   }
   const elements = new Map();
-  for (const id of ["summary", "candidateStatus", "candidateReasons", "denominators", "responses", "scores", "condition-model", "condition-reverb", "condition-clean", "conditions"]) elements.set(id, new Element());
-  for (const id of ["summary", "responses", "scores", "conditions"]) elements.get(id).tBodies = [new Element("tbody")];
+  for (const id of ["summary", "candidateStatus", "candidateReasons", "denominators", "criteriaSummary", "criteriaNote", "targetControls", "target-model", "targetComparison", "responses", "scores", "condition-model", "condition-reverb", "condition-clean", "conditions"]) elements.set(id, new Element());
+  for (const id of ["summary", "responses", "scores", "conditions", "targetComparison"]) elements.get(id).tBodies = [new Element("tbody")];
   const context = vm.createContext({document: {getElementById: id => elements.get(id), createElement: tag => new Element(tag)}});
   context.window = context; vm.runInContext(source, context);
   return {elements, ui: context.KowwResultsUI, rows: id => elements.get(id).tBodies[0].children.map(row => row.children.map(cell => cell.textContent))};
@@ -79,6 +79,60 @@ test("runtime model and evaluation selection are not conflated", () => {
   ui.renderSummary(report); ui.renderConditions(report);
   assert.equal(elements.get("candidateStatus").textContent, "현재 실행 모델: 앙상블 · 모델 3개 점수 평균");
   assert.equal(elements.get("condition-model").value, "member2_seed2");
+});
+test("criteria show frozen targets and compare exact measurements for the selected model", () => {
+  const {ui, rows, elements} = browser(), report = sample();
+  report.adoption_criteria = {schema_version: 1, clean_recall: 0.98, snr10_recall: 0.95, snr5_recall: 0.9, fa_per_hour: 0.1, latency_p95_s: 0.5, minimum_negative_hours: 20};
+  const before = JSON.stringify(report);
+  ui.renderSummary(report);
+  assert.equal(elements.get("criteriaSummary").textContent, "목표 기준: 조용할 때 98.00% 이상 · 소음 중간(SNR 10 dB) 95.00% 이상 · 소음 큼(SNR 5 dB) 90.00% 이상 · 시간당 오작동 0.1회 이하 · 반응 시간 0.5초 이내");
+  assert.match(elements.get("criteriaNote").textContent, /울림을 추가하지 않은.*각각.*20시간 이상.*모든 기준/);
+  assert.equal(elements.get("target-model").value, "mean");
+  assert.equal(elements.get("candidateReasons").children.length, 0);
+  assert.equal(rows("targetComparison").length, 10);
+  assert.deepEqual(rows("targetComparison")[0], ["조용한 환경 성공률", "98.00% 이상", "100.00%", "충족"]);
+  assert.deepEqual(rows("targetComparison")[1], ["환경소음 · 소음 중간 (SNR 10 dB)", "95.00% 이상", "83.33%", "미달"]);
+  assert.deepEqual(rows("targetComparison")[2], ["환경소음 · 소음 큼 (SNR 5 dB)", "90.00% 이상", "75.00%", "미달"]);
+  assert.deepEqual(rows("targetComparison")[7], ["시간당 오작동", "0.1회 이하", "0.033회", "충족"]);
+  assert.deepEqual(rows("targetComparison")[8], ["반응 시간 · 감지된 호출의 95%", "0.5초 이하", "0.16초", "충족"]);
+  assert.deepEqual(rows("targetComparison")[9], ["오작동 시험 시간", "20시간 이상", "30시간", "충족"]);
+  elements.get("target-model").value = "member3_seed3"; elements.get("target-model").onchange();
+  assert.deepEqual(rows("targetComparison")[0], ["조용한 환경 성공률", "98.00% 이상", "결과 없음", "결과 없음"]);
+  assert.equal(rows("targetComparison")[9][3], "미달");
+  assert.equal(JSON.stringify(report), before);
+});
+test("target comparisons retain boundary inclusivity without changing recorded decisions", () => {
+  const {ui, rows, elements} = browser(), report = sample();
+  report.adoption_criteria = {schema_version: 1, clean_recall: 1, snr10_recall: 10 / 12, snr5_recall: 0.9, fa_per_hour: 0.1, latency_p95_s: 0.2, minimum_negative_hours: 30};
+  ui.renderSummary(report);
+  elements.get("target-model").value = "member2_seed2"; elements.get("target-model").onchange();
+  for (const index of [0, 1, 7, 8, 9]) assert.equal(rows("targetComparison")[index][3], "충족");
+  assert.equal(rows("summary")[0][7], "미달");
+});
+test("legacy or invalid criteria never silently borrow current default targets", () => {
+  const {ui, rows, elements} = browser(), report = sample();
+  for (const criteria of [undefined, {}, {schema_version: 1, clean_recall: 0.98}, {schema_version: 999}, {schema_version: 1, clean_recall: 2, snr10_recall: 0.95, snr5_recall: 0.9, fa_per_hour: 0.1, latency_p95_s: 0.5, minimum_negative_hours: 20}]) {
+    report.adoption_criteria = criteria; ui.renderSummary(report);
+    assert.equal(elements.get("criteriaSummary").textContent, "평가 당시 목표 기준이 기록되지 않아 상세 비교를 표시할 수 없습니다.");
+    assert.equal(elements.get("targetControls").hidden, true);
+    assert.equal(elements.get("targetComparison").hidden, true);
+    assert.equal(rows("targetComparison").length, 0);
+    assert.equal(rows("summary")[0][7], "미달");
+  }
+});
+test("rounding cannot disguise a measurement slightly outside its target", () => {
+  const {ui, rows, elements} = browser(), report = sample();
+  report.adoption_criteria = {schema_version: 1, clean_recall: 0.98, snr10_recall: 0.95, snr5_recall: 0.9, fa_per_hour: 0.1, latency_p95_s: 0.5, minimum_negative_hours: 20};
+  const model = report.models.find(value => value.id === "mean");
+  model.clean.recall = 0.979999; model.negative.fa_per_hour = 0.1000004;
+  model.primary.latency_p95_s = 0.500001; model.negative.hours = 19.9999;
+  ui.renderSummary(report);
+  assert.deepEqual(rows("targetComparison")[0].slice(1), ["98.00% 이상", "97.9999%", "미달"]);
+  assert.deepEqual(rows("targetComparison")[7].slice(1), ["0.1회 이하", "0.1000004회", "미달"]);
+  assert.deepEqual(rows("targetComparison")[8].slice(1), ["0.5초 이하", "0.500001초", "미달"]);
+  assert.deepEqual(rows("targetComparison")[9].slice(1), ["20시간 이상", "19.9999시간", "미달"]);
+  model.negative.fa_per_hour = 0.1; ui.renderSummary(report);
+  assert.deepEqual(rows("targetComparison")[7].slice(1), ["0.1회 이하", "0.1회", "충족"]);
 });
 test("conditions show actual cells in fixed noise order including zero successes", () => {
   const {ui, rows, elements} = browser(), report = sample(), before = JSON.stringify(report);

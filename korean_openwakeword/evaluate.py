@@ -111,6 +111,20 @@ def summarize(clip_rows, config, candidates=None):
     return singles + [r for r in summaries if r["kind"] == "ensemble"]
 
 
+def adoption_criteria(config):
+    """Snapshot the exact gates used for this report, without default fallbacks.
+
+    Noise recall gates use the dry/no-added-RIR condition for each category.
+    Latency uses the primary positive set; the minimum duration is the same
+    Development floor historically used by adoption, including Final reports.
+    """
+    targets = config["evaluation_targets"]
+    return {"schema_version": 1,
+            **{key: targets[key] for key in ("clean_recall", "snr10_recall", "snr5_recall",
+                                           "fa_per_hour", "latency_p95_s")},
+            "minimum_negative_hours": config["targets"]["development_negative_hours"][0]}
+
+
 def adoption(summaries, config, candidate=None):
     if candidate is not None:
         selected = next((r for r in summaries if r["id"] == candidate), None)
@@ -122,7 +136,7 @@ def adoption(summaries, config, candidate=None):
     errors = []
     if selected is None:
         return {"passed": False, "reasons": ["No evaluated candidate"]}
-    targets = config["evaluation_targets"]
+    targets = adoption_criteria(config)
     if selected["clean"]["recall"] is None or selected["clean"]["recall"] < targets["clean_recall"]:
         errors.append("Clean recall below target or unmeasured")
     for category in CATEGORIES:
@@ -131,8 +145,8 @@ def adoption(summaries, config, candidate=None):
             if not cell or cell["recall"] is None or cell["recall"] < targets[key]:
                 errors.append(f"{category} SNR{snr} below target or unmeasured")
     negative = selected["negative"]
-    if negative["hours"] < config["targets"]["development_negative_hours"][0]:
-        errors.append(f"Development FP duration below {config['targets']['development_negative_hours'][0]:g}h")
+    if negative["hours"] < targets["minimum_negative_hours"]:
+        errors.append(f"Development FP duration below {targets['minimum_negative_hours']:g}h")
     if negative["fa_per_hour"] is None or negative["fa_per_hour"] > targets["fa_per_hour"]:
         errors.append("FA/hour target failed or unmeasured")
     latency = selected["primary"].get("latency_p95_s")
@@ -547,7 +561,7 @@ def evaluate(project, bundle, output, stage="development", manifest=None, smoke=
             "runtime": runtime, "sessions": len(clips), "models": summaries, "execution": execution,
             "candidate_definitions": candidates, "selected_candidate": candidate,
             "deployment_candidate": deployed, "candidate_adoptions": candidate_adoptions(summaries, config),
-            "adoption": adoption(summaries, config, candidate),
+            "adoption": adoption(summaries, config, candidate), "adoption_criteria": adoption_criteria(config),
             "scope": "Supplied held-out manifest; synthetic and real human calls remain separate",
             "main_noise_snrs": [20, 15, 10, 5], "snr0_is_diagnostic": True}
         for summary in summaries:

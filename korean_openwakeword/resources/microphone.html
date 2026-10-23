@@ -20,12 +20,16 @@
     <div class="device-row">
       <label for="microphone">입력 장치</label>
       <select id="microphone"><option value="">시스템 기본 마이크</option></select>
+    </div>
+    <div class="actions">
+      <button id="connect" type="button">마이크 연결</button>
       <button id="refresh" type="button">목록 새로고침</button>
     </div>
-    <p class="hint" id="deviceHint">처음 시작할 때 마이크 사용을 허용하세요. 허용 전에는 장치 이름이 표시되지 않을 수 있습니다.</p>
+    <p class="hint" id="deviceHint">마이크 연결을 누르고 사용을 허용하면 장치 이름을 확인할 수 있습니다.</p>
     <div class="actions">
       <button id="start" class="primary" type="button" disabled>시험 시작</button>
       <button id="stop" type="button" disabled>중지</button>
+      <button id="retry" type="button" hidden>모델 연결 다시 시도</button>
       <span id="connection" class="connection">모델 정보를 읽는 중</span>
     </div>
   </section>

@@ -11,7 +11,7 @@ from korean_openwakeword.common import digest, read_json, write_json
 from korean_openwakeword.project import create_project, load_project
 from korean_openwakeword.runtime import (WakeWordDetector, bundle_candidates,
                                         deployment_candidate, sample_bundle, verify_bundle)
-from korean_openwakeword.evaluate import adoption, candidate_adoptions, summarize
+from korean_openwakeword.evaluate import adoption, adoption_criteria, candidate_adoptions, summarize
 from korean_openwakeword.tune import replay, tune, select_runtime
 from korean_openwakeword.selection import select_candidate, verified_evaluation
 from korean_openwakeword.bundle import freeze
@@ -94,6 +94,8 @@ def test_explicit_selection_is_portable_exact_and_immutable(experiment, tmp_path
     assert package["aggregation"] == ("ordered_float64_mean_to_float32" if position == 3 else "single")
     assert deployment_candidate(package)["id"] == ids[position]
     assert selected["adoption"] == read_json(evaluation / "report.json")["candidate_adoptions"][ids[position]]
+    assert selected["adoption_criteria"] == adoption_criteria(load_project(project)[1])
+    assert read_json(tmp_path / "selected/selection.json")["adoption_criteria"] == selected["adoption_criteria"]
     assert result["runtime"] == read_json(evaluation / "report.json")["runtime"]
     assert result["network_rerun"] is False
     with np.load(evaluation / "scores.npz") as old, np.load(Path(result["evaluation"]) / "scores.npz") as new:
@@ -116,6 +118,8 @@ def test_select_legacy_completed_report_without_rewriting_it(experiment, tmp_pat
     original = digest(evaluation / "report.json")
     result = select_candidate(project, bundle, evaluation, tmp_path / "selected", ids[1])
     assert result["adoption"]["passed"]
+    assert "adoption_criteria" not in report  # The old report itself stays immutable.
+    assert read_json(Path(result["evaluation"]) / "report.json")["adoption_criteria"] == adoption_criteria(load_project(project)[1])
     assert digest(evaluation / "report.json") == original
 
 
@@ -146,6 +150,10 @@ def test_tune_default_and_explicit_heads_are_actually_deployed(experiment, tmp_p
     assert len(verify_bundle(explicit["bundle"])["members"]) == 1
     verified_evaluation(project, explicit["bundle"], explicit["evaluation"])
     assert read_json(Path(explicit["evaluation"]) / "report.json")["models"][0]["id"] == ids[1]
+    criteria = adoption_criteria(load_project(project)[1])
+    for result, directory in ((default, "default"), (explicit, "single")):
+        assert read_json(Path(result["evaluation"]) / "report.json")["adoption_criteria"] == criteria
+        assert read_json(tmp_path / directory / "comparison.json")["adoption_criteria"] == criteria
 
 
 @pytest.mark.parametrize("change", ["score_hash", "candidate_hash", "columns", "duration", "final_stage"])

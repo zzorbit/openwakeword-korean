@@ -6,7 +6,7 @@ import numpy as np
 from .common import digest, now, read_json, write_json, writer_lock
 from .project import load_project
 from .events import EventDetector, PositiveTracker
-from .evaluate import summarize, adoption, candidate_adoptions, annotate_clean_score_drops
+from .evaluate import summarize, adoption, adoption_criteria, candidate_adoptions, annotate_clean_score_drops
 from .runtime import verify_bundle, deployment_candidate
 
 
@@ -72,6 +72,7 @@ def tune(project, bundle, evaluation, output, thresholds, consecutive=(2,), cand
                     best = (key, runtime, rows, summaries, decision)
                 print(f"Development gate: threshold={threshold} frames={count} adoption={decision['passed']}", flush=True)
         write_json(output / "comparison.json", {"stage": "development", "created_at": now(), "selected_candidate": chosen,
+                    "adoption_criteria": adoption_criteria(config),
                     "source_report_sha256": digest(evaluation / "report.json"), "source_score_cache_sha256": digest(evaluation / "scores.npz"),
                     "comparisons": comparisons, "selection_order": ["all admission targets passed", "clean recall", "balanced noise recall", "lower FA/hour"],
                     "scope": "Declared gates for one explicit/default deployed candidate; no network retraining and no Final tuning"})
@@ -82,7 +83,8 @@ def tune(project, bundle, evaluation, output, thresholds, consecutive=(2,), cand
                     "source_report_sha256": digest(evaluation / "report.json"),
                     "source_score_cache_sha256": digest(evaluation / "scores.npz"),
                     "comparison_sha256": digest(output / "comparison.json"), "runtime": best[1],
-                    "adoption": best[4], "Final_used_for_selection": False, "network_rerun": False}
+                    "adoption": best[4], "adoption_criteria": adoption_criteria(config),
+                    "Final_used_for_selection": False, "network_rerun": False}
         copy_candidate_bundle(bundle, selected_bundle, package, chosen, evidence=evidence)
         selected_report = dict(report, runtime=best[1], models=best[3], adoption=best[4])
         selected_report, selected_clips, selected_scores = restrict_evaluation(selected_report, best[2], scores, candidates, chosen, config)

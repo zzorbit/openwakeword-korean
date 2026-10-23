@@ -2,12 +2,14 @@
 
 (() => {
   const $ = id => document.getElementById(id);
-  const ui = Object.fromEntries(["wakeword", "microphone", "refresh", "deviceHint", "start", "stop", "connection", "statusHeading", "statusText", "statusDot", "level", "levelText", "elapsed", "frameCount", "lastEvent", "lastEventTime", "models", "threshold", "captureSettings"].map(id => [id, $(id)]));
+  const ui = Object.fromEntries(["wakeword", "microphone", "connect", "refresh", "retry", "deviceHint", "start", "stop", "connection", "statusHeading", "statusText", "statusDot", "level", "levelText", "elapsed", "frameCount", "lastEvent", "lastEventTime", "models", "threshold", "captureSettings"].map(id => [id, $(id)]));
   const rows = new Map();
   let info = null;
   let run = null;
   let generation = 0;
   let refreshing = false;
+  let probe = null;
+  let initializing = false;
 
   function setStatus(heading, text, phase = "idle") {
     ui.statusHeading.textContent = heading;
@@ -16,13 +18,15 @@
   }
 
   function syncControls() {
-    ui.start.disabled = !info || !!run || document.hidden;
-    ui.stop.disabled = !run;
-    ui.microphone.disabled = !!run;
-    ui.refresh.disabled = !!run || refreshing;
+    ui.start.disabled = !info || !!run || !!probe || document.hidden;
+    ui.stop.disabled = !run && !probe;
+    ui.microphone.disabled = !!run || !!probe;
+    ui.connect.disabled = !!run || !!probe || refreshing || document.hidden || !window.isSecureContext || !navigator.mediaDevices?.getUserMedia;
+    ui.refresh.disabled = !!run || refreshing || !!probe || !navigator.mediaDevices?.enumerateDevices;
+    ui.retry.disabled = initializing;
   }
 
-  async function request(path, options = {}, timeoutMs = 5000, controller = new AbortController()) {
+  async function request(path, options = {}, timeoutMs = 5000, controller = new AbortController(), timeoutMessage = "서버 응답이 늦어 시험을 중지했습니다. 서버 상태를 확인한 뒤 다시 시작하세요.") {
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetch(path, { ...options, signal: controller.signal, cache: "no-store" });
@@ -34,7 +38,7 @@
       }
       return data;
     } catch (error) {
-      if (error.name === "AbortError") throw new Error("서버 응답이 늦어 시험을 중지했습니다. 서버 상태를 확인한 뒤 다시 시작하세요.");
+      if (error.name === "AbortError") throw new Error(timeoutMessage);
       throw error;
     } finally { clearTimeout(timer); }
   }
@@ -89,12 +93,13 @@
     }
   }
 
-  async function refreshDevices() {
+  async function refreshDevices(expectedProbe = null) {
     if (refreshing || !navigator.mediaDevices?.enumerateDevices) return;
     refreshing = true; syncControls();
     const selected = ui.microphone.value;
     try {
       const devices = (await navigator.mediaDevices.enumerateDevices()).filter(device => device.kind === "audioinput");
+      if (expectedProbe && probe !== expectedProbe) return;
       ui.microphone.replaceChildren(new Option("시스템 기본 마이크", ""));
       let number = 0;
       for (const device of devices) {
@@ -102,12 +107,38 @@
         ui.microphone.append(new Option(device.label || `마이크 ${++number} (권한 허용 후 이름 표시)`, device.deviceId));
       }
       if (Array.from(ui.microphone.options).some(option => option.value === selected)) ui.microphone.value = selected;
-      ui.deviceHint.textContent = devices.some(device => device.label) ? "마이크를 바꾸려면 시험을 중지하고 다른 입력 장치를 선택하세요." : "처음 시작할 때 마이크 사용을 허용하세요. 허용 전에는 장치 이름이 표시되지 않을 수 있습니다.";
+      ui.deviceHint.textContent = devices.some(device => device.label) ? "입력 장치를 선택한 뒤 시험을 시작하세요." : "마이크 연결을 누르고 사용을 허용하면 장치 이름을 확인할 수 있습니다.";
       if (run?.activeDeviceId && !devices.some(device => device.deviceId === run.activeDeviceId)) {
         stop("선택한 마이크 연결이 끊겨 시험을 중지했습니다.", true);
       }
-    } catch (error) { ui.deviceHint.textContent = `마이크 목록을 읽지 못했습니다: ${error.message}`; }
+    } catch (error) { if (!expectedProbe || probe === expectedProbe) ui.deviceHint.textContent = `마이크 목록을 읽지 못했습니다: ${error.message}`; }
     finally { refreshing = false; syncControls(); }
+  }
+
+  function cancelProbe() {
+    const target = probe;
+    probe = null;
+    for (const track of target?.stream?.getTracks() || []) track.stop();
+    if (target) ui.deviceHint.textContent = "마이크 연결을 취소했습니다. 다시 연결하려면 마이크 연결을 누르세요.";
+  }
+
+  async function connectMicrophone() {
+    if (probe || run || refreshing || document.hidden || !window.isSecureContext || !navigator.mediaDevices?.getUserMedia) return;
+    const target = {};
+    probe = target;
+    ui.deviceHint.textContent = "브라우저의 마이크 사용 요청에서 허용을 선택하세요. 중지를 누르면 연결을 취소합니다.";
+    syncControls();
+    try {
+      target.stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      if (probe !== target) return;
+      await refreshDevices(target);
+    } catch (error) {
+      if (probe === target) ui.deviceHint.textContent = microphoneError(error);
+    } finally {
+      for (const track of target.stream?.getTracks() || []) track.stop();
+      if (probe === target) probe = null;
+      syncControls();
+    }
   }
 
   function closeResources(target) {
@@ -128,6 +159,7 @@
   }
 
   function stop(message = "마이크 사용을 중지했습니다. 다시 시작하면 새 시험이 시작됩니다.", error = false, keepalive = false) {
+    cancelProbe();
     const target = run;
     generation++;
     run = null;
@@ -211,7 +243,7 @@
   }
 
   async function start() {
-    if (!info || run || document.hidden) return;
+    if (!info || run || probe || document.hidden) return;
     const target = { generation: ++generation, cancelled: false, queue: [], sequence: 0, draining: false, sessionId: null };
     run = target;
     syncControls(); resetMetrics();
@@ -262,15 +294,23 @@
 
   ui.start.addEventListener("click", start);
   ui.stop.addEventListener("click", () => stop());
-  ui.refresh.addEventListener("click", refreshDevices);
-  window.addEventListener("pagehide", () => { if (run) stop("페이지를 떠나 마이크 시험을 중지했습니다.", false, true); });
-  document.addEventListener("visibilitychange", () => { if (document.hidden && run) stop("다른 창으로 이동하여 시험을 중지했습니다. 돌아온 뒤 다시 시작하세요.", false, true); syncControls(); });
-  navigator.mediaDevices?.addEventListener("devicechange", refreshDevices);
+  ui.connect.addEventListener("click", connectMicrophone);
+  ui.refresh.addEventListener("click", () => refreshDevices());
+  ui.retry.addEventListener("click", initialize);
+  window.addEventListener("pagehide", () => { if (run || probe) stop("페이지를 떠나 마이크 시험을 중지했습니다.", false, true); });
+  document.addEventListener("visibilitychange", () => { if (document.hidden && (run || probe)) stop("다른 창으로 이동하여 시험을 중지했습니다. 돌아온 뒤 다시 시작하세요.", false, true); syncControls(); });
+  navigator.mediaDevices?.addEventListener("devicechange", () => { if (!probe) refreshDevices(); });
 
   async function initialize() {
+    if (initializing || run) return;
+    initializing = true;
+    ui.retry.hidden = true;
+    ui.connection.textContent = "모델 연결 중";
+    setStatus("모델 연결 중", "이 컴퓨터의 시험 모델을 준비하고 있습니다. 처음에는 잠시 걸릴 수 있습니다.", "preparing");
+    syncControls();
     try {
       if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia || !window.AudioWorkletNode || !window.AudioContext) throw new Error("마이크 시험은 localhost의 최신 Chrome 또는 Edge에서 사용할 수 있습니다.");
-      info = await request("/api/info");
+      info = await request("/api/info", {}, 30000, new AbortController(), "모델 정보를 30초 안에 받지 못했습니다. 잠시 뒤 모델 연결을 다시 시도하세요.");
       if (info.sample_rate !== 16000 || info.frame_samples !== 1280 || !Array.isArray(info.models) || !info.models.length || !info.token || !Number.isFinite(info.warmup_s)) throw new Error("지원하지 않는 마이크 시험 설정입니다. 서버를 확인하세요.");
       ui.wakeword.textContent = `‘${info.wakeword}’`;
       document.title = `${info.wakeword} 마이크 시험 · Korean openWakeWord`;
@@ -278,14 +318,16 @@
       renderModels(info.models);
       ui.connection.textContent = "모델 준비됨";
       setStatus("시작할 준비가 됐습니다", "시험 시작을 누르면 마이크를 연결합니다.");
-      syncControls();
-      await refreshDevices();
     } catch (error) {
       info = null;
-      ui.connection.textContent = "연결 실패";
-      setStatus("시작할 수 없습니다", microphoneError(error), "error");
+      ui.retry.hidden = false;
+      ui.connection.textContent = "모델 연결 실패";
+      setStatus("모델 연결을 확인하세요", `${error.message || "모델 정보를 읽지 못했습니다."} 모델 연결 다시 시도를 눌러주세요.`, "error");
+    } finally {
+      initializing = false;
       syncControls();
     }
   }
+  refreshDevices();
   initialize();
 })();

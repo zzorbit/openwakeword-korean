@@ -19,7 +19,7 @@ function worklet() {
   return { context, messages, instance: new Processor() };
 }
 
-function browser() {
+function browser(config = {}) {
   const elements = new Map(), listeners = {}, mediaListeners = {}, contexts = [], workers = [], calls = [], streams = [];
   let clock = 0, nextTimer = 0;
   const timers = new Map(), intervals = new Map();
@@ -31,15 +31,21 @@ function browser() {
     get options() { return this.children; }
   }
   class Option extends Element { constructor(text, value) { super(); this.textContent = text; this.value = value; } }
-  const state = { deferredPermission: null, deferredStart: null, failFrame: false, holdFrame: false, audioRate: 16000, permissionCalls: 0, constraints: null };
+  const state = { deferredPermission: null, deferredStart: null, deferredInfo: null, failInfo: false, permissionError: null, enumerationError: null, hideDeviceNames: false, enumerations: [], failFrame: false, holdFrame: false, audioRate: 16000, permissionCalls: 0, constraints: null, ...config };
   function makeStream() {
     const track = { label: "모의 마이크", stopped: false, onended: null, onmute: null, stop() { this.stopped = true; }, getSettings() { return { deviceId: "mic1", sampleRate: 48000, channelCount: 2, echoCancellation: false, noiseSuppression: false, autoGainControl: false }; } };
-    const stream = { track, getTracks: () => [track], getAudioTracks: () => [track] };
+    const tracks = [track];
+    const stream = { track, tracks, getTracks: () => tracks, getAudioTracks: () => tracks };
     streams.push(stream); return stream;
   }
   const devices = [{ kind: "audioinput", deviceId: "mic1", label: "모의 마이크" }];
   const document = { hidden: false, title: "", getElementById(id) { if (!elements.has(id)) elements.set(id, new Element(id)); return elements.get(id); }, createElement: () => new Element(), addEventListener(name, handler) { listeners[name] = handler; } };
-  const mediaDevices = { enumerateDevices: async () => devices, getUserMedia(constraints) { state.permissionCalls++; state.constraints = constraints; if (state.deferredPermission) return state.deferredPermission.promise; return Promise.resolve(makeStream()); }, addEventListener(name, handler) { mediaListeners[name] = handler; } };
+  const mediaDevices = { enumerateDevices: async () => {
+    if (state.enumerationError) throw state.enumerationError;
+    const active = streams.some(stream => !stream.track.stopped);
+    state.enumerations.push({ active });
+    return devices.map(device => ({ ...device, label: state.hideDeviceNames && !active ? "" : device.label }));
+  }, getUserMedia(constraints) { state.permissionCalls++; state.constraints = constraints; if (state.permissionError) return Promise.reject(state.permissionError); if (state.deferredPermission) return state.deferredPermission.promise; return Promise.resolve(makeStream()); }, addEventListener(name, handler) { mediaListeners[name] = handler; } };
   class Node { constructor() { this.disconnected = false; } connect() {} disconnect() { this.disconnected = true; } }
   class Context {
     constructor() { this.sampleRate = state.audioRate; this.state = "suspended"; this.destination = {}; this.audioWorklet = { addModule: async url => { assert.equal(url, "/microphone_worklet.js"); } }; contexts.push(this); }
@@ -53,7 +59,14 @@ function browser() {
   const json = (data, status = 200) => ({ ok: status < 400, status, json: async () => data });
   const fetch = async (url, options = {}) => {
     calls.push({ url, options });
-    if (url === "/api/info") return json(info);
+    if (url === "/api/info") {
+      if (state.failInfo) return json({ error: "모의 모델 연결 오류" }, 500);
+      if (state.deferredInfo) return new Promise((resolve, reject) => {
+        options.signal.addEventListener("abort", () => { const error = new Error("aborted"); error.name = "AbortError"; reject(error); }, { once: true });
+        state.deferredInfo.promise.then(resolve, reject);
+      });
+      return json(info);
+    }
     assert.equal(options.headers["X-Koww-Token"], info.token);
     if (url === "/api/start") {
       if (state.deferredStart) return state.deferredStart.promise;
@@ -74,8 +87,8 @@ function browser() {
   context.isSecureContext = true;
   context.addEventListener = (name, handler) => { listeners[name] = handler; };
   vm.runInContext(fs.readFileSync(path.join(resources, "microphone.js"), "utf8"), context);
-  return { state, elements, listeners, mediaListeners, contexts, workers, calls, streams, intervals, devices, makeStream, info,
-    click(id) { return elements.get(id).handlers.click(); },
+  return { state, elements, listeners, mediaListeners, contexts, workers, calls, streams, timers, intervals, devices, makeStream, info,
+    click(id) { return elements.get(id).handlers.click({ type: "click", target: elements.get(id) }); },
     frame() { const worker = workers.at(-1); const pcm = vm.runInContext("new ArrayBuffer(2560)", context); worker.port.onmessage?.({ data: { type: "frame", pcm } }); },
     tick(ms) { clock += ms; for (const timer of [...intervals.values()]) timer.callback(); },
     hidden() { document.hidden = true; listeners.visibilitychange(); },
@@ -114,6 +127,101 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
     const b = browser(); await flush();
     assert.equal(b.state.permissionCalls, 0); assert.equal(b.elements.get("start").disabled, false);
     assert.equal(b.elements.get("wakeword").textContent, "‘보라야’");
+  });
+  await test("explicit microphone connection reveals device names while capture is active then releases every probe track", async () => {
+    const b = browser({ hideDeviceNames: true }); await flush();
+    assert.match(b.elements.get("microphone").options[1].textContent, /권한 허용 후/);
+    b.state.deferredPermission = deferred();
+    const connecting = b.click("connect"), stream = b.makeStream();
+    const extra = { stopped: false, stop() { this.stopped = true; } };
+    stream.tracks.push(extra); b.state.deferredPermission.resolve(stream);
+    await connecting; await flush();
+    assert.equal(b.state.permissionCalls, 1); assert.equal(b.state.constraints.audio, true);
+    assert.equal(b.state.enumerations.at(-1).active, true);
+    assert.equal(b.elements.get("microphone").options[1].textContent, "모의 마이크");
+    assert.equal(b.streams.every(stream => stream.track.stopped), true);
+    assert.equal(extra.stopped, true);
+    assert.equal(b.calls.some(call => call.url === "/api/start"), false);
+    assert.equal(b.elements.get("start").disabled, false);
+  });
+  await test("device discovery remains available after a model connection failure and retry recovers without reloading", async () => {
+    const b = browser({ failInfo: true }); await flush();
+    assert.equal(b.elements.get("connection").textContent, "모델 연결 실패");
+    assert.match(b.elements.get("statusText").textContent, /모의 모델 연결 오류/);
+    assert.equal(b.elements.get("retry").hidden, false); assert.equal(b.elements.get("start").disabled, true);
+    assert.equal(b.elements.get("connect").disabled, false);
+    await b.click("connect"); await flush();
+    assert.equal(b.streams[0].track.stopped, true);
+    assert.equal(b.elements.get("connection").textContent, "모델 연결 실패");
+    b.state.failInfo = false; await b.click("retry"); await flush();
+    assert.equal(b.elements.get("retry").hidden, true); assert.equal(b.elements.get("start").disabled, false);
+    assert.equal(b.calls.filter(call => call.url === "/api/info").length, 2);
+  });
+  await test("cold model initialization has a 30-second limit and rejects duplicate retry requests", async () => {
+    const pending = deferred(), b = browser({ deferredInfo: pending }); await flush();
+    const timeout = [...b.timers.values()].find(timer => timer.duration === 30000);
+    assert.ok(timeout); assert.equal(b.elements.get("retry").disabled, true);
+    await b.click("retry"); assert.equal(b.calls.filter(call => call.url === "/api/info").length, 1);
+    timeout.callback(); await flush();
+    assert.match(b.elements.get("statusText").textContent, /30초/);
+    assert.equal(b.elements.get("connection").textContent, "모델 연결 실패");
+    assert.equal(b.elements.get("retry").disabled, false); assert.equal(b.state.permissionCalls, 0);
+    b.state.deferredInfo = null; await b.click("retry"); await flush();
+    pending.resolve(b.response(b.info)); await flush();
+    assert.equal(b.elements.get("start").disabled, false);
+  });
+  await test("permission denial is a device error and does not invalidate the ready model", async () => {
+    const error = new Error("permission denied"); error.name = "NotAllowedError";
+    const b = browser({ permissionError: error }); await flush(); await b.click("connect");
+    assert.match(b.elements.get("deviceHint").textContent, /마이크 권한이 거부/);
+    assert.equal(b.elements.get("connection").textContent, "모델 준비됨");
+    assert.equal(b.elements.get("start").disabled, false); assert.equal(b.streams.length, 0);
+  });
+  await test("a failed device enumeration releases the permission probe and permits another connection", async () => {
+    const b = browser(); await flush(); b.state.enumerationError = new Error("장치 목록 오류");
+    await b.click("connect"); await flush();
+    assert.equal(b.streams[0].track.stopped, true);
+    assert.match(b.elements.get("deviceHint").textContent, /장치 목록 오류/);
+    assert.equal(b.elements.get("connect").disabled, false);
+    b.state.enumerationError = null; await b.click("connect"); await flush();
+    assert.equal(b.elements.get("microphone").options[1].textContent, "모의 마이크");
+    assert.equal(b.streams.every(stream => stream.track.stopped), true);
+  });
+  await test("click and devicechange event objects do not suppress ordinary device refresh", async () => {
+    const b = browser(); await flush();
+    b.devices.push({ kind: "audioinput", deviceId: "mic2", label: "두 번째 마이크" });
+    await b.click("refresh");
+    assert.equal(b.elements.get("microphone").options[2].textContent, "두 번째 마이크");
+    b.devices.pop(); b.mediaListeners.devicechange({ type: "devicechange" }); await flush();
+    assert.equal(b.elements.get("microphone").options.length, 2);
+  });
+  await test("cancelling a permission probe disposes a late stream without changing the cancellation hint", async () => {
+    const b = browser(); await flush(); b.state.deferredPermission = deferred();
+    const connecting = b.click("connect");
+    assert.equal(b.elements.get("stop").disabled, false); assert.equal(b.elements.get("start").disabled, true);
+    assert.match(b.elements.get("deviceHint").textContent, /허용/);
+    b.click("stop"); const stream = b.makeStream(); b.state.deferredPermission.resolve(stream);
+    await connecting; await flush();
+    assert.equal(stream.track.stopped, true); assert.match(b.elements.get("deviceHint").textContent, /취소/);
+    assert.equal(b.calls.some(call => call.url === "/api/start"), false);
+  });
+  await test("leaving the page cancels device discovery and releases a delayed microphone", async () => {
+    const b = browser(); await flush(); b.state.deferredPermission = deferred();
+    const connecting = b.click("connect"); b.listeners.pagehide();
+    const stream = b.makeStream(); b.state.deferredPermission.resolve(stream);
+    await connecting; await flush(); assert.equal(stream.track.stopped, true);
+    assert.equal(b.elements.get("stop").disabled, true);
+  });
+  await test("a cancelled late permission response cannot clear a newer device connection", async () => {
+    const b = browser(); await flush();
+    const oldPermission = deferred(), newPermission = deferred();
+    b.state.deferredPermission = oldPermission; const oldConnection = b.click("connect"); b.click("stop");
+    b.state.deferredPermission = newPermission; const newConnection = b.click("connect");
+    const oldStream = b.makeStream(); oldPermission.resolve(oldStream); await oldConnection; await flush();
+    assert.equal(oldStream.track.stopped, true); assert.equal(b.elements.get("connect").disabled, true);
+    assert.match(b.elements.get("deviceHint").textContent, /허용/);
+    const newStream = b.makeStream(); newPermission.resolve(newStream); await newConnection; await flush();
+    assert.equal(newStream.track.stopped, true); assert.equal(b.elements.get("start").disabled, false);
   });
   await test("start submits requested DSP settings; frames are authenticated, sequential, and stop releases capture", async () => {
     const b = browser(); await flush(); await b.click("start");

@@ -882,6 +882,8 @@ class StudioManager:
     def microphone(self, project_id):
         if project_id not in self._microphones:
             with self._lock:
+                if project_id in self._microphones:
+                    return self._microphones[project_id]
                 state = self._load(project_id)
                 if "package" not in state["results"]:
                     raise ValueError("모델 학습과 실행 묶음 준비 후 시험할 수 있습니다.")
@@ -1012,8 +1014,8 @@ def make_studio_server(manager, port=8793):
                 self.respond({"error": "페이지를 찾을 수 없습니다."}, 404)
             except PermissionError as error:
                 self.respond({"error": str(error)}, 403)
-            except (ValueError, KeyError, OSError, IndexError) as error:
-                self.respond({"error": str(error)}, 400)
+            except (ValueError, KeyError, OSError, IndexError, RuntimeError, ImportError) as error:
+                self.respond({"error": str(error)}, getattr(error, "status", 400))
 
         def send_file(self, path):
             if not path.is_file():
@@ -1041,7 +1043,7 @@ def make_studio_server(manager, port=8793):
             if name == "microphone.html":
                 content = content.replace('href="/microphone.css"', 'href="' + prefix + '/microphone.css"').replace('src="/microphone.js"', 'src="' + prefix + '/microphone.js"')
             elif name == "microphone.js":
-                content = content.replace('fetch(path,', 'fetch(' + json.dumps(prefix) + ' + path,').replace('"/microphone_worklet.js"', json.dumps(prefix + "/microphone_worklet.js"))
+                content = content.replace('fetch(path,', 'fetch(' + json.dumps(prefix) + ' + path,').replace('fetch("/api/stop",', 'fetch(' + json.dumps(prefix + "/api/stop") + ',').replace('"/microphone_worklet.js"', json.dumps(prefix + "/microphone_worklet.js"))
             kind = "text/html; charset=utf-8" if name.endswith("html") else "text/css; charset=utf-8" if name.endswith("css") else "text/javascript; charset=utf-8"
             return self.respond(content.encode(), kind=kind)
 

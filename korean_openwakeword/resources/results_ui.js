@@ -67,6 +67,70 @@
     }
     return "추가 확인 필요";
   }
+  function criteriaFor(report) {
+    const value = report.adoption_criteria;
+    if (!value || value.schema_version !== 1) return null;
+    const recalls = ["clean_recall", "snr10_recall", "snr5_recall"];
+    if (recalls.some(key => !finite(value[key]) || value[key] < 0 || value[key] > 1)) return null;
+    if (["fa_per_hour", "latency_p95_s", "minimum_negative_hours"].some(key => !finite(value[key]) || value[key] < 0)) return null;
+    return value;
+  }
+  function targetChecks(model, criteria) {
+    const checks = [];
+    const recall = (value, exact = false) => exact ? `${value * 100}%` : percent(value);
+    const metric = (unit, digits) => (value, exact = false) => `${exact ? value : Number(value.toFixed(digits))}${unit}`;
+    const add = (label, actual, target, format, lowerIsBetter = false) => {
+      const passed = finite(actual) && (lowerIsBetter ? actual <= target : actual >= target);
+      let measured = finite(actual) ? format(actual) : "결과 없음";
+      // Keep a small failure visible rather than rounding it to the target.
+      if (finite(actual) && !passed && measured === format(target)) measured = format(actual, true);
+      checks.push({label, target: `${format(target)} ${lowerIsBetter ? "이하" : "이상"}`,
+        actual: measured, result: !finite(actual) ? "결과 없음" : passed ? "충족" : "미달"});
+    };
+    add("조용한 환경 성공률", model.clean?.recall, criteria.clean_recall, recall);
+    for (const category of categories) {
+      for (const [level, key] of [[10, "snr10_recall"], [5, "snr5_recall"]]) {
+        add(`${noiseLabel(category)} · ${level === 10 ? "소음 중간" : "소음 큼"} (SNR ${level} dB)`,
+          conditionValue(model.conditions, category, level)?.recall, criteria[key], recall);
+      }
+    }
+    add("시간당 오작동", model.negative?.fa_per_hour, criteria.fa_per_hour, metric("회", 3), true);
+    add("반응 시간 · 감지된 호출의 95%", model.primary?.latency_p95_s, criteria.latency_p95_s, metric("초", 2), true);
+    add("오작동 시험 시간", model.negative?.hours, criteria.minimum_negative_hours, metric("시간", 2));
+    return checks;
+  }
+  function renderTargets(report) {
+    const criteria = criteriaFor(report), summary = $("criteriaSummary"), note = $("criteriaNote");
+    const select = $("target-model"), rows = body("targetComparison");
+    if (summary) summary.textContent = criteria
+      ? `목표 기준: 조용할 때 ${percent(criteria.clean_recall)} 이상 · 소음 중간(SNR 10 dB) ${percent(criteria.snr10_recall)} 이상 · 소음 큼(SNR 5 dB) ${percent(criteria.snr5_recall)} 이상 · 시간당 오작동 ${Number(criteria.fa_per_hour.toFixed(3))}회 이하 · 반응 시간 ${Number(criteria.latency_p95_s.toFixed(2))}초 이내`
+      : "평가 당시 목표 기준이 기록되지 않아 상세 비교를 표시할 수 없습니다.";
+    if (note) note.textContent = criteria
+      ? `소음 기준은 울림을 추가하지 않은 환경소음·음악·다른 사람 말소리 각각에 적용합니다. 오작동 시험 ${Number(criteria.minimum_negative_hours.toFixed(2))}시간 이상을 포함해 모든 기준을 만족해야 ‘충족’입니다.`
+      : "";
+    if ($("targetControls")) $("targetControls").hidden = !criteria;
+    if ($("targetComparison")) $("targetComparison").hidden = !criteria;
+    if (!select || !rows) return;
+    const previous = select.value, models = report.models || [];
+    select.replaceChildren(); rows.replaceChildren(); select.disabled = !criteria || !models.length;
+    if (!criteria) return;
+    $("candidateReasons")?.replaceChildren();
+    models.forEach(model => option(select, model.id, modelLabel(report, model.id)));
+    const selected = report.deployment_candidate?.id || report.selected_candidate || report.adoption?.candidate;
+    select.value = models.some(model => model.id === previous) ? previous
+      : models.some(model => model.id === selected) ? selected : models[0]?.id || "";
+    function draw() {
+      rows.replaceChildren();
+      const model = models.find(value => value.id === select.value);
+      if (!model) return;
+      for (const check of targetChecks(model, criteria)) {
+        const row = document.createElement("tr");
+        [check.label, check.target, check.actual, check.result].forEach(value => appendCell(row, value));
+        rows.append(row);
+      }
+    }
+    select.onchange = draw; draw();
+  }
   function renderSummary(report) {
     const rows = body("summary"), reasons = $("candidateReasons");
     if (!rows) return;
@@ -100,6 +164,7 @@
         : "선택한 모델 없음";
     }
     if ($("denominators")) $("denominators").textContent = "종합 성공률은 소음과 목소리가 같은 크기인 시험을 제외합니다. 소음 평균은 울림 없이 소음이 아주 작을 때부터 클 때까지의 평균입니다.";
+    renderTargets(report);
   }
   function option(select, value, text) {
     const node = document.createElement("option"); node.value = value; node.textContent = text; select.append(node);

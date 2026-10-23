@@ -125,6 +125,9 @@ def test_evaluation_preflight_hashes_each_audio_once_and_keeps_exact_scores(monk
     files = [Path(row["path"]) for row in rows]
     hashes, headers = _count_io(monkeypatch, files)
     cached = evaluate.evaluate(project, bundle, root / "reports/cached", manifest=manifest, workers=1, smoke=True)
+    assert cached["adoption_criteria"] == evaluate.adoption_criteria(load_project(project)[1])
+    saved_report = read_json(root / "reports/cached/report.json")
+    assert saved_report["adoption_criteria"] == cached["adoption_criteria"]
     assert all(hashes[path] == headers[path] == 1 for path in files)
     package = read_json(bundle / "manifest.json")
     # Preflight changes must not change the existing resumable score identity.

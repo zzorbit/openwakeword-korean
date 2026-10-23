@@ -494,6 +494,8 @@ def test_http_mic_assets_use_integrated_prefix_and_their_own_token(manager, http
     status, content, _ = http_server(prefix + "/microphone.js")
     assert status == 200 and json.dumps(prefix) + " + path" in content.decode()
     assert prefix + "/microphone_worklet.js" in content.decode()
+    assert 'fetch("/api/stop",' not in content.decode()
+    assert 'fetch(' + json.dumps(prefix + "/api/stop") + ',' in content.decode()
     assert http_server(prefix + "/api/info")[0] == 200
     assert http_server(prefix + "/api/start", "POST", {}, headers={"X-Koww-Token": manager.token})[0] == 403
     assert http_server(prefix + "/api/start", "POST", {}, headers={"X-Koww-Token": microphone.token})[0] == 200
@@ -501,6 +503,19 @@ def test_http_mic_assets_use_integrated_prefix_and_their_own_token(manager, http
         headers={"Content-Type": "application/octet-stream", "X-Koww-Token": microphone.token,
                  "X-Koww-Session": "fixture-session", "X-Koww-Sequence": "0"})
     assert status == 200 and json.loads(content)["bytes"] == 2560
+    status, content, _ = http_server(prefix + "/api/stop", "POST", {"session_id": "fixture-session"},
+        headers={"X-Koww-Token": microphone.token})
+    assert status == 200 and json.loads(content)["stopped"] == "fixture-session"
+
+
+def test_http_mic_initialization_failure_returns_recoverable_json(manager, http_server, monkeypatch):
+    project = create(manager)
+    def unavailable(project_id):
+        raise RuntimeError("Model initialization failed")
+    monkeypatch.setattr(manager, "microphone", unavailable)
+    status, content, _ = http_server(f"/mic/{project['id']}/api/info")
+    assert status == 400
+    assert json.loads(content) == {"error": "Model initialization failed"}
 
 
 def worker_request(tmp_path, stage="frontend"):
