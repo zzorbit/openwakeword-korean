@@ -283,7 +283,10 @@ def validate_cpu_prefix_import(project, bundle, manifest, output, stage, candida
         archived_checkpoint = json.loads(archive.read("checkpoint.json"))
         require(archived_checkpoint == checkpoint, "CPU checkpoint backup changed")
         with archive.open("clips_prefix.jsonl") as stream:
-            require(hashlib.file_digest(stream, "sha256").hexdigest() == prefix["journal_prefix_sha256"], "CPU clip-prefix backup changed")
+            checksum = hashlib.sha256()
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                checksum.update(block)
+            require(checksum.hexdigest() == prefix["journal_prefix_sha256"], "CPU clip-prefix backup changed")
         archived_scores = np.load(io.BytesIO(archive.read("frames_prefix.npy")), allow_pickle=False)
         require(archived_scores.dtype == np.float32 and archived_scores.ndim == 2
                 and hashlib.sha256(archived_scores.tobytes()).hexdigest() == prefix["frame_prefix_sha256"], "CPU score-prefix backup changed")

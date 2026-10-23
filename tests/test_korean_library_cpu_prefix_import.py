@@ -129,6 +129,12 @@ def test_valid_cpu_prefix_import_is_exact_and_read_only(imported):
     assert _validate(imported, sources=None)["prefix"] == imported["receipt"]["prefix"]
 
 
+def test_valid_import_supports_python310_without_hashlib_file_digest(imported, monkeypatch):
+    # The fixture is complete before removing the API introduced in Python 3.11.
+    monkeypatch.delattr(hashlib, "file_digest", raising=False)
+    assert _validate(imported) == imported["receipt"]
+
+
 @pytest.mark.parametrize("name", ["frames.npy", "clips.jsonl"])
 def test_changed_original_cpu_work_is_rejected_even_outside_committed_prefix(imported, name):
     path = imported["cpu_work"] / name
