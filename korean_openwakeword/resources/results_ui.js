@@ -99,7 +99,7 @@
         ? `현재 실행 모델: ${modelLabel(report, actualId)}${size ? ` · 모델 ${size}개 점수 평균` : ""}`
         : "선택한 모델 없음";
     }
-    if ($("denominators")) $("denominators").textContent = "소음 평균은 울림 없이 SNR 20·15·10·5 dB로 시험한 결과입니다.";
+    if ($("denominators")) $("denominators").textContent = "종합 성공률은 소음과 목소리가 같은 크기인 시험을 제외합니다. 소음 평균은 울림 없이 소음이 아주 작을 때부터 클 때까지의 평균입니다.";
   }
   function option(select, value, text) {
     const node = document.createElement("option"); node.value = value; node.textContent = text; select.append(node);
