@@ -39,7 +39,7 @@ MIT에 실제 공간 대응표가 없다면 전체 자료를 하나의 보수적
 **2. 변환·분리·대표 검수 목록 만들기**
 
 ```powershell
-koww prepare-materials --project projects/bora/project.json --input shared/zeroth/train_data_01 --source-index shared/zeroth_index.jsonl --hours 1 --output projects/bora/prepared/korean_v1
+koww prepare-materials --project models/bora/project.json --input shared/zeroth/train_data_01 --source-index shared/zeroth_index.jsonl --hours 1 --output models/bora/prepared/korean_v1
 ```
 
 원본을 보존하고 16kHz·모노·PCM16 음원, 기술 검사, 학습 분량, 개발용 예약 자료, 대표 청취 목록을 만듭니다. `--hours`는 고유 학습 분량이며 같은 파일을 복제해 채우지 않습니다. 자료가 부족하면 `target_met: false`와 실제 시간을 보고합니다.
@@ -55,9 +55,9 @@ koww prepare-materials --project projects/bora/project.json --input shared/zerot
 **3. 검수 답변 적용·학습 자료 연결**
 
 ```powershell
-koww review --project projects/bora/project.json --queue projects/bora/prepared/korean_v1/representatives.jsonl --pool-manifest projects/bora/prepared/korean_v1/train_sources.jsonl --kind content
+koww review --project models/bora/project.json --queue models/bora/prepared/korean_v1/representatives.jsonl --pool-manifest models/bora/prepared/korean_v1/train_sources.jsonl --kind content
 # 대표 음원을 듣고 자료 묶음 사용 동의·저장을 완료합니다. Ctrl+C로 서버를 종료합니다.
-koww admit-materials --project projects/bora/project.json --preparation projects/bora/prepared/korean_v1/preparation_receipt.json --pools korean_negative --connect
+koww admit-materials --project models/bora/project.json --preparation models/bora/prepared/korean_v1/preparation_receipt.json --pools korean_negative --connect
 ```
 
 저장된 답변을 서버에서 읽어 승인 목록을 연결합니다. 폐기한 대표의 원본은 제외하고 재검수 항목이 남으면 중단합니다. 대표 검수와 묶음 사용 동의는 듣지 않은 모든 음원의 개별 청취를 뜻하지 않습니다. 일반·한국어 비호출은 고정 2초 구간까지 준비하므로 `project.json`을 직접 바꿀 필요가 없습니다.
@@ -69,7 +69,7 @@ koww admit-materials --project projects/bora/project.json --preparation projects
 AudioSet·음악을 각각 준비·검수했다면 `admit-materials --pools noise`로 승인 목록만 만들고, 다음으로 함께 연결합니다. 이 예시의 경로는 각 준비 결과에 맞추세요.
 
 ```powershell
-koww connect-materials --project projects/bora/project.json --admissions projects/bora/prepared/audioset_v1/admitted/admission_receipt.json projects/bora/prepared/music_v1/admitted/admission_receipt.json --pools noise
+koww connect-materials --project models/bora/project.json --admissions models/bora/prepared/audioset_v1/admitted/admission_receipt.json models/bora/prepared/music_v1/admitted/admission_receipt.json --pools noise
 ```
 
 출처·승인·해시·교차 분할을 다시 확인한 뒤 비어 있는 학습 목록에 한 번 연결합니다. 이미 시작한 실험은 바꾸지 않습니다. 중단된 준비·승인·연결은 같은 입력과 명령으로 재개하며, 기존 결과와 내용이 다르면 새 출력 폴더를 사용합니다.
@@ -80,7 +80,7 @@ koww connect-materials --project projects/bora/project.json --admissions project
 
 자료 목록(manifest)은 **어떤 파일을 어디에 사용할지 적는 JSONL 파일**입니다. JSONL은 한 줄에 하나의 JSON 객체를 저장하는 형식입니다. 호출어는 생성 명령, 공개 음원은 위 준비·승인 명령이 목록을 만듭니다. 직접 작성하거나 외부 자료를 연결할 때는 아래 필드를 사용합니다.
 
-경로는 `project.json`이 있는 폴더를 기준으로 적습니다. 예를 들어 `data/negative/source_0001.wav`는 `projects/bora/data/negative/source_0001.wav`를 가리킵니다. 여러 프로젝트에서 공유하는 음원은 절대 경로로 연결할 수도 있습니다.
+경로는 `project.json`이 있는 폴더를 기준으로 적습니다. 예를 들어 `data/negative/source_0001.wav`는 `models/bora/data/negative/source_0001.wav`를 가리킵니다. 여러 프로젝트에서 공유하는 음원은 절대 경로로 연결할 수도 있습니다.
 
 | 필드 | 적을 내용 |
 | --- | --- |
@@ -103,7 +103,7 @@ koww connect-materials --project projects/bora/project.json --admissions project
 Windows PowerShell 예시입니다. 출력한 값을 자료 목록의 `sha256`에 넣습니다.
 
 ```powershell
-((Get-FileHash -LiteralPath 'projects/bora/data/negative/source_0001.wav' -Algorithm SHA256).Hash).ToLower()
+((Get-FileHash -LiteralPath 'models/bora/data/negative/source_0001.wav' -Algorithm SHA256).Hash).ToLower()
 ```
 
 다운로드 완료 기록(receipt)은 파일이 정확히 내려받아졌다는 근거입니다. 고정 제공 정책의 자동 검사·연결 근거나 직접 추가한 자료의 내용 검수 승인과는 별개입니다.
@@ -112,7 +112,7 @@ Windows PowerShell 예시입니다. 출력한 값을 자료 목록의 `sha256`�
 
 직접 추가한 자료가 설명한 범주에 맞고 사용 가능한지 대표 구간을 듣습니다. 깨짐·부적절한 내용·실제로 포함된 호출어 등 문제가 있는 원본은 제외합니다. 모든 음원을 새로 STT하거나 모든 학습 구간을 하나씩 청취하지는 않습니다.
 
-`projects/bora/review/public_queue.jsonl`에 다음 형태의 검수 항목을 준비합니다. 아래 JSON은 읽기 쉽게 줄을 나누었으며, **실제 JSONL에는 항목 하나를 한 줄로 저장**합니다. 경로·해시·출처·이용조건은 실제 값으로 바꾸세요.
+`models/bora/review/public_queue.jsonl`에 다음 형태의 검수 항목을 준비합니다. 아래 JSON은 읽기 쉽게 줄을 나누었으며, **실제 JSONL에는 항목 하나를 한 줄로 저장**합니다. 경로·해시·출처·이용조건은 실제 값으로 바꾸세요.
 
 ```json
 {
@@ -133,7 +133,7 @@ Windows PowerShell 예시입니다. 출력한 값을 자료 목록의 `sha256`�
 `path`는 들을 대표 구간, `reviewed_source`는 그 구간이 나온 원본입니다. 대표 파일을 원본과 연결해야 해당 원본을 사용할 수 있습니다.
 
 ```powershell
-koww review --project projects/bora/project.json --queue projects/bora/review/public_queue.jsonl --kind content --port 8790
+koww review --project models/bora/project.json --queue models/bora/review/public_queue.jsonl --kind content --port 8790
 ```
 
 [http://127.0.0.1:8790/](http://127.0.0.1:8790/)에서 검수하고 저장합니다. 반환 결과의 `admission` 객체를 보존한 원본 항목에 넣으세요. 이 객체는 변경되지 않는 승인 기록을 가리킵니다. 최신 화면 요약인 `review/content_admission.json`을 대신 연결하면 후속 검수 때 내용이 바뀔 수 있습니다.
@@ -179,7 +179,7 @@ koww review --project projects/bora/project.json --queue projects/bora/review/pu
 목록을 준비한 뒤 다음으로 파일·출처·자료 분리를 확인합니다.
 
 ```powershell
-koww audit --project projects/bora/project.json
+koww audit --project models/bora/project.json
 ```
 
 ## 유사어 학습 자료
@@ -246,9 +246,9 @@ koww audit --project projects/bora/project.json
 ```python
 from pathlib import Path
 
-positive = Path("projects/bora/data/eval/paired_v1/manifest.jsonl")
-negative = Path("projects/bora/data/eval/development_negative.jsonl")
-output = Path("projects/bora/data/eval/development.jsonl")
+positive = Path("models/bora/data/eval/paired_v1/manifest.jsonl")
+negative = Path("models/bora/data/eval/development_negative.jsonl")
+output = Path("models/bora/data/eval/development.jsonl")
 
 for source in (positive, negative):
     if not source.is_file():

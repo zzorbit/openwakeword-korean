@@ -9,7 +9,7 @@ const flush = async () => { for (let index = 0; index < 12; index++) await new P
 const tests = [];
 async function test(name, action) { await action(); tests.push(name); }
 
-function browser({ noBoot = false, initialState, recipeError = false, recipeOverrides = {}, recipeList, logResponse = "ready", logError = false } = {}) {
+function browser({ noBoot = false, initialState, recipeError = false, recipeOverrides = {}, recipeList, recipeDirectory = "F:\\test\\models", logResponse = "ready", logError = false } = {}) {
   const elements = new Map(), calls = [], intervals = [];
   class Element {
     constructor(tag = "div") { this.tagName = tag; this.value = ""; this.textContent = ""; this.children = []; this.handlers = {}; this.attributes = {}; this.hidden = false; this.disabled = false; this.open = false; this.srcWrites = 0; }
@@ -29,7 +29,7 @@ function browser({ noBoot = false, initialState, recipeError = false, recipeOver
   const fetch = async (url, options) => {
     calls.push({ url, options });
     if (url === "/api/state") { if (state.fetchError) throw state.fetchError; return json(state.value); }
-    if (url === "/api/recipes") return recipeError ? json({ error: "recipe failure" }, 500) : json({ presets });
+    if (url === "/api/recipes") return recipeError ? json({ error: "recipe failure" }, 500) : json({ presets, default_directory: recipeDirectory });
     if (url === "/api/projects" && options.method === "POST") {
       const payload = JSON.parse(options.body);
       const project = { id: "bora", wakeword: payload.wakeword, status: "ready", preset: payload.preset, stage: "data", error: null };
@@ -180,11 +180,33 @@ function storageBudgetRecipe(overrides = {}) {
 (async () => {
   await test("budget request preserves selected values and does not invent overrides", () => {
     const { helpers } = browser({ noBoot: true });
-    const result = helpers.requestBody({ wakeword: " 보라야 ", directory: "", advanced: { positive_originals: "", generic_hours: "" } }, "check");
+    const result = helpers.requestBody({ wakeword: " 보라야 ", advanced: { positive_originals: "", generic_hours: "" } }, "check");
     assert.deepEqual(JSON.parse(JSON.stringify(result)), { wakeword: "보라야", preset: "check" });
     const custom = helpers.requestBody({ wakeword: "보라야", directory: "F:\\bora", advanced: { positive_originals: "500", augmentation_rounds: "3", korean_hours: "1.5" } }, "trial");
-    assert.equal(custom.directory, "F:\\bora"); assert.equal(custom.advanced.positive_originals, 500); assert.equal(custom.advanced.korean_hours, 1.5);
-    for (const value of ["-1", "1.5", "Infinity"]) assert.throws(() => helpers.requestBody({ wakeword: "보라야", directory: "", advanced: { positive_originals: value } }, "check"));
+    assert.equal(Object.hasOwn(custom, "directory"), false); assert.equal(custom.advanced.positive_originals, 500); assert.equal(custom.advanced.korean_hours, 1.5);
+    for (const value of ["-1", "1.5", "Infinity"]) assert.throws(() => helpers.requestBody({ wakeword: "보라야", advanced: { positive_originals: value } }, "check"));
+  });
+  await test("new model storage is a server-provided read-only location without a directory override", async () => {
+    const b = browser({ recipeDirectory: "F:\\workspace\\models" }); await flush();
+    assert.equal(b.elements.has("directory"), false);
+    assert.equal(b.elements.has("storage-note"), false);
+    assert.equal(b.elements.get("storage-directory").textContent, "F:\\workspace\\models");
+    assert.doesNotMatch(html, /(?:id|name)="directory"|새 프로젝트/);
+    assert.doesNotMatch(script, /\$\("directory"\)|form\.directory/);
+    b.elements.get("wakeword").value = "보라야";
+    await b.submit("create-form");
+    const request = b.calls.find(call => call.url === "/api/projects" && call.options.method === "POST");
+    assert.deepEqual(JSON.parse(request.options.body), { wakeword: "보라야", preset: "check" });
+  });
+  await test("existing model locations remain visible verbatim and storage labels are escaped as text", async () => {
+    const project = { id: "bora", wakeword: "보라야", status: "ready", directory: "F:\\old-workspace\\projects\\bora" };
+    const label = "F:\\<img src=x onerror=bad()>\\models";
+    const b = browser({ initialState: { projects: [project], active_project_id: "bora" }, recipeDirectory: label }); await flush();
+    assert.equal(b.elements.get("project-directory").textContent, project.directory);
+    assert.equal(b.elements.get("storage-directory").textContent, label);
+    assert.equal(b.elements.get("storage-directory").children.length, 0);
+    await b.click("new-project");
+    assert.match(textOf(b.elements.get("project-select")), /새 모델/);
   });
   await test("unknown progress and ETA stay unknown, and units are formatted separately", () => {
     const { helpers } = browser({ noBoot: true });

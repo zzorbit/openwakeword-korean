@@ -144,7 +144,6 @@
   }
   function requestBody(form, preset) {
     const result = { wakeword: form.wakeword.trim(), preset };
-    if (form.directory.trim()) result.directory = form.directory.trim();
     const advanced = {};
     const integerKeys = new Set(["positive_originals", "augmentation_rounds", "updates"]);
     for (const [key, raw] of Object.entries(form.advanced || {})) {
@@ -491,7 +490,7 @@
     const projects = snapshot.projects || [];
     const selector = $("project-select");
     replace(selector, projects.map(project => { const option = element("option", project.wakeword || project.id); option.value = project.id; return option; }));
-    if (newProject) { const option = element("option", "새 프로젝트"); option.value = ""; selector.append(option); selector.value = ""; }
+    if (newProject) { const option = element("option", "새 모델"); option.value = ""; selector.append(option); selector.value = ""; }
     else selector.value = selectedId;
     $("project-switch").hidden = !projects.length;
     selector.hidden = !projects.length; $("new-project").hidden = !projects.length;
@@ -757,12 +756,12 @@
   async function create(event) {
     event.preventDefault(); if (busy) return;
     let body;
-    try { body = requestBody({ wakeword: $("wakeword").value, directory: $("directory").value, advanced: { positive_originals: $("adv-originals").value, augmentation_rounds: $("adv-rounds").value, updates: $("adv-updates").value, generic_hours: $("adv-generic").value, korean_hours: $("adv-korean").value } }, selectedPreset); }
+    try { body = requestBody({ wakeword: $("wakeword").value, advanced: { positive_originals: $("adv-originals").value, augmentation_rounds: $("adv-rounds").value, updates: $("adv-updates").value, generic_hours: $("adv-generic").value, korean_hours: $("adv-korean").value } }, selectedPreset); }
     catch (error) { message(error.message, true); return; }
-    busy = true; message("프로젝트를 만들고 있습니다."); render();
+    busy = true; message("모델 학습 폴더를 만들고 있습니다."); render();
     try {
       const result = await api("/api/projects", "POST", body), project = result.project || result;
-      if (!project.id) throw new Error("프로젝트 생성 결과에 식별자가 없습니다. 중복 생성 전에 목록을 확인하세요.");
+      if (!project.id) throw new Error("모델 생성 결과에 식별자가 없습니다. 중복 생성 전에 목록을 확인하세요.");
       selectedId = project.id; newProject = false;
       await refresh();
       if (!activeStatuses.has(project.status)) await api(`/api/projects/${encodeURIComponent(selectedId)}/start`, "POST", {});
@@ -828,8 +827,7 @@
     try {
       const result = await api("/api/recipes"); recipes = Array.isArray(result.presets) ? result.presets : [];
       if (!recipes.some(recipe => recipe.id === selectedPreset)) selectedPreset = recipes[0]?.id || "check";
-      if (result.default_directory) $("directory").placeholder = result.default_directory;
-      if (result.storage_note) $("storage-note").textContent = result.storage_note;
+      if (typeof result.default_directory === "string" && result.default_directory) $("storage-directory").textContent = result.default_directory;
       recipeReady = recipes.length > 0; renderPresets(); renderRecipe(); render();
     } catch (error) { message("작업 규모를 불러오지 못했습니다. " + error.message, true); }
     pollTimer = setInterval(async () => { if (!document.hidden) { await refresh(); if ($("log-details").open) await loadLog(); } }, 3000);

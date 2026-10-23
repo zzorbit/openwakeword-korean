@@ -117,30 +117,37 @@ def test_create_presets_only_configure_without_work(manager, preset, originals, 
 
 
 
-def test_new_official_example_selection_policy_is_frozen_but_not_added_to_legacy_attach(manager, tmp_path):
+def test_new_official_example_selection_policy_is_frozen_but_not_added_to_legacy_resume(manager):
     view = create(manager)
     state = manager._load(view["id"])
     assert state["settings"]["official_noise_acquisition_policy"] == "selective_fma_small_v1"
     assert read_json(state["project"])["official_noise_acquisition_policy"] == "selective_fma_small_v1"
-    legacy = create_project(tmp_path / "legacy", "다음아", "legacy", positive_originals=1000,
-                            augmentation_rounds=1, updates=10000, generic_hours=2000,
-                            korean_hours=1, validation_voice_families=30)
+    registered = manager.create({"wakeword": "다음아", "preset": "check"})
+    legacy_state = manager._load(registered["id"])
+    legacy = Path(legacy_state["project"])
+    config = read_json(legacy)
+    config.pop("official_noise_acquisition_policy")
+    write_json(legacy, config)
+    legacy_state["settings"].pop("official_noise_acquisition_policy")
+    manager._save(legacy_state)
     before = digest(legacy)
-    attached = manager.create({"wakeword": "다음아", "preset": "check", "directory": str(legacy.parent)})
+    attached = manager.create({"wakeword": "다음아", "preset": "check"})
     attached_state = manager._load(attached["id"])
     assert "official_noise_acquisition_policy" not in attached_state["settings"]
     assert digest(legacy) == before
 
 
-def test_retired_common_transport_is_preserved_on_attach_without_rewriting_config(manager, tmp_path):
-    project = create_project(tmp_path / "saved016", "다음아", "saved016", positive_originals=1000,
-                             augmentation_rounds=1, updates=10000, generic_hours=2000,
-                             korean_hours=1, validation_voice_families=30)
+def test_retired_common_transport_is_preserved_on_resume_without_rewriting_config(manager):
+    registered = manager.create({"wakeword": "다음아", "preset": "check"})
+    saved_state = manager._load(registered["id"])
+    project = Path(saved_state["project"])
     config = read_json(project)
     config["common_download_policy"] = "selected_common_zip_v1"
     write_json(project, config)
+    saved_state["settings"]["common_download_policy"] = "selected_common_zip_v1"
+    manager._save(saved_state)
     before = project.read_bytes()
-    view = manager.create({"wakeword": "다음아", "preset": "check", "directory": str(project.parent)})
+    view = manager.create({"wakeword": "다음아", "preset": "check"})
     saved = manager._load(view["id"])
     assert saved["settings"]["common_download_policy"] == "selected_common_zip_v1"
     assert view["status"] == "ready"
@@ -193,7 +200,7 @@ def test_registered_v2_workflow_keeps_its_frozen_protocol_when_opened_after_upgr
     manager._save(state)
     path = manager._path(view["id"])
     original = path.read_bytes()
-    reopened = create(manager, directory=str(Path(state["project"]).parent))
+    reopened = create(manager)
     assert reopened["id"] == view["id"]
     assert manager._load(view["id"])["settings"]["evaluation_policy"] == common_evaluation_policy(2)
     assert path.read_bytes() == original
@@ -224,69 +231,54 @@ def test_invalid_create_types_are_actionable_validation_errors(manager, payload)
 
 
 def test_invalid_rounds_never_leave_an_unregistered_partial_project(manager, tmp_path):
-    target = tmp_path / "invalid"
+    target = manager.workspace / "models" / "보라야"
     with pytest.raises(ValueError):
-        create(manager, directory=str(target), advanced={"augmentation_rounds": 2})
+        create(manager, advanced={"augmentation_rounds": 2})
     assert not (target / "project.json").exists()
     assert manager.registry["projects"] == {}
 
 
-@pytest.mark.parametrize("protected", [".codex", ".CoDeX", ".git", ".GIT"])
-def test_storage_guard_rejects_internal_paths(manager, tmp_path, protected):
-    with pytest.raises(ValueError, match=".codex|.git"):
-        create(manager, directory=str(tmp_path / protected / "models"))
+@pytest.mark.parametrize("path", [".codex/models", ".git/models", "custom-models"])
+def test_creation_rejects_caller_storage_paths(manager, tmp_path, path):
+    target = tmp_path / path
+    with pytest.raises(ValueError, match="자동"):
+        create(manager, directory=str(target))
+    assert not target.exists()
 
 
-def test_create_accepts_explicit_directory_and_preserves_existing_project(manager, tmp_path):
-    target = tmp_path / "chosen-project"
-    original = create_project(target, "보라야", "standalone", positive_originals=1000,
-                              augmentation_rounds=1, updates=10000, generic_hours=2000, korean_hours=1)
-    marker = target / "data" / "saved-user-data.bin"
-    marker.write_bytes(b"preserve this original data")
-    before = digest(original)
-    first = create(manager, directory=str(target))
-    again = create(manager, directory=str(target))
-    assert first["id"] == again["id"] and digest(original) == before
-    assert marker.read_bytes() == b"preserve this original data"
-    adopted = manager._load(first["id"])
-    assert adopted["settings"]["material_acquisition_policy"] == "automatic_v2"
-    assert "audio_storage_policy" not in adopted["settings"]
-    assert "audio_storage_policy" not in read_json(original)
-
-
-def test_registered_project_never_silently_accepts_conflicting_word(manager, tmp_path):
-    target = tmp_path / "existing"
-    first = create(manager, directory=str(target))
+def test_registered_project_never_silently_accepts_conflicting_word(manager):
+    first = create(manager)
     project = Path(manager._load(first["id"])["project"])
     before = digest(project)
-    with pytest.raises(ValueError, match="기존|다릅니다|일치"):
-        create(manager, directory=str(target), wakeword="다른호출어")
+    second = create(manager, wakeword="다른호출어")
+    assert first["id"] != second["id"]
+    assert Path(second["directory"]).name == "다른호출어"
     assert digest(project) == before
 
 
-def test_conflicting_unregistered_or_nonempty_directory_is_not_overwritten(manager, tmp_path):
-    target = tmp_path / "existing"
+def test_conflicting_unregistered_or_nonempty_directory_is_not_overwritten(manager):
+    target = manager.workspace / "models" / "보라야"
     project = create_project(target, "춘식아", "other")
     before = digest(project)
-    with pytest.raises(ValueError):
-        create(manager, directory=str(target))
+    created = create(manager)
+    assert Path(created["directory"]) != target
     assert digest(project) == before
-    unrelated = tmp_path / "unrelated"
+    unrelated = manager.workspace / "models" / "다음아"
     unrelated.mkdir()
     (unrelated / "important.txt").write_text("keep", encoding="utf-8")
-    with pytest.raises(ValueError):
-        create(manager, directory=str(unrelated))
+    created = create(manager, wakeword="다음아")
+    assert Path(created["directory"]) != unrelated
     assert (unrelated / "important.txt").read_text() == "keep"
 
 
-def test_final_locked_project_cannot_be_adopted(manager, tmp_path):
-    target = tmp_path / "final"
+def test_final_locked_unregistered_project_is_preserved_without_adoption(manager):
+    target = manager.workspace / "models" / "보라야"
     project = create_project(target, "보라야", "standalone", positive_originals=1000,
                              augmentation_rounds=1, updates=10000)
     write_json(target / "final_lock.json", {"state": "frozen"})
     before = digest(project)
-    with pytest.raises(ValueError):
-        create(manager, directory=str(target))
+    view = create(manager)
+    assert Path(view["directory"]) != target
     assert digest(project) == before
 
 
@@ -295,8 +287,8 @@ def test_duplicate_start_and_single_active_project_guard(manager):
     manager.start(first["id"])
     manager.start(first["id"])
     assert len(manager.workers.items) == 1
-    second = create(manager)
-    with pytest.raises(ValueError, match="다른 프로젝트"):
+    second = create(manager, wakeword="다음아")
+    with pytest.raises(ValueError, match="다른 모델 학습"):
         manager.start(second["id"])
     assert len(manager.workers.items) == 1
 
@@ -327,7 +319,7 @@ def test_completed_legacy_project_never_blocks_next_project_or_rewrites_history(
                       auto_continue=True, implementation_id="historical-version")
     path = manager._path(first["id"])
     preserved = path.read_bytes()
-    second = create(manager)
+    second = create(manager, wakeword="다음아")
     assert manager.start(second["id"])["status"] == "running"
     assert len(manager.workers.items) == 1
     assert path.read_bytes() == preserved

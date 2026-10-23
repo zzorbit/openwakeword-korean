@@ -48,8 +48,9 @@ p{margin:8px 0}
 .preset-title{font-size:16px;font-weight:750}
 .preset-description{font-size:13px;color:var(--muted);margin:8px 0 11px;min-height:42px}
 .preset-summary{font-size:12px;line-height:1.9;margin:0;color:var(--muted)}
-.folder-field input{width:100%}
-.optional{font-size:12px;font-weight:500;color:var(--muted);margin-left:7px}
+.storage-location{display:flex;align-items:baseline;flex-wrap:wrap;gap:6px 14px;font-size:13px}
+.storage-location>span{font-weight:650}
+.storage-location .directory{margin:0;min-width:0}
 .hint{color:var(--muted);font-size:13px;line-height:1.65}
 .advanced{margin-top:22px;border-top:1px solid var(--border);padding-top:16px}
 .advanced summary,.log-card summary{cursor:pointer;font-weight:650}

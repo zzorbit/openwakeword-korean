@@ -1,20 +1,20 @@
 # 저장 위치 안내
 
-학습 자료를 둘 드라이브와 폴더는 사용자가 선택합니다. **SSD와 HDD 모두 사용할 수 있습니다.** 자료가 들어갈 실제 위치와 여유 공간을 먼저 확인하세요.
+웹에서 만드는 모델의 자료와 결과는 작업 폴더의 `models/호출어`에 자동 저장됩니다. **SSD와 HDD 모두 사용할 수 있습니다.** 자료가 들어갈 실제 위치와 여유 공간을 먼저 확인하세요.
 
 ## 무엇이 어디에 저장되나요?
 
 | 항목 | 기본 위치 |
 | --- | --- |
-| 생성 음성·학습 데이터·학습 결과 | `koww init --output`으로 만든 프로젝트 폴더 |
+| 생성 음성·학습 데이터·학습 결과 | 웹은 작업 폴더의 `models/호출어`, 개별 명령은 `koww init --output`으로 지정한 폴더 |
 | 공개 자료 다운로드 | 다운로드 명령의 `--output`으로 지정한 파일 |
 | 모델 다운로드·임시 파일 | 프로젝트 폴더의 `cache` |
 | 설치 스크립트를 사용한 다운로드 캐시·임시 파일 | 저장소 폴더의 `storage/runtime_cache` |
 
-프로젝트별 저장 위치는 다음 명령으로 확인합니다.
+개별 학습의 저장 위치는 다음 명령으로 확인합니다. 아래는 명령으로 만든 `models/bora`의 예시입니다.
 
 ```powershell
-koww storage --project projects/bora/project.json
+koww storage --project models/bora/project.json
 ```
 
 ## 설치할 때의 저장 위치
@@ -33,7 +33,7 @@ Windows PowerShell에서 저장소 폴더로 이동한 뒤, 패키지를 설치�
 
 ```powershell
 $env:KOWW_CACHE_ROOT = Join-Path (Get-Location).Path 'shared/cache'
-koww storage --project projects/bora/project.json
+koww storage --project models/bora/project.json
 ```
 
 `Use-ProjectStorage.ps1`도 이 값을 설정하므로, 공유 캐시를 직접 지정하려면 **스크립트를 실행한 다음** 위 명령을 사용하세요. 공개 음성·소음 자료는 `shared/`에 한 번 내려받고 각 프로젝트의 자료 목록에서 연결해 재사용할 수 있습니다.

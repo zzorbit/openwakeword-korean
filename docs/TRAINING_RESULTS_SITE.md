@@ -4,11 +4,11 @@
 
 ## 사이트 만들고 열기
 
-아래는 최종 평가 결과가 `projects/bora/reports/final_v1`에 저장된 경우입니다.
+아래는 최종 평가 결과가 `models/bora/reports/final_v1`에 저장된 경우입니다.
 
 ```powershell
-koww site --evaluation projects/bora/reports/final_v1 --output projects/bora/reports/final_v1/site
-koww serve --directory projects/bora/reports/final_v1/site --port 8791
+koww site --evaluation models/bora/reports/final_v1 --output models/bora/reports/final_v1/site
+koww serve --directory models/bora/reports/final_v1/site --port 8791
 ```
 
 브라우저에서 [http://127.0.0.1:8791/](http://127.0.0.1:8791/)을 여세요. 서버를 실행한 터미널은 열어 두어야 합니다. 이미 만든 사이트를 다시 열 때는 `serve` 명령만 실행하세요.

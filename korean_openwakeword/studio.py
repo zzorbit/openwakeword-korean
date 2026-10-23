@@ -76,6 +76,22 @@ def _safe_root(path):
     return path
 
 
+def _model_folder_name(word):
+    """The same Hangul-only input contract as project.json, before any mkdir."""
+    if not re.fullmatch(r"[가-힣]+", word):
+        raise ValueError("호출어는 한글로 입력하세요. 경로나 특수 문자는 사용할 수 없습니다.")
+    # Keep even unusually long calls below the Windows filename limit. The
+    # complete original word remains in project.json and the workflow.
+    return word if len(word) <= 64 else word[:64] + "_" + identity(word)[:12]
+
+
+def _model_choice(word, preset, settings):
+    """Only user choices identify a saved run; upgrades keep its frozen policy."""
+    return {"wakeword": word, "preset": preset,
+            **{key: settings[key] for key in ("originals", "rounds", "updates")},
+            **{key: float(settings[key]) for key in ("generic_hours", "korean_hours")}}
+
+
 def _elapsed(start):
     try:
         return max(0, time.time() - datetime.fromisoformat(start).timestamp())
@@ -298,14 +314,14 @@ class StudioManager:
 
     def _path(self, project_id):
         if project_id not in self.registry["projects"]:
-            raise ValueError("등록되지 않은 프로젝트입니다.")
+            raise ValueError("등록되지 않은 모델 학습입니다.")
         project = _safe_root(self.registry["projects"][project_id])
         return project.parent / ".studio" / "workflow.json"
 
     def _load(self, project_id):
         state = read_json(self._path(project_id))
         if state.get("id") != project_id or state.get("workspace") != str(self.workspace):
-            raise ValueError("저장된 프로젝트 실행 근거가 일치하지 않습니다.")
+            raise ValueError("저장된 모델 학습의 실행 근거가 일치하지 않습니다.")
         return state
 
     def _save(self, state):
@@ -406,8 +422,8 @@ class StudioManager:
                     settings, base_archive_bytes=recipe["known_download_bytes"])
                 recipe["estimated_workspace_bytes_scope"] = "legacy_partial_not_total"
             presets.append({**settings, **recipe, "id": key, "label": label})
-        return {"presets": presets, "default_directory": str(self.workspace / "projects"),
-                "storage_note": "선택한 작업 폴더에 자료·모델·캐시를 저장합니다. 상용 모델용의 용량 계산 근거에서 확인분과 미확정 항목을 구분해 볼 수 있습니다."}
+        return {"presets": presets, "default_directory": str(self.workspace / "models"),
+                "storage_note": "호출어별 학습 자료와 결과를 models 폴더에 자동으로 저장합니다. 공통 자료와 캐시는 작업 폴더 안에서 공유합니다."}
 
     def create(self, payload):
         from .studio_steps import preset_settings, workflow_plan
@@ -421,8 +437,8 @@ class StudioManager:
             overrides = payload.get("advanced") or {}
             if not isinstance(overrides, dict):
                 raise ValueError("세부 설정 형식이 올바르지 않습니다.")
-            if payload.get("directory") is not None and not isinstance(payload["directory"], (str, Path)):
-                raise ValueError("저장 폴더 경로를 문자열로 입력하세요.")
+            if payload.get("directory") not in (None, ""):
+                raise ValueError("모델 저장 폴더는 자동으로 정해집니다. 저장 경로를 입력하지 마세요.")
             mapping = {"positive_originals": "originals", "augmentation_rounds": "rounds", "updates": "updates",
                        "generic_hours": "generic_hours", "korean_hours": "korean_hours"}
             if set(overrides) - set(mapping):
@@ -430,70 +446,57 @@ class StudioManager:
             for key, value in overrides.items():
                 if value is not None and value != "":
                     settings[mapping[key]] = value
-            project_id = uuid.uuid4().hex[:12]
+            if type(settings["rounds"]) is not int:
+                raise ValueError("증강 횟수는 정수 1 / 3 / 5로 입력하세요.")
             word = payload.get("wakeword", "").strip()
-            target = _safe_root(payload.get("directory") or self.workspace / "projects" / ("word_" + project_id))
+            folder_name = _model_folder_name(word)
+            plan = workflow_plan(settings)
+            choice = _model_choice(word, preset, settings)
+            # Resume registered runs wherever they were originally stored,
+            # including legacy projects/... and manually attached paths.
+            # Do not rewrite their settings, contracts or immutable evidence.
+            for known_id in self.registry["projects"]:
+                saved = self._load(known_id)
+                if _model_choice(saved["wakeword"], saved["preset"], saved["settings"]) == choice:
+                    if (Path(saved["project"]).parent / "final_lock.json").exists() and saved["status"] != "completed":
+                        raise ValueError("최종 평가로 잠긴 모델 학습입니다. 기존 자료와 평가 잠금을 유지합니다.")
+                    self.registry["active_project_id"] = known_id
+                    write_json(self.registry_path, self.registry)
+                    return self.describe(saved)
+            models = self.workspace / "models"
+            if _safe_root(models) != models or (models.exists() and not models.is_dir()):
+                raise ValueError("models 저장 폴더가 다른 위치를 가리키거나 파일과 겹칩니다. 기존 자료를 확인하세요.")
+            target = models / folder_name
+            if _safe_root(target) != target:
+                raise ValueError("모델 저장 폴더가 다른 위치를 가리킵니다. 기존 자료를 확인하세요.")
+            if target.exists() and (not target.is_dir() or any(target.iterdir())):
+                # A different budget or unknown existing directory gets a
+                # separate deterministic destination, never an adoption.
+                target = models / (folder_name + "_" + identity(choice)[:12])
+                if _safe_root(target) != target:
+                    raise ValueError("모델 저장 폴더가 다른 위치를 가리킵니다. 기존 자료를 확인하세요.")
+                if target.exists() and (not target.is_dir() or any(target.iterdir())):
+                    raise ValueError("자동 저장 폴더에 등록되지 않은 자료가 있습니다. 기존 자료를 보존하고 폴더를 확인하세요.")
+            project_id = uuid.uuid4().hex[:12]
             project = target / "project.json"
-            if project.exists():
-                _, config = load_project(project)
-                expected = (word, settings["originals"], settings["rounds"], settings["updates"])
-                actual = (config["wakeword"], config["targets"]["positive_originals"], config["augmentation_rounds"], config["training"]["updates"])
-                if expected != actual or (target / "final_lock.json").exists():
-                    raise ValueError("기존 프로젝트와 선택한 호출어·작업량이 다릅니다. 기존 자료는 보존하고 새 폴더를 선택하세요.")
-                for known_id, known_path in self.registry["projects"].items():
-                    if Path(known_path) == project:
-                        self.registry["active_project_id"] = known_id
-                        write_json(self.registry_path, self.registry)
-                        return self.describe(self._load(known_id))
-                if (target / ".studio" / "workflow.json").exists():
-                    raise ValueError("이 프로젝트의 웹 실행 기록이 이미 있습니다. 처음 사용한 작업 폴더로 웹 화면을 여세요. 기존 기록은 덮어쓰지 않습니다.")
-                if _lock_paths(target):
-                    raise ValueError("기존 작업의 잠금이 있습니다. 실행 상태를 확인한 뒤 연결하세요.")
-                settings.update(generic_hours=config["targets"]["generic_hours"], korean_hours=config["targets"]["korean_hours"])
-                # A newly installed library must not change an attached
-                # project's frozen FMA download/retirement transaction.
-                settings.pop("fma_acquisition_policy", None)
-                if config.get("fma_acquisition_policy"):
-                    settings["fma_acquisition_policy"] = config["fma_acquisition_policy"]
-                settings.pop("official_noise_acquisition_policy", None)
-                if config.get("official_noise_acquisition_policy"):
-                    settings["official_noise_acquisition_policy"] = config["official_noise_acquisition_policy"]
-                if config.get("common_download_policy"):
-                    # Preserve a retired 0.16 request for viewing; new
-                    # preparation must not silently switch its transport.
-                    settings["common_download_policy"] = config["common_download_policy"]
-                if config.get("audio_storage_policy") != "canonical_flac_only_v1":
-                    # Attaching an existing CLI project must not reinterpret
-                    # its old WAV/cache/receipt contract as canonical storage.
-                    settings.update(material_acquisition_policy="automatic_v2")
-                    settings.pop("audio_storage_policy", None)
-                bank = read_json(target / "voices.json")
-                if sum(f["split"] == "validation" for f in bank["families"]) < settings["validation_references"]:
-                    # Reusing an existing project does not rewrite its voice bank
-                    # or pretend that the expanded protocol has been prepared.
-                    from .studio_steps import common_evaluation_policy
-                    policy = common_evaluation_policy(1)
-                    settings.update(evaluation_policy=policy,
-                                    **{k: policy[k] for k in ("validation_references", "validation_originals", "noise_sections")})
-            else:
-                create_project(target, word, "word_" + project_id,
-                               positive_originals=settings["originals"], augmentation_rounds=settings["rounds"],
-                               updates=settings["updates"], generic_hours=settings["generic_hours"],
-                               korean_hours=settings["korean_hours"],
-                               validation_voice_families=settings["validation_references"])
-                _, config = load_project(project)
-                config["audio_storage_policy"] = settings["audio_storage_policy"]
-                if settings.get("fma_acquisition_policy"):
-                    config["fma_acquisition_policy"] = settings["fma_acquisition_policy"]
-                if settings.get("official_noise_acquisition_policy"):
-                    config["official_noise_acquisition_policy"] = settings["official_noise_acquisition_policy"]
-                write_json(project, config)
+            create_project(target, word, "word_" + project_id,
+                           positive_originals=settings["originals"], augmentation_rounds=settings["rounds"],
+                           updates=settings["updates"], generic_hours=settings["generic_hours"],
+                           korean_hours=settings["korean_hours"],
+                           validation_voice_families=settings["validation_references"])
+            _, config = load_project(project)
+            config["audio_storage_policy"] = settings["audio_storage_policy"]
+            if settings.get("fma_acquisition_policy"):
+                config["fma_acquisition_policy"] = settings["fma_acquisition_policy"]
+            if settings.get("official_noise_acquisition_policy"):
+                config["official_noise_acquisition_policy"] = settings["official_noise_acquisition_policy"]
+            write_json(project, config)
             state = {"schema_version": 1, "id": project_id, "workspace": str(self.workspace),
-                     "storage_workspace": str(self.workspace if target.is_relative_to(self.workspace) else target),
+                     "storage_workspace": str(self.workspace),
                      "project": str(project), "wakeword": word, "preset": preset, "settings": settings,
                      "config_sha256": digest(project), "implementation_id": self._implementation_id,
                      "created_at": now(), "status": "ready", "index": 0,
-                     "plan": workflow_plan(settings), "results": {}, "inputs": {}, "job": None,
+                     "plan": plan, "results": {}, "inputs": {}, "job": None,
                      "error": None, "next_action": "시작하면 자료 준비부터 자동으로 진행합니다."}
             state["execution_contract"] = {**self._execution_contract,
                 "settings_sha256": identity(settings), "plan_sha256": identity(state["plan"])}
@@ -524,7 +527,7 @@ class StudioManager:
 
     def _guard_config(self, state):
         if digest(state["project"]) != state["config_sha256"]:
-            raise ValueError("프로젝트 설정이 변경되었습니다. 실행 중인 실험 설정은 덮어쓰지 않습니다.")
+            raise ValueError("모델 학습 설정이 변경되었습니다. 실행 중인 실험 설정은 덮어쓰지 않습니다.")
         if state.get("implementation_id") != self._implementation_id:
             root = Path(state["project"]).parent
             jobs = root / ".studio" / "jobs"
@@ -598,7 +601,7 @@ class StudioManager:
             if not compatibility or compatibility["state"] != "available":
                 raise ValueError((compatibility or {}).get("reason", "이 업데이트는 자동 이관할 수 없습니다."))
             if digest(state["project"]) != state["config_sha256"]:
-                raise ValueError("프로젝트 설정이 변경되어 업데이트를 적용할 수 없습니다.")
+                raise ValueError("모델 학습 설정이 변경되어 업데이트를 적용할 수 없습니다.")
             for other_id in self.registry["projects"]:
                 if self._job_alive(self._load(other_id).get("job") or {}):
                     raise ValueError("실행 중인 작업이 있습니다. 해당 작업이 끝난 뒤 업데이트를 적용하세요.")
@@ -684,7 +687,7 @@ class StudioManager:
                 raise ValueError("단계 결과 파일이 변경되었습니다: " + binding["path"])
         current_hash = digest(state["project"])
         if current_hash != result.get("result_config_sha256", state["config_sha256"]):
-            raise ValueError("단계 이후 프로젝트 설정이 변경되었습니다.")
+            raise ValueError("단계 이후 모델 학습 설정이 변경되었습니다.")
         state["config_sha256"] = current_hash
         state["last_job"] = job
         state["job"] = None
@@ -734,7 +737,7 @@ class StudioManager:
                 other = self._load(other_id)
                 scheduled = other["status"] in ("ready", "running", "pausing") and other.get("auto_continue")
                 if other_id != project_id and (scheduled or self._job_alive(other.get("job") or {})):
-                    raise ValueError("다른 프로젝트가 실행 중입니다. 해당 작업을 먼저 일시정지하세요.")
+                    raise ValueError("다른 모델 학습이 실행 중입니다. 해당 작업을 먼저 일시정지하세요.")
             if state["status"] == "completed":
                 return self.describe(state)
             if state["status"] == "waiting_review":

@@ -4,11 +4,11 @@ from pathlib import Path
 import pytest
 
 from korean_openwakeword import automatic_sources as module
-from korean_openwakeword.common import read_json
+from korean_openwakeword.common import digest, identity, now, read_json, write_json
 from korean_openwakeword.project import create_project
 from korean_openwakeword.studio import StudioManager
 from korean_openwakeword.studio_data import material_recipe, _automatic_space_plan
-from korean_openwakeword.studio_steps import common_evaluation_policy
+from korean_openwakeword.studio_steps import common_evaluation_policy, preset_settings, workflow_plan
 
 
 POLICY = "per_track_flac_prefetch_v1"
@@ -69,7 +69,7 @@ def test_recipe_and_custom_project_storage_plan_keep_explicit_policy():
     assert module.automatic_storage_plan(config, material_acquisition_policy="automatic_v3")["fma_acquisition_policy"] == POLICY
 
 
-def test_attaching_legacy_project_does_not_enable_new_fma_transaction(tmp_path):
+def test_resuming_registered_legacy_project_does_not_enable_new_fma_transaction(tmp_path):
     directory = tmp_path / "old"
     create_project(directory, "보라야", "bora", positive_originals=100000,
                    augmentation_rounds=5, updates=100000, generic_hours=3500, korean_hours=1500,
@@ -78,10 +78,33 @@ def test_attaching_legacy_project_does_not_enable_new_fma_transaction(tmp_path):
     original = project.read_bytes()
     manager = StudioManager(tmp_path / "workspace")
     try:
-        view = manager.create({"wakeword": "보라야", "preset": "production", "directory": str(directory)})
+        # Saved web registrations remain readable at their original location.
+        # Construct the historical record explicitly: web creation no longer
+        # accepts arbitrary directory payloads or attaches unregistered data.
+        settings = preset_settings("production")
+        settings.pop("fma_acquisition_policy")
+        settings.pop("audio_storage_policy")
+        settings["material_acquisition_policy"] = "automatic_v2"
+        plan = workflow_plan(settings)
+        state = {"schema_version": 1, "id": "legacy-bora", "workspace": str(manager.workspace),
+                 "storage_workspace": str(directory), "project": str(project), "wakeword": "보라야",
+                 "preset": "production", "settings": settings, "plan": plan,
+                 "config_sha256": digest(project), "implementation_id": manager._implementation_id,
+                 "created_at": now(), "status": "ready", "index": 0, "results": {}, "inputs": {},
+                 "job": None, "error": None, "next_action": "기존 학습 이어서 진행"}
+        state["execution_contract"] = {**manager._execution_contract,
+            "settings_sha256": identity(settings), "plan_sha256": identity(plan)}
+        manager.registry["projects"][state["id"]] = str(project)
+        write_json(manager.registry_path, manager.registry)
+        manager._save(state)
+        workflow = manager._path(state["id"]).read_bytes()
+        view = manager.create({"wakeword": "보라야", "preset": "production"})
+        assert view["id"] == state["id"] and Path(view["directory"]) == directory
         assert "fma_acquisition_policy" not in manager._load(view["id"])["settings"]
         assert project.read_bytes() == original
+        assert manager._path(state["id"]).read_bytes() == workflow
         assert "fma_acquisition_policy" not in read_json(project)
+        assert not (manager.workspace / "models").exists()
     finally:
         manager.close()
 

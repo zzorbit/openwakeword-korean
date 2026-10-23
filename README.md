@@ -41,7 +41,7 @@ koww check
 koww web
 ```
 
-[학습 화면](http://127.0.0.1:8793/)에서 **호출어·작업 규모·저장 폴더**를 정하고 **만들고 준비 시작**을 누릅니다. 필요한 학습 도구가 없으면 화면에서 CPU/GPU용 도구를 선택해 설치할 수 있습니다. Windows에서는 `scripts\Start-Web.cmd`를 더블클릭해도 같은 화면이 열립니다.
+[학습 화면](http://127.0.0.1:8793/)에서 **호출어·작업 규모**를 정하고 **만들고 준비 시작**을 누릅니다. 자료와 결과는 작업 폴더의 `models/호출어`에 자동 저장됩니다. 예를 들어 ‘보라야’는 `models/보라야`를 사용합니다. 필요한 학습 도구가 없으면 화면에서 CPU/GPU용 도구를 선택해 설치할 수 있습니다. Windows에서는 `scripts\Start-Web.cmd`를 더블클릭해도 같은 화면이 열립니다.
 
 음성 생성·모델 학습·공통 평가는 **GPU를 우선 사용**합니다. 공통 평가는 GPU 실행을 확인한 뒤 배치로 처리하고, 임계값 근처 음원은 CPU로 다시 확인합니다. GPU를 사용할 수 없으면 CPU 선택 사유를 기록합니다. 평가 화면에서 완료 수와 진행률을 확인할 수 있습니다.
 
@@ -140,23 +140,23 @@ koww download-generic --output shared/openwakeword_features_ACAV100M_2000_hrs_16
 
 ## 호출어 학습 시작
 
-**프로젝트 설정 → 호출어 생성·검수 → 자료 연결·증강 → 모델 학습 → 평가** 순서로 진행합니다. 실제 학습을 시작하는 명령은 **`koww train`**입니다. 아래는 전체 흐름이며, 검수·자료 목록 작성의 세부 명령은 [학습 가이드](docs/LIBRARY_GUIDE.md)를 따르세요.
+**학습 설정 → 호출어 생성·검수 → 자료 연결·증강 → 모델 학습 → 평가** 순서로 진행합니다. 실제 학습을 시작하는 명령은 **`koww train`**입니다. 아래는 전체 흐름이며, 검수·자료 목록 작성의 세부 명령은 [학습 가이드](docs/LIBRARY_GUIDE.md)를 따르세요.
 
-아래는 호출어 **‘보라야’**를 학습할 프로젝트를 만드는 예시입니다. `보라야`는 호출어, `bora`는 영문 프로젝트 이름입니다. 원하는 호출어와 프로젝트 이름으로 바꿔 사용하세요. 생성된 파일은 `projects/bora`에 저장됩니다.
+아래는 호출어 **‘보라야’**의 학습 설정을 직접 명령으로 만드는 예시입니다. `보라야`는 호출어, `bora`는 설정을 구분하는 영문 이름입니다. 웹에서는 저장 위치가 자동으로 정해지며, 아래 명령 예시는 `models/bora`를 사용합니다.
 
-### 1. 프로젝트 설정
+### 1. 학습 설정
 
 `init`에서 [앞서 선택한 학습 규모](#학습-규모-선택)의 **호출어 원본 수·증강 횟수·모델당 학습량·일반 및 한국어 비호출 시간**을 입력합니다. 값을 입력하지 않고 Enter를 누르면 **상용 모델용 기본값**을 사용합니다. 현재 설정 화면은 환경소음 재료의 목표 시간도 묻습니다. 이 시간은 준비 계획용이며, 공개 자료를 자동으로 내려받거나 선택하지 않습니다.
 
 ```powershell
-koww init --wakeword 보라야 --id bora --output projects/bora --interactive --validation-voices 30
-koww prepare-frontend --project projects/bora/project.json
-koww status --project projects/bora/project.json
+koww init --wakeword 보라야 --id bora --output models/bora --interactive --validation-voices 30
+koww prepare-frontend --project models/bora/project.json
+koww status --project models/bora/project.json
 ```
 
 `init`은 설정을 만드는 단계이며 음성 생성이나 학습을 바로 시작하지 않습니다. `prepare-frontend`는 학습에 필요한 공통 음성 처리 모델을 준비하고, `status`는 준비 상태를 확인합니다.
 
-입력한 값은 `projects/bora/project.json`에 저장됩니다. 이후 명령은 이 설정을 읽으므로 학습량을 매번 다시 입력하지 않습니다.
+입력한 값은 `models/bora/project.json`에 저장됩니다. 이후 명령은 이 설정을 읽으므로 학습량을 매번 다시 입력하지 않습니다.
 
 CNN128·AdamW 등은 초기 표본 모델 학습 결과에서 선정한 **권장 시작값**입니다. 이 시작값은 최적값으로 입증된 수치는 아니며 모델 학습 후에 결과물에 따라 설정값을 조정하여 더 좋은 결과물을 얻을 수 있습니다. 직접 변경하려면 `init` 명령에 `--advanced`를 추가하세요. 새 호출어와 선택한 작업량의 성능은 학습 후 평가로 확인합니다.
 
@@ -167,7 +167,7 @@ CNN128·AdamW 등은 초기 표본 모델 학습 결과에서 선정한 **권장
 
 ```powershell
 # 상용 모델용
-koww init --wakeword 보라야 --id bora --output projects/bora --non-interactive --originals 100000 --rounds 5 --updates 100000 --generic-hours 3500 --korean-hours 1500 --validation-voices 30
+koww init --wakeword 보라야 --id bora --output models/bora --non-interactive --originals 100000 --rounds 5 --updates 100000 --generic-hours 3500 --korean-hours 1500 --validation-voices 30
 ```
 
 값은 직접 바꿀 수 있습니다. 이미 만든 프로젝트에 `init`을 다시 실행하지 말고, 다른 규모의 실험은 새 폴더 또는 [별도 설정 파일](docs/LIBRARY_GUIDE.md#추가-설정과-재사용)을 사용하세요.
@@ -179,8 +179,8 @@ koww init --wakeword 보라야 --id bora --output projects/bora --non-interactiv
 먼저 [합성 음색 준비·검수](docs/LIBRARY_GUIDE.md#2-합성-음색-준비검수)와 [소량 호출어 발음 확인](docs/LIBRARY_GUIDE.md#3-호출어를-소량-생성해-발음-확인하기)을 진행합니다. **검수 승인 후** 다음 명령으로 학습용과 개발용 호출어를 생성합니다.
 
 ```powershell
-koww generate --project projects/bora/project.json --split train
-koww generate --project projects/bora/project.json --split validation
+koww generate --project models/bora/project.json --split train
+koww generate --project models/bora/project.json --split validation
 ```
 
 웹의 제공 학습·평가 배경 자료는 자동 검사 후 연결합니다. 직접 추가한 공개 음원은 **`prepare-materials`로 변환·자료 분리·검수 목록을 준비**하고, 검수 화면에서 저장한 답변을 **`admit-materials`로 학습에 연결**합니다. 한국어 비호출은 고정 2초 구간까지 자동으로 준비합니다. 출처·언어·화자 정보는 제공자 메타데이터를 사용합니다.
@@ -189,10 +189,10 @@ koww generate --project projects/bora/project.json --split validation
 
 ```powershell
 koww index-data --dataset zeroth --input shared/zeroth/train_data_01 --output shared/zeroth_index.jsonl --source-url https://www.openslr.org/40/ --license CC-BY-4.0
-koww prepare-materials --project projects/bora/project.json --input shared/zeroth/train_data_01 --source-index shared/zeroth_index.jsonl --hours 1 --output projects/bora/prepared/korean_v1
-koww review --project projects/bora/project.json --queue projects/bora/prepared/korean_v1/representatives.jsonl --pool-manifest projects/bora/prepared/korean_v1/train_sources.jsonl --kind content
+koww prepare-materials --project models/bora/project.json --input shared/zeroth/train_data_01 --source-index shared/zeroth_index.jsonl --hours 1 --output models/bora/prepared/korean_v1
+koww review --project models/bora/project.json --queue models/bora/prepared/korean_v1/representatives.jsonl --pool-manifest models/bora/prepared/korean_v1/train_sources.jsonl --kind content
 # 브라우저에서 검수·저장한 뒤 Ctrl+C로 서버를 종료합니다.
-koww admit-materials --project projects/bora/project.json --preparation projects/bora/prepared/korean_v1/preparation_receipt.json --pools korean_negative --connect
+koww admit-materials --project models/bora/project.json --preparation models/bora/prepared/korean_v1/preparation_receipt.json --pools korean_negative --connect
 ```
 
 소음·잔향 준비와 여러 자료 묶음의 연결은 [자료 준비 안내](docs/DATA_FORMAT.md#공개-음원-자동-준비)에 있습니다. 개발용 자료는 원본·화자·공간 단위로 분리해 예약하며, 실제 확보 시간과 부족분은 준비 결과에 표시합니다. 일반 비호출의 공개 특징 자료는 기존 `import-generic` 명령으로 연결합니다.
@@ -204,9 +204,9 @@ koww admit-materials --project projects/bora/project.json --preparation projects
 호출어 생성과 자료 연결을 마친 뒤 다음을 실행합니다.
 
 ```powershell
-koww features --project projects/bora/project.json --role korean_negative
-koww features --project projects/bora/project.json --role hard_negative
-koww features --project projects/bora/project.json --role positive
+koww features --project models/bora/project.json --role korean_negative
+koww features --project models/bora/project.json --role hard_negative
+koww features --project models/bora/project.json --role positive
 ```
 
 `features`는 소음·잔향·음량 변형을 적용하고 음성을 학습용 숫자 배열로 바꿉니다. 호출어 자료는 **원본 수 × 증강 횟수**만큼 준비합니다. 동작 확인용·시험 모델용에서 일반 비호출의 사전 계산 특징을 연결했다면 다시 추출하지 않습니다.
@@ -214,38 +214,38 @@ koww features --project projects/bora/project.json --role positive
 상용 모델용처럼 **일반 비호출을 원본 오디오로 준비·승인해 연결했다면**, 학습 전에 이 자료의 특징도 생성합니다. 웹 화면은 이 단계를 자동으로 실행합니다.
 
 ```powershell
-koww features --project projects/bora/project.json --role generic_negative
+koww features --project models/bora/project.json --role generic_negative
 ```
 
 준비된 자료로 **실제 모델 학습을 시작**하고, 학습 결과를 사용 가능한 모델 묶음으로 정리합니다.
 
 ```powershell
-koww train --project projects/bora/project.json --output projects/bora/runs/selected_budget
-koww package --project projects/bora/project.json --run projects/bora/runs/selected_budget --output projects/bora/models/candidate_selected
+koww train --project models/bora/project.json --output models/bora/runs/selected_budget
+koww package --project models/bora/project.json --run models/bora/runs/selected_budget --output models/bora/models/candidate_selected
 ```
 
 `train`은 저장된 설정에 따라 모델을 학습하고, `package`는 모델 파일·공통 음성 처리 모델·실행 설정을 한 폴더에 모읍니다.
 
 **학습 1회**는 준비된 자료에서 일반 비호출 768개·한국어 비호출 256개·호출어 100개·유사어 100개, 총 **1,224개**를 무작위로 뽑아 모델의 판단을 정답과 비교하고, 모델을 한 번 수정하는 과정입니다. 일반·한국어 비호출 배치는 **75:25**이며, 유사어는 호출어와 발음이 비슷하지만 호출어가 아닌 별도 비호출 자료입니다. **모델당 100,000회**는 이 과정을 모델 하나마다 100,000번 반복한다는 뜻입니다. 전체 자료를 매번 모두 사용하지 않으며, 같은 자료가 여러 번 뽑힐 수 있습니다.
 
-기본 모델 3개를 각각 학습하므로 상용 모델용의 총 학습량은 **300,000회**입니다. 큰 작업 전에 `koww benchmark --output projects/bora/reports/cpu_gpu.json`으로 CPU와 GPU의 학습 속도를 비교할 수 있습니다.
+기본 모델 3개를 각각 학습하므로 상용 모델용의 총 학습량은 **300,000회**입니다. 큰 작업 전에 `koww benchmark --output models/bora/reports/cpu_gpu.json`으로 CPU와 GPU의 학습 속도를 비교할 수 있습니다.
 
 ### 4. 성능 평가
 
 [개발용 평가 자료 준비 안내](docs/LIBRARY_GUIDE.md#7-개발용-평가감지-기준-선택하기)에 따라 소음별 호출어 오디오와 연속 비호출 평가 목록을 준비한 뒤 실행합니다.
 
 ```powershell
-koww evaluate --project projects/bora/project.json --bundle projects/bora/models/candidate_selected --manifest projects/bora/data/eval/development.jsonl --output projects/bora/reports/dev_selected
-koww site --evaluation projects/bora/reports/dev_selected --output projects/bora/reports/dev_selected/site
-koww serve --directory projects/bora/reports/dev_selected/site --port 8791
+koww evaluate --project models/bora/project.json --bundle models/bora/models/candidate_selected --manifest models/bora/data/eval/development.jsonl --output models/bora/reports/dev_selected
+koww site --evaluation models/bora/reports/dev_selected --output models/bora/reports/dev_selected/site
+koww serve --directory models/bora/reports/dev_selected/site --port 8791
 ```
 
 [http://127.0.0.1:8791/](http://127.0.0.1:8791/)에서 단일 모델과 앙상블의 성공률·오호출·지연, **각 후보의 기준 통과 여부**를 비교합니다. 확인 후 Ctrl+C로 서버를 종료하세요. 앙상블이 항상 더 좋다고 가정하지 않습니다. 사용할 후보는 평가에 표시된 ID로 직접 선택합니다.
 
 ```powershell
 # 아래 ID는 선택 예시입니다. 실제 결과를 보고 원하는 후보를 지정하세요.
-koww select-candidate --project projects/bora/project.json --bundle projects/bora/models/candidate_selected --evaluation projects/bora/reports/dev_selected --candidate member3_seed20260930 --output projects/bora/models/selected_v1
-koww mic --bundle projects/bora/models/selected_v1/bundle
+koww select-candidate --project models/bora/project.json --bundle models/bora/models/candidate_selected --evaluation models/bora/reports/dev_selected --candidate member3_seed20260930 --output models/bora/models/selected_v1
+koww mic --bundle models/bora/models/selected_v1/bundle
 ```
 
 선택은 기존 평가 점수를 재사용하며, 단일 모델을 골랐다면 실제 실행 묶음에도 그 모델만 넣습니다. 감지 기준 비교·동결·[별도 최종 평가](docs/LIBRARY_GUIDE.md#8-모델설정-확정-후-최종-평가하기)는 [학습 가이드](docs/LIBRARY_GUIDE.md)를 따르세요. 평가 기준을 통과하지 않은 후보도 시험할 수 있지만 Final 동결은 할 수 없습니다.
@@ -265,7 +265,7 @@ koww mic
 직접 학습한 모델 묶음을 시험하려면 경로를 지정합니다.
 
 ```powershell
-koww mic --bundle projects/bora/models/candidate_selected
+koww mic --bundle models/bora/models/candidate_selected
 ```
 
 모델의 감지 기준은 바꾸지 않으며, 음성은 파일로 저장하거나 학습에 사용하지 않습니다. **중지**를 누르면 마이크 입력을 종료합니다. 서버를 유지하려면 터미널을 열어 두고, 종료할 때는 Ctrl+C를 누르세요. 상세 사용법은 [마이크 시험 안내](docs/LIBRARY_GUIDE.md#마이크로-모델-시험하기)에 있습니다.
