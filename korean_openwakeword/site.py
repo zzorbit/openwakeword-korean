@@ -56,10 +56,36 @@ def export_site(evaluation, output):
     for name in ("report.json", "clips.json"):
         if digest(evaluation / name) != receipt[name.split(".")[0] + "_sha256"]:
             raise ValueError("Completed evaluation report/clip binding changed")
-    report, clips = read_json(evaluation / "report.json"), read_json(evaluation / "clips.json")
+    report = read_json(evaluation / "report.json")
     if output.exists() and any(output.iterdir()):
         raise ValueError("Site exports are immutable")
+    clips = None if (evaluation / "clips.json").stat().st_size > 4 * 1024 ** 2 else read_json(evaluation / "clips.json")
     (output / "audio").mkdir(parents=True, exist_ok=True)
+    # A large evaluation must not become a single browser script. Keep full
+    # diagnostics in the evaluation archive and load display details by page.
+    if clips is None or len(clips) > 1000:
+        from .paged_site import iter_clip_array, write_paged_viewer
+        audio = {}
+        verified_sources, verified_destinations = {}, {}
+        def display_rows():
+            rows = iter_clip_array(evaluation / "clips.json") if clips is None else clips
+            for row in rows:
+                source = Path(row["path"])
+                name = row["sha256"] + ".wav"
+                _copy_verified_audio(source, output / "audio" / name, row["sha256"],
+                                     verified_sources, verified_destinations)
+                audio[row["sample_id"]] = row["sha256"]
+                yield {**row, "path": "audio/" + name}
+        viewer = write_paged_viewer(report, display_rows(), output)
+        resources = files("korean_openwakeword") / "resources"
+        for source, destination in (("results_paged.html", "index.html"), ("results_paged.js", "results_paged.js"),
+                                    ("results_scope.js", "results_scope.js"), ("results.css", "results.css")):
+            (output / destination).write_bytes((resources / source).read_bytes())
+        write_json(output / "provenance.json", {"evaluation_receipt_sha256": digest(evaluation / "receipt.json"),
+            "audio": audio, "models": report["models"], "stage": report["stage"],
+            "same_scored_WAVs": True, "new_inference_or_training": False,
+            "viewer": {"schema_version": 1, **viewer}})
+        return {"site": str(output / "index.html"), "audio_files": viewer["audio_files"], "stage": report["stage"]}
     verified_sources, verified_destinations = {}, {}
     for row in clips:
         source = Path(row["path"])
