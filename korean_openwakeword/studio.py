@@ -76,15 +76,6 @@ def _safe_root(path):
     return path
 
 
-def _model_folder_name(word):
-    """The same Hangul-only input contract as project.json, before any mkdir."""
-    if not re.fullmatch(r"[가-힣]+", word):
-        raise ValueError("호출어는 한글로 입력하세요. 경로나 특수 문자는 사용할 수 없습니다.")
-    # Keep even unusually long calls below the Windows filename limit. The
-    # complete original word remains in project.json and the workflow.
-    return word if len(word) <= 64 else word[:64] + "_" + identity(word)[:12]
-
-
 def _model_choice(word, preset, settings):
     """Only user choices identify a saved run; upgrades keep its frozen policy."""
     return {"wakeword": word, "preset": preset,
@@ -425,58 +416,73 @@ class StudioManager:
         return {"presets": presets, "default_directory": str(self.workspace / "models"),
                 "storage_note": "호출어별 학습 자료와 결과를 models 폴더에 자동으로 저장합니다. 공통 자료와 캐시는 작업 폴더 안에서 공유합니다."}
 
-    def create(self, payload):
+    def _model_request(self, payload):
+        """Validate creation and preview inputs without changing stored state."""
         from .studio_steps import preset_settings, workflow_plan
+        if not isinstance(payload, dict) or not isinstance(payload.get("wakeword"), str):
+            raise ValueError("호출어를 문자열로 입력하세요.")
+        preset = payload.get("preset", "check")
+        if not isinstance(preset, str):
+            raise ValueError("작업 규모를 선택하세요.")
+        settings = preset_settings(preset)
+        overrides = payload.get("advanced") or {}
+        if not isinstance(overrides, dict):
+            raise ValueError("세부 설정 형식이 올바르지 않습니다.")
+        if payload.get("directory") not in (None, ""):
+            raise ValueError("모델 저장 폴더는 자동으로 정해집니다. 저장 경로를 입력하지 마세요.")
+        mapping = {"positive_originals": "originals", "augmentation_rounds": "rounds", "updates": "updates",
+                   "generic_hours": "generic_hours", "korean_hours": "korean_hours"}
+        if set(overrides) - set(mapping):
+            raise ValueError("지원하지 않는 세부 설정입니다.")
+        for key, value in overrides.items():
+            if value is not None and value != "":
+                settings[mapping[key]] = value
+        if type(settings["rounds"]) is not int:
+            raise ValueError("증강 횟수는 정수 1 / 3 / 5로 입력하세요.")
+        word = payload["wakeword"].strip()
+        if not re.fullmatch(r"[가-힣]+", word):
+            raise ValueError("호출어는 한글로 입력하세요. 경로나 특수 문자는 사용할 수 없습니다.")
+        return word, preset, settings, workflow_plan(settings)
+
+    def _model_location(self, word, preset, settings):
+        """Read-only resolver shared by previews and actual model creation."""
+        choice = _model_choice(word, preset, settings)
+        # Old registered paths and their immutable settings remain in place,
+        # including the Hangul folders made by 0.17.1 and projects/... paths.
+        for known_id in self.registry["projects"]:
+            saved = self._load(known_id)
+            if _model_choice(saved["wakeword"], saved["preset"], saved["settings"]) == choice:
+                target = Path(saved["project"]).parent
+                if (target / "final_lock.json").exists() and saved["status"] != "completed":
+                    raise ValueError("최종 평가로 잠긴 모델 학습입니다. 기존 자료와 평가 잠금을 유지합니다.")
+                return target, saved
+        models = self.workspace / "models"
+        if _safe_root(models) != models or (models.exists() and not models.is_dir()):
+            raise ValueError("models 저장 폴더가 다른 위치를 가리키거나 파일과 겹칩니다. 기존 자료를 확인하세요.")
+        numbers = [int(match.group(1)) for entry in models.iterdir()
+                   if (match := re.fullmatch(r"model_([0-9]+)", entry.name, re.IGNORECASE))] if models.exists() else []
+        target = models / f"model_{max(numbers, default=0) + 1:04d}"
+        if _safe_root(target) != target:
+            raise ValueError("모델 저장 폴더가 다른 위치를 가리킵니다. 기존 자료를 확인하세요.")
+        return target, None
+
+    def model_location(self, payload):
         with self._lock:
-            if not isinstance(payload, dict) or not isinstance(payload.get("wakeword"), str):
-                raise ValueError("호출어를 문자열로 입력하세요.")
-            preset = payload.get("preset", "check")
-            if not isinstance(preset, str):
-                raise ValueError("작업 규모를 선택하세요.")
-            settings = preset_settings(preset)
-            overrides = payload.get("advanced") or {}
-            if not isinstance(overrides, dict):
-                raise ValueError("세부 설정 형식이 올바르지 않습니다.")
-            if payload.get("directory") not in (None, ""):
-                raise ValueError("모델 저장 폴더는 자동으로 정해집니다. 저장 경로를 입력하지 마세요.")
-            mapping = {"positive_originals": "originals", "augmentation_rounds": "rounds", "updates": "updates",
-                       "generic_hours": "generic_hours", "korean_hours": "korean_hours"}
-            if set(overrides) - set(mapping):
-                raise ValueError("지원하지 않는 세부 설정입니다.")
-            for key, value in overrides.items():
-                if value is not None and value != "":
-                    settings[mapping[key]] = value
-            if type(settings["rounds"]) is not int:
-                raise ValueError("증강 횟수는 정수 1 / 3 / 5로 입력하세요.")
-            word = payload.get("wakeword", "").strip()
-            folder_name = _model_folder_name(word)
-            plan = workflow_plan(settings)
-            choice = _model_choice(word, preset, settings)
-            # Resume registered runs wherever they were originally stored,
-            # including legacy projects/... and manually attached paths.
-            # Do not rewrite their settings, contracts or immutable evidence.
-            for known_id in self.registry["projects"]:
-                saved = self._load(known_id)
-                if _model_choice(saved["wakeword"], saved["preset"], saved["settings"]) == choice:
-                    if (Path(saved["project"]).parent / "final_lock.json").exists() and saved["status"] != "completed":
-                        raise ValueError("최종 평가로 잠긴 모델 학습입니다. 기존 자료와 평가 잠금을 유지합니다.")
-                    self.registry["active_project_id"] = known_id
-                    write_json(self.registry_path, self.registry)
-                    return self.describe(saved)
-            models = self.workspace / "models"
-            if _safe_root(models) != models or (models.exists() and not models.is_dir()):
-                raise ValueError("models 저장 폴더가 다른 위치를 가리키거나 파일과 겹칩니다. 기존 자료를 확인하세요.")
-            target = models / folder_name
-            if _safe_root(target) != target:
-                raise ValueError("모델 저장 폴더가 다른 위치를 가리킵니다. 기존 자료를 확인하세요.")
-            if target.exists() and (not target.is_dir() or any(target.iterdir())):
-                # A different budget or unknown existing directory gets a
-                # separate deterministic destination, never an adoption.
-                target = models / (folder_name + "_" + identity(choice)[:12])
-                if _safe_root(target) != target:
-                    raise ValueError("모델 저장 폴더가 다른 위치를 가리킵니다. 기존 자료를 확인하세요.")
-                if target.exists() and (not target.is_dir() or any(target.iterdir())):
-                    raise ValueError("자동 저장 폴더에 등록되지 않은 자료가 있습니다. 기존 자료를 보존하고 폴더를 확인하세요.")
+            word, preset, settings, _ = self._model_request(payload)
+            target, _ = self._model_location(word, preset, settings)
+            return {"directory": str(target)}
+
+    def create(self, payload):
+        with self._lock:
+            word, preset, settings, plan = self._model_request(payload)
+            target, saved = self._model_location(word, preset, settings)
+            if saved:
+                self.registry["active_project_id"] = saved["id"]
+                write_json(self.registry_path, self.registry)
+                return self.describe(saved)
+            # Claim a fresh folder exclusively: even an empty directory made
+            # between resolution and creation belongs to someone else.
+            target.mkdir(parents=True, exist_ok=False)
             project_id = uuid.uuid4().hex[:12]
             project = target / "project.json"
             create_project(target, word, "word_" + project_id,
@@ -1377,6 +1383,8 @@ def make_studio_server(manager, port=8793):
                     return self.respond(manager.analysis.launch(parts[2], parts[4], payload))
                 if path == "/api/projects":
                     return self.respond(manager.create(payload))
+                if path == "/api/model-location":
+                    return self.respond(manager.model_location(payload))
                 if path == "/review/save":
                     query = parse_qs(urlsplit(self.path).query)
                     return self.respond(manager.save_review(query["project"][0], query["queue"][0], payload))

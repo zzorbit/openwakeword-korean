@@ -21,7 +21,7 @@
           <label class="field-title" for="wakeword">호출어</label>
           <input id="wakeword" name="wakeword" class="wakeword-input" placeholder="예: 보라야" maxlength="40" autocomplete="off" required>
           <fieldset class="purpose"><legend class="field-title">작업 규모</legend><div id="presets" class="preset-grid" aria-live="polite"><p class="muted">설정을 불러오는 중입니다.</p></div></fieldset>
-          <div class="storage-location"><span>자동 저장 위치</span><p id="storage-directory" class="directory">models</p></div>
+          <div class="storage-location"><span>자동 저장 위치</span><p id="storage-directory" class="directory" aria-live="polite">호출어를 입력하면 표시됩니다.</p></div>
           <details id="advanced" class="advanced"><summary>세부 설정</summary><p class="hint">비워 두면 선택한 규모의 설정을 사용합니다.</p><div class="advanced-grid">
             <label>호출어 원본 수<input id="adv-originals" type="number" min="1" step="1" inputmode="numeric"></label>
             <label>원본당 증강 횟수 · 1/3/5<input id="adv-rounds" type="number" min="1" step="1" inputmode="numeric"></label>

@@ -6,10 +6,11 @@ const vm = require("node:vm");
 const script = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources/studio.js"), "utf8");
 const html = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources/studio.html"), "utf8");
 const flush = async () => { for (let index = 0; index < 12; index++) await new Promise(resolve => setImmediate(resolve)); };
+const locationSettled = async () => { await new Promise(resolve => setTimeout(resolve, 230)); await flush(); };
 const tests = [];
 async function test(name, action) { await action(); tests.push(name); }
 
-function browser({ noBoot = false, initialState, recipeError = false, recipeOverrides = {}, recipeList, recipeDirectory = "F:\\test\\models", logResponse = "ready", logError = false } = {}) {
+function browser({ noBoot = false, initialState, recipeError = false, recipeOverrides = {}, recipeList, recipeDirectory = "F:\\test\\models", locationResponse, createdDirectory, logResponse = "ready", logError = false } = {}) {
   const elements = new Map(), calls = [], intervals = [];
   class Element {
     constructor(tag = "div") { this.tagName = tag; this.value = ""; this.textContent = ""; this.children = []; this.handlers = {}; this.attributes = {}; this.hidden = false; this.disabled = false; this.open = false; this.srcWrites = 0; }
@@ -30,9 +31,13 @@ function browser({ noBoot = false, initialState, recipeError = false, recipeOver
     calls.push({ url, options });
     if (url === "/api/state") { if (state.fetchError) throw state.fetchError; return json(state.value); }
     if (url === "/api/recipes") return recipeError ? json({ error: "recipe failure" }, 500) : json({ presets, default_directory: recipeDirectory });
+    if (url === "/api/model-location" && options.method === "POST") {
+      const payload = JSON.parse(options.body);
+      return json(locationResponse ? await locationResponse(payload) : { directory: recipeDirectory + "\\model_0001" });
+    }
     if (url === "/api/projects" && options.method === "POST") {
       const payload = JSON.parse(options.body);
-      const project = { id: "bora", wakeword: payload.wakeword, status: "ready", preset: payload.preset, stage: "data", error: null };
+      const project = { id: "bora", wakeword: payload.wakeword, status: "ready", preset: payload.preset, directory: createdDirectory || recipeDirectory + "\\model_0001", stage: "data", error: null };
       state.value.projects.push(project); state.value.active_project_id = project.id;
       return json(project);
     }
@@ -186,27 +191,97 @@ function storageBudgetRecipe(overrides = {}) {
     assert.equal(Object.hasOwn(custom, "directory"), false); assert.equal(custom.advanced.positive_originals, 500); assert.equal(custom.advanced.korean_hours, 1.5);
     for (const value of ["-1", "1.5", "Infinity"]) assert.throws(() => helpers.requestBody({ wakeword: "보라야", advanced: { positive_originals: value } }, "check"));
   });
-  await test("new model storage is a server-provided read-only location without a directory override", async () => {
+  await test("new model storage previews the full server-provided read-only location without a directory override", async () => {
     const b = browser({ recipeDirectory: "F:\\workspace\\models" }); await flush();
     assert.equal(b.elements.has("directory"), false);
     assert.equal(b.elements.has("storage-note"), false);
-    assert.equal(b.elements.get("storage-directory").textContent, "F:\\workspace\\models");
+    assert.match(b.elements.get("storage-directory").textContent, /호출어를 입력하면/);
+    assert.equal(b.elements.get("create").disabled, true);
     assert.doesNotMatch(html, /(?:id|name)="directory"|새 프로젝트/);
     assert.doesNotMatch(script, /\$\("directory"\)|form\.directory/);
     b.elements.get("wakeword").value = "보라야";
+    b.elements.get("wakeword").handlers.input();
+    assert.equal(b.elements.get("create").disabled, true);
+    await locationSettled();
+    assert.equal(b.elements.get("storage-directory").textContent, "F:\\workspace\\models\\model_0001");
+    assert.equal(b.elements.get("create").disabled, false);
     await b.submit("create-form");
     const request = b.calls.find(call => call.url === "/api/projects" && call.options.method === "POST");
     assert.deepEqual(JSON.parse(request.options.body), { wakeword: "보라야", preset: "check" });
+    const preview = b.calls.find(call => call.url === "/api/model-location");
+    assert.equal(preview.options.headers["X-Koww-Token"], "local-token");
+    assert.deepEqual(JSON.parse(preview.options.body), JSON.parse(request.options.body));
+    assert.equal(b.elements.get("project-directory").textContent, "F:\\workspace\\models\\model_0001");
   });
   await test("existing model locations remain visible verbatim and storage labels are escaped as text", async () => {
     const project = { id: "bora", wakeword: "보라야", status: "ready", directory: "F:\\old-workspace\\projects\\bora" };
     const label = "F:\\<img src=x onerror=bad()>\\models";
-    const b = browser({ initialState: { projects: [project], active_project_id: "bora" }, recipeDirectory: label }); await flush();
+    const b = browser({ initialState: { projects: [project], active_project_id: "bora" }, locationResponse: async () => ({ directory: label }) }); await flush();
     assert.equal(b.elements.get("project-directory").textContent, project.directory);
+    await b.click("new-project");
+    b.elements.get("wakeword").value = "보라야"; b.elements.get("wakeword").handlers.input();
+    await locationSettled();
     assert.equal(b.elements.get("storage-directory").textContent, label);
     assert.equal(b.elements.get("storage-directory").children.length, 0);
-    await b.click("new-project");
     assert.match(textOf(b.elements.get("project-select")), /새 모델/);
+  });
+  await test("location previews debounce edits, follow every workload choice and do not repeat on polling", async () => {
+    const b = browser(); await flush();
+    for (const word of ["보", "보라", "보라야"]) { b.elements.get("wakeword").value = word; b.elements.get("wakeword").handlers.input(); }
+    await locationSettled();
+    assert.equal(b.calls.filter(call => call.url === "/api/model-location").length, 1);
+    for (const [id, key, value] of [["adv-originals", "positive_originals", "1234"], ["adv-rounds", "augmentation_rounds", "3"], ["adv-updates", "updates", "20000"], ["adv-generic", "generic_hours", "2001"], ["adv-korean", "korean_hours", "2"]]) {
+      b.elements.get(id).value = value; b.elements.get(id).handlers.input();
+      assert.equal(b.elements.get("create").disabled, true);
+      await locationSettled();
+      const last = b.calls.filter(call => call.url === "/api/model-location").at(-1);
+      assert.equal(JSON.parse(last.options.body).advanced[key], Number(value));
+    }
+    const trialRadio = descendants(b.elements.get("presets")).find(node => node.tagName === "input" && node.value === "trial");
+    trialRadio.handlers.change(); await locationSettled();
+    assert.equal(JSON.parse(b.calls.filter(call => call.url === "/api/model-location").at(-1).options.body).preset, "trial");
+    const count = b.calls.filter(call => call.url === "/api/model-location").length;
+    await b.tick(); await b.tick(); await locationSettled();
+    assert.equal(b.calls.filter(call => call.url === "/api/model-location").length, count);
+    assert.equal(b.calls.some(call => /\/api\/projects.*(?:start|resume)/.test(call.url)), false);
+  });
+  await test("late preview responses cannot replace the current path or re-enable creation after input is cleared", async () => {
+    const pending = [];
+    const b = browser({ locationResponse: payload => new Promise(resolve => pending.push({ payload, resolve })) }); await flush();
+    b.elements.get("wakeword").value = "보라야"; b.elements.get("wakeword").handlers.input(); await locationSettled();
+    b.elements.get("wakeword").value = "다음아"; b.elements.get("wakeword").handlers.input(); await locationSettled();
+    assert.equal(pending.length, 2);
+    pending[1].resolve({ directory: "F:\\test\\models\\model_0002" }); await flush();
+    assert.equal(b.elements.get("create").disabled, false);
+    pending[0].resolve({ directory: "F:\\test\\models\\model_0001" }); await flush();
+    assert.equal(b.elements.get("storage-directory").textContent, "F:\\test\\models\\model_0002");
+    b.elements.get("adv-updates").value = "30000"; b.elements.get("adv-updates").handlers.input(); await locationSettled();
+    assert.equal(b.elements.get("create").disabled, true);
+    b.elements.get("wakeword").value = ""; b.elements.get("wakeword").handlers.input();
+    pending[2].resolve({ directory: "F:\\test\\models\\model_0003" }); await flush();
+    assert.match(b.elements.get("storage-directory").textContent, /호출어를 입력하면/);
+    assert.equal(b.elements.get("create").disabled, true);
+  });
+  await test("failed, incomplete and stale choices cannot create a model before a valid location is displayed", async () => {
+    let result = { directory: "" };
+    const b = browser({ locationResponse: async () => result }); await flush();
+    b.elements.get("wakeword").value = "보라야"; b.elements.get("wakeword").handlers.input(); await locationSettled();
+    assert.match(b.elements.get("storage-directory").textContent, /확인 실패/);
+    assert.equal(b.elements.get("create").disabled, true);
+    result = { directory: "F:\\test\\models\\model_0001" };
+    b.elements.get("adv-updates").value = "-1"; b.elements.get("adv-updates").handlers.input();
+    await locationSettled();
+    assert.match(b.elements.get("storage-directory").textContent, /입력한 값을/);
+    b.elements.get("adv-updates").value = "10000"; await b.submit("create-form");
+    assert.equal(b.calls.some(call => call.url === "/api/projects"), false);
+    await locationSettled(); assert.equal(b.elements.get("create").disabled, false);
+  });
+  await test("creation displays the authoritative returned path if another model occupied the previewed slot", async () => {
+    const b = browser({ createdDirectory: "F:\\test\\models\\model_0002" }); await flush();
+    b.elements.get("wakeword").value = "보라야"; b.elements.get("wakeword").handlers.input(); await locationSettled();
+    assert.equal(b.elements.get("storage-directory").textContent, "F:\\test\\models\\model_0001");
+    await b.submit("create-form");
+    assert.equal(b.elements.get("project-directory").textContent, "F:\\test\\models\\model_0002");
   });
   await test("unknown progress and ETA stay unknown, and units are formatted separately", () => {
     const { helpers } = browser({ noBoot: true });
@@ -341,7 +416,7 @@ function storageBudgetRecipe(overrides = {}) {
   await test("initial load checks state/recipes only and untrusted source labels remain text", async () => {
     const b = browser(); await flush();
     assert.deepEqual(b.calls.map(call => call.url), ["/api/state", "/api/recipes"]);
-    assert.equal(b.elements.get("create").disabled, false);
+    assert.equal(b.elements.get("create").disabled, true);
     const preview = b.elements.get("source-preview");
     const label = descendants(preview).find(node => node.textContent === "<img src=x onerror=bad()>");
     assert.ok(label); assert.notEqual(label.tagName, "a");
@@ -848,8 +923,9 @@ function storageBudgetRecipe(overrides = {}) {
   });
   await test("create-and-start needs one form submission and sends the local token", async () => {
     const b = browser(); await flush(); b.elements.get("wakeword").value = "보라야";
+    b.elements.get("wakeword").handlers.input(); await locationSettled();
     await b.submit("create-form");
-    const mutations = b.calls.filter(call => call.options.method === "POST");
+    const mutations = b.calls.filter(call => call.options.method === "POST" && call.url !== "/api/model-location");
     assert.deepEqual(mutations.map(call => call.url), ["/api/projects", "/api/projects/bora/start"]);
     assert.deepEqual(JSON.parse(mutations[0].options.body), { wakeword: "보라야", preset: "check" });
     assert.ok(mutations.every(call => call.options.headers["X-Koww-Token"] === "local-token"));

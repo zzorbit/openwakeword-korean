@@ -195,6 +195,7 @@
 
   let snapshot = { projects: [] }, recipes = [], selectedId = "", selectedPreset = "check";
   let newProject = false, busy = false, refreshing = false, pollTimer = null, recipeReady = false;
+  let locationTimer = null, locationRevision = 0, modelLocation = { key: "", directory: "" };
   let reviewIdentity = "", inputIdentity = "", resultIdentity = "", resultMode = "results", logProject = "";
   const selectedProject = () => (snapshot.projects || []).find(project => project.id === selectedId);
 
@@ -224,11 +225,46 @@
     $("message").hidden = !text;
     $("message").className = "notice" + (error ? " error" : "");
   }
+  function creationBody() {
+    return requestBody({ wakeword: $("wakeword").value, advanced: { positive_originals: $("adv-originals").value, augmentation_rounds: $("adv-rounds").value, updates: $("adv-updates").value, generic_hours: $("adv-generic").value, korean_hours: $("adv-korean").value } }, selectedPreset);
+  }
+  function locationReady(body) {
+    try { return Boolean(modelLocation.directory) && modelLocation.key === JSON.stringify(body || creationBody()); }
+    catch { return false; }
+  }
+  function previewLocation() {
+    clearTimeout(locationTimer); locationTimer = null;
+    const revision = ++locationRevision;
+    modelLocation = { key: "", directory: "" };
+    let body;
+    try { body = creationBody(); }
+    catch {
+      $("storage-directory").textContent = $("wakeword").value.trim() ? "입력한 값을 확인하세요." : "호출어를 입력하면 표시됩니다.";
+      render(); return;
+    }
+    if (!recipeReady) { render(); return; }
+    $("storage-directory").textContent = "저장 위치 확인 중…";
+    render();
+    locationTimer = setTimeout(async () => {
+      locationTimer = null;
+      try {
+        const result = await api("/api/model-location", "POST", body);
+        if (revision !== locationRevision) return;
+        if (typeof result.directory !== "string" || !result.directory.trim()) throw new Error("서버에서 저장 위치를 받지 못했습니다.");
+        modelLocation = { key: JSON.stringify(body), directory: result.directory };
+        $("storage-directory").textContent = result.directory;
+      } catch (error) {
+        if (revision !== locationRevision) return;
+        $("storage-directory").textContent = "저장 위치 확인 실패: " + error.message;
+      }
+      render();
+    }, 200);
+  }
   function renderPresets() {
     const nodes = recipes.map(recipe => {
       const label = element("label", undefined, "preset");
       const radio = element("input"); radio.type = "radio"; radio.name = "preset"; radio.value = recipe.id; radio.checked = selectedPreset === recipe.id;
-      radio.addEventListener("change", () => { selectedPreset = recipe.id; renderRecipe(); });
+      radio.addEventListener("change", () => { selectedPreset = recipe.id; renderRecipe(); previewLocation(); });
       const title = element("span", recipe.label || names[recipe.id] || recipe.id, "preset-title");
       const heading = element("div"); heading.append(radio, title);
       const detail = element("p", recipe.description || "", "preset-description");
@@ -718,7 +754,7 @@
     renderSelector(); renderSystem();
     $("setup").hidden = Boolean(project) && !newProject;
     $("project").hidden = !project || newProject;
-    $("create").disabled = busy || !recipeReady;
+    $("create").disabled = busy || !recipeReady || !locationReady();
     if (project && !newProject) renderProject(project);
     else if (reviewIdentity || resultIdentity) {
       frameSource($("review-frame"), ""); frameSource($("result-frame"), "");
@@ -756,8 +792,9 @@
   async function create(event) {
     event.preventDefault(); if (busy) return;
     let body;
-    try { body = requestBody({ wakeword: $("wakeword").value, advanced: { positive_originals: $("adv-originals").value, augmentation_rounds: $("adv-rounds").value, updates: $("adv-updates").value, generic_hours: $("adv-generic").value, korean_hours: $("adv-korean").value } }, selectedPreset); }
+    try { body = creationBody(); }
     catch (error) { message(error.message, true); return; }
+    if (!recipeReady || !locationReady(body)) { previewLocation(); return; }
     busy = true; message("모델 학습 폴더를 만들고 있습니다."); render();
     try {
       const result = await api("/api/projects", "POST", body), project = result.project || result;
@@ -803,7 +840,8 @@
   }
   async function boot() {
     $("create-form").addEventListener("submit", create);
-    for (const id of ["adv-originals", "adv-rounds", "adv-generic", "adv-korean"]) $(id).addEventListener("input", renderRecipe);
+    for (const id of ["adv-originals", "adv-rounds", "adv-updates", "adv-generic", "adv-korean"]) $(id).addEventListener("input", () => { renderRecipe(); previewLocation(); });
+    $("wakeword").addEventListener("input", previewLocation);
     $("input-form").addEventListener("submit", submitInput);
     $("material-mode").addEventListener("change", () => renderInputMode(selectedProject()));
     $("source-dataset").addEventListener("change", () => {
@@ -814,8 +852,8 @@
       renderInputMode(selectedProject());
     });
     $("source-pool").addEventListener("change", () => renderInputMode(selectedProject()));
-    $("project-select").addEventListener("change", () => { selectedId = $("project-select").value; newProject = !selectedId; message(""); render(); });
-    $("new-project").addEventListener("click", () => { newProject = true; message(""); render(); $("wakeword").focus(); });
+    $("project-select").addEventListener("change", () => { selectedId = $("project-select").value; newProject = !selectedId; message(""); render(); if (newProject) previewLocation(); });
+    $("new-project").addEventListener("click", () => { newProject = true; message(""); render(); previewLocation(); $("wakeword").focus(); });
     for (const action of ["start", "pause", "resume", "migrate"]) $(action).addEventListener("click", () => runAction(action));
     $("refresh-log").addEventListener("click", loadLog);
     $("log-details").addEventListener("toggle", loadLog);
@@ -827,11 +865,10 @@
     try {
       const result = await api("/api/recipes"); recipes = Array.isArray(result.presets) ? result.presets : [];
       if (!recipes.some(recipe => recipe.id === selectedPreset)) selectedPreset = recipes[0]?.id || "check";
-      if (typeof result.default_directory === "string" && result.default_directory) $("storage-directory").textContent = result.default_directory;
-      recipeReady = recipes.length > 0; renderPresets(); renderRecipe(); render();
+      recipeReady = recipes.length > 0; renderPresets(); renderRecipe(); previewLocation();
     } catch (error) { message("작업 규모를 불러오지 못했습니다. " + error.message, true); }
     pollTimer = setInterval(async () => { if (!document.hidden) { await refresh(); if ($("log-details").open) await loadLog(); } }, 3000);
-    window.addEventListener("pagehide", () => clearInterval(pollTimer), { once: true });
+    window.addEventListener("pagehide", () => { clearInterval(pollTimer); clearTimeout(locationTimer); locationRevision++; }, { once: true });
   }
   window.KowwStudio = Object.freeze({ duration, bytes, storageEstimate, storageBudget, eta, progressValue, requestBody, localUrl, webUrl });
   if (!window.KOWW_STUDIO_TEST) boot();

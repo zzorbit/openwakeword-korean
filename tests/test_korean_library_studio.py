@@ -231,7 +231,7 @@ def test_invalid_create_types_are_actionable_validation_errors(manager, payload)
 
 
 def test_invalid_rounds_never_leave_an_unregistered_partial_project(manager, tmp_path):
-    target = manager.workspace / "models" / "보라야"
+    target = manager.workspace / "models" / "model_0001"
     with pytest.raises(ValueError):
         create(manager, advanced={"augmentation_rounds": 2})
     assert not (target / "project.json").exists()
@@ -252,7 +252,7 @@ def test_registered_project_never_silently_accepts_conflicting_word(manager):
     before = digest(project)
     second = create(manager, wakeword="다른호출어")
     assert first["id"] != second["id"]
-    assert Path(second["directory"]).name == "다른호출어"
+    assert Path(second["directory"]).name == "model_0002"
     assert digest(project) == before
 
 
@@ -629,6 +629,26 @@ def test_http_csrf_origin_host_guards_and_valid_create(manager, http_server):
     status, content, _ = http_server("/api/projects", "POST", payload, headers=headers)
     assert status == 200 and json.loads(content)["wakeword"] == "보라야"
     assert len(manager.registry["projects"]) == 1
+
+
+def test_http_model_location_is_guarded_read_only_and_matches_creation(manager, http_server):
+    payload = {"wakeword": "보라야", "preset": "check"}
+    assert http_server("/api/model-location", "POST", payload)[0] == 403
+    assert http_server("/api/model-location", "POST", payload,
+        headers={"X-Koww-Token": manager.token, "Origin": "https://evil.invalid"})[0] == 403
+    headers = {"X-Koww-Token": manager.token}
+    for _ in range(3):
+        status, content, _ = http_server("/api/model-location", "POST", payload, headers=headers)
+        assert status == 200
+        preview = json.loads(content)
+        assert preview == {"directory": str(manager.workspace / "models" / "model_0001")}
+        assert manager.registry == {"projects": {}, "active_project_id": None}
+        assert not (manager.workspace / "models").exists()
+    status, content, _ = http_server("/api/projects", "POST", payload, headers=headers)
+    assert status == 200 and json.loads(content)["directory"] == preview["directory"]
+    status, content, _ = http_server("/api/model-location", "POST",
+        {**payload, "directory": str(manager.workspace / "custom")}, headers=headers)
+    assert status == 400 and "자동" in json.loads(content)["error"]
 
 
 def test_http_compatible_update_requires_token_and_does_not_start_worker(manager, http_server):

@@ -29,7 +29,7 @@
 
 ## 1. 학습 설정 만들기
 
-웹에서는 호출어와 규모만 선택하면 `models/호출어`에 자동 저장됩니다. 아래는 명령으로 직접 관리하는 예시이며 `models/bora`를 사용합니다. `--project`와 `project.json`은 학습 설정을 읽는 명령 옵션과 파일 이름입니다.
+웹에서는 호출어와 규모만 선택하면 `models/model_0001`처럼 번호가 붙은 폴더에 자동 저장됩니다. 저장될 전체 경로는 화면에 표시됩니다. 아래는 명령으로 직접 관리하는 예시이며 `models/bora`를 사용합니다. `--project`와 `project.json`은 학습 설정을 읽는 명령 옵션과 파일 이름입니다.
 
 ```powershell
 koww init --wakeword 보라야 --id bora --output models/bora --interactive --validation-voices 30
