@@ -411,6 +411,12 @@ def test_full_preparation_recipe_uses_real_qc_and_never_auto_approves(tmp_path, 
     # This legacy-corpus adapter fixture does not download new evaluation media;
     # evaluation-only preparation/admission has separate tests below.
     monkeypatch.setattr(module, "ensure_evaluation_materials", lambda project, workspace, prepared, progress=None: prepared)
+    real_recipe = module.material_recipe
+    def training_recipe(*args, **kwargs):
+        result = real_recipe(*args, **kwargs)
+        result["evaluation_assets"] = []  # Held-out downloads have their own fixture.
+        return result
+    monkeypatch.setattr(module, "material_recipe", training_recipe)
     source = tmp_path / "fixture_sources"
     source.mkdir()
     assets = module._official_assets()
@@ -475,25 +481,34 @@ def test_full_preparation_recipe_uses_real_qc_and_never_auto_approves(tmp_path, 
         paths[key].write_bytes(wav_bytes(len(paths) + 200))
     for asset in assets:
         asset.update(size_bytes=paths[asset["id"]].stat().st_size, license="fixture only")
+        algorithm = asset["checksum_algorithm"]
+        payload = paths[asset["id"]].read_bytes()
+        asset[algorithm] = (hashlib.sha1(f"blob {len(payload)}\0".encode() + payload).hexdigest()
+                            if algorithm == "git_sha1" else hashlib.new(algorithm, payload).hexdigest())
     monkeypatch.setattr(module, "_official_assets", lambda: assets)
     requested_assets = []
     download_batches = []
     def download(asset, directory, progress=None, verification_cache=None):
         requested_assets.append(asset["id"])
+        from korean_openwakeword.downloads import verify_checksum
+        verify_checksum(paths[asset["id"]], asset["checksum_algorithm"], asset[asset["checksum_algorithm"]],
+                        verification_cache=verification_cache)
         return paths[asset["id"]]
     monkeypatch.setattr(module, "_download", download)
     def download_batch(items, worker, *, progress=None, max_workers=None):
         items = list(items)
-        download_batches.append([asset["id"] for asset in items])
+        download_batches.append([asset["asset"]["id"] for asset in items if asset["kind"] == "base"])
         completed = {asset["id"]: worker(asset, lambda record: None) for asset in reversed(items)}
         return [completed[asset["id"]] for asset in items]
-    monkeypatch.setattr(module, "download_many", download_batch)
+    from korean_openwakeword import material_downloads
+    monkeypatch.setattr(material_downloads, "download_many", download_batch)
     def mit(shared, progress=None):
         directory = shared / "mit_fixture"
         directory.mkdir(parents=True, exist_ok=True)
         (directory / "actual_filter.wav").write_bytes(wav_bytes(444, 1600))
         return directory
     monkeypatch.setattr(module, "_fetch_mit", mit)
+    monkeypatch.setattr(module, "_mit_download_plan", lambda shared: (mit(shared), []))
     import korean_openwakeword.assets as generic
     def fake_import(path, output, frontend_identity, *, verification_cache=None):
         meta = {"publisher_declared_hours": 2000, "feature_path": str(path),

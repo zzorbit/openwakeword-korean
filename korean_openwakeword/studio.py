@@ -123,7 +123,7 @@ def _execution_contract():
     groups = {
         "data": {"automatic_sources.py", "canonical_sources.py", "commercial_sources.py", "compact_sources.py",
                  "downloads.py", "download_control.py", "evaluation_materials.py", "fma_download.py", "fma_selection.py", "fma_streaming.py",
-                 "material_policy.py", "provider_index.py", "range_zip.py", "source_waveform_index.py",
+                 "material_downloads.py", "material_policy.py", "provider_index.py", "range_zip.py", "source_waveform_index.py",
                  "studio_data.py", "studio_evaluation_data.py", "pool_review.py"},
         "tts": {"reference_bank.py", "hard_tts.py", "tts.py", "tts_runtime.py", "tts_cuda_graph.py",
                 "tts_cuda_predictor.py", "tts_cuda_sampling.py"},
@@ -183,6 +183,53 @@ def _execution_contract():
 _LEGACY_COMPATIBLE_CONTRACTS = {
     "9d05b6d391a18920f28c964cf8f12c26faec7c5f98152688c73a5a499b4dd141":
         "28f88142c4ab88361199fd2fae2ec1fca1ba863412c206fb0cd5e6b5515def14"}
+
+
+# An acquisition-only update still changes computational files. It requires an
+# audited, exact source/target pair, not a blanket exception for download code.
+# Final release fingerprints and the preserved-input equivalence receipt are
+# filled only after the complete source tree has been frozen and tested.
+_AUDITED_ACQUISITION_UPDATES = {
+    "04d4bd5dcfa9667ff2a650e4163007181fafe9b0cdd2e8cc72ad3e9526380d04": {
+        "source_stages_sha256": "aef7b4226a131faa19df24a46220015e901d696f3c130fb67064114fbb2b38de",
+        "target_computation_sha256": "9074dae60dd74e2439198457ecbfb639df5a418831a2d73937feae53ee22de70",
+        "target_stages_sha256": "a01c4fcc065be2c5dd003f82fbe9c3d630a3e7a840d4c0da935c2551b51c702c",
+        "changed_files": ('downloads.py', 'evaluation_materials.py', 'evaluation_rir.py', 'material_downloads.py', 'official_music.py', 'studio_data.py', 'studio_steps.py'),
+        "evidence_sha256": "250073e4bae086eefaf11e1a00a57baf169fcbff8376a0dea0e4ff12196c818c",
+    },
+}
+_ACQUISITION_UPDATE_FILES = {
+    "downloads.py", "download_control.py", "material_downloads.py", "studio_data.py",
+    "evaluation_materials.py", "evaluation_rir.py", "studio_evaluation_data.py", "official_music.py", "studio_steps.py",
+}
+
+
+def _audited_acquisition_update(previous, current):
+    """Return a release-bound audit only for its fully pinned acquisition diff."""
+    audit = _AUDITED_ACQUISITION_UPDATES.get(previous.get("computation_sha256"))
+    if not isinstance(audit, dict):
+        return None
+    hash_keys = ("source_stages_sha256", "target_computation_sha256", "target_stages_sha256", "evidence_sha256")
+    if any(not isinstance(audit.get(key), str) or not re.fullmatch(r"[0-9a-f]{64}", audit[key]) for key in hash_keys):
+        return None  # An unfinished release audit can never authorize a rebind.
+    old_files, new_files = previous.get("files"), current.get("files")
+    if (previous.get("schema_version") != 1 or current.get("schema_version") != 1
+            or not isinstance(old_files, dict) or not isinstance(new_files, dict)
+            or identity(old_files) != previous.get("computation_sha256")
+            or identity(new_files) != current.get("computation_sha256")
+            or current["computation_sha256"] != audit["target_computation_sha256"]
+            or identity(previous.get("stages")) != audit["source_stages_sha256"]
+            or identity(current.get("stages")) != audit["target_stages_sha256"]):
+        return None
+    changed = sorted(name for name in old_files.keys() | new_files.keys() if old_files.get(name) != new_files.get(name))
+    approved = audit.get("changed_files")
+    if (not isinstance(approved, (list, tuple)) or not approved or changed != sorted(approved)
+            or not set(changed).issubset(_ACQUISITION_UPDATE_FILES)):
+        return None  # Catalogs, pins, and every unlisted module must be intact.
+    return {"kind": "audited_acquisition_update", "source_computation_sha256": previous["computation_sha256"],
+            "target_computation_sha256": current["computation_sha256"], "changed_files": changed,
+            "source_stages_sha256": audit["source_stages_sha256"], "target_stages_sha256": audit["target_stages_sha256"],
+            "evidence_sha256": audit["evidence_sha256"]}
 
 
 def _timestamp(value):
@@ -596,6 +643,7 @@ class StudioManager:
         if self._job_alive(state.get("job") or {}):
             return blocked("현재 작업이 끝난 뒤 업데이트 호환성을 다시 확인합니다.")
         previous = state.get("execution_contract") or {}
+        audited_update = None
         if previous:
             if (previous.get("schema_version") != 1 or previous.get("settings_sha256") != identity(state["settings"])
                     or previous.get("plan_sha256") != identity(state["plan"])):
@@ -604,12 +652,16 @@ class StudioManager:
             changed = [stage for stage in remaining if not previous.get("stages", {}).get(stage)
                        or previous["stages"][stage] != self._execution_contract["stages"].get(stage)]
             if changed:
-                return blocked("남은 단계의 자료·생성·학습·채점 코드가 달라 호환 이관할 수 없습니다. 기존 자료를 보존하고 새 실험을 만드세요.")
+                audited_update = _audited_acquisition_update(previous, self._execution_contract)
+                if audited_update is None:
+                    return blocked("남은 단계의 자료·생성·학습·채점 코드가 달라 호환 이관할 수 없습니다. 기존 자료를 보존하고 새 실험을 만드세요.")
         elif (_LEGACY_COMPATIBLE_CONTRACTS.get(state.get("implementation_id"))
               != self._execution_contract["computation_sha256"]):
             return blocked("이 구버전에는 검증된 단계 계약이 없습니다. 기존 자료를 보존하고 별도 호환 검증이 필요합니다.")
         return {"state": "available", "action": "migrate",
-                "reason": "남은 단계의 계산·자료 계약이 같습니다. 기존 설정과 완료 결과를 검증하고 업데이트를 적용할 수 있습니다.",
+                "reason": ("다운로드 순서·진행 표시 변경의 자료 동일성을 확인한 업데이트입니다. 기존 설정과 완료 결과를 검증한 뒤 적용할 수 있습니다."
+                           if audited_update else "남은 단계의 계산·자료 계약이 같습니다. 기존 설정과 완료 결과를 검증하고 업데이트를 적용할 수 있습니다."),
+                **({"audited_acquisition_update": audited_update} if audited_update else {}),
                 "preserves": ["project_settings", "completed_artifacts", "review_answers", "history"]}
 
     def migrate(self, project_id):
@@ -645,6 +697,8 @@ class StudioManager:
                 "new_computation_sha256": self._execution_contract["computation_sha256"],
                 "remaining_stages": [entry["id"] for entry in state["plan"][state["index"]:]],
                 "history_sha256": identity(state.get("history", [])), "inputs_sha256": identity(state.get("inputs", {})),
+                **({"audited_acquisition_update": compatibility["audited_acquisition_update"]}
+                   if compatibility.get("audited_acquisition_update") else {}),
                 "preserved": compatibility["preserves"]})
             state["implementation_id"] = self._implementation_id
             state["execution_contract"] = {**self._execution_contract,
@@ -796,7 +850,7 @@ class StudioManager:
         root = Path(state["project"]).parent
         shared = Path(state.get("storage_workspace", self.workspace)) / "shared"
         paths = _lock_paths(root)
-        for pattern in ("*/.writer.lock", "downloads/*/.writer.lock", "mit_rir/16khz/*/.writer.lock",
+        for pattern in ("*/.writer.lock", "downloads/*/.writer.lock", "downloads/common_rir/*/.writer.lock", "mit_rir/16khz/*/.writer.lock",
                         "automatic_sources_v3/parts/*/.writer.lock",
                         "automatic_sources_v3/parts/*/.canonical_lock/.writer.lock"):
             paths.extend(shared.glob(pattern))

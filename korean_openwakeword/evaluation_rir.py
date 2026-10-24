@@ -126,7 +126,9 @@ def _prepare_common_rirs_locked(root, catalog, output, archive, log, cache_direc
         archive = directory / pin["filename"]
         if log:
             log("공통 잔향 원본 archive 준비·무결성 확인")
-        download_checked(pin["source_url"], archive, pin["sha256"], pin["size_bytes"])
+        from .material_downloads import borrowed_download
+        if borrowed_download(archive, "sha256", pin["sha256"], pin["size_bytes"]) is None:
+            download_checked(pin["source_url"], archive, pin["sha256"], pin["size_bytes"])
     archive = Path(archive).resolve()
     if archive.stat().st_size != pin["size_bytes"] or (not downloaded_and_verified and digest(archive) != pin["sha256"]):
         raise ValueError("Common RIR archive differs from its pinned size/SHA256")

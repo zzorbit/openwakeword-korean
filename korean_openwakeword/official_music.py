@@ -65,12 +65,14 @@ def _member_matches(path, row, progress):
     return True
 
 
-def prepare_official_music(shared, progress=None):
+def prepare_official_music(shared, progress=None, *, aggregate_progress=False):
     """Fetch only missing pinned members, preserving originals and resume state."""
     shared = Path(shared).resolve()
     if any(part.lower() == ".codex" for part in shared.parts):
         raise ValueError("Codex state is not an audio download directory")
     catalog = official_music_catalog()
+    total_selected = sum(row["compressed_bytes"] for source in catalog["archives"].values() for row in source["members"])
+    completed_selected = 0
     state_dir = shared / "official_music_selective_v1"
     request = {"policy": POLICY, "catalog_sha256": identity(catalog)}
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -81,14 +83,27 @@ def prepare_official_music(shared, progress=None):
         if not request_path.exists():
             write_json(request_path, request)
         bindings, observed_transfer, selected = {}, 0, []
+        def aggregate(record, done, *, network_bytes, active, member=None):
+            if progress:
+                progress({**record, "aggregate_done": True, "done": done, "total": total_selected,
+                    "unit": "bytes", "network_bytes": network_bytes, "network_active": active,
+                    "bytes_per_second": None, "eta_seconds": None, "current_file": member})
         # Metadata first retains the same provider data available to indexing.
         for key in ("metadata", "music"):
             source = catalog["archives"][key]
             missing = []
             for row in source["members"]:
                 path = _destination(shared, key, row)
-                if not _member_matches(path, row, progress):
+                def cached_progress(record):
+                    aggregate(record, completed_selected, network_bytes=observed_transfer,
+                              active=False, member=row["name"])
+                if not _member_matches(path, row, cached_progress if aggregate_progress else progress):
                     missing.append(row)
+                else:
+                    completed_selected += row["compressed_bytes"]
+                    if aggregate_progress:
+                        aggregate({"phase": "hash", "label": "기존 음악 자료 확인", "verification_reused": True},
+                                  completed_selected, network_bytes=observed_transfer, active=False, member=row["name"])
                 selected.append({"path": str(path), **row})
             if not missing:
                 continue
@@ -110,6 +125,12 @@ def prepare_official_music(shared, progress=None):
                         raise ValueError("Selected official-example member differs from its pin")
                     def report(record):
                         if progress:
+                            if aggregate_progress:
+                                aggregate({"label": "필요한 음악 자료 다운로드" if key == "music" else "음악 자료 목록 다운로드",
+                                           "phase": "download"}, completed_selected + record["done"],
+                                          network_bytes=observed_transfer + archive.downloaded_bytes,
+                                          active=record["done"] < record["total"], member=row["name"])
+                                return
                             completed = done + record["done"]
                             elapsed = time.monotonic() - started
                             rate = completed / elapsed if elapsed > 0 else None
@@ -118,10 +139,17 @@ def prepare_official_music(shared, progress=None):
                                       "bytes_per_second": rate,
                                       "eta_seconds": max(0, (total-completed)/rate) if rate else None})
                     destination = _destination(shared, key, row)
+                    if aggregate_progress:
+                        aggregate({"phase": "download", "label": "음악 자료 연결·이어받기"}, completed_selected,
+                                  network_bytes=observed_transfer + archive.downloaded_bytes, active=True, member=row["name"])
                     result = archive.extract(row["name"], destination, progress=report if progress else None)
                     if result["sha256"] != row["sha256"]:
                         raise ValueError("Selected official-example original differs from frozen SHA256")
                     done += row["compressed_bytes"]
+                    completed_selected += row["compressed_bytes"]
+                    if aggregate_progress:
+                        aggregate({"phase": "hash", "label": "음악 원본 무결성 확인"}, completed_selected,
+                                  network_bytes=observed_transfer + archive.downloaded_bytes, active=False, member=row["name"])
                 observed_transfer += archive.downloaded_bytes
         result = {"kind": POLICY, "request": request, "files": selected, "archive_bindings": bindings,
                   "observed_transfer_bytes_this_run": observed_transfer,

@@ -3,6 +3,7 @@ from importlib.resources import files
 from pathlib import Path
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import hashlib
+import math
 import os
 import queue
 import re
@@ -71,6 +72,13 @@ def download_many(items, worker, *, progress=None, max_workers=None):
     available, results = [0] * len(items), [None] * len(items)
     received, reading, writing = ([0.0] * len(items) for _ in range(3))
     networking = [False] * len(items)
+    downloaded = [False] * len(items)
+    file_views = [{"id": item["id"], "label": item.get("label", item["id"]),
+                   "group": item.get("group", item["id"]),
+                   "group_label": item.get("group_label", item.get("label", item["id"])),
+                   "state": "waiting", "done": 0, "total": size,
+                   "network_bytes": 0, "bytes_per_second": None, "eta_seconds": None}
+                  for item, size in zip(items, sizes)]
     events, failed = queue.SimpleQueue(), threading.Event()
     pending, verified, next_index, first_error = {}, 0, 0, None
     last_emit, last_signature = -float("inf"), None
@@ -102,6 +110,7 @@ def download_many(items, worker, *, progress=None, max_workers=None):
                       "download_mode": "auto" if automatic else "fixed", "target_workers": target(),
                       "adjustment_reason": controller.reason if controller else "fixed",
                       "network_bytes": sum(received), "active_network": sum(networking),
+                      "files": [dict(view) for view in file_views],
                       "current_asset": identifiers[index] if index is not None else None,
                       "current_event": event})
 
@@ -114,7 +123,8 @@ def download_many(items, worker, *, progress=None, max_workers=None):
             # Hashing starts after the local bytes are present. Its zero-based
             # counter must not reset the download total or pretend to be a rate.
             if event.get("unit") == "bytes":
-                count = event.get("total") if event.get("phase") == "hash" else event.get("done")
+                count = (event.get("total") if event.get("phase") == "hash" and not event.get("aggregate_done")
+                         else event.get("done"))
                 if isinstance(count, (int, float)) and not isinstance(count, bool) and count >= 0:
                     available[index] = max(available[index], min(count, sizes[index]) if sizes[index] else count)
             for key, values in (("network_bytes", received), ("read_seconds", reading), ("write_seconds", writing)):
@@ -125,6 +135,29 @@ def download_many(items, worker, *, progress=None, max_workers=None):
                 networking[index] = event["network_active"]
             elif event.get("phase") in ("hash", "retry"):
                 networking[index] = False
+            view = file_views[index]
+            phase = event.get("phase")
+            view["state"] = {"download": "downloading", "hash": "verifying",
+                             "retry": "retrying"}.get(phase, view["state"])
+            if phase == "download":
+                downloaded[index] = True
+            if event.get("failed"):
+                view["state"] = "failed"
+            view.update(done=available[index], network_bytes=received[index],
+                        bytes_per_second=None, eta_seconds=None)
+            if sizes[index] is None and event.get("unit") == "bytes":
+                amount = event.get("total")
+                if (isinstance(amount, (int, float)) and not isinstance(amount, bool)
+                        and math.isfinite(amount) and amount >= 0):
+                    view["total"] = amount
+            if type(event.get("attempt")) is int:
+                view["attempt"] = event["attempt"]
+            if view["state"] == "downloading" and received[index] > 0:
+                for key in ("bytes_per_second", "eta_seconds"):
+                    value = event.get(key)
+                    if (isinstance(value, (int, float)) and not isinstance(value, bool)
+                            and math.isfinite(value) and value >= 0):
+                        view[key] = value
             update_control(event.get("observed_at"), retry=event.get("phase") == "retry")
             emit(index, event)
 
@@ -142,6 +175,7 @@ def download_many(items, worker, *, progress=None, max_workers=None):
         try:
             while next_index < len(items) or pending:
                 while next_index < len(items) and len(pending) < target() and not failed.is_set():
+                    file_views[next_index]["state"] = "downloading"
                     pending[executor.submit(run, next_index)] = next_index
                     next_index += 1
                 if not pending:
@@ -154,12 +188,20 @@ def download_many(items, worker, *, progress=None, max_workers=None):
                     try:
                         results[index] = future.result()
                     except BaseException as error:
+                        file_views[index].update(state="failed", bytes_per_second=None,
+                                                 eta_seconds=None, error=type(error).__name__)
                         if first_error is None:
                             first_error = error
                     else:
                         verified += 1
                         if sizes[index] is not None:
                             available[index] = sizes[index]
+                        result = results[index]
+                        reused = (not received[index] and
+                                  (result.get("reused") is True if isinstance(result, dict) and "reused" in result
+                                   else not downloaded[index]))
+                        file_views[index].update(state="reused" if reused else "complete",
+                                                 done=available[index], bytes_per_second=None, eta_seconds=None)
                 update_control()
                 if done:
                     emit()

@@ -540,7 +540,14 @@ def run_stage(project, workspace, settings, stage_id, context=None):
 
     if stage_id == "data_download":
         from .studio_data import prepare_materials
+        download_files = {}
         def progress(record):
+            # Keep the complete download list visible during later extraction,
+            # source selection and conversion progress, without inventing rates.
+            if isinstance(record.get("files"), list):
+                download_files.update((entry["id"], dict(entry)) for entry in record["files"])
+            if download_files:
+                record = {**record, "files": list(download_files.values())}
             write_json(workspace / "progress.json", {"stage": stage_id, "updated_at": now(), **record})
         prepared = prepare_materials(project, selected_workspace, preset=settings["preset"], progress=progress,
                                      evaluation_policy=settings.get("evaluation_policy"),

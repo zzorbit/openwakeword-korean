@@ -693,6 +693,99 @@
       replace($("evaluation-shortages"), shortages.map(item => element("li", item)));
     }
   }
+  const downloadStates = { waiting: "대기", downloading: "다운로드", verifying: "검증", complete: "완료", reused: "기존 파일", retrying: "재시도", failed: "실패" };
+  let downloadProject = "", downloadGroups = new Map();
+  const downloadNumber = value => typeof value === "number" && Number.isFinite(value) && value >= 0;
+  function downloadChildren(parent, children) {
+    if (parent.children.length !== children.length || children.some((child, index) => parent.children[index] !== child)) replace(parent, children);
+  }
+  function downloadRow(tag) {
+    const node = element(tag, undefined, "download-item"), line = element("div", undefined, "download-line");
+    const view = { node, name: element("span", undefined, "download-name"), state: element("span"),
+      amount: element("span", undefined, "download-amount"), speed: element("span", undefined, "download-speed"),
+      bar: element("progress"), error: element("p", undefined, "download-error") };
+    view.bar.max = 100; view.bar.hidden = true; view.error.hidden = true;
+    line.append(view.name, view.state, view.amount, view.speed); node.append(line, view.bar, view.error);
+    return view;
+  }
+  function updateDownload(view, row, label) {
+    const state = Object.hasOwn(downloadStates, row.state) ? row.state : "unknown";
+    view.name.textContent = label;
+    view.state.textContent = downloadStates[state] || "상태 확인 중";
+    view.state.className = "download-state " + state;
+    const unit = row.unit ?? "bytes", knownUnit = ["bytes", "hours", "files"].includes(unit);
+    const quantity = value => unit === "bytes" ? bytes(value) : `${number(value)}${unit === "hours" ? "시간" : "개"}`;
+    const done = downloadNumber(row.done), total = downloadNumber(row.total);
+    const unknown = unit === "bytes" ? "전체 용량 확인 전" : "전체 분량 확인 전";
+    view.amount.textContent = unit === "mixed" ? "" : !knownUnit ? "진행량 확인 전"
+      : total ? `${done ? quantity(row.done) + " / " : "전체 "}${quantity(row.total)}`
+      : done && row.done > 0 ? `${quantity(row.done)} · ${unknown}` : unknown;
+    // Local progress may contain a resumed partial or a verified cached file.
+    // Only measured bytes from the current transfer can carry a live rate.
+    view.speed.textContent = unit === "bytes" && state === "downloading" && downloadNumber(row.network_bytes) && row.network_bytes > 0 && downloadNumber(row.bytes_per_second) && row.bytes_per_second > 0
+      ? `${bytes(row.bytes_per_second)}/초` : "";
+    view.bar.hidden = !knownUnit || !done || !total || row.total <= 0;
+    if (!view.bar.hidden) { view.bar.value = Math.min(100, row.done / row.total * 100); view.bar.setAttribute("aria-label", label + " 확보 진행률"); }
+    view.error.textContent = state === "failed" && typeof row.error === "string" ? row.error : "";
+    view.error.hidden = !view.error.textContent;
+  }
+  function downloadGroupProgress(rows) {
+    const sum = key => rows.every(row => downloadNumber(row[key])) ? rows.reduce((total, row) => total + row[key], 0) : null;
+    const finished = row => ["complete", "reused"].includes(row.state);
+    const state = rows.every(row => row.state === "reused") ? "reused" : rows.every(finished) ? "complete"
+      : ["failed", "downloading", "retrying", "verifying", "waiting"].find(state => rows.some(row => row.state === state)) || "unknown";
+    const units = new Set(rows.map(row => row.unit ?? "bytes")), unit = units.size === 1 ? [...units][0] : "mixed";
+    return { state, unit, done: unit === "mixed" ? null : sum("done"), total: unit === "mixed" ? null : sum("total"), network_bytes: sum("network_bytes"),
+      bytes_per_second: rows.reduce((sum, row) => sum + (row.state === "downloading" && downloadNumber(row.network_bytes) && row.network_bytes > 0 && downloadNumber(row.bytes_per_second) ? row.bytes_per_second : 0), 0) };
+  }
+  function renderDownloadFiles(group) {
+    if (!group.details?.open) return;
+    const children = group.rows.map(row => {
+      let view = group.files.get(row.id);
+      if (!view) { view = downloadRow("li"); group.files.set(row.id, view); }
+      updateDownload(view, row, row.label || row.id); return view.node;
+    });
+    const ids = new Set(group.rows.map(row => row.id));
+    for (const id of group.files.keys()) if (!ids.has(id)) group.files.delete(id);
+    downloadChildren(group.list, children);
+  }
+  function renderDownloads(project) {
+    const input = Array.isArray(project.progress?.files) ? project.progress.files : [];
+    const files = [...new Map(input.filter(row => row && typeof row.id === "string" && row.id).map(row => [row.id, row])).values()];
+    $("downloads-section").hidden = !files.length;
+    if (downloadProject !== project.id || !files.length) {
+      downloadProject = project.id; downloadGroups = new Map(); replace($("downloads-list"), []);
+    }
+    if (!files.length) { $("downloads-count").textContent = ""; return; }
+    $("downloads-count").textContent = `${number(files.filter(row => ["complete", "reused"].includes(row.state)).length)} / ${number(files.length)}개 준비 완료`;
+    const groups = new Map();
+    for (const row of files) {
+      const key = typeof row.group === "string" && row.group ? row.group : "file:" + row.id;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(row);
+    }
+    const nodes = [];
+    for (const [key, rows] of groups) {
+      const multiple = rows.length > 1;
+      let group = downloadGroups.get(key);
+      if (!group || Boolean(group.details) !== multiple) {
+        const node = element("li", undefined, "download-group"), view = downloadRow(multiple ? "summary" : "div");
+        group = { node, view, rows, files: new Map() };
+        if (multiple) {
+          group.details = element("details", undefined, "download-details"); group.list = element("ul", undefined, "download-files");
+          view.node.className += " download-summary"; group.details.append(view.node, group.list); node.append(group.details);
+          group.details.addEventListener("toggle", () => renderDownloadFiles(group));
+        } else node.append(view.node);
+        downloadGroups.set(key, group);
+      }
+      group.rows = rows;
+      const label = multiple ? `${rows[0].group_label || rows[0].group || "자료 묶음"} · ${number(rows.filter(row => ["complete", "reused"].includes(row.state)).length)} / ${number(rows.length)}개 완료` : rows[0].label || rows[0].id;
+      updateDownload(group.view, multiple ? downloadGroupProgress(rows) : rows[0], label);
+      renderDownloadFiles(group); nodes.push(group.node);
+    }
+    for (const key of downloadGroups.keys()) if (!groups.has(key)) downloadGroups.delete(key);
+    downloadChildren($("downloads-list"), nodes);
+  }
   function renderProject(project) {
     const running = activeStatuses.has(project.status), complete = completeStatuses.has(project.status), waiting = Boolean(project.review || project.input) || /wait|need|await/.test(project.status || "");
     $("project-title").textContent = `‘${project.wakeword || project.id}’`;
@@ -751,7 +844,7 @@
     if (evaluating(project)) $("eta").textContent = progress && !/단계/.test(progress.unit) ? "음원 수 기준 · 긴 비호출 음원은 더 오래 걸립니다." : "평가 음원의 무결성과 형식을 확인하고 있습니다.";
     $("project-error").hidden = !project.error;
     $("project-error").textContent = project.error && typeof project.error === "object" ? project.error.message || JSON.stringify(project.error) : project.error || "";
-    renderCounts(project); renderReview(project); renderInput(project); renderResultFrame(project);
+    renderDownloads(project); renderCounts(project); renderReview(project); renderInput(project); renderResultFrame(project);
     if (logProject !== project.id) { logProject = project.id; $("log").textContent = "작업 기록 보기를 열면 최신 기록을 불러옵니다."; if ($("log-details").open) loadLog(); }
   }
   function render() {

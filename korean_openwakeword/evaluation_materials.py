@@ -132,17 +132,23 @@ def _safe_member(name):
     return path
 
 
-def _download_archive(asset, downloads, progress=None):
+def _download_archive(asset, downloads, progress=None, *, verification_cache=None):
     """Official SHA256 pins, or the original publisher's MD5 plus local SHA256."""
     from .studio_data import _download, _emit
     if asset.get("checksum_algorithm") != "md5":
-        return _download(asset, downloads, progress)
+        return _download(asset, downloads, progress, verification_cache=verification_cache) if verification_cache is not None else _download(asset, downloads, progress)
     downloads.mkdir(parents=True, exist_ok=True)
     target = downloads / asset["filename"]
     expected, size = asset["md5"], asset["size_bytes"]
     if not re.fullmatch(r"[0-9a-f]{32}", expected) or not asset["source_url"].startswith("https://"):
         raise ValueError("Publisher checksum and HTTPS are required")
-    from .downloads import download_partial, verify_checksum
+    from .material_downloads import borrowed_download
+    borrowed = borrowed_download(target, "md5", expected, size)
+    if borrowed is not None:
+        _emit(progress, "이미 확인한 공통 평가 자료 재사용: " + asset["id"], size, size, "bytes",
+              phase="hash", verification_reused=True, network_bytes=0, network_active=False)
+        return borrowed
+    from .downloads import _file_identity, download_partial, verify_checksum
     def report(record):
         labels = {"download": "공통 평가 원본 다운로드", "hash": "공통 평가 원본 무결성 검사", "retry": "연결 복구 · 이어받기"}
         if progress:
@@ -153,16 +159,25 @@ def _download_archive(asset, downloads, progress=None):
         if not reused:
             partial = target.with_name(target.name + ".part")
             download_partial(asset["source_url"], partial, size, progress=report if progress else None)
+            verified_identity = _file_identity(partial)
             try:
-                sha = verify_checksum(partial, "md5", expected, progress=report if progress else None, return_sha256=True)
+                sha = verify_checksum(partial, "md5", expected, progress=report if progress else None,
+                                      verification_cache=verification_cache, return_sha256=True)
             except ValueError as error:
                 raise ValueError("Publisher archive checksum failed; partial source preserved") from error
             partial.replace(target)
+            if verification_cache is not None:
+                published_identity = _file_identity(target)
+                if published_identity[:4] != verified_identity[:4]:
+                    raise ValueError("Publisher archive changed after verification")
+                verification_cache.record(target, "md5", expected, published_identity)
+                verification_cache.record(target, "sha256", sha, published_identity)
         else:
             if target.stat().st_size != size:
                 raise ValueError("Existing publisher archive changed")
             try:
-                sha = verify_checksum(target, "md5", expected, progress=report if progress else None, return_sha256=True)
+                sha = verify_checksum(target, "md5", expected, progress=report if progress else None,
+                                      verification_cache=verification_cache, return_sha256=True)
             except ValueError as error:
                 raise ValueError("Existing publisher archive changed") from error
         md5 = expected
@@ -413,7 +428,13 @@ def prepare_common_sources(project, workspace, prepared=None, progress=None, str
     if shutil.disk_usage(stage).free < required - cached:
         raise ValueError("Selected workspace lacks space for pinned originals and common evaluation WAVs")
     archives = catalog["archives"]
-    downloaded = download_many(archives,
+    from .material_downloads import borrowed_download
+    from .studio_data import _cached_asset
+    prefetched = [borrowed_download(
+        downloads / asset["filename"] if asset.get("checksum_algorithm") == "md5" else _cached_asset(asset, downloads),
+        asset.get("checksum_algorithm", "sha256"), asset.get(asset.get("checksum_algorithm", "sha256")),
+        asset["size_bytes"]) for asset in archives]
+    downloaded = prefetched if all(path is not None for path in prefetched) else download_many(archives,
         lambda asset, report: _download_archive(asset, downloads, report), progress=progress)
     paths = {asset["id"]: path for asset, path in zip(archives, downloaded)}
     rows, failures = [], []

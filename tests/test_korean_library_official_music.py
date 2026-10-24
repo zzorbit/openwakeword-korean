@@ -87,10 +87,11 @@ def fixture_catalog(tmp_path, monkeypatch, frames=160):
     return catalog, original_audio, session, legacy
 
 
-def test_selective_inputs_match_legacy_selection_original_bytes_and_pcm(tmp_path, monkeypatch):
+@pytest.mark.parametrize("aggregate", [False, True])
+def test_selective_inputs_match_legacy_selection_original_bytes_and_pcm(tmp_path, monkeypatch, aggregate):
     catalog, originals, session, legacy = fixture_catalog(tmp_path, monkeypatch)
     observed = []
-    result = module.prepare_official_music(tmp_path / "selected", observed.append)
+    result = module.prepare_official_music(tmp_path / "selected", observed.append, aggregate_progress=aggregate)
     legacy_dir = tmp_path / "legacy"
     studio_data._fma_selection(result["metadata"], legacy["music"], legacy_dir)
     for name, expected in originals.items():
@@ -106,6 +107,12 @@ def test_selective_inputs_match_legacy_selection_original_bytes_and_pcm(tmp_path
     receipt = read_json(result["receipt"])
     assert receipt["original_bytes_preserved"] and not receipt["audio_reencoded"]
     assert not receipt["whole_archive_sha1_verified_this_run"]
+    if aggregate:
+        expected_total = sum(row["compressed_bytes"] for source in catalog["archives"].values() for row in source["members"])
+        assert all(row["aggregate_done"] and row["total"] == expected_total for row in observed)
+        assert all(0 <= row["done"] <= expected_total for row in observed)
+        assert observed[-1]["done"] == expected_total
+        assert observed[-1]["network_bytes"] == result["observed_transfer_bytes_this_run"]
     previous_calls = len(session.requests)
     resumed = module.prepare_official_music(tmp_path / "selected")
     assert len(session.requests) == previous_calls and resumed["observed_transfer_bytes_this_run"] == 0

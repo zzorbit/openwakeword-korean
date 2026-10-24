@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "kind": "audited_material_download_queue_update",
+  "source_versions": [
+    "0.17.3",
+    "0.17.4"
+  ],
+  "target_version": "0.18.0",
+  "source_computation_sha256": "04d4bd5dcfa9667ff2a650e4163007181fafe9b0cdd2e8cc72ad3e9526380d04",
+  "target_computation_sha256": "9074dae60dd74e2439198457ecbfb639df5a418831a2d73937feae53ee22de70",
+  "source_stages_sha256": "aef7b4226a131faa19df24a46220015e901d696f3c130fb67064114fbb2b38de",
+  "target_stages_sha256": "a01c4fcc065be2c5dd003f82fbe9c3d630a3e7a840d4c0da935c2551b51c702c",
+  "changed_files": [
+    "downloads.py",
+    "evaluation_materials.py",
+    "evaluation_rir.py",
+    "material_downloads.py",
+    "official_music.py",
+    "studio_data.py",
+    "studio_steps.py"
+  ],
+  "unchanged_files_and_catalogs_exactly_match_source": true,
+  "regression_report": {
+    "kind": "global_material_download_regression_v1",
+    "runs": [
+      {
+        "file": "backend_initial.xml",
+        "tests": 95,
+        "passed": 91,
+        "failed": 4,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "file": "backend_recheck.xml",
+        "tests": 4,
+        "passed": 1,
+        "failed": 3,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "file": "backend_final.xml",
+        "tests": 26,
+        "passed": 26,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "file": "plan_final.xml",
+        "tests": 6,
+        "passed": 6,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    ],
+    "latest_distinct_cases": 100,
+    "latest_results": {
+      "passed": 100,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "unchanged_core_module_ast": {
+      "audio.py": true,
+      "canonical_audio.py": true,
+      "features.py": true,
+      "frontend.py": true,
+      "train.py": true,
+      "paired.py": true,
+      "evaluate.py": true,
+      "evaluation_backend.py": true,
+      "evaluation_workers.py": true,
+      "gpu_evaluation.py": true,
+      "runtime.py": true,
+      "tts.py": true,
+      "tts_runtime.py": true,
+      "preparation.py": true,
+      "project.py": true,
+      "studio_evaluation_data.py": true,
+      "material_policy.py": true
+    },
+    "unchanged_source_pins_and_selection_function_ast": {
+      "studio_data.py:_official_assets": true,
+      "studio_data.py:_automatic_source_plan": true,
+      "studio_data.py:_fma_selection": true,
+      "studio_data.py:_extract_zeroth_archive": true,
+      "official_music.py:official_music_catalog": true,
+      "official_music.py:_destination": true,
+      "official_music.py:_member_matches": true,
+      "evaluation_materials.py:evaluation_material_catalog": true,
+      "evaluation_materials.py:_candidate_rows": true,
+      "evaluation_rir.py:common_rir_catalog": true,
+      "evaluation_rir.py:_assert_source_separation": true,
+      "evaluation_rir.py:estimate_rt60_t20": true
+    },
+    "unchanged_json_resource_values": {
+      "korean_openwakeword/resources/default_profile.json": true,
+      "korean_openwakeword/resources/evaluation_backgrounds_v4.json": true,
+      "korean_openwakeword/resources/evaluation_materials_v1.json": true,
+      "korean_openwakeword/resources/evaluation_noise_v2.json": true,
+      "korean_openwakeword/resources/evaluation_noise_v3.json": true,
+      "korean_openwakeword/resources/evaluation_rirs_v1.json": true,
+      "korean_openwakeword/resources/faster_qwen3_tts_UPSTREAM.json": true,
+      "korean_openwakeword/resources/official_fma_small_v1.json": true,
+      "korean_openwakeword/resources/public_datasets.json": true,
+      "korean_openwakeword/resources/storage_evidence_v1.json": true
+    },
+    "scope": "Deterministic local fixtures and source/pin equivalence; no production corpus download, learning or rescoring is claimed.",
+    "notes": [
+      "Initial fixture failures are retained in their original logs; the latest corresponding cases pass.",
+      "Official FMA aggregate/non-aggregate tests compare all 120 selected original byte streams and decoded PCM with legacy selection.",
+      "Global queue fixture verifies one static batch, all 270 MIT jobs, shared Zeroth deduplication and deferred bounded automatic sources.",
+      "Verification borrowing is call-scoped and checks full checksum pins and the identity captured by checksum verification. Changed or unverified files are never promoted."
+    ]
+  },
+  "additional_regressions": {
+    "download_queue_and_views": {
+      "passed": 94
+    },
+    "call_scoped_context_queue": {
+      "passed": 12
+    },
+    "stage_progress_retention": {
+      "passed": 1
+    },
+    "studio_ui": {
+      "passed": 76
+    }
+  },
+  "scope": "Acquisition order/progress update with identical pinned sources and deterministic local regression inputs. No production corpus retraining or new wakeword-performance qualification is claimed."
+}

@@ -57,6 +57,7 @@ const textOf = node => [node.textContent || "", ...(node.children || []).map(tex
 const materialRows = group => withClass(group, "material");
 const material = (group, name) => materialRows(group).find(row => withClass(row, "material-name")[0]?.textContent === name);
 const sourceEntries = row => withClass(row, "source-item");
+const downloadFile = (id, extra = {}) => ({ id, label: id, group: id, group_label: id, state: "waiting", done: 0, total: 1024, network_bytes: 0, bytes_per_second: null, eta_seconds: null, ...extra });
 function assertMaterialDisclosures(node) {
   const rows = materialRows(node);
   assert.ok(rows.length);
@@ -1281,6 +1282,113 @@ function storageBudgetRecipe(overrides = {}) {
     const b=browser({initialState:{projects:[project]}});await flush();b.click("analysis-tab");await flush();
     assert.equal(b.elements.get("result-frame").getAttribute("src"),"/analysis/bora/");await b.tick();
     assert.equal(b.elements.get("result-frame").getAttribute("src"),"/analysis/bora/");assert.equal(b.calls.some(call=>call.options.method==="POST"),false);
+  });
+  await test("all required download groups are visible while hundreds of RIR files expand only on demand", async () => {
+    const rirs = Array.from({ length: 270 }, (_, index) => downloadFile(`rir-${index}`, { group: "mit", group_label: "MIT 잔향 자료", label: `room_${index}.wav`, total: 1024,
+      ...(index === 0 ? { state: "downloading", done: 512, network_bytes: 256, bytes_per_second: 128 } : {}) }));
+    const files = [downloadFile("generic", { label: "일반 비호출 자료", total: 4096 }),
+      downloadFile("common", { label: "공통 평가 배경", state: "verifying", done: 2048, total: 2048 }), ...rirs];
+    const project = { id: "bora", wakeword: "보라야", status: "running", stage: "data_download", progress: { done: 1, total: 4, unit: "files", files } };
+    const b = browser({ initialState: { projects: [project] } }); await flush();
+    assert.equal(b.elements.get("downloads-section").hidden, false);
+    assert.equal(b.elements.get("downloads-count").textContent, "0 / 272개 준비 완료");
+    const groups = b.elements.get("downloads-list").children;
+    assert.equal(groups.length, 3);
+    assert.match(textOf(groups[0]), /일반 비호출 자료.*대기.*0 B \/ 4 KiB/);
+    assert.match(textOf(groups[1]), /공통 평가 배경.*검증/);
+    assert.match(textOf(groups[2]), /MIT 잔향 자료 · 0 \/ 270개 완료.*다운로드/);
+    const details = withClass(groups[2], "download-details")[0], list = withClass(groups[2], "download-files")[0];
+    assert.equal(list.children.length, 0);
+    details.open = true; details.handlers.toggle();
+    assert.equal(list.children.length, 270);
+    assert.match(textOf(list.children[0]), /room_0.wav.*다운로드.*512 B \/ 1 KiB.*128 B\/초/);
+    assert.match(textOf(list.children[269]), /room_269.wav.*대기/);
+    assert.equal(b.elements.get("progress").value, 25);
+    assert.equal(b.calls.some(call => call.options.method === "POST"), false);
+  });
+  await test("download rows preserve nodes and disclosure state while quantities and statuses change", async () => {
+    const files = [downloadFile("a", { group: "pair", group_label: "자료 묶음", state: "downloading", done: 256, network_bytes: 256, bytes_per_second: 128 }),
+      downloadFile("b", { group: "pair", group_label: "자료 묶음" })];
+    const project = { id: "bora", status: "running", stage: "data_download", progress: { phase: "download_many", files } };
+    const b = browser({ initialState: { projects: [project] } }); await flush();
+    const group = b.elements.get("downloads-list").children[0], details = withClass(group, "download-details")[0];
+    const list = withClass(group, "download-files")[0]; details.open = true; details.handlers.toggle();
+    const child = list.children[0], bar = descendants(child).find(node => node.tagName === "progress");
+    files[0].done = 768; files[0].network_bytes = 768; files[1].state = "verifying";
+    await b.tick(); await b.tick();
+    assert.equal(b.elements.get("downloads-list").children[0], group);
+    assert.equal(withClass(group, "download-details")[0], details); assert.equal(details.open, true);
+    assert.equal(list.children[0], child); assert.equal(bar.value, 75);
+    assert.match(textOf(list.children[1]), /검증/);
+    files[0].state = "complete"; files[0].done = 1024; files[1].state = "reused"; files[1].done = 1024;
+    project.progress.phase = "preprocessing"; await b.tick();
+    assert.equal(b.elements.get("downloads-section").hidden, false);
+    assert.equal(b.elements.get("downloads-count").textContent, "2 / 2개 준비 완료");
+    assert.match(textOf(list.children[0]), /완료/); assert.match(textOf(list.children[1]), /기존 파일/);
+    assert.equal(withClass(child, "download-speed")[0].textContent, "");
+    b.state.httpError = { status: 503, body: { code: "progress_read_pending", error: "read pending" } }; await b.tick();
+    assert.equal(b.elements.get("downloads-list").children[0], group); assert.equal(details.open, true);
+    b.state.httpError = null; await b.tick();
+    assert.equal(b.elements.get("connection").hidden, true); assert.equal(list.children[0], child);
+  });
+  await test("cached, retrying, failed and unknown-size downloads never invent network rates or percentages", async () => {
+    const files = [downloadFile("cached", { state: "reused", done: 1024, network_bytes: 0, bytes_per_second: 99999 }),
+      downloadFile("resumed", { state: "downloading", done: 900, network_bytes: 0, bytes_per_second: 99999 }),
+      downloadFile("retry", { state: "retrying", done: 100, network_bytes: 100, bytes_per_second: 50, attempt: 2 }),
+      downloadFile("failure", { state: "failed", error: "<img src=x onerror=bad()>" }),
+      downloadFile("unknown", { state: "downloading", done: 512, total: null, network_bytes: 512, bytes_per_second: null }),
+      downloadFile("malformed", { state: "unrecognized", done: null, total: null, network_bytes: null })];
+    const project = { id: "bora", status: "running", stage: "data_download", progress: { files } };
+    const b = browser({ initialState: { projects: [project] } }); await flush();
+    const groups = b.elements.get("downloads-list").children;
+    assert.match(textOf(groups[0]), /기존 파일/); assert.match(textOf(groups[2]), /재시도/); assert.match(textOf(groups[3]), /실패/);
+    assert.match(textOf(groups[4]), /512 B · 전체 용량 확인 전/); assert.match(textOf(groups[5]), /상태 확인 중/);
+    assert.equal(descendants(groups[4]).find(node => node.tagName === "progress").hidden, true);
+    assert.equal(descendants(groups[5]).find(node => node.tagName === "progress").hidden, true);
+    for (const group of groups) assert.equal(withClass(group, "download-speed")[0].textContent, "");
+    assert.match(withClass(groups[3], "download-error")[0].textContent, /<img src=x onerror=bad\(\)>/);
+    assert.equal(descendants(b.elements.get("downloads-list")).some(node => ["img", "script"].includes(node.tagName)), false);
+    assert.doesNotMatch(textOf(b.elements.get("downloads-list")), /NaN|Infinity|undefined/);
+    assert.equal(b.calls.some(call => call.options.method === "POST"), false);
+  });
+  await test("deferred hours and file counts use their own units while mixed groups never sum byte percentages", async () => {
+    const files = [downloadFile("hours", { label: "한국어 비호출", unit: "hours", done: 1.5, total: 3, state: "downloading", network_bytes: 100, bytes_per_second: 50 }),
+      downloadFile("files", { label: "음악 음원", unit: "files", done: 2, total: 5, state: "downloading", network_bytes: 100, bytes_per_second: 50 }),
+      downloadFile("mixed-bytes", { group: "mixed", group_label: "여러 단위", state: "complete", done: 1024 }),
+      downloadFile("mixed-hours", { group: "mixed", group_label: "여러 단위", unit: "hours", done: 10, total: 20, state: "downloading" }),
+      downloadFile("unknown-hours", { unit: "hours", done: 5, total: null }),
+      downloadFile("unknown-unit", { unit: "seconds", done: 2, total: 4 })];
+    const project = { id: "bora", status: "running", stage: "data_download", progress: { files } };
+    const b = browser({ initialState: { projects: [project] } }); await flush();
+    const groups = b.elements.get("downloads-list").children;
+    assert.equal(withClass(groups[0], "download-amount")[0].textContent, "1.5시간 / 3시간");
+    assert.equal(descendants(groups[0]).find(node => node.tagName === "progress").value, 50);
+    assert.equal(withClass(groups[1], "download-amount")[0].textContent, "2개 / 5개");
+    assert.equal(descendants(groups[1]).find(node => node.tagName === "progress").value, 40);
+    assert.match(textOf(groups[2]), /여러 단위 · 1 \/ 2개 완료/);
+    assert.equal(withClass(groups[2], "download-amount")[0].textContent, "");
+    assert.equal(descendants(groups[2]).find(node => node.tagName === "progress").hidden, true);
+    assert.equal(withClass(groups[3], "download-amount")[0].textContent, "5시간 · 전체 분량 확인 전");
+    assert.equal(descendants(groups[3]).find(node => node.tagName === "progress").hidden, true);
+    assert.equal(withClass(groups[4], "download-amount")[0].textContent, "진행량 확인 전");
+    assert.equal(descendants(groups[4]).find(node => node.tagName === "progress").hidden, true);
+    for (const group of groups) assert.equal(withClass(group, "download-speed")[0].textContent, "");
+    const details = withClass(groups[2], "download-details")[0]; details.open = true; details.handlers.toggle();
+    assert.match(textOf(groups[2]), /10시간 \/ 20시간/);
+  });
+  await test("legacy progress hides the file list and switching models releases old download rows", async () => {
+    const first = { id: "bora", status: "running", stage: "data_download", progress: { files: [downloadFile("old")] } };
+    const second = { id: "other", status: "running", stage: "data_download", progress: { done: 1, total: 2, unit: "files" } };
+    const b = browser({ initialState: { projects: [first, second], active_project_id: "bora" } }); await flush();
+    assert.equal(b.elements.get("downloads-section").hidden, false);
+    b.elements.get("project-select").value = "other"; b.elements.get("project-select").handlers.change();
+    assert.equal(b.elements.get("downloads-section").hidden, true); assert.equal(b.elements.get("downloads-list").children.length, 0);
+    assert.equal(b.elements.get("progress").value, 50);
+    second.progress.files = [null, { label: "no ID" }]; await b.tick();
+    assert.equal(b.elements.get("downloads-section").hidden, true);
+    second.progress.files = [downloadFile("new", { label: "새 자료" })]; await b.tick();
+    assert.equal(b.elements.get("downloads-list").children.length, 1);
+    assert.match(textOf(b.elements.get("downloads-list")), /새 자료/); assert.doesNotMatch(textOf(b.elements.get("downloads-list")), /old/);
   });
   await test("download speed and retry information describe the current operation", async () => {
     const project={id:"bora",status:"running",stage:{id:"data_download"},progress:{done:100,total:1000,unit:"bytes",phase:"download",bytes_per_second:1048576},eta_seconds:90};

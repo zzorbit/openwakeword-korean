@@ -93,6 +93,31 @@ progress::-webkit-progress-bar{background:var(--line)}
 progress::-webkit-progress-value{background:var(--blue)}
 progress::-moz-progress-bar{background:var(--blue)}
 .timing{display:flex;gap:24px;flex-wrap:wrap;color:var(--muted);font-size:12px;margin-top:12px}
+.downloads-section{margin-top:22px;border-top:1px solid var(--border);padding-top:15px}
+.downloads-heading{display:flex;align-items:baseline;justify-content:space-between;gap:14px;margin-bottom:4px}
+.downloads-heading h3{font-size:14px;margin:0;font-weight:700}
+.downloads-heading>span{font-size:12px;color:var(--muted)}
+.downloads-list,.download-files{list-style:none;padding:0;margin:0}
+.download-group{border-bottom:1px solid var(--line)}
+.download-item{padding:11px 0}
+.download-line{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline;gap:2px 14px;font-size:12px}
+.download-name{font-size:13px;font-weight:650;overflow-wrap:anywhere}
+.download-state{text-align:right;color:var(--muted);font-weight:600}
+.download-state.downloading{color:var(--blue)}
+.download-state.complete{color:var(--green)}
+.download-state.retrying{color:var(--amber)}
+.download-state.failed{color:var(--danger)}
+.download-amount,.download-speed{color:var(--muted);font-variant-numeric:tabular-nums}
+.download-speed{text-align:right}
+.download-item progress{height:5px;margin-top:7px}
+.download-item .download-error{color:var(--danger);font-size:12px;margin:5px 0 0;overflow-wrap:anywhere}
+.download-summary{cursor:pointer;position:relative;list-style:none;padding-right:22px}
+.download-summary::-webkit-details-marker{display:none}
+.download-summary::after{content:"";position:absolute;right:3px;top:20px;width:6px;height:6px;border-right:1.5px solid var(--muted);border-bottom:1.5px solid var(--muted);transform:rotate(45deg)}
+.download-details[open]>.download-summary::after{transform:rotate(225deg);top:23px}
+.download-files{padding:0 14px 3px;border-top:1px solid var(--line)}
+.download-files>li+li{border-top:1px solid var(--line)}
+.download-files .download-name{font-weight:500;font-size:12px}
 .counts{display:flex;gap:10px 25px;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:14px;margin-top:20px;font-size:12px;color:var(--muted)}
 .counts strong{color:var(--fg)}
 .work-section{margin-top:22px}

@@ -297,6 +297,13 @@ def _download(asset, directory, progress=None, verification_cache=None):
     target = _cached_asset(asset, directory)
     if not asset["source_url"].startswith("https://"):
         raise ValueError("Public-data sources must use HTTPS")
+    from .material_downloads import borrowed_download
+    borrowed = borrowed_download(target, asset["checksum_algorithm"],
+        asset.get(asset["checksum_algorithm"]), asset["size_bytes"])
+    if borrowed is not None:
+        _emit(progress, "이미 확인한 자료 재사용: " + asset["id"], asset["size_bytes"], asset["size_bytes"],
+              "bytes", phase="hash", verification_reused=True, network_bytes=0, network_active=False)
+        return borrowed
     algorithm = asset["checksum_algorithm"]
     def report(record):
         labels = {"download": "자료 다운로드", "hash": "자료 무결성 검사", "retry": "연결 복구 · 이어받기"}
@@ -447,7 +454,9 @@ def _extract_zeroth_archive(archive, output, progress=None):
     return extract_archive(archive, output, **options, **({"progress": progress} if progress else {}))
 
 
-def _fetch_mit(shared, progress=None):
+def _mit_download_plan(shared):
+    """Resolve and validate every pinned RIR before scheduling any member."""
+    shared = Path(shared)
     directory = shared / "mit_rir"
     directory.mkdir(parents=True, exist_ok=True)
     manifest = directory / "provider_tree.json"
@@ -486,14 +495,19 @@ def _fetch_mit(shared, progress=None):
             pending_bytes += max(0, item["size_bytes"] - (partial.stat().st_size if partial.is_file() else 0))
     if shutil.disk_usage(directory).free < pending_bytes:
         raise ValueError("Selected workspace lacks space for the pinned MIT WAV downloads")
+    return directory / "16khz", requests_by_order
+
+
+def _fetch_mit(shared, progress=None):
+    directory, requests_by_order = _mit_download_plan(shared)
     def acquire(item, report):
         def file_progress(record):
             labels = {"download": "잔향 자료 다운로드", "hash": "잔향 자료 무결성 검사", "retry": "연결 복구 · 이어받기"}
             report({"label": labels[record["phase"]] + ": " + item["id"], **record})
         return download_checked(*item["request"], progress=file_progress)
     download_many(requests_by_order, acquire, progress=progress)
-    _emit(progress, "잔향 자료 확인", len(entries), len(entries), "files")
-    return directory / "16khz"
+    _emit(progress, "잔향 자료 확인", len(requests_by_order), len(requests_by_order), "files")
+    return directory
 
 
 def _fma_selection(metadata, archive, output):
@@ -557,6 +571,16 @@ def _candidate_pool_hours(root, queues):
 def prepare_materials(project_path, workspace, preset="check", progress=None, evaluation_policy=None,
                       noise_material_policy=None, material_acquisition_policy=None,
                       official_noise_acquisition_policy=None):
+    from .material_downloads import MaterialDownloads
+    with MaterialDownloads(workspace, progress) as downloads:
+        return _prepare_materials(project_path, workspace, preset, downloads.report if progress else None, evaluation_policy,
+            noise_material_policy, material_acquisition_policy, official_noise_acquisition_policy,
+            downloads=downloads)
+
+
+def _prepare_materials(project_path, workspace, preset="check", progress=None, evaluation_policy=None,
+                       noise_material_policy=None, material_acquisition_policy=None,
+                       official_noise_acquisition_policy=None, *, downloads):
     """Download, normalize and reserve sources, then return actual review gates."""
     from .preparation import create_source_index, prepare_public_audio
     from .assets import import_generic
@@ -569,7 +593,7 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
     if any(part.lower() == ".codex" for part in workspace.parts):
         raise ValueError("Public learning material must not be stored inside .codex")
     shared = workspace / "shared"
-    downloads = shared / "downloads"
+    download_directory = shared / "downloads"
     recipe = material_recipe(preset, workspace, evaluation_policy, noise_material_policy,
                              material_acquisition_policy, config.get("fma_acquisition_policy"),
                              official_noise_acquisition_policy=official_noise_acquisition_policy)
@@ -584,11 +608,11 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
         for asset in recipe["common_evaluation_catalog"]["archives"]:
             if asset.get("sha256") in shared_pins:
                 continue
-            cached = _cached_asset(asset, downloads)
+            cached = _cached_asset(asset, download_directory)
             if not cached or not cached.is_file():
                 missing += asset["size_bytes"]
         rir_archive = common_rir_catalog()["archive"]
-        if not (downloads / "common_rir" / rir_archive["filename"]).is_file():
+        if not (download_directory / "common_rir" / rir_archive["filename"]).is_file():
             missing += rir_archive["size_bytes"]
     reserve = 4 * 1024**3
     if automatic and recipe["preset"] in ("test", "full"):
@@ -614,12 +638,11 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
     legacy_extra = root / ".studio/materials/extra_source_index.jsonl"
     if recipe.get("recipe_version") != 6 and legacy_extra.exists() and any(r.get("canonical_source_id") in ("freesound:102956", "freesound:13613") for r in read_rows(legacy_extra)):
         assets.update({a["id"]: a for a in _official_assets() if a["id"] in ("dns_door", "electronic_validation")})
-    verification_cache = VerificationCache()
+    verification_cache = downloads.verification_cache
     selected_assets = [asset for key, asset in assets.items()
                        if not (official_noise_acquisition_policy and key in ("fma", "fma_metadata"))]
-    downloaded = download_many(selected_assets,
-        lambda asset, report: _download(asset, downloads, report, verification_cache), progress=progress)
-    paths = {asset["id"]: path for asset, path in zip(selected_assets, downloaded)}
+    downloads.prepare(selected_assets, recipe, config)
+    paths = downloads.base_paths
     if "zeroth" in paths:
         _extract_zeroth_archive(paths["zeroth"], shared / "zeroth", progress)
     if recipe["noise_material_policy"] == "official_example":
@@ -628,15 +651,14 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
         # bounded allowance for that one CSV, excluding the much larger
         # feature tables that also live in the metadata archive.
         if official_noise_acquisition_policy:
-            from .official_music import prepare_official_music
-            selected_music = prepare_official_music(shared, progress)
+            selected_music = downloads.official_music
             tracks = Path(selected_music["metadata"])
         else:
             extract_archive(paths["fma_metadata"], shared / "fma_metadata", members=["fma_metadata/tracks.csv"], max_bytes=512 * 1024**2,
                             **({"progress": progress} if progress else {}))
             tracks = shared / "fma_metadata/fma_metadata/tracks.csv"
             _fma_selection(tracks, paths["fma"], shared / "fma_1h")
-    mit = _fetch_mit(shared, progress)
+    mit = downloads.mit_directory
     stage = root / ".studio" / "materials"
     stage.mkdir(parents=True, exist_ok=True)
 
@@ -700,6 +722,7 @@ def prepare_materials(project_path, workspace, preset="check", progress=None, ev
             generic_hours=config["targets"]["generic_hours"], korean_hours=config["targets"]["korean_hours"],
             preset=recipe["preset"], progress=progress, qualify_source=prepare_source,
             **({"material_acquisition_policy": material_acquisition_policy} if material_acquisition_policy in ("automatic_v2", "automatic_v3") else {}))
+        downloads.finish_automatic(automatic_preparation)
         for supplied in automatic_preparation["sources"]:
             # Provider selection records describe their Negative purpose. The
             # Studio review explicitly admits the same originals for mixing,
