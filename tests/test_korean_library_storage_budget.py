@@ -43,10 +43,10 @@ def test_baseline_file_formulas_and_shared_features():
     assert rows["negative_features"]["bytes"] == 55296000000
     assert rows["positive_features"]["bytes"] == 3072000000
     assert rows["hard_features"]["bytes"] == 12288000 + 512
-    assert rows["tts_wavs"]["bytes"] == 175800738944
+    assert rows["tts_wavs"]["bytes"] == 171100170944
     assert rows["training_rirs"]["bytes"] == 8374902 + 1554203
     assert rows["fma_catalog"]["bytes"] == 260414445
-    assert result["variables"]["tts_slots"] == 112024
+    assert result["variables"]["tts_slots"] == 109024
     assert result["variables"]["reference_count"] == 140
     for row in result["rows"]:
         if row["bytes"] is not None:
@@ -58,7 +58,7 @@ def test_baseline_file_formulas_and_shared_features():
 def test_site_audio_duplication_and_manual_final_example_are_explicit():
     result = budget()
     rows = by_id(result)
-    assert rows["common_positive"]["bytes"] == 80000 * 167724 + 32000 * 199722
+    assert rows["common_positive"]["bytes"] == 32000 * 167724 + 16000 * 199722
     assert rows["final_positive"]["bytes"] == 380000 * 167724
     assert rows["site_copies"]["bytes"] == sum(rows[key]["bytes"] for key in
         ("common_positive", "final_positive", "common_streams", "final_negative"))
@@ -76,7 +76,7 @@ def test_advanced_workload_updates_payload_not_common_protocol_or_approvals():
     assert rows["negative_audio"]["bytes"] == 1200 * 115200000
     assert rows["negative_features"]["bytes"] == 1200 * 1800 * 6144
     assert rows["positive_features"]["bytes"] == 60000 * 6144
-    assert small["variables"]["tts_slots"] == 32024
+    assert small["variables"]["tts_slots"] == 29024
     assert rows["common_positive"] == by_id(base)["common_positive"]
     assert settings["final_locked"] is True
 
@@ -119,3 +119,24 @@ def test_evidence_totals_and_scope_are_internally_consistent():
     bound = evidence["tts_completion_bound"]
     assert bound["bytes_per_completed_slot_bound"] == 2 * (327681 * 2 + 44) + (128000 * 2 + 44)
     assert "not extrapolated" in evidence["observed_fixtures"]["small_tts_scope"]
+
+
+def test_saved_v4_budget_keeps_its_original_counts_and_new_v5_reduces_only_evaluation_payload():
+    from korean_openwakeword.studio_steps import common_evaluation_policy
+    current = preset_settings("production")
+    old = deepcopy(current)
+    old["evaluation_policy"] = common_evaluation_policy(4)
+    old["validation_originals"] = 5000
+    previous = commercial_storage_budget(old, base_archive_bytes=31592837906)
+    reduced = commercial_storage_budget(current, base_archive_bytes=31592837906)
+    before, after = by_id(previous), by_id(reduced)
+    assert before["common_positive"]["bytes"] == storage_evidence()["evaluation_audio"]["common_positive"]
+    assert before["site_copies"]["bytes"] == storage_evidence()["evaluation_audio"]["site_copies"]
+    assert previous["reference_subtotal_bytes"] == 1074538796779
+    assert reduced["reference_subtotal_bytes"] == 1047345620779
+    assert reduced["variables"]["tts_slots"] == previous["variables"]["tts_slots"] - 3000
+    for key in before.keys() - {"common_positive", "site_copies", "tts_wavs", "scores_and_reports"}:
+        assert before[key] == after[key], key
+    assert "611.424" in before["scores_and_reports"]["detail"]
+    assert "611.424" not in after["scores_and_reports"]["detail"]
+    assert before["scores_and_reports"]["bytes"] is after["scores_and_reports"]["bytes"] is None

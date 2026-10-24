@@ -34,16 +34,20 @@ def _common_preparation(tmp_path, *, margin=False):
 
 def test_all_budgets_default_to_one_common_only_protocol_without_changing_old_policies():
     policies = [preset_settings(name)["evaluation_policy"] for name in ("check", "trial", "production")]
-    assert policies[0] == policies[1] == policies[2] == common_evaluation_policy(4)
+    assert policies[0] == policies[1] == policies[2] == common_evaluation_policy(5)
     current = policies[0]
     assert current["evaluation_materials_recipe"] == 6
     assert current["evaluation_source_scope"] == "common_30h_only"
-    previous = common_evaluation_policy(3)
-    assert current["positive_sessions"] == previous["positive_sessions"] == 112000
-    assert {key for key in previous if previous[key] != current[key]} == {"id", "evaluation_materials_recipe"}
+    previous = common_evaluation_policy(4)
+    assert current["positive_sessions"] == 48000 and previous["positive_sessions"] == 112000
+    assert {key for key in previous if previous[key] != current[key]} == {
+        "id", "validation_originals", "positive_sessions", "dry_positive_sessions",
+        "reverb_originals", "reverb_positive_sessions"}
     assert identity(common_evaluation_policy(1)) == "cf2223feb7e8301f2e9b89c82f0d85dabd6455c528c8e262f990f5f65e7957e8"
     assert identity(common_evaluation_policy(2)) == "b7cbaf6670eca4de1b21f8db3bc1d0f03e8aee6b27acc6e2eae6826efca4da29"
-    assert previous["evaluation_materials_recipe"] == 5 and "evaluation_source_scope" not in previous
+    assert previous["evaluation_materials_recipe"] == 6 and previous["evaluation_source_scope"] == "common_30h_only"
+    assert common_evaluation_policy(3)["evaluation_materials_recipe"] == 5
+    assert "evaluation_source_scope" not in common_evaluation_policy(3)
     assert workflow_plan(preset_settings())
 
 

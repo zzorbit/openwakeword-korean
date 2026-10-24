@@ -31,7 +31,7 @@ _PRESETS = {
 }
 
 
-def common_evaluation_policy(version=4):
+def common_evaluation_policy(version=5):
     """One declared Development protocol, independent of the training budget.
 
     These are test coverage targets, not a claim that background-only hours or
@@ -47,7 +47,7 @@ def common_evaluation_policy(version=4):
             "scope": "Shared across training budgets; Final remains a separate locked holdout"}
     if version == 1:
         return previous
-    if version not in (2, 3, 4):
+    if version not in (2, 3, 4, 5):
         raise ValueError("Unsupported common evaluation policy")
     expanded = {**previous, "id": "common_development_v2", "validation_references": 30,
             "positive_sessions": 100000, "dry_positive_sessions": 80000,
@@ -69,8 +69,16 @@ def common_evaluation_policy(version=4):
         return representative
     # The 30h benchmark is one corpus, not an addition to the legacy 193
     # clips or training-source Validation reserves. Keep old contracts intact.
-    return {**representative, "id": "common_development_v4",
-            "evaluation_materials_recipe": 6, "evaluation_source_scope": "common_30h_only"}
+    common_only = {**representative, "id": "common_development_v4",
+                   "evaluation_materials_recipe": 6, "evaluation_source_scope": "common_30h_only"}
+    if version == 4:
+        return common_only
+    # New workflows use 2,000 originals across all 16 dry conditions, plus
+    # the same balanced 500-call subset for both reverberation groups. All
+    # backgrounds, RIR sources, voice families and saved v1-v4 policies stay.
+    return {**common_only, "id": "common_development_v5", "validation_originals": 2000,
+            "positive_sessions": 48000, "dry_positive_sessions": 32000,
+            "reverb_originals": 500, "reverb_positive_sessions": 16000}
 
 _STAGES = (
     ("frontend", "환경 점검 · 공통 음성 처리 모델", "task"),
@@ -166,7 +174,8 @@ def _validate_settings(settings):
     policy = settings.get("evaluation_policy")
     if policy is not None:
         versions = {"common_development_v1": 1, "common_development_v2": 2,
-                    "common_development_v3": 3, "common_development_v4": 4}
+                    "common_development_v3": 3, "common_development_v4": 4,
+                    "common_development_v5": 5}
         version = versions.get(policy.get("id")) if isinstance(policy, dict) else None
         if version is None:
             raise ValueError("지원하지 않는 공통 평가 설정입니다. 저장된 실험 설정을 임의로 변경하지 마세요.")
@@ -806,7 +815,7 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         if settings.get("evaluation_policy"):
             positives = read_rows(resolved(root, config["manifests"]["positive_validation"]))
             if len(positives) < settings["validation_originals"]:
-                raise ValueError("공통 평가용 호출어 5,000개가 준비되지 않았습니다. 적은 표본으로 공통 평가 완료를 기록하지 않습니다.")
+                raise ValueError(f"공통 평가용 호출어 {settings['validation_originals']:,}개가 준비되지 않았습니다. 적은 표본으로 공통 평가 완료를 기록하지 않습니다.")
         selection = "balanced_sources"
         pair_settings = {"originals": settings["validation_originals"],
                          "noise_sections": settings["noise_sections"], "noise_selection": selection}

@@ -862,11 +862,12 @@ function storageBudgetRecipe(overrides = {}) {
     }
   });
   await test("versioned policy summaries retain historical evaluation totals and available sources", async () => {
-    for (const [version, total] of [[1, 80000], [2, 100000], [3, 112000], [4, 112000]]) {
+    for (const [version, total] of [[1, 80000], [2, 100000], [3, 112000], [4, 112000], [5, 48000]]) {
       const recipe = commonRecipe();
       recipe.evaluation_policy.id = `common_development_v${version}`;
       recipe.evaluation_policy.positive_sessions = total;
-      recipe.evaluation_policy.reverb_originals = version === 2 ? 625 : 1000;
+      recipe.evaluation_policy.reverb_originals = version === 5 ? 500 : version === 2 ? 625 : 1000;
+      if (version === 5) Object.assign(recipe.evaluation_policy, { validation_originals: 2000, dry_positive_sessions: 32000, reverb_positive_sessions: 16000 });
       recipe.evaluation_sources.push({ id: "old_extra", name: "기존 독립 배경", role: "held_out_evaluation_noise", file_count: 193 });
       const b = browser({ recipeList: [recipe] }); await flush();
       const group = b.elements.get("source-preview").children[1], all = textOf(group);
@@ -874,7 +875,32 @@ function storageBudgetRecipe(overrides = {}) {
       if (version < 4) assert.match(all, /기존 독립 배경/);
       else assert.equal(all.includes("기존 독립 배경"), false);
       if (total !== 112000) assert.equal(all.includes("112,000회"), false);
+      assert.equal(withClass(material(group, "호출어 음성"), "material-amount")[0].textContent, version === 5 ? "2,000개" : "5,000개");
     }
+  });
+  await test("all three workload scales share the 48000-call policy and unchanged common backgrounds", async () => {
+    const policy = { ...commonRecipe().evaluation_policy, id: "common_development_v5", validation_originals: 2000,
+      dry_positive_sessions: 32000, reverb_originals: 500, reverb_positive_sessions: 16000,
+      positive_sessions: 48000, evaluation_materials_recipe: 6, evaluation_source_scope: "common_30h_only" };
+    const recipes = [["check", 1000], ["trial", 20000], ["production", 100000]].map(([id, originals]) => commonRecipe({ id, originals, evaluation_policy: policy }));
+    for (const recipe of recipes) recipe.evaluation_sources.push({ id: "old_extra", name: "기존 독립 배경", role: "held_out_evaluation_noise", file_count: 193 });
+    const b = browser({ recipeList: recipes }); await flush();
+    const radios = descendants(b.elements.get("presets")).filter(node => node.tagName === "input");
+    assert.equal(radios.length, 3);
+    for (const [index, radio] of radios.entries()) {
+      radio.handlers.change();
+      const [training, evaluation] = b.elements.get("source-preview").children;
+      assert.equal(withClass(material(training, "호출어 음성"), "material-amount")[0].textContent, `${recipes[index].originals.toLocaleString("ko-KR")}개`);
+      assert.equal(withClass(material(evaluation, "호출어 음성"), "material-amount")[0].textContent, "2,000개");
+      assert.match(withClass(material(evaluation, "호출어 음성"), "material-description")[0].textContent, /30가지 음색/);
+      assert.equal(withClass(material(evaluation, "소음 증강 음원"), "material-amount")[0].textContent, "30시간");
+      assert.equal(withClass(material(evaluation, "잔향 자료"), "material-amount")[0].textContent, "80개");
+      assert.match(textOf(evaluation), /가상 공간 20개/);
+      assert.match(textOf(evaluation), /48,000회/);
+      assert.match(textOf(evaluation), /30시간 이상/);
+      assert.doesNotMatch(textOf(evaluation), /기존 독립 배경|112,000회/);
+    }
+    assert.equal(b.calls.some(call => /\/api\/projects.*(?:start|resume)/.test(call.url)), false);
   });
   await test("partial and unknown metadata stays explicit without invented time, counts or bytes", async () => {
     const b = browser({ recipeOverrides: { originals: undefined, hard_originals: undefined, sources: [], evaluation_sources: [

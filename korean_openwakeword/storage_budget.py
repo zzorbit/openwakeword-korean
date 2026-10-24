@@ -33,10 +33,15 @@ def commercial_storage_budget(settings, *, base_archive_bytes):
     if any(not math.isfinite(h) or h < 0 for h in pool_hours) or hours <= 0:
         raise ValueError("Storage ledger requires finite positive Negative hours")
     policy = settings["evaluation_policy"]
+    # Counts vary by benchmark version; the per-WAV bounds come from the
+    # unchanged call/padding/RIR limits recorded in storage_evidence_v1.
+    supported = {"common_development_v4": (5000, 80000, 32000, 112000, 1000),
+                 "common_development_v5": (2000, 32000, 16000, 48000, 500)}
+    counts = tuple(policy.get(key) for key in ("validation_originals", "dry_positive_sessions",
+                   "reverb_positive_sessions", "positive_sessions", "reverb_originals"))
     if (settings.get("material_acquisition_policy") != "automatic_v3"
-            or policy.get("id") != "common_development_v4"
-            or policy.get("positive_sessions") != 112000
-            or settings.get("validation_originals") != 5000):
+            or counts != supported.get(policy.get("id"))
+            or settings.get("validation_originals") != counts[0]):
         raise ValueError("Storage evidence does not cover this workflow policy")
     final = evidence["independent_final_scenario"]
     variables = {
@@ -45,7 +50,7 @@ def commercial_storage_budget(settings, *, base_archive_bytes):
         # known yet. This is explicitly a nominal payload, not the final shape.
         "negative_feature_rows": math.ceil(hours * 3600 / 2),
         "positive_feature_rows": originals * rounds,
-        "tts_slots": originals + 5000 + final["originals"] + hard + 24,
+        "tts_slots": originals + settings["validation_originals"] + final["originals"] + hard + 24,
         "reference_count": settings["train_references"] + settings["validation_references"] + 10,
         "hard_originals": hard,
     }
@@ -90,9 +95,12 @@ def commercial_storage_budget(settings, *, base_archive_bytes):
     row("environment", "Python 학습 도구 환경", "measured",
         "Windows·Python 3.12·Torch 2.8 cu128 설치 파일 실측 참조입니다. 공유 Python·설치 다운로드 캐시·설치 임시본은 제외하며 환경에 따라 달라집니다.",
         constant=evidence["environment_reference_bytes"])
-    evaluation = evidence["evaluation_audio"]
+    evaluation = dict(evidence["evaluation_audio"])
+    evaluation["common_positive"] = policy["dry_positive_sessions"] * 167724 + policy["reverb_positive_sessions"] * 199722
+    evaluation["site_copies"] = sum(evaluation[key] for key in
+        ("common_positive", "final_positive", "common_streams", "final_negative"))
     for key, label, detail in (
-        ("common_positive", "공통 평가 호출 WAV", "112,000개: 무잔향 80,000 + 잔향 32,000. 호출 구간 최대 1.84초와 지정 패딩·잔향 길이로 계산한 음원 상한입니다."),
+        ("common_positive", "공통 평가 호출 WAV", f"{policy['positive_sessions']:,}개: 무잔향 {policy['dry_positive_sessions']:,} + 잔향 {policy['reverb_positive_sessions']:,}. 호출 구간 최대 1.84초와 지정 패딩·잔향 길이로 계산한 음원 상한입니다."),
         ("final_positive", "독립 Final 호출 WAV(가이드 예시)", "자동 실행 기준이 아닌 가이드의 5,000원본 × 76조건 = 380,000개 시나리오입니다. Final 구성 동결 후 다시 계산해야 합니다."),
         ("common_sources", "공통 평가 변환 음원", "30시간 PCM16 명목값. 실제 원본별 길이·목표 초과분은 준비 후 확인합니다."),
         ("common_streams", "공통 평가 연속 재생 WAV", "원본 변환 음원과 별도로 저장하는 30시간 명목 사본. 유효 시간에서 제외되는 warmup·꼬리는 추가됩니다."),
@@ -107,6 +115,10 @@ def commercial_storage_budget(settings, *, base_archive_bytes):
         "기존 CNN128 ONNX 실측으로 세 학습 출력·배포 묶음·3개 평균 선택본을 계산한 시나리오입니다. 공통 frontend는 프로젝트·배포·선택본의 세 사본이며 설치 패키지의 사본과 별개입니다.",
         constant=evidence["deployment_files_reference_bytes"])
     unknowns = deepcopy(evidence["unknowns"])
+    if policy["id"] == "common_development_v5":
+        for item in unknowns:
+            if item["id"] == "scores_and_reports":
+                item["detail"] = "현재 평가의 실제 점수 프레임 수와 NPZ 압축·JSONL·clips/report·선택 사본 크기는 미확정입니다. 평가 중 frames.npy와 압축 NPZ가 동시에 존재합니다."
     for item in unknowns:
         rows.append({**item, "bytes": None, "classification": "unresolved"})
     return {

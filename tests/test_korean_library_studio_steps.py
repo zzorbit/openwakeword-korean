@@ -53,7 +53,7 @@ def test_presets_are_explicit_not_changes_to_global_defaults(name, counts):
 def test_common_evaluation_is_identical_for_all_training_budgets_and_cannot_drift():
     settings = [steps.preset_settings(name) for name in ("check", "trial", "production")]
     assert all(s["evaluation_policy"] == steps.common_evaluation_policy() for s in settings)
-    assert all((s["validation_references"], s["validation_originals"], s["noise_sections"]) == (30, 5000, 1) for s in settings)
+    assert all((s["validation_references"], s["validation_originals"], s["noise_sections"]) == (30, 2000, 1) for s in settings)
     assert settings[0]["originals"] == 1000 and settings[-1]["originals"] == 100000
     changed = settings[0]
     changed["validation_originals"] = 100
@@ -341,9 +341,10 @@ def test_positive_generation_uses_standalone_train_and_disjoint_validation_only(
     monkeypatch.setattr(tts_runtime, "CloneRuntime", lambda *a: shared)
     monkeypatch.setattr(tts, "generate", generate)
     result = run(project, "positives")
-    assert calls == [(project, "train", 1000, False, "clone"), (project, "validation", 5000, False, "clone")]
+    assert calls == [(project, "train", 1000, False, "clone"), (project, "validation", 2000, False, "clone")]
     assert models == [shared, shared]
     assert result["result"]["independent_STT_runs"] == 0
+    assert result["result"]["validation_originals"] == 2000
     assert not (project.parent / "data/generated/final").exists()
 
 
@@ -410,20 +411,26 @@ def test_old_completed_output_with_different_recipe_is_retained_as_separate_vers
 
 
 @pytest.mark.parametrize("preset", ["check", "trial", "production"])
-@pytest.mark.parametrize("policy_version", [2, 3])
+@pytest.mark.parametrize("policy_version", [2, 3, 4, 5])
 def test_studio_development_selects_balanced_policy_and_preserves_old_pair_outputs(project, monkeypatch, preset, policy_version):
     from korean_openwakeword import paired
     from korean_openwakeword import evaluation_materials
-    monkeypatch.setattr(evaluation_materials, "evaluation_material_coverage", lambda rows: {"target_met": True, "shortages": []})
+    material_calls = []
+    def coverage(rows, **kwargs):
+        material_calls.append(kwargs)
+        return {"target_met": True, "shortages": []}
+    monkeypatch.setattr(evaluation_materials, "evaluation_material_coverage", coverage)
     settings = steps.preset_settings(preset)
-    settings["evaluation_policy"] = steps.common_evaluation_policy(policy_version)
+    policy = steps.common_evaluation_policy(policy_version)
+    settings.update(evaluation_policy=policy, **{key: policy[key] for key in
+                    ("validation_references", "validation_originals", "noise_sections")})
     project = create_project(project.parent.parent / preset, "보라야", "bora", positive_originals=settings["originals"],
                              augmentation_rounds=settings["rounds"], updates=settings["updates"],
                              generic_hours=settings["generic_hours"], korean_hours=settings["korean_hours"])
     root = project.parent
     config = read_json(project)
     steps._publish_rows(root / config["manifests"]["positive_validation"],
-                        [{"sample_id": f"validation_{i:06d}"} for i in range(5000)], allow_initial_empty=True)
+                        [{"sample_id": f"validation_{i:06d}"} for i in range(settings["validation_originals"])], allow_initial_empty=True)
     negative = fake_audio(root, "heldout", kind="negative", split="validation")
     negative_manifest = steps._publish_rows(root / ".studio/negative.jsonl", [negative])
     old = root / "reports/studio_paired"
@@ -444,7 +451,7 @@ def test_studio_development_selects_balanced_policy_and_preserves_old_pair_outpu
     assert result["state"] == "completed" and calls[0]["noise_selection"] == "balanced_sources"
     assert calls[0]["originals"] == settings["validation_originals"] and calls[0]["noise_sections"] == 1
     assert calls[0]["reverb_originals"] == settings["evaluation_policy"]["reverb_originals"]
-    if policy_version == 3:
+    if policy_version >= 3:
         assert calls[0]["reverb_selection"] == "metadata_axes"
     else:
         assert "reverb_selection" not in calls[0]
@@ -453,16 +460,25 @@ def test_studio_development_selects_balanced_policy_and_preserves_old_pair_outpu
     assert result["result"]["noise_coverage"]
     assert result["result"]["evaluation_policy_sha256"] == identity(settings["evaluation_policy"])
     assert calls[0]["snrs"] == (20, 15, 10, 5, 0)
+    assert material_calls == ([{"strict_common_pool": True}] if policy_version >= 4 else [{}])
 
 
-def test_common_evaluation_refuses_a_short_positive_pool_before_building_wavs(project, monkeypatch):
+@pytest.mark.parametrize("policy_version", [4, 5])
+def test_common_evaluation_refuses_a_short_positive_pool_before_building_wavs(project, monkeypatch, policy_version):
     from korean_openwakeword import paired
     negative = fake_audio(project.parent, "background", kind="negative", split="validation")
     manifest = steps._publish_rows(project.parent / ".studio/negative.jsonl", [negative])
     monkeypatch.setattr(paired, "prepare_evaluation", lambda *a, **k: pytest.fail("Short pool cannot start full common evaluation"))
     context = {"results": {"data_connect": {"result": {"negative_validation_manifest": str(manifest)}}}}
-    with pytest.raises(ValueError, match="5,000개"):
-        run(project, "development", context)
+    settings = steps.preset_settings()
+    policy = steps.common_evaluation_policy(policy_version)
+    settings.update(evaluation_policy=policy, **{key: policy[key] for key in
+                    ("validation_references", "validation_originals", "noise_sections")})
+    config = read_json(project)
+    steps._publish_rows(project.parent / config["manifests"]["positive_validation"],
+        [{"sample_id": f"validation_{i:06d}"} for i in range(policy["validation_originals"] - 1)], allow_initial_empty=True)
+    with pytest.raises(ValueError, match=f"{policy['validation_originals']:,}개"):
+        run(project, "development", context, settings=settings)
 
 
 def test_complete_common_evaluation_is_not_relabeled_as_a_smoke_run_for_check_budget(project, monkeypatch):

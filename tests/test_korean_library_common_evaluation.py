@@ -79,8 +79,8 @@ def test_snr_variants_do_not_inflate_original_or_voice_counts(tmp_path):
 def test_every_training_budget_uses_one_full_common_protocol():
     values = [preset_settings(key) for key in ("check", "trial", "production")]
     assert len({json.dumps(v["evaluation_policy"], sort_keys=True) for v in values}) == 1
-    assert all(v["validation_originals"] == 5000 and v["validation_references"] == 30 for v in values)
-    assert all(v["evaluation_policy"]["positive_sessions"] == 112000 for v in values)
+    assert all(v["validation_originals"] == 2000 and v["validation_references"] == 30 for v in values)
+    assert all(v["evaluation_policy"]["positive_sessions"] == 48000 for v in values)
     assert sum(values[0]["evaluation_policy"]["negative_hours_by_bucket"].values()) == 30
     assert [v["originals"] for v in values] == [1000, 20000, 100000]
 
@@ -104,7 +104,9 @@ def test_new_protocol_only_changes_the_approved_rir_subset_and_keeps_historical_
     # their recorded contract, rather than silently gaining the new budget.
     assert identity(common_evaluation_policy(1)) == "cf2223feb7e8301f2e9b89c82f0d85dabd6455c528c8e262f990f5f65e7957e8"
     assert identity(old) == "b7cbaf6670eca4de1b21f8db3bc1d0f03e8aee6b27acc6e2eae6826efca4da29"
-    for version in (1, 2, 3, 4):
+    assert identity(common_evaluation_policy(3)) == "ad9e96261f5c9c57fc747bbd2f7aa1a6736969d9fbca937a4f4eada19a9e8688"
+    assert identity(common_evaluation_policy(4)) == "ccfb9bfb2c33b317a67b88d55f4bb5e5f5a8e0994a21b50a99ac3f03a1e5f8da"
+    for version in (1, 2, 3, 4, 5):
         settings = preset_settings()
         policy = common_evaluation_policy(version)
         settings.update(evaluation_policy=policy, **{key: policy[key] for key in
@@ -116,7 +118,7 @@ def test_new_protocol_only_changes_the_approved_rir_subset_and_keeps_historical_
     assert common_evaluation_policy(1)["positive_sessions"] == 80000
 
 
-@pytest.mark.parametrize("version", [0, 5, "3", None])
+@pytest.mark.parametrize("version", [0, 6, "3", None])
 def test_unknown_policy_versions_are_rejected(version):
     with pytest.raises(ValueError, match="Unsupported"):
         common_evaluation_policy(version)
@@ -134,14 +136,15 @@ def test_unknown_or_modified_policy_cannot_be_reinterpreted_as_the_new_default()
         workflow_plan(settings)
 
 
-def _full_rir_coverage(tmp_path, monkeypatch, *, reverb_count=1000, mutation=None):
+def _full_rir_coverage(tmp_path, monkeypatch, *, original_count=5000, reverb_count=1000,
+                       strict_common=False, mutation=None):
     """Exercise full-sized row membership without generating any audio."""
     import korean_openwakeword.evaluation_coverage as coverage_module
     import korean_openwakeword.evaluation_materials as material_module
     expected = [("clean", None)] + [(category, snr) for category in
                 ("environment", "music", "competing_speech") for snr in (20, 15, 10, 5, 0)]
     def generate():
-        for group, count in (("none", 5000), ("moderate", reverb_count), ("strong", reverb_count)):
+        for group, count in (("none", original_count), ("moderate", reverb_count), ("strong", reverb_count)):
             for slot in range(count):
                 for category, snr in expected:
                     row = {"sample_id": f"{group}:{slot}:{category}:{snr}", "original_id": f"call:{slot}",
@@ -155,7 +158,7 @@ def _full_rir_coverage(tmp_path, monkeypatch, *, reverb_count=1000, mutation=Non
                     yield mutation(row) if mutation else row
     material_calls = []
     def material_coverage(rows, strict_common_pool=False):
-        assert strict_common_pool is False  # This fixture exercises preserved v2/v3.
+        assert strict_common_pool is strict_common
         material_calls.append(list(rows))
         return {"target_met": True, "shortages": []}
     monkeypatch.setattr(coverage_module, "iter_rows", lambda path: generate())
@@ -201,3 +204,82 @@ def test_paired_coverage_rejects_mismatches_that_leave_all_cell_totals_unchanged
     result = assess()
     assert not result["coverage_targets_passed"]
     assert any(expected in reason for reason in result["shortages"])
+
+
+def test_v5_reduces_only_positive_call_counts_and_keeps_all_previous_contracts():
+    previous = common_evaluation_policy(4)
+    policy = common_evaluation_policy()
+    assert policy["id"] == "common_development_v5"
+    assert {key for key in policy if policy[key] != previous[key]} == {
+        "id", "validation_originals", "positive_sessions", "dry_positive_sessions",
+        "reverb_originals", "reverb_positive_sessions"}
+    assert (policy["validation_originals"], policy["reverb_originals"]) == (2000, 500)
+    assert (policy["dry_positive_sessions"], policy["reverb_positive_sessions"], policy["positive_sessions"]) == (32000, 16000, 48000)
+    assert policy["positive_sessions"] == 16 * policy["validation_originals"] + 2 * 16 * policy["reverb_originals"]
+    assert policy["validation_references"] == 30 and policy["rir_files"] == 80 and policy["rir_rooms"] == 20
+    assert policy["development_negative_target_hours"] == [30, 30]
+    assert policy["reverb_selection"] == "metadata_axes"
+
+
+def test_v5_full_48000_conditions_use_2000_originals_and_same_500_for_both_rirs(tmp_path, monkeypatch):
+    assess, materials = _full_rir_coverage(tmp_path, monkeypatch, original_count=2000,
+                                         reverb_count=500, strict_common=True)
+    result = assess(5)
+    assert result["coverage_targets_passed"] and not result["shortages"]
+    assert result["positive_originals"] == 2000 and result["synthetic_voice_families"] == 30
+    assert result["reverberation"]["originals_per_group"] == {"moderate": 500, "strong": 500}
+    assert sum(row["samples"] for row in result["condition_counts"]) == 32000
+    assert sum(row["samples"] for row in result["reverberation"]["condition_counts"]) == 48000
+    assert len(materials) == 1 and result["negative_hours_per_candidate_minimum"] == 30
+    assert result["independent_Final_completed"] is False
+
+
+@pytest.mark.parametrize("defect,expected", [
+    ("different_subsets", "서로 다른 호출어"),
+    ("missing_dry", "잔향 없음 시험 누락"),
+    ("duplicate_replaces_missing_cell", "원본별 16조건 대응 누락: strong")])
+def test_v5_requires_same_subset_and_every_paired_condition(tmp_path, monkeypatch, defect, expected):
+    def mutate(row):
+        if defect == "different_subsets" and row["reverb_condition"] == "strong":
+            row["original_id"] = "call:" + str(500 + int(row["original_id"].split(":")[1]))
+        elif defect == "missing_dry" and row["reverb_condition"] == "none" and row["original_id"] == "call:0":
+            row["original_id"] = "extra_dry_call"
+        elif defect == "duplicate_replaces_missing_cell" and row["reverb_condition"] == "strong" and row["original_id"] == "call:0" and row["category"] == "environment" and row["snr_db"] == 5:
+            row["original_id"] = "call:1"
+        return row
+    assess, _ = _full_rir_coverage(tmp_path, monkeypatch, original_count=2000,
+        reverb_count=500, strict_common=True, mutation=mutate)
+    result = assess(5)
+    assert not result["coverage_targets_passed"]
+    assert any(expected in reason for reason in result["shortages"])
+
+
+@pytest.mark.parametrize("version", [4, 5])
+def test_common_only_versions_require_strict_negative_source_scope(tmp_path, monkeypatch, version):
+    from korean_openwakeword import evaluation_materials
+    assess, _ = _full_rir_coverage(tmp_path, monkeypatch, strict_common=True)
+    def wrong_scope(rows, **kwargs):
+        assert kwargs == {"strict_common_pool": True}
+        raise ValueError("legacy source is outside the common-only pool")
+    monkeypatch.setattr(evaluation_materials, "evaluation_material_coverage", wrong_scope)
+    result = assess(version)
+    assert not result["coverage_targets_passed"]
+    assert any("outside the common-only pool" in reason for reason in result["shortages"])
+
+
+def test_v5_balanced_500_subset_is_fixed_across_thirty_declared_voice_families():
+    from korean_openwakeword.paired import reverb_subset
+    policy = common_evaluation_policy()
+    values = [{"sample_id": f"call_{slot:05d}", "voice_family_id": f"voice_{slot % 30:02d}",
+               "axes": {"style": ["neutral", "projected"][(slot // 30) % 2],
+                        "speed": ["slow", "fast"][(slot // 60) % 2],
+                        "intonation": ["rising", "falling"][(slot // 120) % 2]}}
+              for slot in range(policy["validation_originals"])]
+    chosen = reverb_subset(values, policy["reverb_originals"], 42, selection=policy["reverb_selection"])
+    assert len(chosen) == len({row["sample_id"] for row in chosen}) == 500
+    counts = Counter(row["voice_family_id"] for row in chosen)
+    assert len(counts) == 30 and set(counts.values()) == {16, 17}
+    assert chosen == reverb_subset(list(reversed(values)), 500, 42, selection="metadata_axes")
+    styles = Counter((row["voice_family_id"], row["axes"]["style"], row["axes"]["speed"],
+                      row["axes"]["intonation"]) for row in chosen)
+    assert len(styles) == 30 * 8 and max(styles.values()) - min(styles.values()) <= 1

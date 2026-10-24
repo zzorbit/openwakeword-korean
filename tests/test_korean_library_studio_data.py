@@ -68,6 +68,32 @@ def test_recipe_cache_availability_does_not_imply_integrity(tmp_path):
     assert module.material_recipe(workspace=tmp_path)["assets"][0]["availability"] == "cached_requires_integrity_check"
 
 
+@pytest.mark.parametrize("preset", ["check", "test", "full"])
+def test_reduced_call_policy_preserves_the_exact_common_material_sources_and_downloads(preset, monkeypatch):
+    from korean_openwakeword.studio_steps import common_evaluation_policy
+    from korean_openwakeword import studio_evaluation_data
+
+    monkeypatch.setattr(module.requests, "get", lambda *a, **k: pytest.fail("planning may not download"))
+    monkeypatch.setattr(studio_evaluation_data, "evaluation_catalog", lambda: pytest.fail("recipe 6 may not append the legacy catalog"))
+    monkeypatch.setattr(studio_evaluation_data, "evaluation_preview", lambda: pytest.fail("recipe 6 may not append legacy supplemental sources"))
+    previous = module.material_recipe(preset, evaluation_policy=common_evaluation_policy(4))
+    current_policy = common_evaluation_policy(5)
+    current = module.material_recipe(preset, evaluation_policy=current_policy)
+    assert current_policy["positive_sessions"] == 48000
+    assert current_policy["validation_originals"] == 2000
+    assert current_policy["reverb_originals"] == 500
+    assert current["evaluation_materials_policy"] == current_policy
+    assert current["recipe_version"] == previous["recipe_version"] == 6
+    assert current["evaluation_source_scope"] == previous["evaluation_source_scope"] == "common_30h_only"
+    assert current["evaluation_assets"] == previous["evaluation_assets"] == []
+    assert current["evaluation_sources"] == previous["evaluation_sources"]
+    assert len(current["evaluation_sources"]) == 8
+    assert all(row["id"].startswith("common_30h_") or row["id"] == "openslr28_common_rir_v1"
+               for row in current["evaluation_sources"])
+    for key in ("assets", "common_evaluation_catalog", "evaluation_download_bytes", "known_download_bytes", "additional_download"):
+        assert current[key] == previous[key]
+
+
 def test_documented_manual_cache_is_reused_without_rewriting_its_receipt(tmp_path, monkeypatch):
     directory = tmp_path / "shared/downloads"
     manual = tmp_path / "shared/source.wav"

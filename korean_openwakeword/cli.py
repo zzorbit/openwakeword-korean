@@ -194,7 +194,7 @@ def parser():
     a.add_argument("--project", type=Path, required=True); a.add_argument("--output", type=Path, required=True)
     a.add_argument("--split", choices=("validation", "final"), default="validation"); a.add_argument("--originals", type=int, default=100)
     a.add_argument("--noise-sections", type=int, default=5)
-    a.add_argument("--reverb-originals", type=int, default=0, help="잔향 추가 시험에 사용할 고정 원본 수; 1000이면 5,000개 기준 총 112,000회")
+    a.add_argument("--reverb-originals", type=int, default=0, help="두 잔향 강도에 공통으로 사용할 원본 수; 원본 2000개·소음 구간 1개·잔향 500개이면 총 48,000회")
     a.add_argument("--reverb-selection", choices=["legacy", "metadata_axes"], default="legacy", help="잔향 원본 선별: 새 공통 평가에는 metadata_axes 사용; 기존 recipe는 legacy 유지")
     a.add_argument("--noise-selection", choices=("legacy", "balanced_sources"), default="legacy",
                    help="legacy: 기존 원본 선택 / balanced_sources: 소음 세부 종류와 원본 균형 선택")
@@ -303,9 +303,15 @@ def dispatch(a):
         from .storage import describe_storage
         return describe_storage(a.project)
     if a.command == "init":
+        from .studio_steps import common_evaluation_policy
         choices = selected_choices(a, default_profile())
         project = create_project(a.output, a.wakeword, a.id, **choices,
                                  validation_voice_families=a.validation_voices)
+        # Only the newly initialized configuration adopts the current common
+        # call count. The pinned profile and saved experiments stay intact.
+        _, config = load_project(project)
+        config["targets"]["validation_originals"] = common_evaluation_policy()["validation_originals"]
+        write_json(project, config)
         return {"project": str(project), "workload": workload_summary(load_project(project)[1]),
                 "next": "참조·파일럿·자료 준비 후 train 실행; init은 학습을 시작하지 않습니다."}
     if a.command == "configure":

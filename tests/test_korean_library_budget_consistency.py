@@ -82,3 +82,28 @@ def test_missing_noise_target_reports_a_validation_error():
     del config["targets"]["noise_hours_phase1"]
     with pytest.raises(ValueError, match="Noise preparation hours"):
         validate_project(config)
+
+
+def test_new_cli_and_web_initialization_use_2000_common_calls_without_rewriting_old_profiles(tmp_path):
+    baseline = default_profile()
+    assert baseline["targets"]["validation_originals"] == 5000
+    old_project = create_project(tmp_path / "saved", "보라야", "saved")
+    old_bytes = old_project.read_bytes()
+    parsed = parser().parse_args(["init", "--wakeword", "보라야", "--id", "bora",
+        "--output", str(tmp_path / "cli"), "--non-interactive", "--validation-voices", "30"])
+    result = dispatch(parsed)
+    config = load_project(result["project"])[1]
+    assert config["targets"]["validation_originals"] == 2000
+    assert config["targets"]["final_originals"] == 5000
+    manager = StudioManager(tmp_path / "web")
+    try:
+        for preset in ("check", "trial", "production"):
+            model = manager.create({"wakeword": "보라야", "preset": preset})
+            state = manager._load(model["id"])
+            assert load_project(state["project"])[1]["targets"]["validation_originals"] == 2000
+            assert state["settings"]["evaluation_policy"]["positive_sessions"] == 48000
+        assert manager._children == {}
+    finally:
+        manager.close()
+    assert old_project.read_bytes() == old_bytes
+    assert default_profile() == baseline

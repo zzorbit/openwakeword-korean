@@ -188,22 +188,35 @@ def test_recipes_preview_has_three_budgets_known_sources_and_no_network(manager)
     assert all(row["material_review_policy"] == "library_fixed_sources_v1" for row in recipes["presets"])
     policies = [row["evaluation_policy"] for row in recipes["presets"]]
     assert all(policy == policies[0] for policy in policies)
-    assert policies[0]["validation_originals"] == 5000
+    assert policies[0]["validation_originals"] == 2000
     assert manager.workers.calls == []
 
 
-def test_registered_v2_workflow_keeps_its_frozen_protocol_when_opened_after_upgrade(manager):
+@pytest.mark.parametrize("version", [1, 2, 3, 4])
+def test_new_common_benchmark_is_separate_and_saved_protocol_remains_readable(manager, version):
     from korean_openwakeword.studio_steps import common_evaluation_policy
     view = create(manager)
     state = manager._load(view["id"])
-    state["settings"]["evaluation_policy"] = common_evaluation_policy(2)
+    old_policy = common_evaluation_policy(version)
+    state["settings"]["evaluation_policy"] = old_policy
+    for key in ("validation_originals", "validation_references", "noise_sections"):
+        state["settings"][key] = old_policy[key]
+    config = read_json(state["project"])
+    config["targets"]["validation_originals"] = old_policy["validation_originals"]
+    write_json(state["project"], config)
+    state["config_sha256"] = digest(state["project"])
     manager._save(state)
     path = manager._path(view["id"])
     original = path.read_bytes()
-    reopened = create(manager)
-    assert reopened["id"] == view["id"]
-    assert manager._load(view["id"])["settings"]["evaluation_policy"] == common_evaluation_policy(2)
+    configuration = Path(state["project"]).read_bytes()
+    new_run = create(manager)
+    assert new_run["id"] != view["id"]
+    assert new_run["directory"] != view["directory"]
+    assert manager._load(new_run["id"])["settings"]["evaluation_policy"] == common_evaluation_policy(5)
+    assert manager.describe(manager._load(view["id"]))["id"] == view["id"]
+    assert manager._load(view["id"])["settings"]["evaluation_policy"] == old_policy
     assert path.read_bytes() == original
+    assert Path(state["project"]).read_bytes() == configuration
     assert manager.workers.calls == []
 
 

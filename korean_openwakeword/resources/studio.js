@@ -373,7 +373,7 @@
     }
     const buckets = policy.negative_hours_by_bucket || {};
     const evalSources = [...sources.filter(isEvaluation), ...(recipe.evaluation_sources || [])]
-      .filter(item => policy.id !== "common_development_v4" || item.id === "openslr28_common_rir_v1" || Object.keys(buckets).some(key => item.id === `common_30h_${key}`));
+      .filter(item => !["common_development_v4", "common_development_v5"].includes(policy.id) || item.id === "openslr28_common_rir_v1" || Object.keys(buckets).some(key => item.id === `common_30h_${key}`));
     const bucketRecord = key => evalSources.find(item => item.id === `common_30h_${key}` || item.dataset_id === key);
     const bucketHours = key => buckets[key] ?? bucketRecord(key)?.target_hours ?? 0;
     const bucketLabels = { korean_conversation: "대화", korean_interview: "인터뷰", korean_read: "낭독", other_speech: "다른 언어", music: "음악", environment: "환경음", electronic: "전자음" };
@@ -399,7 +399,7 @@
         { id: "noise", name: "소음 증강 음원", description: "위 평가용 비호출 음원을 호출어에 섞어 사용", amount: hours(totalHours), sources: [...general, ...speech] }
       );
     }
-    // Older policies retain their supplemental sources; v4 filters them above.
+    // Older policies retain their supplemental sources; v4/v5 filter them above.
     for (const item of evalSources.filter(item => item.id !== "openslr28_common_rir_v1" && (!Object.keys(buckets).length || !item.id?.startsWith("common_30h_")))) {
       evaluation.push({ id: `extra-${evaluation.length}`, name: fallback(item).name, description: fallback(item).content, amount: fallback(item).amount, sources: [fallback(item)] });
     }

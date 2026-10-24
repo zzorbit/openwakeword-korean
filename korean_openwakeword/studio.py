@@ -77,8 +77,9 @@ def _safe_root(path):
 
 
 def _model_choice(word, preset, settings):
-    """Only user choices identify a saved run; upgrades keep its frozen policy."""
+    """Different benchmark versions need separate runs; old IDs stay resumable."""
     return {"wakeword": word, "preset": preset,
+            "evaluation_policy": (settings.get("evaluation_policy") or {}).get("id"),
             **{key: settings[key] for key in ("originals", "rounds", "updates")},
             **{key: float(settings[key]) for key in ("generic_hours", "korean_hours")}}
 
@@ -491,6 +492,7 @@ class StudioManager:
                            korean_hours=settings["korean_hours"],
                            validation_voice_families=settings["validation_references"])
             _, config = load_project(project)
+            config["targets"]["validation_originals"] = settings["validation_originals"]
             config["audio_storage_policy"] = settings["audio_storage_policy"]
             if settings.get("fma_acquisition_policy"):
                 config["fma_acquisition_policy"] = settings["fma_acquisition_policy"]
@@ -1059,7 +1061,7 @@ class StudioManager:
         if candidate_coverage or admitted_coverage:
             view["evaluation_materials"] = {"candidate": candidate_coverage, "admitted": admitted_coverage,
                 "scope": "원본 고유 시간 · 다운로드/기술 검사와 대표 검수 승인은 별도 · 실제 채점 시간은 결과에서 확인"}
-            if (state.get("settings", {}).get("evaluation_policy") or {}).get("id") == "common_development_v4":
+            if (state.get("settings", {}).get("evaluation_policy") or {}).get("id") in ("common_development_v4", "common_development_v5"):
                 def duration_view(coverage, budget):
                     if not coverage:
                         return None
