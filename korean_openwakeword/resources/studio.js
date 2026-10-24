@@ -779,7 +779,9 @@
         downloadGroups.set(key, group);
       }
       group.rows = rows;
-      const label = multiple ? `${rows[0].group_label || rows[0].group || "자료 묶음"} · ${number(rows.filter(row => ["complete", "reused"].includes(row.state)).length)} / ${number(rows.length)}개 완료` : rows[0].label || rows[0].id;
+      const singleLabel = rows[0].group === "common_rir" && typeof rows[0].group_label === "string" && rows[0].group_label
+        ? rows[0].group_label : rows[0].label || rows[0].id;
+      const label = multiple ? `${rows[0].group_label || rows[0].group || "자료 묶음"} · ${number(rows.filter(row => ["complete", "reused"].includes(row.state)).length)} / ${number(rows.length)}개 완료` : singleLabel;
       updateDownload(group.view, multiple ? downloadGroupProgress(rows) : rows[0], label);
       renderDownloadFiles(group); nodes.push(group.node);
     }

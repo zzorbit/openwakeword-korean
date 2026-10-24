@@ -1395,6 +1395,18 @@ function storageBudgetRecipe(overrides = {}) {
     const b=browser({initialState:{projects:[project]}});await flush();assert.match(b.elements.get("eta").textContent,/1 MiB\/초/);assert.match(b.elements.get("eta").textContent,/이 작업 예상 남은 시간/);
     project.progress={done:100,total:1000,unit:"bytes",phase:"retry",attempt:2,retry_limit:3};await b.tick();assert.match(b.elements.get("eta").textContent,/연결 재시도 2 \/ 3/);
   });
+  await test("the evaluation RIR archive uses its purpose label without renaming source records", async () => {
+    const row = downloadFile("common:rir_archive", { label: "rirs_noises.zip", group: "common_rir",
+      group_label: "평가용 공간 울림 · OpenSLR RIR", state: "downloading", done: 256, network_bytes: 256, bytes_per_second: 128 });
+    const project = { id: "bora", status: "running", stage: "data_download", progress: { files: [row] } };
+    const b = browser({ initialState: { projects: [project] } }); await flush();
+    assert.match(textOf(b.elements.get("downloads-list")), /평가용 공간 울림 · OpenSLR RIR/);
+    assert.doesNotMatch(textOf(b.elements.get("downloads-list")), /rirs_noises\.zip/);
+    assert.equal(row.label, "rirs_noises.zip"); assert.equal(row.id, "common:rir_archive");
+    row.state = "complete"; row.done = row.total; await b.tick();
+    assert.match(textOf(b.elements.get("downloads-list")), /평가용 공간 울림 · OpenSLR RIR/);
+    assert.equal(b.calls.some(call => call.options.method === "POST"), false);
+  });
   console.log(`Studio UI: ${tests.length} tests passed`);
   for (const name of tests) console.log("  ✓ " + name);
 })().catch(error => { console.error(error); process.exitCode = 1; });
