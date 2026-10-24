@@ -14,19 +14,19 @@ import sys
 
 from .common import bound_file, digest, identity, now, read_json, read_rows, resolved, write_json
 from .hard_phrase_policy import validate_noncall_text
-from .project import BATCH, load_project, require_standard_common_download
+from .project import BATCH, MAX_TRAIN_VOICE_FAMILIES, load_project, require_standard_common_download
 from .budgets import DEFAULT_GENERIC_HOURS, DEFAULT_KOREAN_HOURS
 
 
 _PRESETS = {
     "check": {"title": "동작 확인용", "originals": 1000, "rounds": 1, "updates": 10000,
-              "generic_hours": 2000, "korean_hours": 1, "train_references": 4,
+              "generic_hours": 2000, "korean_hours": 1, "train_references": 20,
               "hard_originals": 100, "functional_check_only": True, "noise_material_policy": "official_example"},
     "trial": {"title": "시험 모델용", "originals": 20000, "rounds": 3, "updates": 50000,
-              "generic_hours": 2000, "korean_hours": 2000 / 3, "train_references": 20,
+              "generic_hours": 2000, "korean_hours": 2000 / 3, "train_references": 100,
               "hard_originals": 1000, "functional_check_only": False, "noise_material_policy": "official_example"},
     "production": {"title": "상용 모델용", "originals": 100000, "rounds": 5, "updates": 100000,
-              "generic_hours": DEFAULT_GENERIC_HOURS, "korean_hours": DEFAULT_KOREAN_HOURS, "train_references": 100,
+              "generic_hours": DEFAULT_GENERIC_HOURS, "korean_hours": DEFAULT_KOREAN_HOURS, "train_references": 500,
               "hard_originals": 2000, "functional_check_only": False, "noise_material_policy": "reuse_negative_waveforms"},
 }
 
@@ -169,8 +169,8 @@ def _validate_settings(settings):
         raise ValueError("Per-track FMA requires canonical FLAC storage")
     if settings.get("batch", BATCH) != BATCH:
         raise ValueError("Studio baseline batch must remain 768/256/100/100")
-    if settings["train_references"] > 100 or settings["validation_references"] > 30:
-        raise ValueError("The synthetic family bank has 100 Train and up to 30 Validation candidates")
+    if settings["train_references"] > MAX_TRAIN_VOICE_FAMILIES or settings["validation_references"] > 30:
+        raise ValueError(f"The synthetic family bank supports up to {MAX_TRAIN_VOICE_FAMILIES} Train and 30 Validation candidates")
     policy = settings.get("evaluation_policy")
     if policy is not None:
         versions = {"common_development_v1": 1, "common_development_v2": 2,
@@ -234,6 +234,37 @@ def _publish_rows(path, rows, *, allow_initial_empty=False):
     temporary.write_bytes(body)
     temporary.replace(path)
     return path
+
+
+def _publish_reference_queues(workspace, rows, previous=None):
+    """Append review work without rewriting a queue bound to human answers."""
+    base = workspace / "reference_queue.jsonl"
+    by_id = {row["sample_id"]: row for row in rows}
+    if not rows or len(by_id) != len(rows):
+        raise ValueError("합성 목소리 목록은 중복 없는 실제 음원이어야 합니다.")
+    if not base.exists():
+        if previous:
+            raise ValueError("기존 합성 목소리 검수 목록이 없습니다.")
+        return [_publish_rows(base, rows)]
+    queues = [Path(path).resolve() for path in (previous or [base])]
+    if (not queues or queues[0] != base.resolve() or len(set(queues)) != len(queues)
+            or any(path.parent != workspace.resolve() for path in queues)):
+        raise ValueError("기존 합성 목소리 검수 목록 경로가 달라졌습니다.")
+    seen = set()
+    for queue in queues:
+        old = read_rows(queue)
+        if not old:
+            raise ValueError("기존 합성 목소리 검수 목록이 비어 있습니다.")
+        for row in old:
+            sample_id = row["sample_id"]
+            if sample_id in seen or by_id.get(sample_id) != row:
+                raise ValueError("기존 합성 목소리 음원 또는 검수 목록이 달라졌습니다.")
+            seen.add(sample_id)
+    added = [row for row in rows if row["sample_id"] not in seen]
+    if added:
+        key = identity([{key: row[key] for key in ("sample_id", "sha256")} for row in added])[:16]
+        queues.append(_publish_rows(workspace / f"reference_queue_added_{key}.jsonl", added))
+    return queues
 
 
 def _completed(result=None, artifacts=(), **extra):
@@ -358,6 +389,17 @@ def _saved_review(root, descriptor, context):
         if not path.exists():
             return False
         report = read_json(path)
+        if (descriptor["kind"] == "references"
+                and report.get("queue_sha256") != descriptor["queue_sha256"]):
+            # CLI reviews have no Studio answer binding. A later supplemental
+            # review replaces the mutable summary, while its hash-bound archive
+            # keeps the original human decisions available for the old queue.
+            approval = read_json(root / "approval.json")
+            for evidence in reversed(approval.get("reference_review_evidence", [])):
+                archived = read_json(bound_file(root, evidence))
+                if archived.get("queue_sha256") == descriptor["queue_sha256"]:
+                    report = archived
+                    break
     if report.get("queue_sha256") != descriptor["queue_sha256"]:
         return False
     rows = read_rows(descriptor["queue"])
@@ -638,7 +680,10 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         families = read_json(root / "voices.json")["families"]
         pending = False
         for split, count in (("train", settings["train_references"]), ("validation", settings["validation_references"])):
-            selected = [f for f in families if f["split"] == split][:count]
+            candidates = [f for f in families if f["split"] == split]
+            if len(candidates) < count:
+                raise ValueError(f"{split} 기준 목소리 후보가 {len(candidates)}/{count}개입니다. 기존 음원과 검수 기록을 보존하는 목소리 설정 업데이트가 필요합니다.")
+            selected = candidates[:count]
             completed = {r["voice_family_id"] for r in read_rows(root / "data/references" / split / "references.jsonl")}
             pending = pending or any(f["family_id"] not in completed for f in selected)
         # Both partitions use identical VoiceDesign weights. Keep one model
@@ -648,12 +693,20 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         outputs = [generate_references(project, "train", settings["train_references"], model=model),
                    generate_references(project, "validation", settings["validation_references"], model=model)]
         rows = [r for output in outputs for r in read_rows(output["review_queue"])]
-        queue = _publish_rows(workspace / "reference_queue.jsonl", rows)
-        return _completed({"outputs": outputs, "queue": str(queue), "generated": len(rows)}, [queue])
+        queues = _publish_reference_queues(workspace, rows, _result(context, "references").get("queues"))
+        return _completed({"outputs": outputs, "queue": str(queues[0]),
+                           "queues": [str(queue) for queue in queues], "generated": len(rows)}, queues)
 
     if stage_id == "references_review":
-        descriptor = _review_descriptor(root, workspace / "reference_queue.jsonl", "references", "references")
-        return _review_gate(root, [descriptor], context)
+        queues = _result(context, "references").get("queues") or [workspace / "reference_queue.jsonl"]
+        reviews = []
+        for queue in queues:
+            queue = Path(queue)
+            if queue.resolve().parent != workspace.resolve():
+                raise ValueError("합성 목소리 검수 목록은 현재 모델 폴더 안에 있어야 합니다.")
+            review_id = "references" if queue.name == "reference_queue.jsonl" else queue.stem.replace("reference_queue_", "references_", 1)
+            reviews.append(_review_descriptor(root, queue, "references", review_id))
+        return _review_gate(root, reviews, context)
 
     if stage_id == "pilot":
         from .tts_runtime import generate_with_runtime

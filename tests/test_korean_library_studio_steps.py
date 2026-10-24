@@ -261,13 +261,13 @@ def test_references_are_combined_once_and_require_actual_saved_answers(project, 
     monkeypatch.setattr(tts, "generate_references", generate)
     monkeypatch.setattr(tts, "_load_model", load)
     result = run(project, "references")
-    assert calls == [("train", 4), ("validation", 30)]
+    assert calls == [("train", 20), ("validation", 30)]
     assert len(loads) == 1
-    assert result["result"]["generated"] == 34
+    assert result["result"]["generated"] == 50
     queue = Path(result["result"]["queue"])
     assert queue.parent == project.parent / ".studio"
     pending = run(project, "references_review")
-    assert pending["state"] == "waiting_review" and pending["reviews"][0]["count"] == 34
+    assert pending["state"] == "waiting_review" and pending["reviews"][0]["count"] == 50
     assert read_json(project.parent / "approval.json")["generation_policy_approved"] is False
     approve(project, queue, "references")
     assert run(project, "references_review")["state"] == "completed"

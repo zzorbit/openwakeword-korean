@@ -63,8 +63,8 @@ def parser():
     a.add_argument("--no-browser", action="store_true", help="브라우저를 자동으로 열지 않음")
     a = sub.add_parser("init", help="새 한국어 호출어 프로젝트")
     a.add_argument("--wakeword", required=True); a.add_argument("--id", required=True); a.add_argument("--output", type=Path, required=True)
-    a.add_argument("--validation-voices", type=int, choices=(10, 30), default=10,
-                   help="평가용 합성 음색 계열 수; 새 웹 공통 평가와 맞추려면 30")
+    a.add_argument("--validation-voices", type=int, choices=(10, 30), default=30,
+                   help="평가용 기준 목소리 수; 기본 30개, 이전 10개 설정도 지원")
     setup_arguments(a)
     a = sub.add_parser("configure", help="기존 설정을 보존하고 별도 작업량·세부 설정 snapshot 작성")
     a.add_argument("--project", type=Path, required=True); a.add_argument("--output", type=Path, required=True)

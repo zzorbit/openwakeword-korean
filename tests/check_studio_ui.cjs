@@ -88,7 +88,7 @@ function commonRecipe(overrides = {}) {
   evaluation_sources.push({ id: "openslr28_common_rir_v1", name: "공통 평가용 공간 울림", file_count: 80, room_count: 20, simulated_room_count: 20, size_bytes: 1311166223 });
   return {
     id: "check", label: "동작 확인용", originals: 1000, rounds: 1, updates: 10000, hard_originals: 100,
-    generic_hours: 2000, korean_hours: 1, train_references: 4,
+    generic_hours: 2000, korean_hours: 1, train_references: 20,
     automatic_target_hours: { generic_nominal: 2000, korean_train: 1 },
     assets: [
       { id: "generic", role: "generic_features", size_bytes: 17280000128 },
@@ -422,6 +422,20 @@ function storageBudgetRecipe(overrides = {}) {
     const label = descendants(preview).find(node => node.textContent === "<img src=x onerror=bad()>");
     assert.ok(label); assert.notEqual(label.tagName, "a");
     assert.equal(descendants(preview).some(node => node.tagName === "img"), false);
+  });
+  await test("each training scale shows its reference voice count while common evaluation keeps 30 voices", async () => {
+    const recipes = [["check", 20, 1000], ["trial", 100, 20000], ["production", 500, 100000]]
+      .map(([id, train_references, originals]) => commonRecipe({ id, train_references, originals }));
+    const b = browser({ recipeList: recipes }); await flush();
+    for (const [index, recipe] of recipes.entries()) {
+      const preset = b.elements.get("presets").children[index];
+      assert.match(textOf(preset), new RegExp(`학습 기준 목소리 ${recipe.train_references}개`));
+      descendants(preset).find(node => node.tagName === "input").handlers.change();
+      const groups = b.elements.get("source-preview").children;
+      assert.match(textOf(material(groups[0], "호출어 음성")), new RegExp(`기준 목소리 ${recipe.train_references}개`));
+      assert.match(textOf(material(groups[1], "호출어 음성")), /30가지 음색 계열/);
+    }
+    assert.equal(b.calls.some(call => /\/api\/projects(?:\/|$)/.test(call.url) && call.options?.method === "POST"), false);
   });
   await test("materials use the approved list hierarchy with short consistent titles", async () => {
     const b = browser({ recipeList: [commonRecipe()] }); await flush();
@@ -980,6 +994,16 @@ function storageBudgetRecipe(overrides = {}) {
     await b.tick(); assert.equal(b.elements.get("review-frame").srcWrites, 1);
     project.stage = { id: "references", label: "학습 · 평가용 합성 음색 생성" }; project.status = "running";
     await b.tick(); assert.equal(b.elements.get("current-title").textContent, "합성 목소리 만들기");
+  });
+  await test("voice review shows saved workflow counts without replacing the review iframe or applying new defaults", async () => {
+    const project = { id: "bora", wakeword: "보라야", status: "waiting_review", stage: "references_review", reference_counts: { train: 4, validation: 30 }, review: { queue_id: "references", url: "/review/?project=bora&queue=references" } };
+    const b = browser({ recipeList: [commonRecipe()], initialState: { projects: [project] } }); await flush();
+    assert.match(b.elements.get("review-description").textContent, /학습용 4개 · 공통 평가용 30개 · 총 34개/);
+    const before = b.elements.get("review-frame").srcWrites;
+    project.reference_counts = { train: 20, validation: 30 }; await b.tick();
+    assert.match(b.elements.get("review-description").textContent, /학습용 20개 · 공통 평가용 30개 · 총 50개/);
+    assert.equal(b.elements.get("review-frame").srcWrites, before);
+    assert.equal(b.calls.some(call => /\/api\/projects(?:\/|$)/.test(call.url) && call.options?.method === "POST"), false);
   });
   await test("human input is explicit; polling does not overwrite the text being edited", async () => {
     const project = { id: "bora", wakeword: "보라야", status: "waiting_input", stage: "pilot", input: { kind: "hard_phrases", phrases: ["돌아와"] } };

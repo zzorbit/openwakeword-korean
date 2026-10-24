@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "release": "0.19.0",
+  "kind": "reference_budget_expansion",
+  "source_computation_sha256": "9074dae60dd74e2439198457ecbfb639df5a418831a2d73937feae53ee22de70",
+  "target_computation_sha256": "5c883156eb3b70a0ff3dffb0b469d6281add62884c9891f3aff0f43c5691b289",
+  "source_stages_sha256": "a01c4fcc065be2c5dd003f82fbe9c3d630a3e7a840d4c0da935c2551b51c702c",
+  "target_stages_sha256": "a85ec45815ccc7ba85a2c9a82ab8960280bed3e8d77d36fb33ec9e3cb07e3abe",
+  "changed_computational_files": [
+    "project.py",
+    "studio_steps.py"
+  ],
+  "training_reference_counts": {
+    "check": 20,
+    "trial": 100,
+    "production": 500
+  },
+  "common_reference_count": 30,
+  "preserved": [
+    "legacy_voice_ids_and_designs",
+    "held_out_voice_bank",
+    "tts_implementation_and_seeds",
+    "training_and_scoring_code",
+    "dataset_pins",
+    "other_preset_values",
+    "frozen_reference_queues"
+  ],
+  "legacy_voice_bank_sha256": "baf64598be8783974f274edbfe016b17566f6a328c99f705b4f9dae4b33175d4",
+  "tts_sha256": "cc6e951d48e3340e00a8a8b5a22776d1a1ebc15e4834ba4eddf4186311052a8c",
+  "scope": "Count/selection orchestration and new candidate bank; no claim of performance optimality or new human listening."
+}

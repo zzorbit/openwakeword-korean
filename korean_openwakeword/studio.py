@@ -203,6 +203,42 @@ _ACQUISITION_UPDATE_FILES = {
     "evaluation_materials.py", "evaluation_rir.py", "studio_evaluation_data.py", "official_music.py", "studio_steps.py",
 }
 
+# Only the audited reference-bank expansion can rebind this release. Existing
+# generation code, reference waveforms and evaluation families stay unchanged.
+_AUDITED_REFERENCE_UPDATES = {
+    "9074dae60dd74e2439198457ecbfb639df5a418831a2d73937feae53ee22de70": {
+        "source_stages_sha256": "a01c4fcc065be2c5dd003f82fbe9c3d630a3e7a840d4c0da935c2551b51c702c",
+        "target_computation_sha256": "5c883156eb3b70a0ff3dffb0b469d6281add62884c9891f3aff0f43c5691b289",
+        "target_stages_sha256": "a85ec45815ccc7ba85a2c9a82ab8960280bed3e8d77d36fb33ec9e3cb07e3abe",
+        "evidence_sha256": "7592afc3d3c2d85512d7a7aed1b54ee12e2a96c2f91260b8d873c413c4bd4df3",
+    },
+}
+
+
+def _audited_reference_update(previous, current):
+    audit = _AUDITED_REFERENCE_UPDATES.get(previous.get("computation_sha256"))
+    if not isinstance(audit, dict):
+        return None
+    old_files, new_files = previous.get("files"), current.get("files")
+    if (not isinstance(old_files, dict) or not isinstance(new_files, dict)
+            or identity(old_files) != previous.get("computation_sha256")
+            or identity(new_files) != current.get("computation_sha256")
+            or current.get("computation_sha256") != audit.get("target_computation_sha256")
+            or identity(previous.get("stages")) != audit.get("source_stages_sha256")
+            or identity(current.get("stages")) != audit.get("target_stages_sha256")):
+        return None
+    changed = sorted(name for name in old_files.keys() | new_files.keys()
+                     if old_files.get(name) != new_files.get(name))
+    if changed != ["project.py", "studio_steps.py"]:
+        return None
+    evidence = audit.get("evidence_sha256", "")
+    if not re.fullmatch(r"[0-9a-f]{64}", evidence):
+        return None
+    return {"kind": "audited_reference_budget_update", "changed_files": changed,
+            "source_computation_sha256": previous["computation_sha256"],
+            "target_computation_sha256": current["computation_sha256"],
+            "evidence_sha256": evidence}
+
 
 def _audited_acquisition_update(previous, current):
     """Return a release-bound audit only for its fully pinned acquisition diff."""
@@ -635,6 +671,33 @@ class StudioManager:
             state.setdefault("migrations", []).append({"path": str(receipt), "sha256": digest(receipt)})
             self._save(state)
 
+    def _reference_budget_change(self, state):
+        """Expand only before call generation; never reinterpret a trained run."""
+        from .studio_steps import preset_settings
+        settings = state["settings"]
+        old = settings.get("train_references")
+        target = preset_settings(state["preset"])["train_references"]
+        if type(old) is not int or old >= target:
+            return None
+        positions = {entry["id"]: i for i, entry in enumerate(state["plan"])}
+        if ("references" not in positions or "references_review" not in positions
+                or state["index"] > positions["references_review"]):
+            return None
+        root = Path(state["project"]).parent
+        approval = read_json(root / "approval.json")
+        if (root / "final_lock.json").exists() or approval.get("generation_policy_approved"):
+            return None
+        for directory in (root / "data/pilot", root / "data/generated", root / "runs"):
+            if directory.exists() and any(p.is_file() for p in directory.rglob("*")):
+                return None
+        families = read_json(root / "voices.json")["families"]
+        if sum(f.get("split") == "train" for f in families) < target:
+            return None  # A frozen, smaller bank needs its own explicit plan.
+        return {"old_train_references": old, "train_references": target,
+                "validation_references": settings["validation_references"],
+                "resume_index": min(state["index"], positions["references"]),
+                "preserves_existing_bank": True}
+
     def _migration_view(self, state):
         if state.get("implementation_id") == self._implementation_id or state.get("status") == "completed":
             return None
@@ -644,6 +707,7 @@ class StudioManager:
             return blocked("현재 작업이 끝난 뒤 업데이트 호환성을 다시 확인합니다.")
         previous = state.get("execution_contract") or {}
         audited_update = None
+        reference_update = None
         if previous:
             if (previous.get("schema_version") != 1 or previous.get("settings_sha256") != identity(state["settings"])
                     or previous.get("plan_sha256") != identity(state["plan"])):
@@ -653,15 +717,21 @@ class StudioManager:
                        or previous["stages"][stage] != self._execution_contract["stages"].get(stage)]
             if changed:
                 audited_update = _audited_acquisition_update(previous, self._execution_contract)
-                if audited_update is None:
+                reference_update = _audited_reference_update(previous, self._execution_contract)
+                if audited_update is None and reference_update is None:
                     return blocked("남은 단계의 자료·생성·학습·채점 코드가 달라 호환 이관할 수 없습니다. 기존 자료를 보존하고 새 실험을 만드세요.")
         elif (_LEGACY_COMPATIBLE_CONTRACTS.get(state.get("implementation_id"))
               != self._execution_contract["computation_sha256"]):
             return blocked("이 구버전에는 검증된 단계 계약이 없습니다. 기존 자료를 보존하고 별도 호환 검증이 필요합니다.")
+        budget_change = self._reference_budget_change(state) if reference_update else None
         return {"state": "available", "action": "migrate",
-                "reason": ("다운로드 순서·진행 표시 변경의 자료 동일성을 확인한 업데이트입니다. 기존 설정과 완료 결과를 검증한 뒤 적용할 수 있습니다."
+                "reason": ("기존 목소리·검수 결과를 보존하고 부족한 학습용 기준 목소리만 추가합니다. 호출어 생성 전 작업에만 수량 변경을 적용합니다."
+                           if reference_update else
+                           "다운로드 순서·진행 표시 변경의 자료 동일성을 확인한 업데이트입니다. 기존 설정과 완료 결과를 검증한 뒤 적용할 수 있습니다."
                            if audited_update else "남은 단계의 계산·자료 계약이 같습니다. 기존 설정과 완료 결과를 검증하고 업데이트를 적용할 수 있습니다."),
                 **({"audited_acquisition_update": audited_update} if audited_update else {}),
+                **({"audited_reference_update": reference_update} if reference_update else {}),
+                **({"reference_budget_change": budget_change} if budget_change else {}),
                 "preserves": ["project_settings", "completed_artifacts", "review_answers", "history"]}
 
     def migrate(self, project_id):
@@ -699,7 +769,16 @@ class StudioManager:
                 "history_sha256": identity(state.get("history", [])), "inputs_sha256": identity(state.get("inputs", {})),
                 **({"audited_acquisition_update": compatibility["audited_acquisition_update"]}
                    if compatibility.get("audited_acquisition_update") else {}),
+                **({"audited_reference_update": compatibility["audited_reference_update"]}
+                   if compatibility.get("audited_reference_update") else {}),
+                **({"reference_budget_change": compatibility["reference_budget_change"]}
+                   if compatibility.get("reference_budget_change") else {}),
                 "preserved": compatibility["preserves"]})
+            budget_change = compatibility.get("reference_budget_change")
+            if budget_change:
+                state["settings"]["train_references"] = budget_change["train_references"]
+                state.update(index=budget_change["resume_index"], status="paused", auto_continue=False,
+                             error=None, next_action="이어서 진행하면 기존 음원은 유지하고 부족한 학습용 목소리만 추가합니다.")
             state["implementation_id"] = self._implementation_id
             state["execution_contract"] = {**self._execution_contract,
                 "settings_sha256": identity(state["settings"]), "plan_sha256": identity(state["plan"])}
@@ -1032,6 +1111,8 @@ class StudioManager:
         view = {key: state.get(key) for key in ("id", "wakeword", "preset", "status", "error", "next_action", "created_at")}
         timing = self._timing(state)
         view.update(directory=str(Path(state["project"]).parent), stage=stage, stage_id=stage["id"],
+                    reference_counts={"train": state["settings"]["train_references"],
+                                      "validation": state["settings"]["validation_references"]},
                     evaluation_policy=state.get("settings", {}).get("evaluation_policy"),
                     evaluation_policy_sha256=identity(state["settings"]["evaluation_policy"]) if state.get("settings", {}).get("evaluation_policy") else None,
                     stages=[{**entry, "status": "completed" if i < index else state["status"] if i == index else "pending"}

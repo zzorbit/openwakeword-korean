@@ -278,6 +278,7 @@
       if (originals !== undefined) summary.append(element("span", `호출어 ${number(originals)}개`));
       if (rounds !== undefined) summary.append(element("span", `증강 R${number(rounds)}`));
       if (updates !== undefined) summary.append(element("span", `학습 ${number(updates)}회 / 모델`));
+      if (Number.isInteger(recipe.train_references) && recipe.train_references > 0) summary.append(element("span", `학습 기준 목소리 ${number(recipe.train_references)}개`));
       label.append(heading, detail, summary); return label;
     });
     replace($("presets"), nodes.length ? nodes : [element("p", "사용 가능한 작업 규모가 없습니다. 서버 설정을 확인하세요.", "muted")]);
@@ -362,7 +363,7 @@
     }
     const mit = asset("mit_rir") || recipe.additional_download;
     const training = [
-      { id: "positive", name: "호출어 음성", description: "호출어 합성 음성", amount: count(originals), sources: [source("Qwen TTS", "호출어만 말한 음성", count(originals), originals)] },
+      { id: "positive", name: "호출어 음성", description: "호출어 합성 음성", amount: count(originals), sources: [source("Qwen TTS", Number.isInteger(recipe.train_references) && recipe.train_references > 0 ? `기준 목소리 ${number(recipe.train_references)}개 · 호출어만 말한 음성` : "호출어만 말한 음성", count(originals), originals)] },
       { id: "hard", name: "유사어 음성", description: "호출어로 오인할 수 있는 다른 단어·표현", amount: count(recipe.hard_originals ?? 0), sources: [source("Qwen TTS", "헷갈리기 쉬운 단어·표현을 합성한 음성", count(recipe.hard_originals ?? 0), recipe.hard_originals ?? 0)] },
       { id: "generic", name: "일반 비호출 자료", description: "일반 음성 · 음악 · 환경음", amount: hours(genericHours), sources: generic },
       { id: "korean", name: "한국어 비호출 자료", description: hasNegativePlan || automaticKorean.length || koreanHours > suppliedKorean ? "한국어 대화 · 낭독 등 음성" : "한국어 낭독 음성", amount: hours(koreanHours), sources: korean },
@@ -609,8 +610,11 @@
     if (!show) { if (reviewIdentity) frameSource($("review-frame"), ""); reviewIdentity = ""; return; }
     const identity = project.id + ":" + (review.queue_id || review.id || url);
     const references = review.queue_id === "references";
+    const counts = project.reference_counts;
+    const voiceCounts = counts && [counts.train, counts.validation].every(value => Number.isInteger(value) && value > 0)
+      ? `학습용 ${number(counts.train)}개 · 공통 평가용 ${number(counts.validation)}개 · 총 ${number(counts.train + counts.validation)}개. ` : "";
     $("review-title").textContent = references ? "합성 목소리 확인" : review.title || "오디오 검수";
-    $("review-description").textContent = references ? "목소리와 음질을 확인하세요. 호출어 발음은 다음 단계에서 확인합니다." : review.description || "끝까지 들으면 자동으로 보존됩니다. 문제가 있는 항목만 바꾼 뒤 검수 완료·저장을 누르세요.";
+    $("review-description").textContent = references ? voiceCounts + "목소리와 음질을 확인하세요. 호출어 발음은 다음 단계에서 확인합니다." : review.description || "끝까지 들으면 자동으로 보존됩니다. 문제가 있는 항목만 바꾼 뒤 검수 완료·저장을 누르세요.";
     if (reviewIdentity !== identity) { frameSource($("review-frame"), url); reviewIdentity = identity; }
   }
   function renderInput(project) {

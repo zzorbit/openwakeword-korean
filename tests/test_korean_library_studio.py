@@ -1406,3 +1406,76 @@ def test_evaluation_only_descriptor_cannot_request_training_pool_admission(manag
         manager.save_review(project["id"], "fixture", {
             "decisions": {"fixture-1": {"decision": "keep", "listened": True}}, "policy_approved": True})
     assert manager._path(project["id"]).read_bytes() == before
+
+
+def test_reference_budget_update_preserves_bank_answers_and_pauses_before_supplement(manager, monkeypatch):
+    view = create(manager)
+    state = manager._load(view["id"])
+    root = Path(state["project"]).parent
+    state["settings"]["train_references"] = 4
+    state["index"] = next(i for i, s in enumerate(state["plan"]) if s["id"] == "references_review")
+    state.update(status="waiting_review", auto_continue=True,
+                 results={"references": {"state": "completed", "result": {"generated": 34}},
+                          "references_review": {"state": "waiting_review", "reviews": []}},
+                 inputs={"review_answers": {"references": {"fixture": "existing saved answer"}}})
+    state["execution_contract"]["settings_sha256"] = identity(state["settings"])
+    manager._save(state)
+    inputs = json.loads(json.dumps(state["inputs"]))
+    preserved = {name: digest(root / name) for name in ("project.json", "voices.json", "approval.json")}
+    manager._implementation_id = "reference-budget-release"
+    manager._execution_contract = json.loads(json.dumps(manager._execution_contract))
+    manager._execution_contract["stages"]["references"] = "expanded-reference-stage"
+    manager._execution_contract["stages"]["references_review"] = "versioned-review-stage"
+    monkeypatch.setattr(studio, "_audited_reference_update", lambda old, new: {"kind": "fixture_audit"})
+    compatibility = manager.describe(state)["migration"]
+    assert compatibility["reference_budget_change"]["train_references"] == 20
+    migrated = manager.migrate(view["id"])
+    after = manager._load(view["id"])
+    assert migrated["reference_counts"] == {"train": 20, "validation": 30}
+    assert after["plan"][after["index"]]["id"] == "references"
+    assert after["status"] == "paused" and after["auto_continue"] is False
+    assert after["inputs"] == inputs and after["results"] == state["results"]
+    assert len(manager.workers.items) == 0
+    assert all(digest(root / name) == sha for name, sha in preserved.items())
+    receipt = read_json(after["migrations"][-1]["path"])
+    assert receipt["reference_budget_change"]["old_train_references"] == 4
+    assert receipt["reference_budget_change"]["validation_references"] == 30
+    assert manager.migrate(view["id"])["reference_counts"]["train"] == 20
+    assert len(manager._load(view["id"])["migrations"]) == 1
+
+
+@pytest.mark.parametrize("freeze", ["past_references", "generated_call", "approved_policy"])
+def test_reference_budget_never_reinterprets_started_call_generation(manager, freeze):
+    view = create(manager)
+    state = manager._load(view["id"])
+    root = Path(state["project"]).parent
+    state["settings"]["train_references"] = 4
+    if freeze == "past_references":
+        state["index"] = next(i for i, s in enumerate(state["plan"]) if s["id"] == "pilot")
+    elif freeze == "generated_call":
+        path = root / "data/generated/train/candidates.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("fixture", encoding="utf-8")
+    else:
+        approval = read_json(root / "approval.json")
+        approval["generation_policy_approved"] = True
+        write_json(root / "approval.json", approval)
+    assert manager._reference_budget_change(state) is None
+
+
+def test_reference_update_audit_requires_exact_code_and_stage_fingerprints(monkeypatch):
+    previous = {"files": {"project.py": "old", "studio_steps.py": "old", "tts.py": "unchanged"},
+                "stages": {"references": "old_stage"}}
+    current = {"files": {"project.py": "new", "studio_steps.py": "new", "tts.py": "unchanged"},
+               "stages": {"references": "new_stage"}}
+    for contract in (previous, current):
+        contract["computation_sha256"] = identity(contract["files"])
+    audit = {"target_computation_sha256": current["computation_sha256"],
+             "source_stages_sha256": identity(previous["stages"]),
+             "target_stages_sha256": identity(current["stages"]), "evidence_sha256": "a" * 64}
+    monkeypatch.setattr(studio, "_AUDITED_REFERENCE_UPDATES", {previous["computation_sha256"]: audit})
+    assert studio._audited_reference_update(previous, current)["changed_files"] == ["project.py", "studio_steps.py"]
+    current["files"]["tts.py"] = "unreviewed generation change"
+    current["computation_sha256"] = identity(current["files"])
+    audit["target_computation_sha256"] = current["computation_sha256"]
+    assert studio._audited_reference_update(previous, current) is None

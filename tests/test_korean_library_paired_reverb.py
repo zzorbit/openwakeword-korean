@@ -289,8 +289,8 @@ def test_new_thirty_validation_families_do_not_change_default_ten(tmp_path):
     assert Counter(row["split"] for row in voice_candidates()["families"]) == {"train": 100, "validation": 10, "final": 10}
     project = create_project(tmp_path / "thirty", "보라야", "bora", validation_voice_families=30)
     families = read_json(project.parent / "voices.json")["families"]
-    assert Counter(row["split"] for row in families) == {"train": 100, "validation": 30, "final": 10}
-    assert len({row["family_id"] for row in families}) == 140
+    assert Counter(row["split"] for row in families) == {"train": 500, "validation": 30, "final": 10}
+    assert len({row["family_id"] for row in families}) == 540
 
 
 def test_real_pinned_common_rir_catalog_records_simulated_rooms_and_fitted_decay():

@@ -9,6 +9,7 @@ from .common import read_json, write_json, resolved
 
 BATCH = {"generic_negative": 768, "korean_negative": 256, "positive": 100, "hard_negative": 100}
 DEFAULT_VOICE_SAMPLE_TEXT = "오늘은 창밖으로 따뜻한 햇살이 들어옵니다."
+MAX_TRAIN_VOICE_FAMILIES = 500
 LEGACY_BATCH = {"generic_negative": 768, "korean_negative": 256, "positive": 50}
 SPLITS = ("train", "validation", "final")
 ADVANCED_TRAINING_KEYS = frozenset({
@@ -223,11 +224,12 @@ def validate_project(config):
 def create_project(output, wakeword, project_id, *, positive_originals=None,
                    augmentation_rounds=None, updates=None, generic_hours=None,
                    korean_hours=None, noise_hours=None, training_overrides=None,
-                   validation_voice_families=10):
+                   validation_voice_families=30, train_voice_families=MAX_TRAIN_VOICE_FAMILIES):
     output = Path(output).resolve()
     if output.exists() and any(output.iterdir()):
         raise ValueError("Use a new empty project directory; existing experiments are immutable")
-    candidates = voice_candidates(validation_count=validation_voice_families)
+    candidates = voice_candidates(validation_count=validation_voice_families,
+                                  train_count=train_voice_families)
     config = default_profile()
     config.update(wakeword=wakeword, project_id=project_id)
     # New projects reserve RIR partitions explicitly. Loading historical JSON
@@ -273,10 +275,17 @@ def load_project(path):
     return path.parent, validate_project(read_json(path))
 
 
-def voice_candidates(validation_count=10):
-    """Requested personas are candidates, not 120 certified distinct speakers."""
+def voice_candidates(validation_count=10, *, train_count=100):
+    """Keep historical personas fixed; append new training-only candidates.
+
+    The helper's legacy default remains 100. New projects reserve up to 500
+    candidates and each Studio preset generates only its selected count.
+    Candidate descriptions never certify acoustically distinct speakers.
+    """
     if type(validation_count) is not int or not 1 <= validation_count <= 100:
         raise ValueError("Validation synthetic voice families must be an integer from 1 to 100")
+    if type(train_count) is not int or not 1 <= train_count <= MAX_TRAIN_VOICE_FAMILIES:
+        raise ValueError(f"Training synthetic voice families must be an integer from 1 to {MAX_TRAIN_VOICE_FAMILIES}")
     ages = ("young adult", "middle-aged", "older adult", "adult")
     textures = ("clear light", "warm rounded", "low resonant", "bright nasal", "slightly husky", "soft airy", "crisp focused", "deep mellow", "smooth balanced", "rich textured", "gentle thin", "firm dry", "light breathy", "dense midrange", "clear ringing")
     families = []
@@ -285,6 +294,25 @@ def voice_candidates(validation_count=10):
         families.append({"family_id": f"{split}_voice_{i:03d}", "split": split,
             "description": f"A native Korean {ages[(i // 30) % 4]} {'woman' if i % 2 else 'man'} with a {textures[i % 15]} timbre, pitch variation {i // 15 + 1}. Natural dry speech.",
             "style": ("neutral", "friendly", "urgent", "projected")[i % 4], "speed": ("slow", "natural", "quick")[(i // 4) % 3], "intonation": ("level", "rising", "falling")[(i // 12) % 3], "vocal_effort": ("soft", "normal", "strong")[(i // 36) % 3], "call_length": ("short", "natural", "drawn_out")[(i // 3) % 3],
+            "provenance": "qwen_synthetic", "status": "candidate"})
+    # Validation/Final IDs and their descriptions predate the expanded bank.
+    # Do not shift or regenerate those held-out personas when Train grows.
+    families = [row for row in families
+                if row["split"] != "train" or int(row["family_id"].rsplit("_", 1)[1]) < train_count]
+    registers = ("lower", "middle", "upper-middle", "higher")
+    for index in range(100, train_count):
+        extra = index - 100
+        age = ages[(extra // 2) % len(ages)]
+        gender = "woman" if extra % 2 else "man"
+        texture = textures[(extra // 8) % len(textures)]
+        register = registers[(extra // (8 * len(textures))) % len(registers)]
+        families.append({"family_id": f"train_voice_{index:03d}", "split": "train",
+            "description": f"A native Korean {age} {gender} with a {texture} timbre and a {register} vocal register. Natural dry speech.",
+            "style": ("neutral", "friendly", "urgent", "projected")[extra % 4],
+            "speed": ("slow", "natural", "quick")[(extra // 4) % 3],
+            "intonation": ("level", "rising", "falling")[(extra // 12) % 3],
+            "vocal_effort": ("soft", "normal", "strong")[(extra // 36) % 3],
+            "call_length": ("short", "natural", "drawn_out")[(extra // 3) % 3],
             "provenance": "qwen_synthetic", "status": "candidate"})
     return {"schema_version": 1, "families": families,
         "note": "Descriptions/IDs do not prove acoustic diversity. Audit a representative pilot and disjoint families."}
