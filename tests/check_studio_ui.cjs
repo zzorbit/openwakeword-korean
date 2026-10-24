@@ -29,7 +29,7 @@ function browser({ noBoot = false, initialState, recipeError = false, recipeOver
   const presets = recipeList || [{ id: "check", label: "동작 확인용", originals: 1000, rounds: 1, updates: 10000, sources: [{ name: "<img src=x onerror=bad()>", role: "비호출 자료", url: "javascript:alert(1)", bytes: 1024 }], ...recipeOverrides }, { id: "trial", originals: 20000, rounds: 3, updates: 20000 }];
   const fetch = async (url, options) => {
     calls.push({ url, options });
-    if (url === "/api/state") { if (state.fetchError) throw state.fetchError; return json(state.value); }
+    if (url === "/api/state") { if (state.fetchError) throw state.fetchError; if (state.httpError) return json(state.httpError.body, state.httpError.status); return json(state.value); }
     if (url === "/api/recipes") return recipeError ? json({ error: "recipe failure" }, 500) : json({ presets, default_directory: recipeDirectory });
     if (url === "/api/model-location" && options.method === "POST") {
       const payload = JSON.parse(options.body);
@@ -1078,6 +1078,52 @@ function storageBudgetRecipe(overrides = {}) {
     assert.equal(b.elements.get("project-title").textContent, title);
     assert.notEqual(b.elements.get("progress-label").textContent, progress);
     assert.equal(frame.getAttribute("src"), source); assert.equal(frame.srcWrites, writes);
+    assert.equal(b.calls.some(call => call.options.method === "POST"), false);
+  });
+  await test("HTTP 503 progress-read failures preserve the last snapshot, gauge and iframe until polling recovers", async () => {
+    const project = { id: "bora", wakeword: "보라야", status: "waiting_review", stage: "pilot", error: null,
+      progress: { done: 2, total: 24, unit: "files" },
+      review: { queue_id: "pilot1", url: "/review/?project=bora&queue=pilot1" } };
+    const b = browser({ initialState: { projects: [project], active_project_id: "bora" } }); await flush();
+    const title = b.elements.get("project-title").textContent, label = b.elements.get("progress-label").textContent;
+    const gauge = b.elements.get("progress"), percent = b.elements.get("progress-percent").textContent, value = gauge.value;
+    const frame = b.elements.get("review-frame"), source = frame.getAttribute("src"), writes = frame.srcWrites;
+    b.state.httpError = { status: 503, body: { error: "진행 상태를 읽는 중입니다.", code: "progress_read_pending" } };
+    for (let attempt = 0; attempt < 4; attempt++) {
+      await b.tick();
+      assert.equal(b.elements.get("connection").hidden, false);
+      assert.equal(b.elements.get("connection").className, "notice");
+      assert.equal(b.elements.get("connection").getAttribute("role"), "status");
+      assert.equal(b.elements.get("connection").textContent, "진행 상태 파일을 읽지 못했습니다. 마지막으로 받은 상태를 표시하며 자동으로 다시 확인합니다.");
+      assert.equal(b.elements.get("project").hidden, false);
+      assert.equal(b.elements.get("project-title").textContent, title);
+      assert.equal(b.elements.get("progress-label").textContent, label);
+      assert.equal(b.elements.get("progress-percent").textContent, percent);
+      assert.equal(gauge.value, value);
+      assert.equal(b.elements.get("review-section").hidden, false);
+      assert.equal(frame.getAttribute("src"), source); assert.equal(frame.srcWrites, writes);
+    }
+    assert.equal(b.calls.some(call => call.options.method === "POST"), false);
+    b.state.httpError = null; project.progress.done = 4; await b.tick();
+    assert.equal(b.elements.get("connection").hidden, true);
+    assert.notEqual(b.elements.get("progress-label").textContent, label);
+    assert.equal(gauge.value, 4 / 24 * 100);
+    assert.equal(frame.getAttribute("src"), source); assert.equal(frame.srcWrites, writes);
+    assert.equal(b.calls.some(call => call.options.method === "POST"), false);
+  });
+  await test("HTTP permission errors and unrelated failures remain ordinary errors rather than progress-read notices", async () => {
+    const project = { id: "bora", wakeword: "보라야", status: "running", stage: "data_download", progress: { done: 10, total: 100 } };
+    const b = browser({ initialState: { projects: [project] } }); await flush();
+    for (const [status, code] of [[403, "forbidden"], [403, "progress_read_pending"], [503, "other_failure"], [503, { value: "progress_read_pending" }]]) {
+      b.state.httpError = { status, body: { error: "접근할 수 없습니다.", code } }; await b.tick();
+      assert.equal(b.elements.get("connection").hidden, false);
+      assert.equal(b.elements.get("connection").className, "notice error");
+      assert.equal(b.elements.get("connection").getAttribute("role"), "alert");
+      assert.match(b.elements.get("connection").textContent, /접근할 수 없습니다/);
+      assert.doesNotMatch(b.elements.get("connection").textContent, /진행 상태 파일을 읽지 못했습니다/);
+    }
+    b.state.httpError = null; await b.tick();
+    assert.equal(b.elements.get("connection").hidden, true);
     assert.equal(b.calls.some(call => call.options.method === "POST"), false);
   });
   await test("render failures are screen errors rather than false server connection errors", async () => {

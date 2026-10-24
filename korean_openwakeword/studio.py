@@ -221,6 +221,21 @@ def _job_log_tail(job, limit=24000):
         return ""
 
 
+class _ProgressReadPending(RuntimeError):
+    """A live progress view is temporarily unreadable; no execution failure."""
+
+
+def _read_optional_progress(path):
+    """Defer access-denied live views only, never frozen execution evidence."""
+    try:
+        return read_json(path)
+    except FileNotFoundError:
+        return {}  # It can disappear after the caller's existence check.
+    except PermissionError as error:
+        raise _ProgressReadPending(
+            "진행 정보를 잠시 읽지 못했습니다. 마지막 상태를 유지하고 자동으로 다시 확인합니다.") from error
+
+
 def _evaluation_log_progress(job):
     """Session counts only; polling never opens score caches or evaluation WAVs."""
     pattern = (r"(?m)^Evaluate (?:development|final): (\d+)/(\d+) "
@@ -977,19 +992,19 @@ class StudioManager:
             view["process_alive"] = self._job_alive(job)
             progress = Path(state["project"]).parent / ".studio" / "task_progress.json"
             if progress.exists():
-                record = read_json(progress)
+                record = _read_optional_progress(progress)
                 if record.get("task_id") == job["task_id"]:
                     view["progress"] = record
                     view["eta_seconds"] = record.get("eta_seconds")
             material_progress = Path(state["project"]).parent / ".studio" / "progress.json"
             if job["stage"] == "data_download" and material_progress.exists():
-                record = read_json(material_progress)
+                record = _read_optional_progress(material_progress)
                 if record.get("stage") == "data_download" and record.get("updated_at", "") >= job["started_at"]:
                     view["progress"] = record
                     view["eta_seconds"] = record.get("eta_seconds")
             if job["stage"] == "training":
                 progress_files = list((Path(state["project"]).parent / "runs" / "studio_run").glob("member*/progress.json"))
-                records = [read_json(p) for p in progress_files]
+                records = [_read_optional_progress(p) for p in progress_files]
                 done = sum(r.get("completed_updates", r.get("update", 0)) for r in records)
                 view["progress"] = {"done": done, "total": state["settings"]["updates"] * 3,
                                     "unit": "학습 업데이트", "label": "모델 3개 누적 학습량"}
@@ -1296,6 +1311,8 @@ def make_studio_server(manager, port=8793):
                 if path.startswith("/analysis/"):
                     return self.analysis_get(path)
                 self.respond({"error": "페이지를 찾을 수 없습니다."}, 404)
+            except _ProgressReadPending as error:
+                self.respond({"error": str(error), "code": "progress_read_pending"}, 503)
             except PermissionError as error:
                 self.respond({"error": str(error)}, 403)
             except (ValueError, KeyError, OSError, IndexError, RuntimeError, ImportError) as error:

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "korean-openwakeword"
-version = "0.17.3"
+version = "0.17.4"
 description = "Reproducible Korean wakeword training, evaluation and ONNX inference"
 readme = "README.md"
 license = "Apache-2.0"

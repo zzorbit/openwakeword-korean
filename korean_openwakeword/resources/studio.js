@@ -209,7 +209,12 @@
       const text = await response.text();
       let body;
       try { body = text ? JSON.parse(text) : {}; } catch { throw new Error(response.ok ? "서버 응답을 읽지 못했습니다." : `요청에 실패했습니다 (${response.status}).`); }
-      if (!response.ok) throw new Error(body?.error?.message || body?.error || body?.message || `요청에 실패했습니다 (${response.status}).`);
+      if (!response.ok) {
+        const error = new Error(body?.error?.message || body?.error || body?.message || `요청에 실패했습니다 (${response.status}).`);
+        error.status = response.status;
+        if (typeof body?.code === "string") error.code = body.code;
+        throw error;
+      }
       return body;
     } catch (error) {
       if (error.name === "AbortError") {
@@ -771,11 +776,14 @@
       if (!newProject && !snapshot.projects.some(project => project.id === selectedId)) selectedId = snapshot.active_project_id || snapshot.projects[0]?.id || "";
       $("connection").hidden = true; render();
     } catch (error) {
-      const delayed = error.code === "request_timeout";
+      const progressPending = error.status === 503 && error.code === "progress_read_pending";
+      const delayed = progressPending || error.code === "request_timeout";
       $("connection").hidden = false;
       $("connection").className = "notice" + (delayed ? "" : " error");
       $("connection").setAttribute("role", delayed ? "status" : "alert");
-      $("connection").textContent = delayed
+      $("connection").textContent = progressPending
+        ? "진행 상태 파일을 읽지 못했습니다. 마지막으로 받은 상태를 표시하며 자동으로 다시 확인합니다."
+        : delayed
         ? "진행 상태 확인이 늦어지고 있습니다. 마지막으로 받은 상태를 표시하며 자동으로 다시 확인합니다."
         : (receivedState
         ? "진행 상태를 화면에 표시하지 못했습니다. 페이지를 새로고침하세요. 저장된 작업은 사라지지 않습니다.\n"

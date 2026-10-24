@@ -1,5 +1,6 @@
 """Local Studio orchestration/HTTP tests: synthetic fixtures, no downloads or GPU."""
 import http.client
+import errno
 import json
 import os
 import re
@@ -630,6 +631,114 @@ def test_http_static_ui_state_and_bound_random_port_are_usable(manager, http_ser
         assert headers["X-Frame-Options"] == "SAMEORIGIN" and headers["Cache-Control"] == "no-store"
     status, content, _ = http_server("/api/state")
     assert status == 200 and json.loads(content)["token"] == manager.token
+
+
+def live_progress_record(manager, kind):
+    """A live fake worker and its real files; no download or pipeline runs."""
+    view = create(manager)
+    manager.start(view["id"])
+    state = manager._load(view["id"])
+    stage = {"task": "frontend", "material": "data_download", "member": "training"}[kind]
+    state["index"] = next(index for index, entry in enumerate(state["plan"]) if entry["id"] == stage)
+    state["job"]["stage"] = stage
+    manager._save(state)
+    root = Path(state["project"]).parent
+    record = {"task_id": state["job"]["task_id"], "done": 7, "total": 100,
+              "unit": "bytes", "label": "실시간 시험 진행"}
+    if kind == "task":
+        path = root / ".studio" / "task_progress.json"
+    elif kind == "material":
+        path = root / ".studio" / "progress.json"
+        record.update(stage=stage, updated_at=now())
+    else:
+        path = root / "runs" / "studio_run" / "member1_seed20260928" / "progress.json"
+        record = {"completed_updates": 7}
+    write_json(path, record)
+    partial = root / "data" / "materials" / "download.part"
+    partial.write_bytes(b"preserve the ongoing download bytes")
+    protected = (Path(state["project"]), manager._path(view["id"]), manager.registry_path,
+                 manager.workers.items[-1].request_path, path, partial)
+    return view["id"], path, {item: item.read_bytes() for item in protected}
+
+
+@pytest.mark.parametrize("kind", ["task", "material", "member"])
+def test_http_live_progress_access_denial_defers_then_recovers_without_changing_work(manager, http_server, monkeypatch, kind):
+    project_id, progress, protected = live_progress_record(manager, kind)
+    original = studio.read_json
+    denied = True
+    def read(path):
+        if Path(path) == progress and denied:
+            # read_json already owns bounded sharing retries; simulate their
+            # final exception here. Its retry contract has dedicated I/O tests.
+            raise PermissionError(errno.EACCES, "fixture progress access denied")
+        return original(path)
+    monkeypatch.setattr(studio, "read_json", read)
+    for _ in range(2):
+        status, content, _ = http_server("/api/state")
+        body = json.loads(content)
+        assert status == 503 and body["code"] == "progress_read_pending"
+        assert "진행 정보" in body["error"] and "자동으로 다시 확인" in body["error"]
+        assert manager._load(project_id)["status"] == "running"
+        assert manager._load(project_id)["error"] is None
+        assert len(manager.workers.items) == 1
+        assert all(path.read_bytes() == before for path, before in protected.items())
+    denied = False
+    status, content, _ = http_server("/api/state")
+    assert status == 200
+    active = next(row for row in json.loads(content)["projects"] if row["id"] == project_id)
+    assert active["status"] == "running" and active["error"] is None
+    assert active["progress"]["done"] == 7
+    assert len(manager.workers.items) == 1
+    assert all(path.read_bytes() == before for path, before in protected.items())
+
+
+@pytest.mark.parametrize("kind", ["task", "material", "member"])
+def test_http_live_progress_disappearance_after_exists_is_optional(manager, http_server, monkeypatch, kind):
+    project_id, progress, protected = live_progress_record(manager, kind)
+    original = studio.read_json
+    def read(path):
+        if Path(path) == progress:
+            raise FileNotFoundError(errno.ENOENT, "fixture progress disappeared")
+        return original(path)
+    monkeypatch.setattr(studio, "read_json", read)
+    status, content, _ = http_server("/api/state")
+    assert status == 200
+    active = next(row for row in json.loads(content)["projects"] if row["id"] == project_id)
+    assert active["status"] == "running" and active["error"] is None
+    assert len(manager.workers.items) == 1
+    assert all(path.read_bytes() == before for path, before in protected.items())
+
+
+@pytest.mark.parametrize("failure", [OSError(errno.EIO, "fixture unexpected I/O"),
+    json.JSONDecodeError("fixture damaged JSON", "{", 1)])
+def test_http_live_progress_other_failures_are_not_masked_as_pending(manager, http_server, monkeypatch, failure):
+    _, progress, protected = live_progress_record(manager, "material")
+    original = studio.read_json
+    def read(path):
+        if Path(path) == progress:
+            raise failure
+        return original(path)
+    monkeypatch.setattr(studio, "read_json", read)
+    status, content, _ = http_server("/api/state")
+    assert status == 400 and "fixture" in json.loads(content)["error"]
+    assert "code" not in json.loads(content)
+    assert all(path.read_bytes() == before for path, before in protected.items())
+
+
+def test_http_workflow_access_denial_remains_a_failure_not_optional_progress(manager, http_server, monkeypatch):
+    project_id, _, protected = live_progress_record(manager, "material")
+    workflow = manager._path(project_id)
+    original = studio.read_json
+    def read(path):
+        if Path(path) == workflow:
+            raise PermissionError(errno.EACCES, "fixture workflow access denied")
+        return original(path)
+    monkeypatch.setattr(studio, "read_json", read)
+    status, content, _ = http_server("/api/state")
+    assert status == 403 and "workflow" in json.loads(content)["error"]
+    assert "code" not in json.loads(content)
+    assert len(manager.workers.items) == 1
+    assert all(path.read_bytes() == before for path, before in protected.items())
 
 
 def test_http_csrf_origin_host_guards_and_valid_create(manager, http_server):
