@@ -420,6 +420,7 @@
   function renderRecipe() {
     const recipe = recipes.find(item => item.id === selectedPreset);
     if (!recipe) return;
+    renderVoiceDesign("setup-voices", recipe.reference_design);
     const placeholders = { "adv-originals": recipe.originals ?? recipe.positive_originals, "adv-rounds": recipe.rounds ?? recipe.augmentation_rounds, "adv-updates": recipe.updates, "adv-generic": recipe.generic_hours, "adv-korean": recipe.korean_hours };
     for (const [id, value] of Object.entries(placeholders)) $(id).placeholder = value === undefined ? "규모 기본값" : String(value);
     const groups = materialGroups(recipe), sections = [], openId = activeMaterial?.id;
@@ -531,7 +532,14 @@
   function renderSelector() {
     const projects = snapshot.projects || [];
     const selector = $("project-select");
-    replace(selector, projects.map(project => { const option = element("option", project.wakeword || project.id); option.value = project.id; return option; }));
+    replace(selector, projects.map(project => {
+      let label = project.wakeword || project.id;
+      if (projects.filter(other => other.wakeword === project.wakeword).length > 1) {
+        const folder = String(project.directory || "").split(/[\\/]/).filter(Boolean).pop();
+        label += " · " + (folder || project.id);
+      }
+      const option = element("option", label); option.value = project.id; return option;
+    }));
     if (newProject) { const option = element("option", "새 모델"); option.value = ""; selector.append(option); selector.value = ""; }
     else selector.value = selectedId;
     $("project-switch").hidden = !projects.length;
@@ -602,19 +610,49 @@
     if (!safe) { frame.removeAttribute("src"); return; }
     if (frame.getAttribute("src") !== safe) frame.setAttribute("src", safe);
   }
+  function renderVoiceDesign(id, design) {
+    const groups = design?.counts, train = groups?.train, validation = groups?.validation;
+    const show = Boolean(train && validation && Number.isInteger(train.count) && Number.isInteger(validation.count));
+    $(id).hidden = !show;
+    if (!show) { replace($(id + "-rows"), []); return; }
+    const labels = {
+      man:"남성", woman:"여성", male:"남성", female:"여성",
+      child:"어린이", teenager:"청소년",
+      "young adult":"젊은 성인", "middle-aged":"중년", "older adult":"고령", adult:"성인(연령 미지정)",
+      young_adult:"젊은 성인", middle_aged:"중년", older_adult:"고령",
+      neutral:"담담하게", friendly:"친근하게", urgent:"다급하게", projected:"또렷하게",
+      soft:"부드럽게", normal:"보통", strong:"강하게"
+    };
+    const distribution = (group, axis) => {
+      const entries = Object.entries(group[axis] || {}).filter(([, count]) => Number.isInteger(count) && count > 0);
+      if (!entries.length) return "미지정";
+      if (axis === "timbre") {
+        const values = entries.map(([,count]) => count), low = Math.min(...values), high = Math.max(...values);
+        return `${number(entries.length)}종 · 유형당 ${number(low)}${high === low ? "" : "–" + number(high)}개`;
+      }
+      return entries.map(([label,count]) => `${labels[label] || label} ${number(count)}개`).join(" · ");
+    };
+    $(id + "-train").textContent = `학습용 ${number(train.count)}개`;
+    $(id + "-validation").textContent = `공통 평가용 ${number(validation.count)}개`;
+    replace($(id + "-rows"), [["gender","성별"],["age","연령"],["timbre","음색"],["style","말투"],["vocal_effort","발성 강도"]].map(([axis,label]) => {
+      const row = element("tr"), heading = element("th",label); heading.setAttribute("scope","row");
+      row.append(heading, element("td",distribution(train,axis)), element("td",distribution(validation,axis))); return row;
+    }));
+  }
   function renderReview(project) {
     const review = project.review;
     const url = localUrl(review?.url);
     const show = Boolean(review && url && !activeStatuses.has(project.status));
     $("review-section").hidden = !show;
-    if (!show) { if (reviewIdentity) frameSource($("review-frame"), ""); reviewIdentity = ""; return; }
+    if (!show) { if (reviewIdentity) frameSource($("review-frame"), ""); reviewIdentity = ""; renderVoiceDesign("review-voices", null); return; }
     const identity = project.id + ":" + (review.queue_id || review.id || url);
-    const references = review.queue_id === "references";
+    const references = /^references(?:_|$)/.test(review.queue_id || "");
     const counts = project.reference_counts;
     const voiceCounts = counts && [counts.train, counts.validation].every(value => Number.isInteger(value) && value > 0)
       ? `학습용 ${number(counts.train)}개 · 공통 평가용 ${number(counts.validation)}개 · 총 ${number(counts.train + counts.validation)}개. ` : "";
     $("review-title").textContent = references ? "합성 목소리 확인" : review.title || "오디오 검수";
     $("review-description").textContent = references ? voiceCounts + "목소리와 음질을 확인하세요. 호출어 발음은 다음 단계에서 확인합니다." : review.description || "끝까지 들으면 자동으로 보존됩니다. 문제가 있는 항목만 바꾼 뒤 검수 완료·저장을 누르세요.";
+    renderVoiceDesign("review-voices", references ? project.reference_design : null);
     if (reviewIdentity !== identity) { frameSource($("review-frame"), url); reviewIdentity = identity; }
   }
   function renderInput(project) {

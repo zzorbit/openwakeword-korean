@@ -1005,6 +1005,49 @@ function storageBudgetRecipe(overrides = {}) {
     assert.equal(b.elements.get("review-frame").srcWrites, before);
     assert.equal(b.calls.some(call => /\/api\/projects(?:\/|$)/.test(call.url) && call.options?.method === "POST"), false);
   });
+  await test("voice design previews render supplied scale distributions rather than a fixed voice budget", async () => {
+    const design = count => ({ policy: "balanced_v1", counts: {
+      train: { count, gender: { man: count / 2, woman: count / 2 }, age: { child:count/5, teenager:count/5, "young adult":count/5, "middle-aged":count/5, "older adult":count/5 }, timbre: { light: Math.ceil(count/2), warm: Math.floor(count/2) }, style: { neutral: count/4, friendly: count/4, urgent: count/4, projected: count/4 }, vocal_effort: { soft: Math.ceil(count/3), normal: Math.floor(count/3), strong: count-Math.ceil(count/3)-Math.floor(count/3) } },
+      validation: { count: 30, gender: { man: 15, woman: 15 }, age: { child:6, teenager:6, "young adult":6, "middle-aged":6, "older adult":6 }, timbre: { light: 15, warm: 15 }, style: { neutral: 8, friendly: 8, urgent: 7, projected: 7 }, vocal_effort: { soft: 10, normal: 10, strong: 10 } }
+    } });
+    const recipes = [["check",20],["trial",100],["production",500]].map(([id,count]) => commonRecipe({ id, reference_design: design(count) }));
+    const b = browser({ recipeList: recipes }); await flush();
+    for (const [index, count] of [20,100,500].entries()) {
+      if (index) { const radio = descendants(b.elements.get("presets").children[index]).find(node => node.tagName === "input"); await radio.handlers.change(); }
+      assert.equal(b.elements.get("setup-voices").hidden, false);
+      assert.equal(b.elements.get("setup-voices-train").textContent, `학습용 ${count}개`);
+      assert.equal(b.elements.get("setup-voices-validation").textContent, "공통 평가용 30개");
+      const rows = b.elements.get("setup-voices-rows").children;
+      assert.equal(rows.length, 5);
+      assert.match(textOf(rows[0]), new RegExp(`남성 ${count/2}개 · 여성 ${count/2}개`));
+      assert.match(textOf(rows[1]), /어린이/); assert.match(textOf(rows[1]), /청소년/);
+      assert.match(textOf(rows[1]), /중년/); assert.match(textOf(rows[1]), /고령/);
+      assert.match(textOf(rows[4]), /보통/); assert.match(textOf(rows[4]), /강하게/);
+    }
+  });
+  await test("legacy and supplemental voice review distributions remain factual and preserve iframe identity", async () => {
+    const project = { id: "bora", wakeword: "보라야", status: "waiting_review", stage: "references_review", reference_counts: { train: 20, validation: 30 },
+      reference_design: { policy: "legacy", counts: { train: { count:20, gender:{man:10,woman:10}, age:{"young adult":20}, timbre:{light:20}, style:{neutral:20}, vocal_effort:{soft:20} }, validation:{count:30,gender:{man:15,woman:15},age:{adult:20,"young adult":10},timbre:{warm:30},style:{friendly:30},vocal_effort:{soft:22,strong:8}} } },
+      review: { queue_id: "references_added_fixture", url: "/review/?project=bora&queue=references_added_fixture" } };
+    const b = browser({ initialState: { projects:[project] } }); await flush();
+    assert.equal(b.elements.get("review-voices").hidden, false);
+    assert.equal(b.elements.get("review-title").textContent, "합성 목소리 확인");
+    assert.match(textOf(b.elements.get("review-voices-rows")), /성인\(연령 미지정\) 20개/);
+    assert.match(textOf(b.elements.get("review-voices-rows").children[4]), /부드럽게 20개/);
+    const writes = b.elements.get("review-frame").srcWrites;
+    await b.tick(); assert.equal(b.elements.get("review-frame").srcWrites,writes);
+    project.reference_design = null; await b.tick(); assert.equal(b.elements.get("review-voices").hidden,true);
+    assert.equal(b.calls.some(call => /\/api\/projects(?:\/|$)/.test(call.url) && call.options?.method === "POST"),false);
+  });
+  await test("same wakeword revisions use their model folders in the selector without changing IDs", async () => {
+    const b = browser({ initialState: { active_project_id:"new", projects:[
+      {id:"old",wakeword:"언년아",directory:"F:\\test\\models\\model_0001",status:"paused",stage:"references_review"},
+      {id:"new",wakeword:"언년아",directory:"F:\\test\\models\\model_0002",status:"paused",stage:"references"}
+    ] } }); await flush();
+    const options = b.elements.get("project-select").children;
+    assert.deepEqual(options.map(option => [option.textContent,option.value]), [["언년아 · model_0001","old"],["언년아 · model_0002","new"]]);
+    assert.equal(b.elements.get("project-select").value,"new");
+  });
   await test("human input is explicit; polling does not overwrite the text being edited", async () => {
     const project = { id: "bora", wakeword: "보라야", status: "waiting_input", stage: "pilot", input: { kind: "hard_phrases", phrases: ["돌아와"] } };
     const b = browser({ initialState: { projects: [project] } }); await flush();

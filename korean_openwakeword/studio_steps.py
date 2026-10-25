@@ -115,6 +115,7 @@ def preset_settings(name="check"):
             "material_acquisition_policy": "automatic_v3",
             "material_review_policy": "library_fixed_sources_v1",
             "audio_storage_policy": "canonical_flac_only_v1",
+            "voice_design_policy": "balanced_v1",
             **({"official_noise_acquisition_policy": "selective_fma_small_v1"} if name in ("check", "trial") else {}),
             **({"fma_acquisition_policy": "per_track_flac_prefetch_v1"} if name == "production" else {}),
             "final_locked": True, "positive_text_policy": "standalone_only"}
@@ -133,6 +134,8 @@ def workflow_plan(settings):
 
 
 def _validate_settings(settings):
+    if settings.get("voice_design_policy") not in (None, "balanced_v1"):
+        raise ValueError("Unsupported synthetic voice design policy")
     backend = settings.get("evaluation_backend", "cpu")
     if backend not in ("auto", "cpu", "cuda"):
         raise ValueError("Evaluation backend must be auto, cpu or cuda")

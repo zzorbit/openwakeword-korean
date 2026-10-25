@@ -80,6 +80,7 @@ def _model_choice(word, preset, settings):
     """Different benchmark versions need separate runs; old IDs stay resumable."""
     return {"wakeword": word, "preset": preset,
             "evaluation_policy": (settings.get("evaluation_policy") or {}).get("id"),
+            "voice_design_policy": settings.get("voice_design_policy"),
             **{key: settings[key] for key in ("originals", "rounds", "updates")},
             **{key: float(settings[key]) for key in ("generic_hours", "korean_hours")}}
 
@@ -498,6 +499,7 @@ class StudioManager:
     def recipes(self):
         from .studio_data import material_recipe
         from .studio_steps import preset_settings
+        from .project import voice_candidates
         presets = []
         for key, label in (("check", "동작 확인용"), ("trial", "시험 모델용"), ("production", "상용 모델용")):
             settings = preset_settings(key)
@@ -511,7 +513,11 @@ class StudioManager:
                 recipe["storage_budget"] = commercial_storage_budget(
                     settings, base_archive_bytes=recipe["known_download_bytes"])
                 recipe["estimated_workspace_bytes_scope"] = "legacy_partial_not_total"
-            presets.append({**settings, **recipe, "id": key, "label": label})
+            bank = voice_candidates(validation_count=settings["validation_references"],
+                                    train_count=settings["train_references"],
+                                    policy=settings["voice_design_policy"])
+            presets.append({**settings, **recipe, "id": key, "label": label,
+                            "reference_design": self._voice_design(bank, settings)})
         return {"presets": presets, "default_directory": str(self.workspace / "models"),
                 "storage_note": "호출어별 학습 자료와 결과를 models 폴더에 자동으로 저장합니다. 공통 자료와 캐시는 작업 폴더 안에서 공유합니다."}
 
@@ -1105,6 +1111,15 @@ class StudioManager:
                 self.start(project_id)
             return result
 
+    @staticmethod
+    def _voice_design(bank, settings):
+        from .voice_design import summarize_voice_design
+        return {"policy": bank.get("policy", "legacy"),
+                "counts": {split: summarize_voice_design(
+                    [row for row in bank["families"] if row["split"] == split][:settings[key]])
+                    for split, key in (("train", "train_references"), ("validation", "validation_references"))},
+                "scope": "requested_conditions_not_measured_voices"}
+
     def describe(self, state):
         index, plan = state["index"], state["plan"]
         stage = plan[index] if index < len(plan) else {"id": "completed", "label": "완료"}
@@ -1113,6 +1128,7 @@ class StudioManager:
         view.update(directory=str(Path(state["project"]).parent), stage=stage, stage_id=stage["id"],
                     reference_counts={"train": state["settings"]["train_references"],
                                       "validation": state["settings"]["validation_references"]},
+                    reference_design=self._voice_design(read_json(Path(state["project"]).parent / "voices.json"), state["settings"]),
                     evaluation_policy=state.get("settings", {}).get("evaluation_policy"),
                     evaluation_policy_sha256=identity(state["settings"]["evaluation_policy"]) if state.get("settings", {}).get("evaluation_policy") else None,
                     stages=[{**entry, "status": "completed" if i < index else state["status"] if i == index else "pending"}

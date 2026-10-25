@@ -1,0 +1,366 @@
+{
+  "schema_version": 1,
+  "release": "0.20.0",
+  "policy": "balanced_v1",
+  "age_ranges": {
+    "child": [
+      8,
+      12
+    ],
+    "teenager": [
+      13,
+      19
+    ],
+    "young adult": [
+      20,
+      39
+    ],
+    "middle-aged": [
+      40,
+      59
+    ],
+    "older adult": [
+      60,
+      79
+    ]
+  },
+  "source_computation_sha256": "5c883156eb3b70a0ff3dffb0b469d6281add62884c9891f3aff0f43c5691b289",
+  "target_computation_sha256": "1df90740a1b663b970b81042f570ae7e614fe09ab723f4d6242e60e6743902d1",
+  "changed_computational_files": [
+    "project.py",
+    "studio_steps.py",
+    "voice_design.py"
+  ],
+  "requested_distributions": {
+    "check": {
+      "train": {
+        "count": 20,
+        "gender": {
+          "man": 10,
+          "woman": 10
+        },
+        "age": {
+          "young adult": 4,
+          "middle-aged": 4,
+          "teenager": 4,
+          "older adult": 4,
+          "child": 4
+        },
+        "timbre": {
+          "warm rounded": 2,
+          "clear light": 1,
+          "firm dry": 1,
+          "dense midrange": 1,
+          "light breathy": 2,
+          "low resonant": 1,
+          "soft airy": 2,
+          "slightly husky": 1,
+          "bright nasal": 1,
+          "gentle thin": 1,
+          "smooth balanced": 1,
+          "rich textured": 2,
+          "deep mellow": 1,
+          "crisp focused": 1,
+          "clear ringing": 2
+        },
+        "style": {
+          "projected": 5,
+          "neutral": 5,
+          "friendly": 5,
+          "urgent": 5
+        },
+        "vocal_effort": {
+          "strong": 6,
+          "normal": 7,
+          "soft": 7
+        },
+        "speed": {
+          "quick": 6,
+          "natural": 7,
+          "slow": 7
+        },
+        "intonation": {
+          "level": 7,
+          "falling": 6,
+          "rising": 7
+        }
+      },
+      "validation": {
+        "count": 30,
+        "gender": {
+          "woman": 15,
+          "man": 15
+        },
+        "age": {
+          "teenager": 6,
+          "middle-aged": 6,
+          "child": 6,
+          "older adult": 6,
+          "young adult": 6
+        },
+        "timbre": {
+          "warm rounded": 2,
+          "bright nasal": 2,
+          "gentle thin": 2,
+          "low resonant": 2,
+          "crisp focused": 2,
+          "deep mellow": 2,
+          "smooth balanced": 2,
+          "clear ringing": 2,
+          "firm dry": 2,
+          "soft airy": 2,
+          "clear light": 2,
+          "rich textured": 2,
+          "slightly husky": 2,
+          "dense midrange": 2,
+          "light breathy": 2
+        },
+        "style": {
+          "neutral": 7,
+          "friendly": 7,
+          "projected": 8,
+          "urgent": 8
+        },
+        "vocal_effort": {
+          "strong": 10,
+          "normal": 10,
+          "soft": 10
+        },
+        "speed": {
+          "slow": 10,
+          "natural": 10,
+          "quick": 10
+        },
+        "intonation": {
+          "level": 10,
+          "rising": 10,
+          "falling": 10
+        }
+      }
+    },
+    "trial": {
+      "train": {
+        "count": 100,
+        "gender": {
+          "man": 50,
+          "woman": 50
+        },
+        "age": {
+          "young adult": 20,
+          "middle-aged": 20,
+          "teenager": 20,
+          "older adult": 20,
+          "child": 20
+        },
+        "timbre": {
+          "warm rounded": 7,
+          "clear light": 7,
+          "firm dry": 6,
+          "dense midrange": 7,
+          "light breathy": 7,
+          "low resonant": 6,
+          "soft airy": 6,
+          "slightly husky": 6,
+          "bright nasal": 7,
+          "gentle thin": 7,
+          "smooth balanced": 6,
+          "rich textured": 7,
+          "deep mellow": 7,
+          "crisp focused": 7,
+          "clear ringing": 7
+        },
+        "style": {
+          "projected": 25,
+          "neutral": 25,
+          "friendly": 25,
+          "urgent": 25
+        },
+        "vocal_effort": {
+          "strong": 33,
+          "normal": 33,
+          "soft": 34
+        },
+        "speed": {
+          "quick": 33,
+          "natural": 33,
+          "slow": 34
+        },
+        "intonation": {
+          "level": 33,
+          "falling": 33,
+          "rising": 34
+        }
+      },
+      "validation": {
+        "count": 30,
+        "gender": {
+          "woman": 15,
+          "man": 15
+        },
+        "age": {
+          "teenager": 6,
+          "middle-aged": 6,
+          "child": 6,
+          "older adult": 6,
+          "young adult": 6
+        },
+        "timbre": {
+          "warm rounded": 2,
+          "bright nasal": 2,
+          "gentle thin": 2,
+          "low resonant": 2,
+          "crisp focused": 2,
+          "deep mellow": 2,
+          "smooth balanced": 2,
+          "clear ringing": 2,
+          "firm dry": 2,
+          "soft airy": 2,
+          "clear light": 2,
+          "rich textured": 2,
+          "slightly husky": 2,
+          "dense midrange": 2,
+          "light breathy": 2
+        },
+        "style": {
+          "neutral": 7,
+          "friendly": 7,
+          "projected": 8,
+          "urgent": 8
+        },
+        "vocal_effort": {
+          "strong": 10,
+          "normal": 10,
+          "soft": 10
+        },
+        "speed": {
+          "slow": 10,
+          "natural": 10,
+          "quick": 10
+        },
+        "intonation": {
+          "level": 10,
+          "rising": 10,
+          "falling": 10
+        }
+      }
+    },
+    "production": {
+      "train": {
+        "count": 500,
+        "gender": {
+          "man": 250,
+          "woman": 250
+        },
+        "age": {
+          "young adult": 100,
+          "middle-aged": 100,
+          "teenager": 100,
+          "older adult": 100,
+          "child": 100
+        },
+        "timbre": {
+          "warm rounded": 33,
+          "clear light": 34,
+          "firm dry": 34,
+          "dense midrange": 33,
+          "light breathy": 33,
+          "low resonant": 34,
+          "soft airy": 34,
+          "slightly husky": 33,
+          "bright nasal": 33,
+          "gentle thin": 33,
+          "smooth balanced": 33,
+          "rich textured": 33,
+          "deep mellow": 34,
+          "crisp focused": 33,
+          "clear ringing": 33
+        },
+        "style": {
+          "projected": 125,
+          "neutral": 125,
+          "friendly": 125,
+          "urgent": 125
+        },
+        "vocal_effort": {
+          "strong": 166,
+          "normal": 167,
+          "soft": 167
+        },
+        "speed": {
+          "quick": 167,
+          "natural": 166,
+          "slow": 167
+        },
+        "intonation": {
+          "level": 166,
+          "falling": 167,
+          "rising": 167
+        }
+      },
+      "validation": {
+        "count": 30,
+        "gender": {
+          "woman": 15,
+          "man": 15
+        },
+        "age": {
+          "teenager": 6,
+          "middle-aged": 6,
+          "child": 6,
+          "older adult": 6,
+          "young adult": 6
+        },
+        "timbre": {
+          "warm rounded": 2,
+          "bright nasal": 2,
+          "gentle thin": 2,
+          "low resonant": 2,
+          "crisp focused": 2,
+          "deep mellow": 2,
+          "smooth balanced": 2,
+          "clear ringing": 2,
+          "firm dry": 2,
+          "soft airy": 2,
+          "clear light": 2,
+          "rich textured": 2,
+          "slightly husky": 2,
+          "dense midrange": 2,
+          "light breathy": 2
+        },
+        "style": {
+          "neutral": 7,
+          "friendly": 7,
+          "projected": 8,
+          "urgent": 8
+        },
+        "vocal_effort": {
+          "strong": 10,
+          "normal": 10,
+          "soft": 10
+        },
+        "speed": {
+          "slow": 10,
+          "natural": 10,
+          "quick": 10
+        },
+        "intonation": {
+          "level": 10,
+          "rising": 10,
+          "falling": 10
+        }
+      }
+    }
+  },
+  "legacy_bank_automatic_rewrite": false,
+  "new_voice_approval_inherited": false,
+  "unchanged": [
+    "tts_implementation",
+    "augmentation_math",
+    "training_math",
+    "scoring_math",
+    "dataset_pins",
+    "workload_counts",
+    "common_evaluation_sessions"
+  ],
+  "scope": "Balanced synthesis requests, not measured acoustic diversity or validated performance gains"
+}

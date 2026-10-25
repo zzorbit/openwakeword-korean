@@ -6,6 +6,7 @@ import re
 import math
 
 from .common import read_json, write_json, resolved
+from .voice_design import BALANCED_VOICE_POLICY
 
 BATCH = {"generic_negative": 768, "korean_negative": 256, "positive": 100, "hard_negative": 100}
 DEFAULT_VOICE_SAMPLE_TEXT = "오늘은 창밖으로 따뜻한 햇살이 들어옵니다."
@@ -224,12 +225,13 @@ def validate_project(config):
 def create_project(output, wakeword, project_id, *, positive_originals=None,
                    augmentation_rounds=None, updates=None, generic_hours=None,
                    korean_hours=None, noise_hours=None, training_overrides=None,
-                   validation_voice_families=30, train_voice_families=MAX_TRAIN_VOICE_FAMILIES):
+                   validation_voice_families=30, train_voice_families=MAX_TRAIN_VOICE_FAMILIES,
+                   voice_policy=BALANCED_VOICE_POLICY):
     output = Path(output).resolve()
     if output.exists() and any(output.iterdir()):
         raise ValueError("Use a new empty project directory; existing experiments are immutable")
     candidates = voice_candidates(validation_count=validation_voice_families,
-                                  train_count=train_voice_families)
+                                  train_count=train_voice_families, policy=voice_policy)
     config = default_profile()
     config.update(wakeword=wakeword, project_id=project_id)
     # New projects reserve RIR partitions explicitly. Loading historical JSON
@@ -275,13 +277,18 @@ def load_project(path):
     return path.parent, validate_project(read_json(path))
 
 
-def voice_candidates(validation_count=10, *, train_count=100):
+def voice_candidates(validation_count=10, *, train_count=100, policy=None):
     """Keep historical personas fixed; append new training-only candidates.
 
     The helper's legacy default remains 100. New projects reserve up to 500
     candidates and each Studio preset generates only its selected count.
     Candidate descriptions never certify acoustically distinct speakers.
     """
+    if policy == BALANCED_VOICE_POLICY:
+        from .voice_design import balanced_voice_candidates
+        return balanced_voice_candidates(validation_count, train_count=train_count)
+    if policy is not None:
+        raise ValueError("Unsupported synthetic voice design policy")
     if type(validation_count) is not int or not 1 <= validation_count <= 100:
         raise ValueError("Validation synthetic voice families must be an integer from 1 to 100")
     if type(train_count) is not int or not 1 <= train_count <= MAX_TRAIN_VOICE_FAMILIES:

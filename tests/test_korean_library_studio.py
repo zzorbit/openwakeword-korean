@@ -1479,3 +1479,34 @@ def test_reference_update_audit_requires_exact_code_and_stage_fingerprints(monke
     current["computation_sha256"] = identity(current["files"])
     audit["target_computation_sha256"] = current["computation_sha256"]
     assert studio._audited_reference_update(previous, current) is None
+
+
+def test_new_voice_design_creates_separate_model_instead_of_reusing_legacy_bank(manager):
+    view = create(manager)
+    state = manager._load(view["id"])
+    state["settings"].pop("voice_design_policy")
+    manager._save(state)
+    before = manager._path(view["id"]).read_bytes()
+    revised = create(manager)
+    assert revised["id"] != view["id"]
+    assert Path(revised["directory"]).name == "model_0002"
+    assert manager._path(view["id"]).read_bytes() == before
+    assert revised["reference_design"]["policy"] == "balanced_v1"
+
+
+def test_recipes_and_model_show_actual_balanced_voice_requests(manager):
+    for recipe in manager.recipes()["presets"]:
+        counts = recipe["reference_design"]["counts"]
+        assert counts["train"]["count"] == recipe["train_references"]
+        assert counts["validation"]["age"] == {"child": 6, "teenager": 6, "middle-aged": 6, "older adult": 6, "young adult": 6}
+        assert counts["validation"]["vocal_effort"] == {"soft": 10, "normal": 10, "strong": 10}
+    view = create(manager)
+    design = view["reference_design"]
+    assert design["counts"]["train"]["gender"] == {"man": 10, "woman": 10}
+    assert sorted(design["counts"]["train"]["age"].values()) == [4, 4, 4, 4, 4]
+    state = manager._load(view["id"])
+    from korean_openwakeword.project import voice_candidates
+    write_json(Path(state["project"]).parent / "voices.json", voice_candidates(30))
+    legacy = manager.describe(state)["reference_design"]
+    assert legacy["policy"] == "legacy"
+    assert legacy["counts"]["train"]["age"] == {"young adult": 20}

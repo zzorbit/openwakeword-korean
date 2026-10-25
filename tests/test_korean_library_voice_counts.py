@@ -33,7 +33,8 @@ def test_five_hundred_train_candidates_preserve_held_out_and_old_training_person
     extra = expanded[len(legacy):]
     assert len({row["description"] for row in extra}) == 400
     assert not ({row["description"] for row in extra} & {row["description"] for row in legacy})
-    project = create_project(tmp_path / "expanded", "보라야", "bora", validation_voice_families=30)
+    project = create_project(tmp_path / "expanded", "보라야", "bora", validation_voice_families=30,
+                             voice_policy=None)
     assert read_json(project.parent / "voices.json")["families"] == expanded
 
 

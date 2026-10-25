@@ -21,6 +21,7 @@
           <label class="field-title" for="wakeword">호출어</label>
           <input id="wakeword" name="wakeword" class="wakeword-input" placeholder="예: 보라야" maxlength="40" autocomplete="off" required>
           <fieldset class="purpose"><legend class="field-title">작업 규모</legend><div id="presets" class="preset-grid" aria-live="polite"><p class="muted">설정을 불러오는 중입니다.</p></div></fieldset>
+          <section id="setup-voices" class="voice-design" aria-labelledby="setup-voices-title" hidden><h3 id="setup-voices-title">목소리 구성</h3><div class="voice-design-scroll"><table class="voice-design-table"><thead><tr><th scope="col">항목</th><th id="setup-voices-train" scope="col">학습용</th><th id="setup-voices-validation" scope="col">공통 평가용</th></tr></thead><tbody id="setup-voices-rows"></tbody></table></div><p class="hint">생성 지시 기준입니다. 실제 목소리 차이는 음원을 듣고 확인합니다.</p></section>
           <div class="storage-location"><span>자동 저장 위치</span><p id="storage-directory" class="directory" aria-live="polite">호출어를 입력하면 표시됩니다.</p></div>
           <details id="advanced" class="advanced"><summary>세부 설정</summary><p class="hint">비워 두면 선택한 규모의 설정을 사용합니다.</p><div class="advanced-grid">
             <label>호출어 원본 수<input id="adv-originals" type="number" min="1" step="1" inputmode="numeric"></label>
@@ -51,7 +52,7 @@
         <p id="resume-note" class="hint">일시정지는 현재 단계가 끝난 뒤 적용됩니다. 작업 기록은 저장되며, 서버를 다시 켜면 이어서 진행할 수 있습니다.</p>
       </div>
 
-      <section id="review-section" class="card work-section" hidden><div class="section-heading"><div><p class="eyebrow">직접 확인할 차례</p><h2 id="review-title">오디오 검수</h2></div><span class="small-tag">검수 결과를 직접 저장</span></div><p id="review-description" class="muted"></p><iframe id="review-frame" title="오디오 검수" allow="autoplay" loading="lazy"></iframe><p class="hint">검수 화면에서 저장하면 완료 여부를 확인해 다음 단계로 이어집니다.</p></section>
+      <section id="review-section" class="card work-section" hidden><div class="section-heading"><div><p class="eyebrow">직접 확인할 차례</p><h2 id="review-title">오디오 검수</h2></div><span class="small-tag">검수 결과를 직접 저장</span></div><p id="review-description" class="muted"></p><section id="review-voices" class="voice-design" aria-labelledby="review-voices-title" hidden><h3 id="review-voices-title">목소리 구성</h3><div class="voice-design-scroll"><table class="voice-design-table"><thead><tr><th scope="col">항목</th><th id="review-voices-train" scope="col">학습용</th><th id="review-voices-validation" scope="col">공통 평가용</th></tr></thead><tbody id="review-voices-rows"></tbody></table></div><p class="hint">생성 지시 기준입니다. 실제 목소리 차이는 음원을 듣고 확인합니다.</p></section><iframe id="review-frame" title="오디오 검수" allow="autoplay" loading="lazy"></iframe><p class="hint">검수 화면에서 저장하면 완료 여부를 확인해 다음 단계로 이어집니다.</p></section>
 
       <section id="input-section" class="card work-section" hidden><p class="eyebrow">확인이 필요합니다</p><h2 id="input-title"></h2><p id="input-description" class="muted"></p><form id="input-form">
         <div id="material-controls" hidden><label for="material-mode">자료 준비 방법</label><select id="material-mode"><option value="source">음원 폴더로 추가 준비</option><option value="admissions">이미 승인된 자료 연결</option></select>

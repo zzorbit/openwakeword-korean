@@ -265,6 +265,18 @@ a.source-name:hover{text-decoration:underline}
 .evaluation-scope{margin:10px 0 0}
 .source-types{margin-top:4px;line-height:1.8}
 
+.voice-design{margin:20px 0}
+.voice-design h3{font-size:15px;margin:0 0 8px}
+.voice-design-scroll{overflow-x:auto}
+.voice-design-table{width:100%;border-collapse:collapse;font-size:13px;line-height:1.65}
+.voice-design-table th,.voice-design-table td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+.voice-design-table thead th{color:var(--muted);font-size:12px;font-weight:650}
+.voice-design-table th:first-child{width:86px;white-space:nowrap;padding-left:0}
+.voice-design-table td{width:calc((100% - 86px)/2)}
+.voice-design-table tbody tr:last-child>*{border-bottom:0}
+.voice-design>.hint{font-size:12px;margin:6px 0 0}
+@media(max-width:600px){.voice-design-table{font-size:12px;min-width:420px}.voice-design-table th,.voice-design-table td{padding:7px 9px}.voice-design-table th:first-child{width:70px}.voice-design-table td{width:calc((100% - 70px)/2)}}
+
 input::placeholder,textarea::placeholder{color:var(--muted);opacity:1}
 button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible{outline:2px solid var(--focus);outline-offset:3px}
 ::selection{color:var(--fg);background:#1f6feb66}
