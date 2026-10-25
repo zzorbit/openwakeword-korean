@@ -420,6 +420,10 @@ def dispatch(a):
         from .tts import generate_references
         if a.command == "references":
             return generate_references(a.project, a.split, a.limit)
+        if a.pilot and a.method == "clone" and a.split == "train":
+            from .pilot import prepare_pilot
+            return prepare_pilot(a.project, train_count=a.limit,
+                                 tts_backend=a.tts_backend, tts_cpu_threads=a.tts_cpu_threads)
         from .tts_runtime import generate_with_runtime
         return generate_with_runtime(a.project, a.split, a.limit, a.pilot, a.method, a.tts_backend, a.tts_cpu_threads)
     if a.command == "check-references":

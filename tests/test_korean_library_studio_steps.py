@@ -307,6 +307,8 @@ def test_discarded_reference_is_excluded_but_remaining_train_and_validation_can_
 
 
 def test_pilot_queue_contains_only_actual_technical_passes(project, monkeypatch):
+    settings = steps.preset_settings()
+    settings.pop("pilot_review_policy")  # Historical fixed-count queues retain their original gate.
     from korean_openwakeword import tts_runtime
     config = read_json(project)
     rows = [fake_audio(project.parent, f"pilot{i}", slot=i, qc={"passed": True},
@@ -318,19 +320,21 @@ def test_pilot_queue_contains_only_actual_technical_passes(project, monkeypatch)
         calls.append(args)
         return {"full_target_reached": True, "review_queue": str(candidates), "technical_pass": 24}
     monkeypatch.setattr(tts_runtime, "generate_with_runtime", generate)
-    result = run(project, "pilot")
+    result = run(project, "pilot", settings=settings)
     assert calls == [(project, "train", 24, True, "clone")]
     queue = result["result"]["queue"]
     assert len(read_rows(queue)) == 24
-    assert run(project, "pilot_review")["state"] == "waiting_review"
+    assert run(project, "pilot_review", settings=settings)["state"] == "waiting_review"
     approve(project, queue, "pilot")
-    assert run(project, "pilot_review")["state"] == "completed"
+    assert run(project, "pilot_review", settings=settings)["state"] == "completed"
 
 
 def test_incomplete_generation_stops_without_approving_failed_slots(project, monkeypatch):
+    settings = steps.preset_settings()
+    settings.pop("pilot_review_policy")
     from korean_openwakeword import tts_runtime
     monkeypatch.setattr(tts_runtime, "generate_with_runtime", lambda *a: {"full_target_reached": False, "technical_pass": 23})
-    result = run(project, "pilot")
+    result = run(project, "pilot", settings=settings)
     assert result["state"] == "waiting_input"
     assert not (project.parent / ".studio/pilot_queue.jsonl").exists()
 

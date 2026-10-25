@@ -126,7 +126,7 @@ def _execution_contract():
                  "downloads.py", "download_control.py", "evaluation_materials.py", "fma_download.py", "fma_selection.py", "fma_streaming.py",
                  "material_downloads.py", "material_policy.py", "provider_index.py", "range_zip.py", "source_waveform_index.py",
                  "studio_data.py", "studio_evaluation_data.py", "pool_review.py"},
-        "tts": {"reference_bank.py", "reference_qc.py", "hard_tts.py", "tts.py", "tts_runtime.py", "tts_cuda_graph.py",
+        "tts": {"reference_bank.py", "reference_qc.py", "pilot.py", "hard_tts.py", "tts.py", "tts_runtime.py", "tts_cuda_graph.py",
                 "tts_cuda_predictor.py", "tts_cuda_sampling.py"},
         "features": {"features.py", "paired.py", "preparation.py"},
         "training": {"train.py"},
@@ -250,6 +250,41 @@ def _audited_reference_admission_update(previous, current):
             or not re.fullmatch(r"[0-9a-f]{64}", audit.get("evidence_sha256", ""))):
         return None
     return {"kind": "audited_reference_admission_update", "changed_files": changed,
+            "source_computation_sha256": previous["computation_sha256"],
+            "target_computation_sha256": current["computation_sha256"],
+            "evidence_sha256": audit["evidence_sha256"]}
+
+
+_AUDITED_PILOT_UPDATES = {
+    "744dedd32fdbeed761227caf17b89b10e679122130557c575075d1aa74e25d18": {
+        "source_stages_sha256": "e1dbe0d98f0cd2b765f8e4115f068a6d3cb7c1f28ed8ba59691020b2ca4e78b5",
+        "target_computation_sha256": "194ed2bcfda035f24009c11d6a9b71f6cd79639f9a5e8a03361ca4466db4ac4c",
+        "target_stages_sha256": "3a137e646251e373319242ac3c518999a06d8ab430fe5dff66c2e50516b7ec8a",
+        # Canonical JSON identity of docs/pilot_one_per_voice_0.22.0_audit.json.
+        "evidence_sha256": "720ef26f5f850ed9e35a8bd4d20f55deb2d22a97ba917e77c904caa1a4acd6d7",
+    },
+}
+
+
+def _audited_pilot_update(previous, current):
+    audit = _AUDITED_PILOT_UPDATES.get(previous.get("computation_sha256"))
+    if not isinstance(audit, dict):
+        return None
+    old_files, new_files = previous.get("files"), current.get("files")
+    if (previous.get("schema_version") != 1 or current.get("schema_version") != 1
+            or not isinstance(old_files, dict) or not isinstance(new_files, dict)
+            or identity(old_files) != previous.get("computation_sha256")
+            or identity(new_files) != current.get("computation_sha256")
+            or current.get("computation_sha256") != audit.get("target_computation_sha256")
+            or identity(previous.get("stages")) != audit.get("source_stages_sha256")
+            or identity(current.get("stages")) != audit.get("target_stages_sha256")):
+        return None
+    changed = sorted(name for name in old_files.keys() | new_files.keys()
+                     if old_files.get(name) != new_files.get(name))
+    if (changed != ["pilot.py", "studio_steps.py"]
+            or not re.fullmatch(r"[0-9a-f]{64}", audit.get("evidence_sha256", ""))):
+        return None
+    return {"kind": "audited_one_call_per_training_voice", "changed_files": changed,
             "source_computation_sha256": previous["computation_sha256"],
             "target_computation_sha256": current["computation_sha256"],
             "evidence_sha256": audit["evidence_sha256"]}
@@ -754,6 +789,7 @@ class StudioManager:
         audited_update = None
         reference_update = None
         reference_admission_update = None
+        pilot_update = None
         if previous:
             if (previous.get("schema_version") != 1 or previous.get("settings_sha256") != identity(state["settings"])
                     or previous.get("plan_sha256") != identity(state["plan"])):
@@ -765,16 +801,21 @@ class StudioManager:
                 audited_update = _audited_acquisition_update(previous, self._execution_contract)
                 reference_update = _audited_reference_update(previous, self._execution_contract)
                 reference_admission_update = _audited_reference_admission_update(previous, self._execution_contract)
+                pilot_update = _audited_pilot_update(previous, self._execution_contract)
+                if pilot_update and not self._can_update_pilot(state):
+                    return blocked("목소리별 발음 검수 수량 변경은 대량 생성 전 작업에만 적용할 수 있습니다. 기존 음원과 검수 기록은 보존됩니다.")
                 if reference_admission_update and not self._can_update_reference_admission(state):
                     return blocked("기준 목소리 자동 검사는 호출어 생성 전 작업에만 적용할 수 있습니다. 기존 자료와 검수 기록은 보존됩니다.")
-                if audited_update is None and reference_update is None and reference_admission_update is None:
+                if audited_update is None and reference_update is None and reference_admission_update is None and pilot_update is None:
                     return blocked("남은 단계의 자료·생성·학습·채점 코드가 달라 호환 이관할 수 없습니다. 기존 자료를 보존하고 새 실험을 만드세요.")
         elif (_LEGACY_COMPATIBLE_CONTRACTS.get(state.get("implementation_id"))
               != self._execution_contract["computation_sha256"]):
             return blocked("이 구버전에는 검증된 단계 계약이 없습니다. 기존 자료를 보존하고 별도 호환 검증이 필요합니다.")
         budget_change = self._reference_budget_change(state) if reference_update else None
         return {"state": "available", "action": "migrate",
-                "reason": ("기존 목소리와 검수 기록을 보존하고 기준 목소리를 자동 검사합니다. 호출어 발음 대표 검수는 유지합니다."
+                "reason": ("기존 음원과 검수 기록을 보존하고 학습용 목소리마다 호출어 1개씩 확인하도록 목록을 갱신합니다."
+                           if pilot_update else
+                           "기존 목소리와 검수 기록을 보존하고 기준 목소리를 자동 검사합니다. 호출어 발음 대표 검수는 유지합니다."
                            if reference_admission_update else
                            "기존 목소리·검수 결과를 보존하고 부족한 학습용 기준 목소리만 추가합니다. 호출어 생성 전 작업에만 수량 변경을 적용합니다."
                            if reference_update else
@@ -783,6 +824,7 @@ class StudioManager:
                 **({"audited_acquisition_update": audited_update} if audited_update else {}),
                 **({"audited_reference_update": reference_update} if reference_update else {}),
                 **({"audited_reference_admission_update": reference_admission_update} if reference_admission_update else {}),
+                **({"audited_pilot_update": pilot_update} if pilot_update else {}),
                 **({"reference_budget_change": budget_change} if budget_change else {}),
                 "preserves": ["project_settings", "completed_artifacts", "review_answers", "history"]}
 
@@ -794,6 +836,16 @@ class StudioManager:
         if (root / "final_lock.json").exists() or read_json(root / "approval.json").get("generation_policy_approved"):
             return False
         return not any(path.is_file() for folder in ("data/pilot", "data/generated", "runs")
+                       if (root / folder).exists() for path in (root / folder).rglob("*"))
+
+    def _can_update_pilot(self, state):
+        positions = {stage["id"]: i for i, stage in enumerate(state["plan"])}
+        if state["index"] > positions["pilot_review"] or self._job_alive(state.get("job") or {}):
+            return False
+        root = Path(state["project"]).parent
+        if (root / "final_lock.json").exists() or read_json(root / "approval.json").get("generation_policy_approved"):
+            return False
+        return not any(path.is_file() for folder in ("data/generated", "runs")
                        if (root / folder).exists() for path in (root / folder).rglob("*"))
 
     def migrate(self, project_id):
@@ -835,10 +887,19 @@ class StudioManager:
                    if compatibility.get("audited_reference_update") else {}),
                 **({"audited_reference_admission_update": compatibility["audited_reference_admission_update"]}
                    if compatibility.get("audited_reference_admission_update") else {}),
+                **({"audited_pilot_update": compatibility["audited_pilot_update"]}
+                   if compatibility.get("audited_pilot_update") else {}),
                 **({"reference_budget_change": compatibility["reference_budget_change"]}
                    if compatibility.get("reference_budget_change") else {}),
                 "preserved": compatibility["preserves"]})
             budget_change = compatibility.get("reference_budget_change")
+            if compatibility.get("audited_pilot_update"):
+                from .studio_steps import workflow_plan
+                state["settings"]["pilot_review_policy"] = "one_per_training_voice_v1"
+                state["plan"] = workflow_plan(state["settings"])
+                pilot_index = next(i for i, stage in enumerate(state["plan"]) if stage["id"] == "pilot")
+                state.update(index=min(state["index"], pilot_index), status="paused", auto_continue=False,
+                             error=None, next_action="이어서 진행하면 기존 음원으로 목소리별 발음 검수 목록을 준비합니다.")
             if compatibility.get("audited_reference_admission_update"):
                 from .studio_steps import workflow_plan
                 state["settings"]["reference_admission_policy"] = "automatic_technical_v1"
@@ -1253,7 +1314,8 @@ class StudioManager:
                     paths = [folder / "references" / split / "references.jsonl" for split in ("train", "validation")]
                     total = state["settings"]["train_references"] + state["settings"]["validation_references"]
                 elif job["stage"] == "pilot":
-                    paths, total = [folder / "pilot/train/candidates.jsonl"], 24
+                    paths = [folder / "pilot/train/candidates.jsonl"]
+                    total = state["settings"]["train_references"] if state["settings"].get("pilot_review_policy") == "one_per_training_voice_v1" else 24
                 elif job["stage"] == "hard_generation":
                     paths, total = [folder / "generated/hard/candidates.jsonl"], state["settings"]["hard_originals"]
                 else:
@@ -1261,6 +1323,8 @@ class StudioManager:
                     total = state["settings"]["originals"] + state["settings"]["validation_originals"]
                 counters = [self._journal_counts(p) for p in paths]
                 done = sum(c["passed"] for c in counters)
+                if job["stage"] == "pilot" and state["settings"].get("pilot_review_policy") == "one_per_training_voice_v1":
+                    done = min(total, len(set().union(*(c.get("passed_families", set()) for c in counters))))
                 view["progress"] = {"done": done, "total": total, "unit": "개", "label": "자동 기술 검사 통과 음성"}
                 view["counts"] = {"tts_generated": sum(c["attempts"] for c in counters), "technical_passed": done}
             if job["stage"] == "features":
@@ -1367,9 +1431,9 @@ class StudioManager:
         """Incremental line scanning; UI polling never re-reads the full pool."""
         if not path.exists():
             return {"attempts": 0, "passed": 0}
-        record = self._journals.setdefault(str(path), {"offset": 0, "attempts": 0, "passed": 0})
+        record = self._journals.setdefault(str(path), {"offset": 0, "attempts": 0, "passed": 0, "passed_families": set()})
         if path.stat().st_size < record["offset"]:
-            record.update(offset=0, attempts=0, passed=0)
+            record.update(offset=0, attempts=0, passed=0, passed_families=set())
         with path.open("rb") as handle:
             handle.seek(record["offset"])
             while True:
@@ -1382,6 +1446,8 @@ class StudioManager:
                 record["attempts"] += 1
                 if row.get("qc", {}).get("passed", row.get("technical_pass", True)):
                     record["passed"] += 1
+                    if row.get("voice_family_id"):
+                        record["passed_families"].add(row["voice_family_id"])
                 record["offset"] = handle.tell()
         return record
 

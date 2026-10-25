@@ -104,8 +104,9 @@ def test_legacy_reference_policy_still_requires_saved_human_review(project, monk
 
 
 def test_technical_reference_success_does_not_skip_pilot_pronunciation_gate(project):
-    publish_queue(project, "pilot_queue.jsonl")
+    queue = publish_queue(project, "pilot_queue.jsonl")
     result = run(project, "pilot_review", context={"results": {
+        "pilot": {"result": {"queue": str(queue)}},
         "references_review": {"state": "completed", "result": {"state": "accepted", "passed": 50}}}})
     assert result["state"] == "waiting_review" and result["reviews"][0]["kind"] == "pilot"
     assert read_json(project.parent / "approval.json")["generation_policy_approved"] is False

@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "kind": "one_call_per_training_voice_release_audit",
+  "evidence_hash_format": "canonical_json_identity_v1",
+  "source_version": "0.21.0",
+  "target_version": "0.22.0",
+  "source_computation_sha256": "744dedd32fdbeed761227caf17b89b10e679122130557c575075d1aa74e25d18",
+  "target_computation_sha256": "194ed2bcfda035f24009c11d6a9b71f6cd79639f9a5e8a03361ca4466db4ac4c",
+  "source_stages_sha256": "e1dbe0d98f0cd2b765f8e4115f068a6d3cb7c1f28ed8ba59691020b2ca4e78b5",
+  "target_stages_sha256": "3a137e646251e373319242ac3c518999a06d8ab430fe5dff66c2e50516b7ec8a",
+  "changed_computational_files": [
+    "pilot.py",
+    "studio_steps.py"
+  ],
+  "unchanged_tts_module_sha256": "cc6e951d48e3340e00a8a8b5a22776d1a1ebc15e4834ba4eddf4186311052a8c",
+  "tests": {
+    "pilot_selection": 20,
+    "pilot_studio_integration": 21,
+    "cli": 4,
+    "studio_regressions": 205
+  },
+  "current_selection": {
+    "existing_calls_preserved": 24,
+    "selected_calls": 20,
+    "selected_train_voices": 20,
+    "calls_per_voice": 1,
+    "reused_calls": 20,
+    "additional_TTS_calls": 0,
+    "human_listening_inferred": false,
+    "generation_policy_approved": false
+  },
+  "migration_limits": [
+    "no_live_worker",
+    "not_past_pilot_review",
+    "no_bulk_calls_or_training",
+    "no_Final_lock",
+    "no_generation_policy_approval"
+  ],
+  "preserves": [
+    "source_waveforms",
+    "candidate_journal",
+    "generation_contract",
+    "old_review_queue",
+    "saved_human_answers",
+    "completed_receipts",
+    "training_and_evaluation_settings"
+  ],
+  "scope": "Prepare one pronunciation call per admitted Train voice; common evaluation voices and synthesis remain unchanged"
+}

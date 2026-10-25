@@ -117,6 +117,7 @@ def preset_settings(name="check"):
             "audio_storage_policy": "canonical_flac_only_v1",
             "voice_design_policy": "balanced_v1",
             "reference_admission_policy": "automatic_technical_v1",
+            "pilot_review_policy": "one_per_training_voice_v1",
             **({"official_noise_acquisition_policy": "selective_fma_small_v1"} if name in ("check", "trial") else {}),
             **({"fma_acquisition_policy": "per_track_flac_prefetch_v1"} if name == "production" else {}),
             "final_locked": True, "positive_text_policy": "standalone_only"}
@@ -139,6 +140,8 @@ def workflow_plan(settings):
 
 
 def _validate_settings(settings):
+    if settings.get("pilot_review_policy") not in (None, "one_per_training_voice_v1"):
+        raise ValueError("Unsupported pilot review policy")
     if settings.get("reference_admission_policy") not in (None, "automatic_technical_v1"):
         raise ValueError("Unsupported reference admission policy")
     if settings.get("voice_design_policy") not in (None, "balanced_v1"):
@@ -728,6 +731,14 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         return _review_gate(root, reviews, context)
 
     if stage_id == "pilot":
+        if settings.get("pilot_review_policy") == "one_per_training_voice_v1":
+            from .pilot import prepare_pilot
+            summary = prepare_pilot(project, train_count=settings["train_references"])
+            incomplete = _generation_complete(summary)
+            if incomplete:
+                return incomplete
+            queue = Path(summary["review_queue"])
+            return _completed({**summary, "queue": str(queue)}, [queue])
         from .tts_runtime import generate_with_runtime
         summary = generate_with_runtime(project, "train", 24, True, "clone")
         incomplete = _generation_complete(summary)
@@ -738,7 +749,10 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         return _completed({**summary, "queue": str(queue)}, [queue])
 
     if stage_id == "pilot_review":
-        descriptor = _review_descriptor(root, workspace / "pilot_queue.jsonl", "pilot", "pilot")
+        queue = (Path(_result(context, "pilot")["queue"])
+                 if settings.get("pilot_review_policy") == "one_per_training_voice_v1"
+                 else workspace / "pilot_queue.jsonl")
+        descriptor = _review_descriptor(root, queue, "pilot", "pilot")
         result = _review_gate(root, [descriptor], context)
         if result["state"] == "completed":
             approval = read_json(root / "approval.json")
