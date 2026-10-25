@@ -1135,10 +1135,9 @@ class StudioManager:
                 phrases = payload["phrases"]
                 if not isinstance(phrases, list) or not phrases or any(not isinstance(p, str) for p in phrases):
                     raise ValueError("유사어를 한 줄에 하나씩 입력하세요.")
-                from .hard_phrase_policy import validate_noncall_text
+                from .hard_tts import _phrases
                 _, config = load_project(state["project"])
-                for phrase in phrases:
-                    validate_noncall_text(phrase, config["wakeword"])
+                phrases = _phrases(phrases, config["wakeword"])
                 state["inputs"].update(hard_phrases=phrases, hard_phrases_approved=True)
             elif "admissions" in payload:
                 admissions = payload["admissions"]
@@ -1325,8 +1324,13 @@ class StudioManager:
                 done = sum(c["passed"] for c in counters)
                 if job["stage"] == "pilot" and state["settings"].get("pilot_review_policy") == "one_per_training_voice_v1":
                     done = min(total, len(set().union(*(c.get("passed_families", set()) for c in counters))))
-                view["progress"] = {"done": done, "total": total, "unit": "개", "label": "자동 기술 검사 통과 음성"}
+                labels = {"references": "기준 목소리 생성 완료", "pilot": "발음 확인용 호출어 생성 완료",
+                          "positives": "호출어 생성 완료", "hard_generation": "유사어 음성 생성 완료"}
+                view["progress"] = {"done": done, "total": total, "unit": "개", "label": labels[job["stage"]]}
                 view["counts"] = {"tts_generated": sum(c["attempts"] for c in counters), "technical_passed": done}
+                if job["stage"] == "positives":
+                    view["next_action"] = (f"학습용 {counters[0]['passed']:,} / {state['settings']['originals']:,}개 · "
+                                           f"공통 평가용 {counters[1]['passed']:,} / {state['settings']['validation_originals']:,}개")
             if job["stage"] == "features":
                 import re
                 matches = re.findall(r"(positive|korean_negative|hard_negative|generic_negative) R\d+: (\d+)/(\d+)", self.log(state["id"]))
@@ -1403,6 +1407,12 @@ class StudioManager:
             view["input"] = result.get("input", {"kind": result.get("input_kind", "diagnostic"),
                                                    "description": result.get("message", "자료 준비가 필요합니다."),
                                                    "suggestions": result.get("suggestions", [])})
+            if (view.get("input") or {}).get("kind") == "hard_phrases":
+                view["input"] = {**view["input"], "title": "유사어 문구 선택",
+                    "description": (f"입력한 문구로 총 {state['settings']['hard_originals']:,}개의 유사어 음성을 만듭니다. "
+                                    "호출어 자체나 같은 이름·낱말이 통째로 들어간 표현은 제외하세요."),
+                    "label": "유사어 문구 · 한 줄에 하나씩",
+                    "hint": "문구 1~32개 · 한글 1~16자 · 띄어쓰기와 중복 없이 입력하세요."}
         final = state["results"].get("results", {})
         if state["status"] == "completed" or final.get("site"):
             result = state.get("results", {}).get("evaluation", {})

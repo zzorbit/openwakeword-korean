@@ -979,6 +979,8 @@ function storageBudgetRecipe(overrides = {}) {
       reference_preview: { url: "/reference-preview/?project=bora", count: 50, train: 20, validation: 30 } };
     const b = browser({ initialState: { projects: [project] } }); await flush();
     const details = b.elements.get("reference-preview"), frame = b.elements.get("reference-preview-frame");
+    assert.match(html, /<summary>기준 목소리 듣기<\/summary>/);
+    assert.doesNotMatch(html, /기준 목소리 듣기\s*\(선택\)/);
     assert.doesNotMatch(html.match(/<iframe id="reference-preview-frame"[^>]*>/)[0], /\ssrc=/);
     assert.equal(details.hidden, false); assert.equal(details.open, false);
     assert.equal(frame.getAttribute("src"), null); assert.equal(frame.srcWrites, 0);
@@ -1116,11 +1118,66 @@ function storageBudgetRecipe(overrides = {}) {
     const project = { id: "bora", wakeword: "보라야", status: "running", stage: { id: "features", label: "소음 증강" }, stages: [{ id: "frontend", status: "completed" }, { id: "data_download", status: "completed" }, { id: "features", status: "running" }, { id: "training", status: "pending" }], progress: { done: 13, total: 19, unit: "완료 단계" }, elapsed_seconds: 3600, current_stage_elapsed_seconds: 30 };
     const b = browser({ initialState: { projects: [project] } }); await flush();
     assert.match(b.elements.get("stages").children[0].className, /done/);
-    assert.match(b.elements.get("stages").children[4].className, /current/);
+    assert.match(b.elements.get("stages").children[5].className, /current/);
     assert.equal(b.elements.get("progress").hidden, true); assert.equal(b.elements.get("progress-percent").textContent, "");
     assert.equal(b.elements.get("progress-label").textContent, "전체 절차 13 / 19단계 완료");
     assert.equal(b.elements.get("elapsed").textContent, "이 작업 경과 30초 · 전체 경과 1시간");
     assert.match(b.elements.get("eta").textContent, /측정한 뒤/);
+  });
+  await test("nine visible groups separate positive generation and hard-negative preparation while keeping all nineteen workflow stages", async () => {
+    const workflow = ["frontend", "data_download", "data_review", "data_connect", "references", "references_review",
+      "pilot", "pilot_review", "positives", "hard_phrases", "hard_generation", "hard_review", "hard_connect",
+      "features", "training", "package", "development", "evaluation", "results"];
+    const groupIndexes = [0,0,0,0,1,1,2,2,3,4,4,4,4,5,6,6,7,7,8];
+    const labels = ["자료 준비", "합성 목소리", "호출어 확인", "호출어 생성", "유사어 준비", "증강·특징 추출", "모델 학습", "성능 평가", "결과·시험"];
+    const project = { id: "bora", wakeword: "보라야", status: "running", stage: "frontend",
+      progress: { done: 0, total: 19, unit: "완료 단계" }, settings: { frozen_policy: "unchanged" } };
+    const b = browser({ initialState: { projects: [project] } }); await flush();
+    for (const [index, id] of workflow.entries()) {
+      project.stage = id; project.status = /review|phrases/.test(id) ? "waiting_review" : "running";
+      project.stages = workflow.map((name, position) => ({ id: name, status: position < index ? "completed" : position === index ? project.status : "pending" }));
+      project.progress.done = index;
+      await b.tick();
+      const groups = b.elements.get("stages").children;
+      assert.equal(groups.length, 9);
+      assert.deepEqual(groups.map(group => group.children[1].textContent.replace(/^✓ /, "")), labels);
+      assert.equal(groups.filter(group => /\bcurrent\b/.test(group.className)).length, 1);
+      assert.equal(groups[groupIndexes[index]].getAttribute("aria-current"), "step");
+      assert.equal(groups.filter(group => /\bdone\b/.test(group.className)).length, groupIndexes[index]);
+      assert.equal(b.elements.get("progress-label").textContent, `전체 절차 ${index} / 19단계 완료`);
+      assert.equal(b.elements.get("progress-percent").textContent, "");
+      assert.deepEqual(project.stages.map(stage => stage.id), workflow);
+      assert.equal(project.settings.frozen_policy, "unchanged");
+    }
+    project.status = "completed"; project.stage = "completed"; project.progress.done = 19;
+    project.stages.forEach(stage => { stage.status = "completed"; }); await b.tick();
+    const completed = b.elements.get("stages").children;
+    assert.equal(completed.filter(group => /\bdone\b/.test(group.className)).length, 9);
+    assert.equal(completed.filter(group => /\bcurrent\b/.test(group.className)).length, 0);
+    assert.equal(b.calls.some(call => call.options.method === "POST" && call.url !== "/api/model-location"), false);
+  });
+  await test("generation counters distinguish attempts and file checks from human listening", async () => {
+    const project = { id: "bora", status: "running", stage: "positives",
+      counts: { tts_generated: 21, technical_passed: 20, reviewed: 0, admitted: 0 } };
+    const b = browser({ initialState: { projects: [project] } }); await flush();
+    const counts = b.elements.get("counts");
+    assert.equal(counts.hidden, false);
+    assert.deepEqual(counts.children.map(textOf), ["생성 시도 21", "파일 검사 통과 20", "사람 청취 0", "학습 사용 판정 0"]);
+    project.counts = [{ id: "positive_generated", value: 22 }]; await b.tick();
+    assert.equal(textOf(counts), "생성 음원 22");
+    assert.equal(b.calls.some(call => call.options.method === "POST" && call.url !== "/api/model-location"), false);
+  });
+  await test("legacy generation alias stays in the positive group and unknown stages invent no completion", async () => {
+    const project = { id: "bora", status: "running", stage: "generate" };
+    const b = browser({ initialState: { projects: [project] } }); await flush();
+    let groups = b.elements.get("stages").children;
+    assert.equal(groups[3].getAttribute("aria-current"), "step");
+    assert.equal(groups[3].children[1].textContent, "호출어 생성");
+    assert.equal(groups[4].children[1].textContent, "유사어 준비");
+    assert.doesNotMatch(groups[4].className, /\bcurrent\b|\bdone\b/);
+    project.stage = "unknown"; await b.tick(); groups = b.elements.get("stages").children;
+    assert.equal(groups.length, 9);
+    assert.equal(groups.filter(group => /\bcurrent\b|\bdone\b/.test(group.className)).length, 0);
   });
   await test("dependency setup asks for CPU/GPU without mislabeling it as source admission", async () => {
     const project = { id: "bora", wakeword: "보라야", status: "waiting_input", stage: "frontend", error: null, input: { kind: "dependency_setup", recommended_backend: "cu128" } };

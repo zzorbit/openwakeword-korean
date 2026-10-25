@@ -4,13 +4,13 @@
   const names = { check: "동작 확인용", trial: "시험 모델용", production: "상용 모델용" };
   const steps = [
     ["data", "자료 준비"], ["references", "합성 목소리"], ["pilot", "호출어 확인"],
-    ["generate", "음성 생성"], ["features", "증강·특징 추출"], ["train", "모델 학습"],
+    ["generate", "호출어 생성"], ["hard", "유사어 준비"], ["features", "증강·특징 추출"], ["train", "모델 학습"],
     ["evaluate", "성능 평가"], ["test", "결과·시험"]
   ];
   const stepGroups = {
     data: ["data", "frontend", "data_download", "data_review", "data_connect"],
     references: ["references", "references_review"], pilot: ["pilot", "pilot_review"],
-    generate: ["generate", "positives", "hard_phrases", "hard_generation", "hard_review", "hard_connect"],
+    generate: ["generate", "positives"], hard: ["hard_phrases", "hard_generation", "hard_review", "hard_connect"],
     features: ["features"], train: ["train", "training", "package"],
     evaluate: ["evaluate", "development", "evaluation"], test: ["test", "results"]
   };
@@ -564,7 +564,7 @@
   function renderCounts(project) {
     const values = project.counts;
     const records = Array.isArray(values) ? values : values && typeof values === "object" ? Object.entries(values).map(([label, value]) => ({ label, value })) : [];
-    const labels = { tts_generated: "음성 생성", positive_generated: "음성 생성", technical_passed: "자동 검사 통과", reviewed: "사람 청취", admitted: "학습 사용 판정", trained_models: "학습 완료 모델" };
+    const labels = { tts_generated: "생성 시도", positive_generated: "생성 음원", technical_passed: "파일 검사 통과", reviewed: "사람 청취", admitted: "학습 사용 판정", trained_models: "학습 완료 모델" };
     // Only supplied counters are shown; generation is never called human approval.
     replace($("counts"), records.map(record => { const item = element("span"); item.append(element("span", (labels[record.label || record.id] || record.label || record.id || "자료") + " "), element("strong", `${typeof record.value === "number" ? number(record.value) : String(record.value ?? "—")}${record.total !== undefined ? " / " + number(record.total) : ""}${record.unit || ""}`)); return item; }));
     $("counts").hidden = !records.length;

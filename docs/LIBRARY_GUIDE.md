@@ -80,7 +80,7 @@ koww references --project models/bora/project.json --split validation --limit 30
 koww check-references --project models/bora/project.json --train-count 500 --validation-count 30
 ```
 
-파일 무결성·모노·유한값·무음·길이·클리핑·동일 PCM 중복을 검사하며, 실패하면 원인을 표시합니다. 기술 검사 통과는 사람 청취나 발음 승인을 뜻하지 않습니다. 웹의 **기준 목소리 듣기(선택)**에서 음원을 들어볼 수 있습니다.
+파일 무결성·모노·유한값·무음·길이·클리핑·동일 PCM 중복을 검사하며, 실패하면 원인을 표시합니다. 기술 검사 통과는 사람 청취나 발음 승인을 뜻하지 않습니다. 웹의 **기준 목소리 듣기**에서 음원을 들어볼 수 있습니다.
 
 **최종 평가용 참조는 8단계의 모델·설정 확정 후에 생성**합니다. 이미 승인한 합성 참조를 다른 프로젝트에서 가져오는 방법은 아래의 추가 설정을 참고하세요.
 
