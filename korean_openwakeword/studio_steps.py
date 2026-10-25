@@ -116,6 +116,7 @@ def preset_settings(name="check"):
             "material_review_policy": "library_fixed_sources_v1",
             "audio_storage_policy": "canonical_flac_only_v1",
             "voice_design_policy": "balanced_v1",
+            "reference_admission_policy": "automatic_technical_v1",
             **({"official_noise_acquisition_policy": "selective_fma_small_v1"} if name in ("check", "trial") else {}),
             **({"fma_acquisition_policy": "per_track_flac_prefetch_v1"} if name == "production" else {}),
             "final_locked": True, "positive_text_policy": "standalone_only"}
@@ -124,6 +125,10 @@ def preset_settings(name="check"):
 def workflow_plan(settings):
     _validate_settings(settings)
     plan = [{"id": sid, "label": title, "title": title, "kind": kind} for sid, title, kind in _STAGES]
+    if settings.get("reference_admission_policy") == "automatic_technical_v1":
+        for stage in plan:
+            if stage["id"] == "references_review":
+                stage.update(label="기준 목소리 자동 검사", title="기준 목소리 자동 검사", kind="task")
     if settings.get("material_review_policy") == "library_fixed_sources_v1":
         for stage in plan:
             if stage["id"] == "data_review":
@@ -134,6 +139,8 @@ def workflow_plan(settings):
 
 
 def _validate_settings(settings):
+    if settings.get("reference_admission_policy") not in (None, "automatic_technical_v1"):
+        raise ValueError("Unsupported reference admission policy")
     if settings.get("voice_design_policy") not in (None, "balanced_v1"):
         raise ValueError("Unsupported synthetic voice design policy")
     backend = settings.get("evaluation_backend", "cpu")
@@ -702,6 +709,15 @@ def run_stage(project, workspace, settings, stage_id, context=None):
 
     if stage_id == "references_review":
         queues = _result(context, "references").get("queues") or [workspace / "reference_queue.jsonl"]
+        if settings.get("reference_admission_policy") == "automatic_technical_v1":
+            from .reference_qc import admit_references
+            checked = admit_references(project, {"train": settings["train_references"],
+                                               "validation": settings["validation_references"]}, queues=queues)
+            if checked["state"] != "accepted":
+                return _waiting("기준 목소리 자동 검사에서 문제가 발견됐습니다. 선택 듣기와 검사 내역을 확인하세요.",
+                                input_kind="reference_quality", quality=checked)
+            return _completed(checked, [resolved(root, checked[key]["path"])
+                                        for key in ("receipt", "quality_journal")])
         reviews = []
         for queue in queues:
             queue = Path(queue)

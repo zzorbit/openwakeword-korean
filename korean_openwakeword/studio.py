@@ -126,7 +126,7 @@ def _execution_contract():
                  "downloads.py", "download_control.py", "evaluation_materials.py", "fma_download.py", "fma_selection.py", "fma_streaming.py",
                  "material_downloads.py", "material_policy.py", "provider_index.py", "range_zip.py", "source_waveform_index.py",
                  "studio_data.py", "studio_evaluation_data.py", "pool_review.py"},
-        "tts": {"reference_bank.py", "hard_tts.py", "tts.py", "tts_runtime.py", "tts_cuda_graph.py",
+        "tts": {"reference_bank.py", "reference_qc.py", "hard_tts.py", "tts.py", "tts_runtime.py", "tts_cuda_graph.py",
                 "tts_cuda_predictor.py", "tts_cuda_sampling.py"},
         "features": {"features.py", "paired.py", "preparation.py"},
         "training": {"train.py"},
@@ -214,6 +214,45 @@ _AUDITED_REFERENCE_UPDATES = {
         "evidence_sha256": "7592afc3d3c2d85512d7a7aed1b54ee12e2a96c2f91260b8d873c413c4bd4df3",
     },
 }
+
+# Reference admission changes approval provenance, never the generated audio or
+# the mandatory pronunciation pilot. Only frozen, tested release pairs qualify.
+_AUDITED_REFERENCE_ADMISSION_UPDATES = {
+    "1df90740a1b663b970b81042f570ae7e614fe09ab723f4d6242e60e6743902d1": {
+        "source_stages_sha256": "ccbc03ebd7c3c608bfa83184fbff9bc81001d2345047c473d78fc1c1e694e4e3",
+        "target_computation_sha256": "744dedd32fdbeed761227caf17b89b10e679122130557c575075d1aa74e25d18",
+        "target_stages_sha256": "e1dbe0d98f0cd2b765f8e4115f068a6d3cb7c1f28ed8ba59691020b2ca4e78b5",
+        "changed_files": ("reference_bank.py", "reference_qc.py", "studio_steps.py"),
+        # Canonical JSON identity of docs/reference_admission_0.21.0_audit.json.
+        "evidence_sha256": "2aeb248eadb1a676619b940b1d765cb31f1325c7b0cce266c9897cdd44a49180",
+    },
+}
+
+
+def _audited_reference_admission_update(previous, current):
+    audit = _AUDITED_REFERENCE_ADMISSION_UPDATES.get(previous.get("computation_sha256"))
+    if not isinstance(audit, dict):
+        return None
+    old_files, new_files = previous.get("files"), current.get("files")
+    if (previous.get("schema_version") != 1 or current.get("schema_version") != 1
+            or not isinstance(old_files, dict) or not isinstance(new_files, dict)
+            or identity(old_files) != previous.get("computation_sha256")
+            or identity(new_files) != current.get("computation_sha256")
+            or current.get("computation_sha256") != audit.get("target_computation_sha256")
+            or identity(previous.get("stages")) != audit.get("source_stages_sha256")
+            or identity(current.get("stages")) != audit.get("target_stages_sha256")):
+        return None
+    changed = sorted(name for name in old_files.keys() | new_files.keys()
+                     if old_files.get(name) != new_files.get(name))
+    allowed = {"reference_qc.py", "reference_bank.py", "review.py", "studio_steps.py"}
+    if (not changed or changed != sorted(audit.get("changed_files", ()))
+            or not set(changed).issubset(allowed)
+            or not re.fullmatch(r"[0-9a-f]{64}", audit.get("evidence_sha256", ""))):
+        return None
+    return {"kind": "audited_reference_admission_update", "changed_files": changed,
+            "source_computation_sha256": previous["computation_sha256"],
+            "target_computation_sha256": current["computation_sha256"],
+            "evidence_sha256": audit["evidence_sha256"]}
 
 
 def _audited_reference_update(previous, current):
@@ -714,6 +753,7 @@ class StudioManager:
         previous = state.get("execution_contract") or {}
         audited_update = None
         reference_update = None
+        reference_admission_update = None
         if previous:
             if (previous.get("schema_version") != 1 or previous.get("settings_sha256") != identity(state["settings"])
                     or previous.get("plan_sha256") != identity(state["plan"])):
@@ -724,21 +764,37 @@ class StudioManager:
             if changed:
                 audited_update = _audited_acquisition_update(previous, self._execution_contract)
                 reference_update = _audited_reference_update(previous, self._execution_contract)
-                if audited_update is None and reference_update is None:
+                reference_admission_update = _audited_reference_admission_update(previous, self._execution_contract)
+                if reference_admission_update and not self._can_update_reference_admission(state):
+                    return blocked("기준 목소리 자동 검사는 호출어 생성 전 작업에만 적용할 수 있습니다. 기존 자료와 검수 기록은 보존됩니다.")
+                if audited_update is None and reference_update is None and reference_admission_update is None:
                     return blocked("남은 단계의 자료·생성·학습·채점 코드가 달라 호환 이관할 수 없습니다. 기존 자료를 보존하고 새 실험을 만드세요.")
         elif (_LEGACY_COMPATIBLE_CONTRACTS.get(state.get("implementation_id"))
               != self._execution_contract["computation_sha256"]):
             return blocked("이 구버전에는 검증된 단계 계약이 없습니다. 기존 자료를 보존하고 별도 호환 검증이 필요합니다.")
         budget_change = self._reference_budget_change(state) if reference_update else None
         return {"state": "available", "action": "migrate",
-                "reason": ("기존 목소리·검수 결과를 보존하고 부족한 학습용 기준 목소리만 추가합니다. 호출어 생성 전 작업에만 수량 변경을 적용합니다."
+                "reason": ("기존 목소리와 검수 기록을 보존하고 기준 목소리를 자동 검사합니다. 호출어 발음 대표 검수는 유지합니다."
+                           if reference_admission_update else
+                           "기존 목소리·검수 결과를 보존하고 부족한 학습용 기준 목소리만 추가합니다. 호출어 생성 전 작업에만 수량 변경을 적용합니다."
                            if reference_update else
                            "다운로드 순서·진행 표시 변경의 자료 동일성을 확인한 업데이트입니다. 기존 설정과 완료 결과를 검증한 뒤 적용할 수 있습니다."
                            if audited_update else "남은 단계의 계산·자료 계약이 같습니다. 기존 설정과 완료 결과를 검증하고 업데이트를 적용할 수 있습니다."),
                 **({"audited_acquisition_update": audited_update} if audited_update else {}),
                 **({"audited_reference_update": reference_update} if reference_update else {}),
+                **({"audited_reference_admission_update": reference_admission_update} if reference_admission_update else {}),
                 **({"reference_budget_change": budget_change} if budget_change else {}),
                 "preserves": ["project_settings", "completed_artifacts", "review_answers", "history"]}
+
+    def _can_update_reference_admission(self, state):
+        positions = {stage["id"]: i for i, stage in enumerate(state["plan"])}
+        if state["index"] > positions["pilot"] or self._job_alive(state.get("job") or {}):
+            return False
+        root = Path(state["project"]).parent
+        if (root / "final_lock.json").exists() or read_json(root / "approval.json").get("generation_policy_approved"):
+            return False
+        return not any(path.is_file() for folder in ("data/pilot", "data/generated", "runs")
+                       if (root / folder).exists() for path in (root / folder).rglob("*"))
 
     def migrate(self, project_id):
         """Explicit, audited compatibility rebind; never an implicit resume."""
@@ -777,10 +833,19 @@ class StudioManager:
                    if compatibility.get("audited_acquisition_update") else {}),
                 **({"audited_reference_update": compatibility["audited_reference_update"]}
                    if compatibility.get("audited_reference_update") else {}),
+                **({"audited_reference_admission_update": compatibility["audited_reference_admission_update"]}
+                   if compatibility.get("audited_reference_admission_update") else {}),
                 **({"reference_budget_change": compatibility["reference_budget_change"]}
                    if compatibility.get("reference_budget_change") else {}),
                 "preserved": compatibility["preserves"]})
             budget_change = compatibility.get("reference_budget_change")
+            if compatibility.get("audited_reference_admission_update"):
+                from .studio_steps import workflow_plan
+                state["settings"]["reference_admission_policy"] = "automatic_technical_v1"
+                state["plan"] = workflow_plan(state["settings"])
+                review_index = next(i for i, stage in enumerate(state["plan"]) if stage["id"] == "references_review")
+                state.update(index=min(state["index"], review_index), status="paused", auto_continue=False,
+                             error=None, next_action="이어서 진행하면 기준 목소리를 자동 검사합니다. 호출어 발음 검수는 그대로 진행합니다.")
             if budget_change:
                 state["settings"]["train_references"] = budget_change["train_references"]
                 state.update(index=budget_change["resume_index"], status="paused", auto_continue=False,
@@ -1111,6 +1176,23 @@ class StudioManager:
                 self.start(project_id)
             return result
 
+    def reference_preview_rows(self, project_id):
+        state = self._load(project_id)
+        root = Path(state["project"]).parent
+        bank = read_json(root / "voices.json")["families"]
+        rows = []
+        for split, key in (("train", "train_references"), ("validation", "validation_references")):
+            selected = {row["family_id"] for row in [row for row in bank if row["split"] == split][:state["settings"][key]]}
+            for row in read_rows(root / "data/references" / split / "references.jsonl"):
+                if row.get("voice_family_id") in selected:
+                    if (row.get("split") != split or row.get("provenance") != "qwen_synthetic_reference"
+                            or row.get("human_reference_used") is not False):
+                        raise ValueError("기준 목소리 출처가 올바르지 않습니다.")
+                    rows.append(row)
+        if len({row["sample_id"] for row in rows}) != len(rows):
+            raise ValueError("기준 목소리 목록에 중복 번호가 있습니다.")
+        return state, rows
+
     @staticmethod
     def _voice_design(bank, settings):
         from .voice_design import summarize_voice_design
@@ -1137,6 +1219,11 @@ class StudioManager:
                     progress={"done": index, "total": len(plan), "unit": "완료 단계"},
                     elapsed_seconds=timing["total_seconds"], timing=timing,
                     migration=self._migration_view(state), eta_seconds=None)
+        preview_counts = {split: self._journal_counts(Path(state["project"]).parent / "data/references" / split / "references.jsonl")["passed"]
+                          for split in ("train", "validation")}
+        if sum(preview_counts.values()):
+            view["reference_preview"] = {"url": f"/reference-preview/?project={state['id']}",
+                                         "count": sum(preview_counts.values()), **preview_counts}
         job = state.get("job") or {}
         if job:
             view["current_stage_elapsed_seconds"] = round(_elapsed(job.get("started_at")), 1)
@@ -1410,6 +1497,24 @@ def make_studio_server(manager, port=8793):
                     return self.respond((resources / name).read_bytes(), kind=kind)
                 if path.startswith("/api/projects/") and path.endswith("/log"):
                     return self.respond({"log": manager.log(path.split("/")[3])})
+                if path.startswith("/reference-preview/"):
+                    project_id = query["project"][0]
+                    state, rows = manager.reference_preview_rows(project_id)
+                    base = f"?project={quote(project_id)}"
+                    if path == "/reference-preview/":
+                        return self.respond((resources / "reference_preview.html").read_bytes(), kind="text/html; charset=utf-8")
+                    if path == "/reference-preview/queue":
+                        return self.respond({"items": [{"id": row["sample_id"], "text": row.get("text", ""),
+                            "group": "학습용" if row["split"] == "train" else "공통 평가용",
+                            "audio": f"/reference-preview/audio/{i}" + base} for i, row in enumerate(rows)]})
+                    if path.startswith("/reference-preview/audio/"):
+                        index = int(path.rsplit("/", 1)[1])
+                        if not 0 <= index < len(rows):
+                            raise ValueError("잘못된 목소리 번호입니다.")
+                        audio = resolved(Path(state["project"]).parent, rows[index]["path"])
+                        if digest(audio) != rows[index]["sha256"]:
+                            raise ValueError("기준 목소리 음원이 변경되었습니다.")
+                        return self.send_file(audio)
                 if path.startswith("/review/"):
                     project_id, queue_id = query["project"][0], query["queue"][0]
                     state, review, rows = manager.review_queue(project_id, queue_id)

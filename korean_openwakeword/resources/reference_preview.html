@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>기준 목소리 듣기</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,sans-serif;background:#0d1117;color:#c9d1d9}
+body{margin:0;padding:16px 20px;line-height:1.55}main{max-width:900px;margin:auto}
+.bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}select,button{font:inherit;color:inherit;background:#21262d;border:1px solid #484f58;border-radius:7px;padding:8px 12px}
+select{flex:1;min-width:180px}button{cursor:pointer}button:disabled{opacity:.45;cursor:default}
+audio{width:100%;margin-top:14px}p{margin:10px 0 0;color:#b1bac4}#error{color:#ff938a}
+</style>
+<main>
+  <div class="bar">
+    <select id="voice" aria-label="들을 목소리"></select>
+    <button id="previous" type="button">이전</button>
+    <button id="next" type="button">다음</button>
+    <button id="continuous" type="button">연속 듣기</button>
+  </div>
+  <audio id="audio" controls preload="none"></audio>
+  <p id="sentence"></p><p id="error" role="alert"></p>
+</main>
+<script>
+'use strict';
+const voice=document.getElementById('voice'), audio=document.getElementById('audio');
+const previous=document.getElementById('previous'), next=document.getElementById('next');
+const continuous=document.getElementById('continuous'), sentence=document.getElementById('sentence');
+let items=[], playingContinuously=false;
+function stop(){playingContinuously=false;continuous.textContent='연속 듣기';}
+function select(index,play=false){
+  if(!items[index])return;
+  voice.value=String(index);audio.src=items[index].audio;sentence.textContent=items[index].text;
+  previous.disabled=index===0;next.disabled=index===items.length-1;
+  if(play)audio.play().catch(error=>{stop();document.getElementById('error').textContent=error.message;});
+}
+voice.addEventListener('change',()=>{stop();select(Number(voice.value));});
+previous.addEventListener('click',()=>{stop();select(Number(voice.value)-1);});
+next.addEventListener('click',()=>{stop();select(Number(voice.value)+1);});
+continuous.addEventListener('click',()=>{
+  if(playingContinuously){stop();audio.pause();return;}
+  playingContinuously=true;continuous.textContent='연속 듣기 중지';
+  audio.play().catch(error=>{stop();document.getElementById('error').textContent=error.message;});
+});
+audio.addEventListener('ended',()=>{
+  if(!playingContinuously)return;
+  const index=Number(voice.value)+1;
+  if(index<items.length)select(index,true);else stop();
+});
+(async()=>{
+  try{
+    const project=new URL(location.href).searchParams.get('project');
+    const response=await fetch('/reference-preview/queue?project='+encodeURIComponent(project));
+    const payload=await response.json();if(!response.ok)throw Error(payload.error||'목록을 불러오지 못했습니다.');
+    items=payload.items;
+    items.forEach((item,index)=>{const option=document.createElement('option');option.value=String(index);option.textContent=`${index+1}. ${item.group} · ${item.id}`;voice.append(option);});
+    if(items.length)select(0);else throw Error('준비된 기준 목소리가 없습니다.');
+  }catch(error){document.getElementById('error').textContent=error.message;}
+})();
+</script>
+</html>

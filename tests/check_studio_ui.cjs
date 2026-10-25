@@ -974,6 +974,62 @@ function storageBudgetRecipe(overrides = {}) {
     assert.equal(b.elements.get("connection").hidden, true);
     assert.equal(b.elements.get("project-error").hidden, true);
   });
+  await test("optional reference listening loads only on request and polling preserves playback without writing decisions", async () => {
+    const project = { id: "bora", wakeword: "보라야", status: "running", stage: "pilot",
+      reference_preview: { url: "/reference-preview/?project=bora", count: 50, train: 20, validation: 30 } };
+    const b = browser({ initialState: { projects: [project] } }); await flush();
+    const details = b.elements.get("reference-preview"), frame = b.elements.get("reference-preview-frame");
+    assert.doesNotMatch(html.match(/<iframe id="reference-preview-frame"[^>]*>/)[0], /\ssrc=/);
+    assert.equal(details.hidden, false); assert.equal(details.open, false);
+    assert.equal(frame.getAttribute("src"), null); assert.equal(frame.srcWrites, 0);
+    assert.equal(b.elements.get("reference-preview-counts").textContent, "학습용 20개 · 공통 평가용 30개");
+    details.open = true; details.handlers.toggle();
+    assert.equal(frame.getAttribute("src"), "/reference-preview/?project=bora");
+    await b.tick(); await b.tick();
+    assert.equal(details.open, true); assert.equal(frame.srcWrites, 1);
+    project.stage = "training"; await b.tick();
+    assert.equal(details.hidden, false); assert.equal(frame.srcWrites, 1);
+    details.open = false; details.handlers.toggle();
+    assert.equal(frame.getAttribute("src"), null);
+    assert.equal(b.calls.some(call => call.options.method === "POST" && call.url !== "/api/model-location"), false);
+  });
+  await test("optional voice preview closes on model changes and rejects unavailable or external previews", async () => {
+    const project = { id: "bora", status: "complete", reference_preview: { url: "/reference-preview/?project=bora", count: 50 } };
+    const other = { id: "other", status: "running", reference_preview: { url: "/reference-preview/?project=other", count: 10 } };
+    const b = browser({ initialState: { projects: [project, other], active_project_id: "bora" } }); await flush();
+    const details = b.elements.get("reference-preview"), frame = b.elements.get("reference-preview-frame");
+    details.open = true; details.handlers.toggle();
+    b.elements.get("project-select").value = "other"; b.elements.get("project-select").handlers.change();
+    assert.equal(details.open, false); assert.equal(frame.getAttribute("src"), null);
+    details.open = true; details.handlers.toggle();
+    assert.equal(frame.getAttribute("src"), "/reference-preview/?project=other");
+    await b.click("new-project");
+    assert.equal(details.hidden, true); assert.equal(details.open, false); assert.equal(frame.getAttribute("src"), null);
+    other.reference_preview.url = "https://example.com/reference-preview/";
+    b.elements.get("project-select").value = "other"; b.elements.get("project-select").handlers.change(); await b.tick();
+    assert.equal(details.hidden, true); assert.equal(frame.getAttribute("src"), null);
+    other.reference_preview = { url: "/reference-preview/?project=other", count: 0 }; await b.tick();
+    assert.equal(details.hidden, true);
+  });
+  await test("automatic reference checking respects the task label and optional listening never replaces pilot review", async () => {
+    const project = { id: "bora", wakeword: "보라야", status: "running",
+      stage: { id: "references_review", kind: "task", label: "기준 목소리 자동 검사" }, stage_label: "기존 목소리 확인",
+      reference_preview: { url: "/reference-preview/?project=bora", count: 50, train: 20, validation: 30 } };
+    const b = browser({ initialState: { projects: [project] } }); await flush();
+    assert.equal(b.elements.get("current-title").textContent, "기준 목소리 자동 검사");
+    assert.equal(b.elements.get("review-section").hidden, true);
+    project.status = "waiting_review"; project.stage = { id: "pilot_review", kind: "review", label: "호출어 발음 확인" };
+    project.review = { queue_id: "pilot", title: "호출어 발음 확인", url: "/review/?project=bora&queue=pilot" }; await b.tick();
+    const details = b.elements.get("reference-preview"); details.open = true; details.handlers.toggle();
+    assert.equal(b.elements.get("review-section").hidden, false);
+    assert.equal(b.elements.get("review-title").textContent, "호출어 발음 확인");
+    assert.equal(b.elements.get("start").hidden, true);
+    assert.equal(b.elements.get("review-frame").getAttribute("src"), "/review/?project=bora&queue=pilot");
+    await b.tick();
+    assert.equal(b.elements.get("review-frame").srcWrites, 1);
+    assert.equal(b.elements.get("reference-preview-frame").srcWrites, 1);
+    assert.equal(b.calls.some(call => call.options.method === "POST" && call.url !== "/api/model-location"), false);
+  });
   await test("state polling preserves an active review iframe; starting work hides and unloads it", async () => {
     const project = { id: "bora", wakeword: "보라야", status: "waiting_review", stage: "pilot", review: { queue_id: "pilot1", url: "/review/?project=bora&queue=pilot1" } };
     const b = browser({ initialState: { projects: [project], active_project_id: "bora" } }); await flush();

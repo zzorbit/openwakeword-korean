@@ -170,6 +170,10 @@ def parser():
             a.add_argument("--pilot", action="store_true"); a.add_argument("--method", choices=("clone", "design"), default="clone")
             a.add_argument("--tts-backend", choices=("auto", "eager"), default="auto", help="GPU 가속은 원본과 PCM/QC/RNG가 같은지 참조별 확인 후 사용")
             a.add_argument("--tts-cpu-threads", type=int, default=4)
+    a = sub.add_parser("check-references", help="기준 목소리 자동 품질 검사·연결; 호출어 발음 검수는 별도")
+    a.add_argument("--project", type=Path, required=True)
+    a.add_argument("--train-count", type=int, help="학습용 기준 목소리 수; 생략하면 생성된 수량")
+    a.add_argument("--validation-count", type=int, help="공통 평가용 기준 목소리 수; 생략하면 생성된 수량")
     a = sub.add_parser("generate-hard", help="Qwen 유사어 후보 생성; 별도 내용 승인 전에는 학습하지 않음")
     a.add_argument("--project", type=Path, required=True); a.add_argument("--phrases", nargs="+", required=True)
     a.add_argument("--count", type=int, default=100, help="유사어 원본 수; 배치 추출 수와 별개")
@@ -418,6 +422,16 @@ def dispatch(a):
             return generate_references(a.project, a.split, a.limit)
         from .tts_runtime import generate_with_runtime
         return generate_with_runtime(a.project, a.split, a.limit, a.pilot, a.method, a.tts_backend, a.tts_cpu_threads)
+    if a.command == "check-references":
+        from .reference_qc import admit_references
+        if any(value is not None and value < 1 for value in (a.train_count, a.validation_count)):
+            raise ValueError("기준 목소리 수는 1 이상이어야 합니다.")
+        from .common import read_rows
+        root, _ = load_project(a.project)
+        counts = {split: value if value is not None else len(read_rows(root / "data/references" / split / "references.jsonl"))
+                  for split, value in (("train", a.train_count), ("validation", a.validation_count))}
+        counts = {split: count for split, count in counts.items() if count != 0}
+        return admit_references(a.project, counts)
     if a.command == "generate-hard":
         from .hard_tts import generate_hard
         from .tts_runtime import CloneRuntime

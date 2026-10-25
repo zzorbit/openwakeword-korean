@@ -244,6 +244,8 @@ def test_dependency_setup_rechecks_after_explicit_choice_and_then_prepares_front
 
 
 def test_references_are_combined_once_and_require_actual_saved_answers(project, monkeypatch):
+    settings = steps.preset_settings()
+    settings.pop("reference_admission_policy")  # Frozen legacy workflows keep the listening gate.
     from korean_openwakeword import tts
     calls = []
     shared = object()
@@ -266,26 +268,30 @@ def test_references_are_combined_once_and_require_actual_saved_answers(project, 
     assert result["result"]["generated"] == 50
     queue = Path(result["result"]["queue"])
     assert queue.parent == project.parent / ".studio"
-    pending = run(project, "references_review")
+    pending = run(project, "references_review", settings=settings)
     assert pending["state"] == "waiting_review" and pending["reviews"][0]["count"] == 50
     assert read_json(project.parent / "approval.json")["generation_policy_approved"] is False
     approve(project, queue, "references")
-    assert run(project, "references_review")["state"] == "completed"
+    assert run(project, "references_review", settings=settings)["state"] == "completed"
     # A changed exact queue cannot reuse the previous listening answers.
     queue.write_text(queue.read_text(encoding="utf-8") + "\n", encoding="utf-8")
-    assert run(project, "references_review")["state"] == "waiting_review"
+    assert run(project, "references_review", settings=settings)["state"] == "waiting_review"
 
 
 def test_saved_boolean_is_not_a_review_or_generation_approval(project):
+    settings = steps.preset_settings()
+    settings.pop("reference_admission_policy")
     root = project.parent
     row = fake_audio(root, "ref", voice_family_id="voice")
     queue = steps._publish_rows(root / ".studio/reference_queue.jsonl", [row])
     write_json(root / "review/references_results.json", {"queue_sha256": digest(queue),
                "decisions": {"ref": {"decision": "keep", "listened": True}}})
-    assert run(project, "references_review")["state"] == "waiting_review"
+    assert run(project, "references_review", settings=settings)["state"] == "waiting_review"
 
 
 def test_discarded_reference_is_excluded_but_remaining_train_and_validation_can_proceed(project):
+    settings = steps.preset_settings()
+    settings.pop("reference_admission_policy")
     root = project.parent
     rows = [fake_audio(root, name, voice_family_id=name, split=split)
             for name, split in (("train1", "train"), ("train2", "train"), ("val", "validation"))]
@@ -293,11 +299,11 @@ def test_discarded_reference_is_excluded_but_remaining_train_and_validation_can_
     decisions = {r["sample_id"]: {"decision": "keep", "listened": True} for r in rows}
     decisions["train2"] = {"decision": "discard", "listened": True}
     apply_review(project, queue, decisions, "references")
-    assert run(project, "references_review")["state"] == "completed"
+    assert run(project, "references_review", settings=settings)["state"] == "completed"
     assert "train2" not in read_json(root / "approval.json")["accepted_reference_families"]
     decisions["train1"] = {"decision": "discard", "listened": True}
     apply_review(project, queue, decisions, "references")
-    assert run(project, "references_review")["state"] == "waiting_review"
+    assert run(project, "references_review", settings=settings)["state"] == "waiting_review"
 
 
 def test_pilot_queue_contains_only_actual_technical_passes(project, monkeypatch):

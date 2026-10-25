@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "kind": "reference_admission_release_audit",
+  "evidence_hash_format": "canonical_json_identity_v1",
+  "source_version": "0.20.0",
+  "target_version": "0.21.0",
+  "source_computation_sha256": "1df90740a1b663b970b81042f570ae7e614fe09ab723f4d6242e60e6743902d1",
+  "target_computation_sha256": "744dedd32fdbeed761227caf17b89b10e679122130557c575075d1aa74e25d18",
+  "source_stages_sha256": "ccbc03ebd7c3c608bfa83184fbff9bc81001d2345047c473d78fc1c1e694e4e3",
+  "target_stages_sha256": "e1dbe0d98f0cd2b765f8e4115f068a6d3cb7c1f28ed8ba59691020b2ca4e78b5",
+  "changed_computational_files": [
+    "reference_bank.py",
+    "reference_qc.py",
+    "studio_steps.py"
+  ],
+  "unchanged_tts_module_sha256": "cc6e951d48e3340e00a8a8b5a22776d1a1ebc15e4834ba4eddf4186311052a8c",
+  "scope": "Reference technical admission only; no changes to voice design, synthesis, training, evaluation or pilot review approval",
+  "tests": {
+    "new_reference_qc_and_import": 21,
+    "new_studio_integration": 20,
+    "studio_steps": 68,
+    "studio_orchestration": 117,
+    "web_ui_checks": 85
+  },
+  "existing_reference_sanity": {
+    "checked": 50,
+    "technical_passed": 50,
+    "mode": "read_only_no_admission_changes",
+    "human_listening_inferred": false,
+    "waveforms_modified": false,
+    "tts_generation_contracts_modified": false
+  },
+  "migration_limits": [
+    "no_live_worker",
+    "before_call_generation",
+    "no_Final_lock",
+    "no_generation_policy_approval"
+  ],
+  "required_next_human_gate": "24-call pronunciation pilot and generation policy approval"
+}

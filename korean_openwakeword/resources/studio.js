@@ -196,7 +196,7 @@
   let snapshot = { projects: [] }, recipes = [], selectedId = "", selectedPreset = "check";
   let newProject = false, busy = false, refreshing = false, pollTimer = null, recipeReady = false;
   let locationTimer = null, locationRevision = 0, modelLocation = { key: "", directory: "" };
-  let reviewIdentity = "", inputIdentity = "", resultIdentity = "", resultMode = "results", logProject = "";
+  let reviewIdentity = "", referencePreviewIdentity = "", inputIdentity = "", resultIdentity = "", resultMode = "results", logProject = "";
   const selectedProject = () => (snapshot.projects || []).find(project => project.id === selectedId);
 
   async function api(path, method = "GET", payload) {
@@ -639,6 +639,23 @@
       row.append(heading, element("td",distribution(train,axis)), element("td",distribution(validation,axis))); return row;
     }));
   }
+  function renderReferencePreview(project) {
+    const preview = project?.reference_preview, url = localUrl(preview?.url);
+    const show = Boolean(url && Number.isInteger(preview?.count) && preview.count > 0);
+    const details = $("reference-preview"), frame = $("reference-preview-frame");
+    const identity = show ? project.id + ":" + url : "";
+    if (referencePreviewIdentity !== identity) {
+      details.open = false;
+      frameSource(frame, "");
+      referencePreviewIdentity = identity;
+    }
+    details.hidden = !show;
+    if (!show) return;
+    $("reference-preview-counts").textContent = [preview.train, preview.validation].every(value => Number.isInteger(value) && value >= 0)
+      ? `학습용 ${number(preview.train)}개 · 공통 평가용 ${number(preview.validation)}개`
+      : `생성된 기준 목소리 ${number(preview.count)}개`;
+    frameSource(frame, details.open ? url : "");
+  }
   function renderReview(project) {
     const review = project.review;
     const url = localUrl(review?.url);
@@ -841,7 +858,8 @@
     const stageLabel = project.stage && typeof project.stage === "object" ? project.stage.label : steps.find(([id]) => id === project.stage)?.[1];
     $("current-category").textContent = waiting ? "사용자 확인 대기" : complete ? "완료" : "현재 작업";
     const stageId = typeof project.stage === "object" ? project.stage?.id : project.stage;
-    const voiceTitle = { references: "합성 목소리 만들기", references_review: "합성 목소리 확인" }[stageId];
+    const voiceTitle = stageId === "references" ? "합성 목소리 만들기"
+      : stageId === "references_review" ? project.stage?.kind === "task" ? stageLabel : "합성 목소리 확인" : "";
     $("current-title").textContent = voiceTitle || project.stage_label || project.title || stageLabel || (complete ? "학습과 평가를 마쳤습니다" : waiting ? "안내를 확인해주세요" : "시작할 준비가 되었습니다");
     $("current-description").textContent = project.next_action || project.description || (waiting ? "아래에서 필요한 확인을 마치면 이어서 진행합니다." : complete ? "아래에서 결과를 확인하고 호출어를 시험할 수 있습니다." : running ? "진행 상태를 자동으로 갱신합니다." : "시작하면 준비된 작업부터 순서대로 진행합니다.");
     if (complete) $("current-description").textContent = "아래에서 모델 성능을 비교하고 시험 오디오를 들어보세요.";
@@ -888,7 +906,7 @@
     if (evaluating(project)) $("eta").textContent = progress && !/단계/.test(progress.unit) ? "음원 수 기준 · 긴 비호출 음원은 더 오래 걸립니다." : "평가 음원의 무결성과 형식을 확인하고 있습니다.";
     $("project-error").hidden = !project.error;
     $("project-error").textContent = project.error && typeof project.error === "object" ? project.error.message || JSON.stringify(project.error) : project.error || "";
-    renderDownloads(project); renderCounts(project); renderReview(project); renderInput(project); renderResultFrame(project);
+    renderDownloads(project); renderCounts(project); renderReferencePreview(project); renderReview(project); renderInput(project); renderResultFrame(project);
     if (logProject !== project.id) { logProject = project.id; $("log").textContent = "작업 기록 보기를 열면 최신 기록을 불러옵니다."; if ($("log-details").open) loadLog(); }
   }
   function render() {
@@ -898,9 +916,12 @@
     $("project").hidden = !project || newProject;
     $("create").disabled = busy || !recipeReady || !locationReady();
     if (project && !newProject) renderProject(project);
-    else if (reviewIdentity || resultIdentity) {
-      frameSource($("review-frame"), ""); frameSource($("result-frame"), "");
-      reviewIdentity = ""; resultIdentity = "";
+    else {
+      renderReferencePreview(null);
+      if (reviewIdentity || resultIdentity) {
+        frameSource($("review-frame"), ""); frameSource($("result-frame"), "");
+        reviewIdentity = ""; resultIdentity = "";
+      }
     }
   }
   async function refresh() {
@@ -1002,6 +1023,7 @@
     for (const action of ["start", "pause", "resume", "migrate"]) $(action).addEventListener("click", () => runAction(action));
     $("refresh-log").addEventListener("click", loadLog);
     $("log-details").addEventListener("toggle", loadLog);
+    $("reference-preview").addEventListener("toggle", () => renderReferencePreview(newProject ? null : selectedProject()));
     $("result-tab").addEventListener("click", () => { resultMode = "results"; if (selectedProject()) renderResultFrame(selectedProject()); });
     $("mic-tab").addEventListener("click", () => { resultMode = "mic"; if (selectedProject()) renderResultFrame(selectedProject()); });
     $("analysis-tab").addEventListener("click", () => { resultMode = "analysis"; if (selectedProject()) renderResultFrame(selectedProject()); });
