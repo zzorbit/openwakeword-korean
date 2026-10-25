@@ -143,6 +143,85 @@ def test_interrupted_resume_preserves_accepted_files_and_contract(tmp_path):
     assert all(digest(project.parent / p) == h for p, h in hashes.items())
 
 
+@pytest.mark.parametrize("phrases", [PHRASES, PHRASES[:3]])
+def test_per_phrase_budget_covers_every_phrase_and_train_voice(tmp_path, monkeypatch, phrases):
+    project = approved_project(tmp_path)
+    result = hard_tts.generate_hard(project, phrases, model=FakeModel(), samples_per_phrase=4)
+    assert result["target_originals"] == result["technical_pass"] == len(phrases) * 4
+    assert result["samples_per_phrase"] == 4
+    assert result["phrase_count"] == len(phrases)
+    assert result["generation_mode"] == "per_phrase"
+    assert result["phrase_distribution"] == dict.fromkeys(phrases, 4)
+    assert result["voice_distribution"] == dict.fromkeys([f"voice{i}" for i in range(4)], len(phrases))
+    assert len(result["combination_distribution"]) == len(phrases) * 4
+    assert set(result["combination_distribution"].values()) == {1}
+    output = project.parent / "data/generated/hard"
+    contract = read_json(output / "contract.json")
+    assert contract["kind"] == "qwen_hard_negative_generation_contract_v2"
+    assert contract["samples_per_phrase"] == 4 and contract["phrase_count"] == len(phrases)
+    before = {p: p.read_bytes() for p in output.glob("*.wav")}
+    journal = (output / "candidates.jsonl").read_bytes()
+    frozen = (output / "contract.json").read_bytes()
+    monkeypatch.setattr(hard_tts.tts, "_load_model", lambda *args: pytest.fail("Completed resume loaded a model"))
+    resumed = hard_tts.generate_hard(project, phrases, samples_per_phrase=4)
+    assert resumed["attempts"] == len(phrases) * 4
+    assert (output / "candidates.jsonl").read_bytes() == journal
+    assert (output / "contract.json").read_bytes() == frozen
+    assert all(p.read_bytes() == contents for p, contents in before.items())
+    with pytest.raises(ValueError, match="changed"):
+        hard_tts.generate_hard(project, phrases, samples_per_phrase=5)
+
+
+def test_per_phrase_mode_has_no_arbitrary_phrase_or_aggregate_count_limit(tmp_path, monkeypatch):
+    phrases = ["가" + chr(0xAC00 + i) for i in range(40)]
+    assert hard_tts._phrases(phrases, "보라야") == phrases
+    project = create_project(tmp_path / "unapproved", "보라야", "bora")
+    monkeypatch.setattr(hard_tts.tts, "_load_model", lambda *args: pytest.fail("Weights loaded before approval"))
+    # The legacy total-budget cap must not limit a user-selected phrase list.
+    # This stops at approval and never allocates generation slots or loads TTS.
+    with pytest.raises(ValueError, match="Approve"):
+        hard_tts.generate_hard(project, phrases, samples_per_phrase=5000)
+
+
+def test_interrupted_per_phrase_generation_resumes_without_replacing_accepted_audio(tmp_path):
+    project = approved_project(tmp_path)
+    phrases = PHRASES[:3]
+    with pytest.raises(RuntimeError, match="interruption"):
+        hard_tts.generate_hard(project, phrases, model=FakeModel(fail_at=3), samples_per_phrase=4)
+    output = project.parent / "data/generated/hard"
+    previous_rows = read_rows(output / "candidates.jsonl")
+    previous_audio = {p: p.read_bytes() for p in output.glob("*.wav")}
+    previous_contract = (output / "contract.json").read_bytes()
+    resumed_model = FakeModel()
+    resumed_model.calls = 2
+    result = hard_tts.generate_hard(project, phrases, model=resumed_model, samples_per_phrase=4)
+    assert result["technical_pass"] == result["attempts"] == 12
+    assert result["phrase_distribution"] == dict.fromkeys(phrases, 4)
+    assert read_rows(output / "candidates.jsonl")[:2] == previous_rows
+    assert (output / "contract.json").read_bytes() == previous_contract
+    assert all(p.read_bytes() == contents for p, contents in previous_audio.items())
+
+
+@pytest.mark.parametrize("value", [0, -1, True, 1.5])
+def test_per_phrase_budget_rejects_invalid_or_conflicting_values(tmp_path, value):
+    project = create_project(tmp_path / "unapproved", "보라야", "bora")
+    with pytest.raises(ValueError, match="samples_per_phrase"):
+        hard_tts.generate_hard(project, PHRASES, samples_per_phrase=value)
+    with pytest.raises(ValueError, match="not both"):
+        hard_tts.generate_hard(project, PHRASES, count=100, samples_per_phrase=4)
+
+
+def test_per_phrase_mode_cannot_rewrite_a_historical_total_budget_contract(tmp_path):
+    project = approved_project(tmp_path)
+    hard_tts.generate_hard(project, PHRASES, 4, FakeModel())
+    output = project.parent / "data/generated/hard"
+    before = {p: p.read_bytes() for p in output.iterdir() if p.is_file()}
+    # Even when totals agree, the two policies have distinct frozen contracts.
+    with pytest.raises(ValueError, match="changed"):
+        hard_tts.generate_hard(project, PHRASES, model=FakeModel(), samples_per_phrase=1)
+    assert all(p.read_bytes() == contents for p, contents in before.items())
+
+
 def test_changed_audio_reference_or_settings_refuses_resume(tmp_path):
     project = approved_project(tmp_path)
     hard_tts.generate_hard(project, PHRASES, 1, FakeModel())

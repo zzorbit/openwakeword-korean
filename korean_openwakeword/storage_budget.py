@@ -27,7 +27,17 @@ def commercial_storage_budget(settings, *, base_archive_bytes):
     evidence = storage_evidence()
     originals = _positive_integer(settings["originals"])
     rounds = _positive_integer(settings["rounds"])
-    hard = _positive_integer(settings["hard_originals"])
+    per_phrase = settings.get("hard_samples_per_phrase")
+    if per_phrase is not None:
+        per_phrase = _positive_integer(per_phrase)
+        phrase_count = settings.get("hard_phrase_count")
+        if phrase_count is not None:
+            phrase_count = _positive_integer(phrase_count)
+        hard = None if phrase_count is None else phrase_count * per_phrase
+    else:
+        # Completed older recipes keep their original total-count contract.
+        hard = _positive_integer(settings["hard_originals"])
+        phrase_count = None
     pool_hours = [float(settings[key]) for key in ("generic_hours", "korean_hours")]
     hours = sum(pool_hours)
     if any(not math.isfinite(h) or h < 0 for h in pool_hours) or hours <= 0:
@@ -44,16 +54,33 @@ def commercial_storage_budget(settings, *, base_archive_bytes):
             or settings.get("validation_originals") != counts[0]):
         raise ValueError("Storage evidence does not cover this workflow policy")
     final = evidence["independent_final_scenario"]
+    pilot_slots = _positive_integer(settings["train_references"]) if per_phrase is not None else 24
     variables = {
         "negative_hours": hours,
         # Source-boundary rounding and whole-recording quota overshoot are not
         # known yet. This is explicitly a nominal payload, not the final shape.
         "negative_feature_rows": math.ceil(hours * 3600 / 2),
         "positive_feature_rows": originals * rounds,
-        "tts_slots": originals + settings["validation_originals"] + final["originals"] + hard + 24,
+        "tts_slots": originals + settings["validation_originals"] + final["originals"] + (hard or 0) + pilot_slots,
+        "pilot_slots": pilot_slots,
         "reference_count": settings["train_references"] + settings["validation_references"] + 10,
         "hard_originals": hard,
     }
+    hard_budget = {
+        "policy": "per_phrase_v1" if per_phrase is not None else "legacy_total",
+        "samples_per_phrase": per_phrase,
+        "phrase_count": phrase_count,
+        "total_originals": hard,
+        "status": "pending_phrase_count" if hard is None else "calculated",
+        "included_in_reference_subtotal": hard is not None,
+    }
+    if per_phrase is not None:
+        hard_budget.update({
+            "tts_slots_per_phrase": per_phrase,
+            "tts_audio_bytes_per_phrase": per_phrase * 1566856,
+            "feature_bytes_per_phrase": per_phrase * 6144,
+            "incremental_bytes_per_phrase": per_phrase * (1566856 + 6144),
+        })
     rows = []
 
     def row(key, label, classification, detail, **terms):
@@ -71,9 +98,14 @@ def commercial_storage_budget(settings, *, base_archive_bytes):
     row("positive_features", "호출어 증강 특징", "calculated",
         "원본 수 × rounds × 6,144B. 세 모델이 같은 특징을 재사용하며 증강 WAV를 따로 저장하지 않습니다.",
         positive_feature_rows=6144)
-    row("hard_features", "유사어 특징·NPY 헤더", "calculated",
-        "유사어 R1 행당 6,144B + 네 특징 파일의 128B 헤더.",
-        hard_originals=6144, constant=512)
+    if hard is not None:
+        row("hard_features", "유사어 특징·NPY 헤더", "calculated",
+            "유사어 R1 행당 6,144B + 네 특징 파일의 128B 헤더.",
+            hard_originals=6144, constant=512)
+    else:
+        row("feature_headers", "네 특징 파일의 NPY 헤더", "calculated",
+            "네 특징 파일의 128B 헤더. 문구 수가 정해지지 않은 유사어 특징 데이터는 별도 미확정 항목입니다.",
+            constant=512)
     row("base_archives", "공통 평가·기본 자료 묶음", "published",
         "현재 고정 catalog의 보존 다운로드 합계. 대규모 학습 shard와 독립 Final 원본 다운로드는 제외합니다.",
         constant=_nonnegative_integer(base_archive_bytes))
@@ -86,8 +118,9 @@ def commercial_storage_budget(settings, *, base_archive_bytes):
     row("training_rirs", "학습 MIT 잔향 원본·FLAC", "measured",
         "고정270개 원본8,374,902B + 표준 변환 FLAC1,554,203B 실측입니다. 270개 모두 PCM 일치를 확인했으며 경로별 sidecar 크기는 관리 파일에 별도 남깁니다.",
         constant=evidence["mit_rir_audio_bytes"])
-    row("tts_wavs", "TTS 음원·재시도 보존", "calculated",
-        "기본 Qwen 256-token 설정으로 목표를 완료한 경우의 음원 상한 계산입니다. 성공 슬롯당 실패 2개와 성공 1개, 합성 참조를 포함합니다. 평균 예상 크기가 아닙니다.",
+    row("tts_wavs", "TTS 음원·재시도 보존" + ("(유사어 제외)" if hard is None else ""), "calculated",
+        "기본 Qwen 256-token 설정으로 목표를 완료한 경우의 음원 상한 계산입니다. 성공 슬롯당 실패 2개와 성공 1개, 합성 참조를 포함합니다. 평균 예상 크기가 아닙니다."
+        + (" 유사어는 문구 수가 정해지지 않아 이 금액에서 제외했습니다." if hard is None else ""),
         tts_slots=1566856, reference_count=1966160)
     row("qwen", "Qwen 모델 두 개", "published",
         "고정 VoiceDesign·Base revision 전체 파일 합계. 저장소별 tokenizer 사본도 각각 계산합니다.",
@@ -115,6 +148,11 @@ def commercial_storage_budget(settings, *, base_archive_bytes):
         "기존 CNN128 ONNX 실측으로 세 학습 출력·배포 묶음·3개 평균 선택본을 계산한 시나리오입니다. 공통 frontend는 프로젝트·배포·선택본의 세 사본이며 설치 패키지의 사본과 별개입니다.",
         constant=evidence["deployment_files_reference_bytes"])
     unknowns = deepcopy(evidence["unknowns"])
+    if hard is None:
+        unknowns.append({
+            "id": "hard_features", "label": "유사어 음원·특징(문구 수 미정)",
+            "detail": f"문구당 {per_phrase:,}개를 생성합니다. 문구 수가 정해지면 TTS·재시도 보존과 R1 특징을 합쳐 문구당 {hard_budget['incremental_bytes_per_phrase']:,}B씩 참고 합계에 추가합니다. 현재 참고 합계에 이 분량은 포함하지 않았습니다.",
+        })
     if policy["id"] == "common_development_v5":
         for item in unknowns:
             if item["id"] == "scores_and_reports":
@@ -123,6 +161,8 @@ def commercial_storage_budget(settings, *, base_archive_bytes):
         rows.append({**item, "bytes": None, "classification": "unresolved"})
     return {
         "version": 1, "complete": False, "variables": variables, "rows": rows,
+        "hard_generation": hard_budget,
+        "tts_slots_scope": "excluding_unselected_hard_phrases" if hard is None else "including_hard_phrases",
         "reference_subtotal_bytes": sum(r["bytes"] for r in rows if r["bytes"] is not None),
         "total_required_bytes": None, "peak_required_bytes": None,
         "scope": "conditional_file_payload_comparison_not_total_or_bound",

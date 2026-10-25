@@ -81,7 +81,8 @@ def _synthetic_contract(root, row, config, contracts):
     key = (str(path), frozen_binding["sha256"])
     if key not in contracts:
         contract = read_json(path)
-        if contract.get("kind") != "qwen_hard_negative_generation_contract_v1" or contract.get("word") != config["wakeword"]:
+        if (contract.get("kind") not in ("qwen_hard_negative_generation_contract_v1", "qwen_hard_negative_generation_contract_v2")
+                or contract.get("word") != config["wakeword"]):
             raise ValueError("Synthetic pool needs this word's Hard Negative generation contract")
         if contract.get("split") != "train" or contract.get("human_reference_used") is not False or contract.get("method") != "clone":
             raise ValueError("Synthetic Hard Negative contract must use Train synthetic-only clone references")
@@ -118,13 +119,37 @@ def _synthetic_contract(root, row, config, contracts):
         # actual selected row against the current non-call policy below.
         if any(not isinstance(text, str) or not text.strip() for text in contract["texts"]):
             raise ValueError("Synthetic contract phrases must be nonempty strings")
-        contracts[key] = (contract, selected, frozen_binding)
-    contract, selected, _ = contracts[key]
+        if contract["kind"] == "qwen_hard_negative_generation_contract_v2":
+            per_phrase, phrase_count = contract.get("samples_per_phrase"), contract.get("phrase_count")
+            if (type(per_phrase) is not int or per_phrase < 1 or type(phrase_count) is not int
+                    or phrase_count != len(contract["texts"]) or len(set(contract["texts"])) != phrase_count
+                    or type(contract.get("original_count")) is not int
+                    or contract["original_count"] != phrase_count * per_phrase
+                    or contract.get("allocation") != "every_phrase_cycles_train_references_v1"
+                    or type(contract.get("max_attempts_per_slot")) is not int
+                    or contract["max_attempts_per_slot"] < 1):
+                raise ValueError("Synthetic per-phrase count/allocation does not match the declared phrase list")
+        contracts[key] = (contract, selected, frozen_binding, set())
+    contract, selected, _, seen_slots = contracts[key]
     validate_hard_negative(row, config)
     if row.get("generation_contract_id") != identity(contract) or row.get("tts_settings_id") != identity(contract["tts"]):
         raise ValueError("Synthetic row generation contract/settings identity changed")
     if row["text"] not in contract["texts"] or (row["voice_family_id"], row.get("reference_sha256")) not in selected:
         raise ValueError("Synthetic phrase or reference was not declared in its generation contract")
+    if contract["kind"] == "qwen_hard_negative_generation_contract_v2":
+        from .hard_tts import _combination, _seed
+        slot, attempt = row.get("slot"), row.get("attempt")
+        if (type(slot) is not int or not 0 <= slot < contract["original_count"]
+                or type(attempt) is not int or not 0 <= attempt < contract["max_attempts_per_slot"]):
+            raise ValueError("Synthetic per-phrase slot/attempt is outside the frozen generation budget")
+        text, reference = _combination(slot, contract["texts"], contract["references"])
+        if (row["text"] != text or row["voice_family_id"] != reference["voice_family_id"]
+                or row.get("reference_sha256") != reference["sha256"]
+                or row.get("seed") != _seed(config, slot, attempt, text, reference)):
+            raise ValueError("Synthetic per-phrase slot no longer binds its phrase, voice and seed")
+        if slot in seen_slots:
+            raise ValueError("Synthetic per-phrase pool contains a duplicate accepted slot")
+        seen_slots.add(slot)
     return row["dataset_id"], row["text"], row["voice_family_id"]
 
 

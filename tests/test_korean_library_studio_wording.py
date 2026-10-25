@@ -41,15 +41,16 @@ def waiting_phrases(manager,**kwargs):
     return state
 
 
-@pytest.mark.parametrize("preset,originals",[("check",100),("trial",1000),("production",2000)])
-def test_phrase_guidance_distinguishes_text_count_from_audio_count(manager,preset,originals):
+@pytest.mark.parametrize("preset,per_phrase",[("check",20),("trial",100),("production",500)])
+def test_phrase_guidance_distinguishes_text_count_from_audio_count(manager,preset,per_phrase):
     state = waiting_phrases(manager,preset=preset)
     path = manager._path(state["id"])
     before = path.read_bytes()
     described = manager.describe(state)["input"]
     assert described["title"] == "유사어 문구 선택"
-    assert f"총 {originals:,}개의 유사어 음성" in described["description"]
-    assert "1~32개" in described["hint"] and "1~16자" in described["hint"]
+    assert f"문구마다 {per_phrase:,}개의 유사어 음성" in described["description"]
+    assert described["samples_per_phrase"] == described["voice_count"] == per_phrase
+    assert "직접 정하세요" in described["hint"] and "1~16자" in described["hint"]
     assert described["suggestions"] == ["보리야"]
     assert path.read_bytes()==before
     assert "title" not in state["results"]["hard_phrases"]
@@ -67,7 +68,7 @@ def test_invalid_phrases_fail_at_input_before_any_generation_or_saved_approval(m
     assert digest(Path(state["project"]).parent/"approval.json")==approval
 
 
-@pytest.mark.parametrize("count",[1,32])
+@pytest.mark.parametrize("count",[1,32,40,200])
 def test_phrase_input_supported_bounds_remain_available(manager,count):
     state = waiting_phrases(manager)
     phrases = ["나"+chr(0xac00+i) for i in range(count)]

@@ -21,13 +21,13 @@ from .budgets import DEFAULT_GENERIC_HOURS, DEFAULT_KOREAN_HOURS
 _PRESETS = {
     "check": {"title": "동작 확인용", "originals": 1000, "rounds": 1, "updates": 10000,
               "generic_hours": 2000, "korean_hours": 1, "train_references": 20,
-              "hard_originals": 100, "functional_check_only": True, "noise_material_policy": "official_example"},
+              "hard_samples_per_phrase": 20, "functional_check_only": True, "noise_material_policy": "official_example"},
     "trial": {"title": "시험 모델용", "originals": 20000, "rounds": 3, "updates": 50000,
               "generic_hours": 2000, "korean_hours": 2000 / 3, "train_references": 100,
-              "hard_originals": 1000, "functional_check_only": False, "noise_material_policy": "official_example"},
+              "hard_samples_per_phrase": 100, "functional_check_only": False, "noise_material_policy": "official_example"},
     "production": {"title": "상용 모델용", "originals": 100000, "rounds": 5, "updates": 100000,
               "generic_hours": DEFAULT_GENERIC_HOURS, "korean_hours": DEFAULT_KOREAN_HOURS, "train_references": 500,
-              "hard_originals": 2000, "functional_check_only": False, "noise_material_policy": "reuse_negative_waveforms"},
+              "hard_samples_per_phrase": 500, "functional_check_only": False, "noise_material_policy": "reuse_negative_waveforms"},
 }
 
 
@@ -118,6 +118,7 @@ def preset_settings(name="check"):
             "voice_design_policy": "balanced_v1",
             "reference_admission_policy": "automatic_technical_v1",
             "pilot_review_policy": "one_per_training_voice_v1",
+            "hard_generation_policy": "per_phrase_v1",
             **({"official_noise_acquisition_policy": "selective_fma_small_v1"} if name in ("check", "trial") else {}),
             **({"fma_acquisition_policy": "per_track_flac_prefetch_v1"} if name == "production" else {}),
             "final_locked": True, "positive_text_policy": "standalone_only"}
@@ -140,6 +141,14 @@ def workflow_plan(settings):
 
 
 def _validate_settings(settings):
+    hard_policy = settings.get("hard_generation_policy")
+    if hard_policy not in (None, "per_phrase_v1"):
+        raise ValueError("Unsupported Hard generation policy")
+    hard_key = "hard_samples_per_phrase" if hard_policy == "per_phrase_v1" else "hard_originals"
+    if type(settings.get(hard_key)) is not int or settings[hard_key] < 1:
+        raise ValueError(f"{hard_key} must be a positive integer")
+    if hard_policy == "per_phrase_v1" and "hard_originals" in settings:
+        raise ValueError("Per-phrase Hard generation cannot also declare a fixed total")
     if settings.get("pilot_review_policy") not in (None, "one_per_training_voice_v1"):
         raise ValueError("Unsupported pilot review policy")
     if settings.get("reference_admission_policy") not in (None, "automatic_technical_v1"):
@@ -159,7 +168,7 @@ def _validate_settings(settings):
         if isinstance(margin, bool) or not isinstance(margin, (int, float)) or not math.isfinite(margin) or not 0 < margin < 1:
             raise ValueError("GPU boundary margin must be positive and finite below one")
     for key in ("originals", "updates", "train_references", "validation_references",
-                "validation_originals", "hard_originals", "noise_sections"):
+                "validation_originals", "noise_sections"):
         if type(settings.get(key)) is not int or settings[key] < 1:
             raise ValueError(f"{key} must be a positive integer")
     if settings.get("rounds") not in (1, 3, 5):
@@ -200,6 +209,15 @@ def _validate_settings(settings):
         value = settings.get(key)
         if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
             raise ValueError(f"{key} must be positive and finite")
+
+
+def hard_generation_budget(settings, phrases):
+    """Resolve the requested total without reinterpreting saved total budgets."""
+    if settings.get("hard_generation_policy") == "per_phrase_v1":
+        per_phrase = settings["hard_samples_per_phrase"]
+        return {"phrase_count": len(phrases), "samples_per_phrase": per_phrase,
+                "total": len(phrases) * per_phrase}
+    return {"phrase_count": len(phrases), "total": settings["hard_originals"]}
 
 
 def propose_hard_phrases(wakeword, limit=8):
@@ -781,16 +799,15 @@ def run_stage(project, workspace, settings, stage_id, context=None):
                           [resolved(root, config["manifests"]["positive_" + split]) for split in ("train", "validation")])
 
     if stage_id == "hard_phrases":
+        from .hard_tts import _phrases
         inputs = context.get("inputs", {})
         phrases = inputs.get("hard_phrases", [])
         if inputs.get("hard_phrases_approved") is not True or not phrases:
             return _waiting("실제 호출어와 같은 낱말이 들어 있지 않은 비호출 문구인지 확인하세요.",
                             input_kind="hard_phrases", suggestions=propose_hard_phrases(config["wakeword"]))
-        if not isinstance(phrases, list) or any(not isinstance(p, str) for p in phrases) or len(set(phrases)) != len(phrases):
-            raise ValueError("유사어는 중복 없는 문구 목록이어야 합니다.")
-        for phrase in phrases:
-            validate_noncall_text(phrase, config["wakeword"])
-        return _completed({"phrases": phrases, "user_approved": True})
+        phrases = _phrases(phrases, config["wakeword"])
+        return _completed({"phrases": phrases, "user_approved": True,
+                           **hard_generation_budget(settings, phrases)})
 
     if stage_id == "hard_generation":
         from .hard_tts import generate_hard
@@ -799,7 +816,11 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         if approved.get("user_approved") is not True or not approved.get("phrases"):
             return _waiting("비호출 문구를 먼저 확인하고 저장하세요.", input_kind="hard_phrases")
         model = CloneRuntime(config["tts"]["clone_model"], config["tts"], root, "auto", config["training"]["cpu_threads"])
-        summary = generate_hard(project, approved["phrases"], settings["hard_originals"], model=model)
+        if settings.get("hard_generation_policy") == "per_phrase_v1":
+            summary = generate_hard(project, approved["phrases"], model=model,
+                                    samples_per_phrase=settings["hard_samples_per_phrase"])
+        else:
+            summary = generate_hard(project, approved["phrases"], settings["hard_originals"], model=model)
         incomplete = _generation_complete(summary)
         if incomplete:
             return incomplete

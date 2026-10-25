@@ -176,7 +176,9 @@ def parser():
     a.add_argument("--validation-count", type=int, help="공통 평가용 기준 목소리 수; 생략하면 생성된 수량")
     a = sub.add_parser("generate-hard", help="Qwen 유사어 후보 생성; 별도 내용 승인 전에는 학습하지 않음")
     a.add_argument("--project", type=Path, required=True); a.add_argument("--phrases", nargs="+", required=True)
-    a.add_argument("--count", type=int, default=100, help="유사어 원본 수; 배치 추출 수와 별개")
+    hard_budget = a.add_mutually_exclusive_group()
+    hard_budget.add_argument("--samples-per-phrase", type=int, help="유사어 한 문구당 생성할 음원 수")
+    hard_budget.add_argument("--count", type=int, help="기존 방식의 전체 유사어 원본 수; 생략 시 문구당 학습 목소리 수")
     a.add_argument("--tts-backend", choices=("auto", "eager"), default="auto")
     a.add_argument("--tts-cpu-threads", type=int, default=4)
     a = sub.add_parser("review", help="검수 큐 전체 연속 청취·직접 저장")
@@ -443,7 +445,15 @@ def dispatch(a):
         if a.tts_cpu_threads < 1:
             raise ValueError("CPU thread count must be positive")
         model = CloneRuntime(config["tts"]["clone_model"], config["tts"], root, a.tts_backend, a.tts_cpu_threads)
-        return generate_hard(a.project, a.phrases, a.count, model=model)
+        if a.count is not None:
+            return generate_hard(a.project, a.phrases, a.count, model=model)
+        per_phrase = a.samples_per_phrase
+        if per_phrase is None:
+            from .common import read_json, read_rows
+            accepted = set(read_json(root / "approval.json").get("accepted_reference_families", []))
+            per_phrase = sum(row.get("status") == "accepted" or row.get("voice_family_id") in accepted
+                             for row in read_rows(root / "data/references/train/references.jsonl"))
+        return generate_hard(a.project, a.phrases, model=model, samples_per_phrase=per_phrase)
     if a.command == "review":
         from .review import serve_review
         return serve_review(a.project, a.queue, a.kind, a.port, a.pool_manifest)

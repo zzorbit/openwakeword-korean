@@ -268,6 +268,69 @@ def _refresh_contract(pool):
     _refresh(pool)
 
 
+@pytest.fixture
+def per_phrase_pool(synthetic_pool):
+    from korean_openwakeword.hard_tts import _combination, _seed
+    pool = synthetic_pool
+    contract = pool["contract"]
+    contract.update(kind="qwen_hard_negative_generation_contract_v2", phrase_count=2,
+                    samples_per_phrase=4, original_count=8, max_attempts_per_slot=3,
+                    allocation="every_phrase_cycles_train_references_v1")
+    _, config = load_project(pool["project"])
+    slots = {}
+    for slot in range(contract["original_count"]):
+        phrase, reference = _combination(slot, contract["texts"], contract["references"])
+        slots.setdefault((phrase, reference["voice_family_id"]), []).append((slot, reference))
+    for row in pool["rows"]:
+        if row["provenance"] == "qwen_tts":
+            slot, reference = slots[(row["text"], row["voice_family_id"])].pop(0)
+            row.update(slot=slot, attempt=0, seed=_seed(config, slot, 0, row["text"], reference))
+    _refresh_contract(pool)
+    return pool
+
+
+def test_per_phrase_contract_admits_exact_reviewed_scope(per_phrase_pool):
+    result = _approve(per_phrase_pool)
+    assert result["source_count"] == 16
+    record = read_json(per_phrase_pool["output"])
+    assert len(record["synthetic_generation_contracts"]) == 1
+    assert len(record["synthetic_phrase_family_strata"]) == 4
+
+
+@pytest.mark.parametrize("field,value", [
+    ("original_count", 7), ("phrase_count", 3), ("samples_per_phrase", 3),
+    ("samples_per_phrase", True), ("allocation", "unbound"), ("max_attempts_per_slot", None),
+])
+def test_per_phrase_contract_rejects_changed_derived_budget(per_phrase_pool, field, value):
+    per_phrase_pool["contract"][field] = value
+    _refresh_contract(per_phrase_pool)
+    with pytest.raises(ValueError, match="per-phrase count/allocation"):
+        _approve(per_phrase_pool)
+    assert not per_phrase_pool["output"].exists()
+
+
+@pytest.mark.parametrize("field,value", [("slot", 0), ("slot", 8), ("attempt", 3), ("seed", -1)])
+def test_per_phrase_rows_must_bind_their_declared_slot_pair_and_seed(per_phrase_pool, field, value):
+    per_phrase_pool["rows"][-1][field] = value
+    _refresh(per_phrase_pool)
+    with pytest.raises(ValueError, match="per-phrase slot"):
+        _approve(per_phrase_pool)
+
+
+def test_per_phrase_pool_cannot_admit_two_accepted_attempts_for_one_slot(per_phrase_pool):
+    from korean_openwakeword.hard_tts import _seed
+    same_pair = [r for r in per_phrase_pool["rows"] if r["provenance"] == "qwen_tts"
+                 and r["text"] == "보리야" and r["voice_family_id"] == "synthetic_train1"]
+    first, duplicate = same_pair
+    _, config = load_project(per_phrase_pool["project"])
+    reference = per_phrase_pool["contract"]["references"][1]
+    duplicate.update(slot=first["slot"], attempt=1,
+                     seed=_seed(config, first["slot"], 1, duplicate["text"], reference))
+    _refresh(per_phrase_pool)
+    with pytest.raises(ValueError, match="duplicate accepted slot"):
+        _approve(per_phrase_pool)
+
+
 def test_mixed_public_and_qwen_hard_pool_keeps_generation_and_hearing_scope(synthetic_pool):
     result = _approve(synthetic_pool)
     record = read_json(synthetic_pool["output"])
@@ -388,7 +451,8 @@ def test_synthetic_category_basis_can_come_from_verified_generation_contract(syn
     assert _approve(synthetic_pool)["source_count"] == 16
 
 
-def test_fresh_generated_references_review_pilot_and_hard_pool_need_no_manifest_rewrite(tmp_path, monkeypatch):
+@pytest.mark.parametrize("per_phrase", [False, True])
+def test_fresh_generated_references_review_pilot_and_hard_pool_need_no_manifest_rewrite(tmp_path, monkeypatch, per_phrase):
     """The public fresh-project flow keeps reference rows pending/immutable.
 
     A user review approves family IDs in approval.json. That is the authority
@@ -428,7 +492,8 @@ def test_fresh_generated_references_review_pilot_and_hard_pool_need_no_manifest_
     pilot_rows = read_rows(pilot["review_queue"])
     assert pilot["full_target_reached"]
     apply_review(project, pilot["review_queue"], {r["sample_id"]: {"decision": "keep", "listened": True} for r in pilot_rows}, "pilot")
-    candidates = generate_hard(project, ["보리야", "돌아와"], 4, model=model)
+    budget = {"samples_per_phrase": 2} if per_phrase else {"count": 4}
+    candidates = generate_hard(project, ["보리야", "돌아와"], model=model, **budget)
     assert candidates["full_target_reached"]
     sources = [r for r in read_rows(candidates["candidates"]) if r["technical_pass"]]
     source_manifest = root / "review/fresh_sources.jsonl"

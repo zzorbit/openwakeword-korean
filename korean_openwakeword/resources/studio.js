@@ -77,10 +77,20 @@
     const numeric = value => typeof value === "number" && Number.isFinite(value) && value >= 0;
     const record = value => value !== null && typeof value === "object" && !Array.isArray(value);
     const keys = ["negative_hours", "negative_feature_rows", "positive_feature_rows", "tts_slots", "reference_count", "hard_originals"];
+    const hard = budget?.hard_generation, pendingHard = budget?.variables?.hard_originals === null;
+    const validPendingHard = record(hard) && hard.policy === "per_phrase_v1"
+      && Number.isInteger(hard.samples_per_phrase) && hard.samples_per_phrase > 0
+      && hard.phrase_count === null && hard.total_originals === null
+      && hard.status === "pending_phrase_count" && hard.included_in_reference_subtotal === false
+      && hard.tts_slots_per_phrase === hard.samples_per_phrase
+      && [hard.tts_audio_bytes_per_phrase, hard.feature_bytes_per_phrase, hard.incremental_bytes_per_phrase].every(numeric)
+      && hard.incremental_bytes_per_phrase === hard.tts_audio_bytes_per_phrase + hard.feature_bytes_per_phrase
+      && budget.tts_slots_scope === "excluding_unselected_hard_phrases";
+    const validVariables = input => keys.every(key => key === "hard_originals" && pendingHard ? input[key] === null : numeric(input[key]));
     if (!record(budget) || budget.version !== 1 || budget.complete !== false
       || budget.total_required_bytes !== null || budget.peak_required_bytes !== null
       || !numeric(budget.reference_subtotal_bytes) || !record(budget.variables)
-      || !keys.every(key => numeric(budget.variables[key])) || !Array.isArray(budget.rows)
+      || (pendingHard && !validPendingHard) || !validVariables(budget.variables) || !Array.isArray(budget.rows)
       || !Array.isArray(budget.assumptions) || !budget.assumptions.every(item => typeof item === "string")
       || !Array.isArray(budget.unknowns) || !budget.unknowns.every(item => record(item)
         && typeof item.id === "string" && typeof item.label === "string" && typeof item.detail === "string")) return null;
@@ -100,7 +110,7 @@
       negative_feature_rows: Math.ceil(rawHours * 3600 / 2),
       positive_feature_rows: values.originals * values.rounds,
       tts_slots: budget.variables.tts_slots + values.originals - recipe.originals };
-    if (!keys.every(key => numeric(variables[key]))) return null;
+    if (!validVariables(variables)) return null;
     const classes = new Set(["published", "measured", "calculated", "reference", "unresolved"]), ids = new Set(), rows = [];
     let baseline = 0, subtotal = 0;
     const calculate = (terms, input) => Math.ceil(Object.entries(terms).reduce((sum, [key, coefficient]) => sum + coefficient * (key === "constant" ? 1 : input[key]), 0));
@@ -114,6 +124,7 @@
       }
       if (!numeric(row.bytes) || row.classification === "unresolved" || !record(row.terms)
         || !Object.keys(row.terms).length || !Object.entries(row.terms).every(([key, value]) => (key === "constant" || keys.includes(key)) && numeric(value))) return null;
+      if (pendingHard && row.terms.hard_originals) return null;
       if (Math.abs(calculate(row.terms, budget.variables) - row.bytes) > 1) return null;
       const size = calculate(row.terms, variables);
       if (!numeric(size)) return null;
@@ -362,9 +373,12 @@
       if (asset("audioset")) noise.push(source("AudioSet", "여러 종류의 일반 오디오", "1묶음", null, asset("audioset"), bundleSize(["audioset", "audioset_segments", "audioset_ontology"])));
     }
     const mit = asset("mit_rir") || recipe.additional_download;
+    const hardPerPhrase = Number.isInteger(recipe.hard_samples_per_phrase) && recipe.hard_samples_per_phrase > 0
+      ? recipe.hard_samples_per_phrase : null;
+    const hardAmount = hardPerPhrase ? `문구당 ${count(hardPerPhrase)}` : count(recipe.hard_originals ?? 0);
     const training = [
       { id: "positive", name: "호출어 음성", description: "호출어 합성 음성", amount: count(originals), sources: [source("Qwen TTS", Number.isInteger(recipe.train_references) && recipe.train_references > 0 ? `기준 목소리 ${number(recipe.train_references)}개 · 호출어만 말한 음성` : "호출어만 말한 음성", count(originals), originals)] },
-      { id: "hard", name: "유사어 음성", description: "호출어로 오인할 수 있는 다른 단어·표현", amount: count(recipe.hard_originals ?? 0), sources: [source("Qwen TTS", "헷갈리기 쉬운 단어·표현을 합성한 음성", count(recipe.hard_originals ?? 0), recipe.hard_originals ?? 0)] },
+      { id: "hard", name: "유사어 음성", description: "호출어로 오인할 수 있는 다른 단어·표현", amount: hardAmount, sources: [source("Qwen TTS", hardPerPhrase ? "문구 수는 직접 선택 · 총량은 문구 수에 따라 결정" : "헷갈리기 쉬운 단어·표현을 합성한 음성", hardAmount, hardPerPhrase ? null : recipe.hard_originals ?? 0)] },
       { id: "generic", name: "일반 비호출 자료", description: "일반 음성 · 음악 · 환경음", amount: hours(genericHours), sources: generic },
       { id: "korean", name: "한국어 비호출 자료", description: hasNegativePlan || automaticKorean.length || koreanHours > suppliedKorean ? "한국어 대화 · 낭독 등 음성" : "한국어 낭독 음성", amount: hours(koreanHours), sources: korean },
       { id: "noise", name: "소음 증강 음원", description: reuseNegativeWaveforms ? "학습용 비호출 원본 음원 재사용" : "일반 오디오 · 음악 · 한국어 음성", amount: reuseNegativeWaveforms ? "재사용" : `${number(noise.length)}종`, sources: noise },
@@ -480,7 +494,7 @@
       const budget = storageBudget(recipe, values);
       $("source-plan-note").hidden = false;
       $("source-plan-note").textContent = budget
-        ? `전체 필요 공간: 미확정. 계산 가능한 항목의 비교 합계 ${bytes(budget.reference_subtotal_bytes)}.`
+        ? `전체 필요 공간: 미확정. ${budget.hard_generation?.status === "pending_phrase_count" ? "유사어 분량을 제외한 " : ""}계산 가능한 항목의 비교 합계 ${bytes(budget.reference_subtotal_bytes)}.`
         : "전체 필요 공간: 미확정. 용량 계산 근거를 확인할 수 없습니다.";
       if (budget) {
         const wrap = element("div", undefined, "storage-table-wrap"), table = element("table", undefined, "storage-table");
@@ -493,12 +507,17 @@
         const rows = [...budget.rows, ...unknowns.map(item => ({ ...item, bytes: null, classification: "unresolved" }))];
         for (const row of rows) {
           const line = element("tr");
-          line.append(element("th", row.label), element("td", row.bytes === null ? "미확정" : bytes(row.bytes)),
+          const pendingPhraseCount = row.id === "hard_features" && budget.hard_generation?.status === "pending_phrase_count";
+          const amount = row.bytes === null ? (pendingPhraseCount ? "문구 수 미정" : "미확정") : bytes(row.bytes);
+          line.append(element("th", row.label), element("td", amount),
             element("td", classifications[row.classification]), element("td", row.detail));
           line.children[0].setAttribute("scope", "row"); body.append(line);
         }
         table.append(head, body); wrap.append(table);
         const content = [element("p", "비교 합계는 실제 FLAC 저장량이나 최대 필요 공간이 아닙니다.", "hint"), wrap];
+        if (budget.hard_generation?.status === "pending_phrase_count") {
+          content.push(element("p", `유사어 문구 1종당 참고 용량 ${bytes(budget.hard_generation.incremental_bytes_per_phrase)}가 추가됩니다.`, "hint"));
+        }
         if (budget.assumptions.length) {
           const list = element("ul", undefined, "storage-assumptions");
           for (const assumption of budget.assumptions) list.append(element("li", assumption));
@@ -676,7 +695,7 @@
     const input = project.input;
     const show = Boolean(input && !activeStatuses.has(project.status));
     $("input-section").hidden = !show;
-    if (!show) { inputIdentity = ""; return; }
+    if (!show) { inputIdentity = ""; $("hard-generation-counts").hidden = true; return; }
     const identity = project.id + ":" + (input.id || input.kind);
     const hard = input.kind === "hard_phrases";
     const dependencies = input.kind === "dependency_setup";
@@ -704,7 +723,17 @@
       inputIdentity = identity;
     }
     renderInputMode(project);
+    renderHardGenerationCounts(project);
     $("input-submit").disabled = busy;
+  }
+  function renderHardGenerationCounts(project) {
+    const input = project?.input, perPhrase = input?.samples_per_phrase;
+    const show = input?.kind === "hard_phrases" && Number.isInteger(perPhrase) && perPhrase > 0;
+    const counts = $("hard-generation-counts");
+    counts.hidden = !show;
+    if (!show) { counts.textContent = ""; return; }
+    const phrases = new Set($("input-value").value.split(/\r?\n/).map(value => value.trim()).filter(Boolean));
+    counts.textContent = `유사어 ${number(phrases.size)}종 · 문구당 ${number(perPhrase)}개 · 총 ${number(phrases.size * perPhrase)}개`;
   }
   function renderInputMode(project) {
     const material = project?.input?.kind === "material_admissions";
@@ -1009,6 +1038,7 @@
     for (const id of ["adv-originals", "adv-rounds", "adv-updates", "adv-generic", "adv-korean"]) $(id).addEventListener("input", () => { renderRecipe(); previewLocation(); });
     $("wakeword").addEventListener("input", previewLocation);
     $("input-form").addEventListener("submit", submitInput);
+    $("input-value").addEventListener("input", () => renderHardGenerationCounts(selectedProject()));
     $("material-mode").addEventListener("change", () => renderInputMode(selectedProject()));
     $("source-dataset").addEventListener("change", () => {
       const dataset = $("source-dataset").value;

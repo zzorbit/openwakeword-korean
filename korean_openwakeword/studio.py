@@ -290,6 +290,42 @@ def _audited_pilot_update(previous, current):
             "evidence_sha256": audit["evidence_sha256"]}
 
 
+_AUDITED_HARD_PER_PHRASE_UPDATES = {
+    "194ed2bcfda035f24009c11d6a9b71f6cd79639f9a5e8a03361ca4466db4ac4c": {
+        "source_stages_sha256": "3a137e646251e373319242ac3c518999a06d8ab430fe5dff66c2e50516b7ec8a",
+        "target_computation_sha256": "de8c59b13dd11d3f0688409c091c79016f27453a5d849d6b596bf31b6865758a",
+        "target_stages_sha256": "e73d5b7a8280e34852bf33090ea1f2d69ff46d79470e1bd82549480d2f20c0a5",
+        # Canonical JSON identity of docs/hard_per_phrase_0.23.0_audit.json.
+        "evidence_sha256": "1a129b6eeebe366dce54b763acd4132c4e37c4cca125b059c12b01d509be0c81",
+    },
+}
+
+
+def _audited_hard_per_phrase_update(previous, current):
+    """Only a tested, pinned release may change an unstarted Hard budget."""
+    audit = _AUDITED_HARD_PER_PHRASE_UPDATES.get(previous.get("computation_sha256"))
+    if not isinstance(audit, dict):
+        return None
+    old_files, new_files = previous.get("files"), current.get("files")
+    if (previous.get("schema_version") != 1 or current.get("schema_version") != 1
+            or not isinstance(old_files, dict) or not isinstance(new_files, dict)
+            or identity(old_files) != previous.get("computation_sha256")
+            or identity(new_files) != current.get("computation_sha256")
+            or current.get("computation_sha256") != audit.get("target_computation_sha256")
+            or identity(previous.get("stages")) != audit.get("source_stages_sha256")
+            or identity(current.get("stages")) != audit.get("target_stages_sha256")):
+        return None
+    changed = sorted(name for name in old_files.keys() | new_files.keys()
+                     if old_files.get(name) != new_files.get(name))
+    if (changed != ["hard_tts.py", "pool_review.py", "studio_steps.py"]
+            or not re.fullmatch(r"[0-9a-f]{64}", audit.get("evidence_sha256", ""))):
+        return None
+    return {"kind": "audited_hard_per_phrase_update", "changed_files": changed,
+            "source_computation_sha256": previous["computation_sha256"],
+            "target_computation_sha256": current["computation_sha256"],
+            "evidence_sha256": audit["evidence_sha256"]}
+
+
 def _audited_reference_update(previous, current):
     audit = _AUDITED_REFERENCE_UPDATES.get(previous.get("computation_sha256"))
     if not isinstance(audit, dict):
@@ -790,6 +826,7 @@ class StudioManager:
         reference_update = None
         reference_admission_update = None
         pilot_update = None
+        hard_update = None
         if previous:
             if (previous.get("schema_version") != 1 or previous.get("settings_sha256") != identity(state["settings"])
                     or previous.get("plan_sha256") != identity(state["plan"])):
@@ -802,18 +839,23 @@ class StudioManager:
                 reference_update = _audited_reference_update(previous, self._execution_contract)
                 reference_admission_update = _audited_reference_admission_update(previous, self._execution_contract)
                 pilot_update = _audited_pilot_update(previous, self._execution_contract)
+                hard_update = _audited_hard_per_phrase_update(previous, self._execution_contract)
+                if hard_update and not self._can_update_hard_budget(state):
+                    return blocked("유사어 생성이 시작된 작업은 수량과 기존 기록을 유지합니다. 새 문구당 설정은 별도 모델에서 사용하세요.")
                 if pilot_update and not self._can_update_pilot(state):
                     return blocked("목소리별 발음 검수 수량 변경은 대량 생성 전 작업에만 적용할 수 있습니다. 기존 음원과 검수 기록은 보존됩니다.")
                 if reference_admission_update and not self._can_update_reference_admission(state):
                     return blocked("기준 목소리 자동 검사는 호출어 생성 전 작업에만 적용할 수 있습니다. 기존 자료와 검수 기록은 보존됩니다.")
-                if audited_update is None and reference_update is None and reference_admission_update is None and pilot_update is None:
+                if all(update is None for update in (audited_update, reference_update, reference_admission_update, pilot_update, hard_update)):
                     return blocked("남은 단계의 자료·생성·학습·채점 코드가 달라 호환 이관할 수 없습니다. 기존 자료를 보존하고 새 실험을 만드세요.")
         elif (_LEGACY_COMPATIBLE_CONTRACTS.get(state.get("implementation_id"))
               != self._execution_contract["computation_sha256"]):
             return blocked("이 구버전에는 검증된 단계 계약이 없습니다. 기존 자료를 보존하고 별도 호환 검증이 필요합니다.")
         budget_change = self._reference_budget_change(state) if reference_update else None
         return {"state": "available", "action": "migrate",
-                "reason": ("기존 음원과 검수 기록을 보존하고 학습용 목소리마다 호출어 1개씩 확인하도록 목록을 갱신합니다."
+                "reason": ("기존 호출어 음원과 검수 기록을 보존하고, 아직 시작하지 않은 유사어 생성을 문구당 수량으로 설정합니다."
+                           if hard_update else
+                           "기존 음원과 검수 기록을 보존하고 학습용 목소리마다 호출어 1개씩 확인하도록 목록을 갱신합니다."
                            if pilot_update else
                            "기존 목소리와 검수 기록을 보존하고 기준 목소리를 자동 검사합니다. 호출어 발음 대표 검수는 유지합니다."
                            if reference_admission_update else
@@ -825,8 +867,24 @@ class StudioManager:
                 **({"audited_reference_update": reference_update} if reference_update else {}),
                 **({"audited_reference_admission_update": reference_admission_update} if reference_admission_update else {}),
                 **({"audited_pilot_update": pilot_update} if pilot_update else {}),
+                **({"audited_hard_per_phrase_update": hard_update} if hard_update else {}),
                 **({"reference_budget_change": budget_change} if budget_change else {}),
                 "preserves": ["project_settings", "completed_artifacts", "review_answers", "history"]}
+
+    def _can_update_hard_budget(self, state):
+        from .studio_steps import preset_settings
+        positions = {stage["id"]: i for i, stage in enumerate(state["plan"])}
+        if state["index"] > positions["hard_generation"] or self._job_alive(state.get("job") or {}):
+            return False
+        if state["settings"]["train_references"] != preset_settings(state["preset"])["train_references"]:
+            return False
+        root = Path(state["project"]).parent
+        if (root / "final_lock.json").exists() or "hard_generation" in state.get("results", {}):
+            return False
+        if any(item.get("stage") == "hard_generation" for item in state.get("history", [])):
+            return False
+        return not any(path.is_file() for folder in ("data/generated/hard", "runs")
+                       if (root / folder).exists() for path in (root / folder).rglob("*"))
 
     def _can_update_reference_admission(self, state):
         positions = {stage["id"]: i for i, stage in enumerate(state["plan"])}
@@ -889,10 +947,17 @@ class StudioManager:
                    if compatibility.get("audited_reference_admission_update") else {}),
                 **({"audited_pilot_update": compatibility["audited_pilot_update"]}
                    if compatibility.get("audited_pilot_update") else {}),
+                **({"audited_hard_per_phrase_update": compatibility["audited_hard_per_phrase_update"]}
+                   if compatibility.get("audited_hard_per_phrase_update") else {}),
                 **({"reference_budget_change": compatibility["reference_budget_change"]}
                    if compatibility.get("reference_budget_change") else {}),
                 "preserved": compatibility["preserves"]})
             budget_change = compatibility.get("reference_budget_change")
+            if compatibility.get("audited_hard_per_phrase_update"):
+                from .studio_steps import preset_settings
+                state["settings"].pop("hard_originals", None)
+                state["settings"].update(hard_generation_policy="per_phrase_v1",
+                    hard_samples_per_phrase=preset_settings(state["preset"])["hard_samples_per_phrase"])
             if compatibility.get("audited_pilot_update"):
                 from .studio_steps import workflow_plan
                 state["settings"]["pilot_review_policy"] = "one_per_training_voice_v1"
@@ -1343,7 +1408,10 @@ class StudioManager:
                     paths = [folder / "pilot/train/candidates.jsonl"]
                     total = state["settings"]["train_references"] if state["settings"].get("pilot_review_policy") == "one_per_training_voice_v1" else 24
                 elif job["stage"] == "hard_generation":
-                    paths, total = [folder / "generated/hard/candidates.jsonl"], state["settings"]["hard_originals"]
+                    from .studio_steps import hard_generation_budget
+                    phrases = state.get("inputs", {}).get("hard_phrases", [])
+                    total = hard_generation_budget(state["settings"], phrases)["total"]
+                    paths = [folder / "generated/hard/candidates.jsonl"]
                 else:
                     paths = [folder / "generated" / split / "candidates.jsonl" for split in ("train", "validation")]
                     total = state["settings"]["originals"] + state["settings"]["validation_originals"]
@@ -1435,11 +1503,15 @@ class StudioManager:
                                                    "description": result.get("message", "자료 준비가 필요합니다."),
                                                    "suggestions": result.get("suggestions", [])})
             if (view.get("input") or {}).get("kind") == "hard_phrases":
+                per_phrase = state["settings"].get("hard_samples_per_phrase")
                 view["input"] = {**view["input"], "title": "유사어 문구 선택",
-                    "description": (f"입력한 문구로 총 {state['settings']['hard_originals']:,}개의 유사어 음성을 만듭니다. "
+                    "description": ((f"문구마다 {per_phrase:,}개의 유사어 음성을 만듭니다. " if per_phrase is not None else
+                                     f"입력한 문구로 총 {state['settings']['hard_originals']:,}개의 유사어 음성을 만듭니다. ") +
                                     "호출어 자체나 같은 이름·낱말이 통째로 들어간 표현은 제외하세요."),
                     "label": "유사어 문구 · 한 줄에 하나씩",
-                    "hint": "문구 1~32개 · 한글 1~16자 · 띄어쓰기와 중복 없이 입력하세요."}
+                    "hint": "문구 수는 직접 정하세요. 한글 1~16자 문구를 한 줄에 하나씩, 띄어쓰기와 중복 없이 입력하세요.",
+                    **({"samples_per_phrase": per_phrase, "voice_count": state["settings"]["train_references"]}
+                       if per_phrase is not None else {})}
         final = state["results"].get("results", {})
         if state["status"] == "completed" or final.get("site"):
             result = state.get("results", {}).get("evaluation", {})

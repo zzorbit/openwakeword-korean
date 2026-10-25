@@ -25,8 +25,8 @@ MAX_ATTEMPTS = 3
 
 
 def _phrases(values, wakeword):
-    if not isinstance(values, (list, tuple)) or not 1 <= len(values) <= 32:
-        raise ValueError("Provide 1 to 32 distinct Korean non-call phrases")
+    if not isinstance(values, (list, tuple)) or not values:
+        raise ValueError("Provide at least one distinct Korean non-call phrase")
     phrases = list(values)
     for phrase in phrases:
         if not isinstance(phrase, str):
@@ -105,20 +105,34 @@ def _validate_existing(root, output, rows, contract, config, phrases, references
 
 
 @project_storage
-def generate_hard(project, phrases, count=100, model=None):
+def generate_hard(project, phrases, count=None, model=None, *, samples_per_phrase=None):
     """Create candidate-only originals, independently of Hard batch draws.
 
-    ``count`` is frozen on first execution and must be 1..100,000. The caller
+    New callers specify ``samples_per_phrase``; the total is the number of
+    distinct phrases multiplied by that value. Each phrase cycles through
+    the approved Train voices, covering every voice once when the per-phrase
+    target equals the reference-bank size. Legacy ``count`` calls retain
+    their total-budget semantics and 100,000-original limit (default 100).
+    Both modes are frozen on first execution and cannot be mixed. The caller
     may inject the qualified lazy Qwen runtime; approval checks precede any
-    loading. No actual training manifest or content admission is published.
-    ``candidates.jsonl`` is the fsynced authoritative per-attempt journal.
+    loading. ``candidates.jsonl`` is the authoritative per-attempt journal;
+    generation never publishes training admission or listening decisions.
     """
     root, config = load_project(project)
-    if type(count) is not int or not 1 <= count <= MAX_ORIGINALS:
-        raise ValueError(f"Hard original count must be an integer from 1 to {MAX_ORIGINALS}")
+    if samples_per_phrase is not None:
+        if count is not None:
+            raise ValueError("Choose samples_per_phrase or a legacy total count, not both")
+        if type(samples_per_phrase) is not int or samples_per_phrase < 1:
+            raise ValueError("Hard samples_per_phrase must be a positive integer")
+    else:
+        count = 100 if count is None else count
+        if type(count) is not int or not 1 <= count <= MAX_ORIGINALS:
+            raise ValueError(f"Hard original count must be an integer from 1 to {MAX_ORIGINALS}")
     if (root / "final_lock.json").exists():
         raise ValueError("Final is frozen; create a separate project for new Hard candidates")
     phrases = _phrases(phrases, config["wakeword"])
+    if samples_per_phrase is not None:
+        count = len(phrases) * samples_per_phrase
     approval = read_json(root / "approval.json")
     if (approval.get("state") != "accepted" or approval.get("generation_policy_approved") is not True or
         approval.get("human_reference_used") is not False or approval.get("wakeword") != config["wakeword"] or
@@ -145,6 +159,11 @@ def generate_hard(project, phrases, count=100, model=None):
         "technical_qc_implementation": {"path": str(Path(tts.__file__).resolve()), "sha256": digest(tts.__file__)},
         "positive_policy": {"path": "approval.json", "sha256": digest(root / "approval.json")},
         "acceptance": "technical_candidates_only_content_approval_pending"}
+    if samples_per_phrase is not None:
+        contract.update(kind="qwen_hard_negative_generation_contract_v2",
+                        samples_per_phrase=samples_per_phrase,
+                        phrase_count=len(phrases),
+                        allocation="every_phrase_cycles_train_references_v1")
     with writer_lock(output):
         contract_path = output / "contract.json"
         if contract_path.exists():
@@ -224,5 +243,8 @@ def generate_hard(project, phrases, count=100, model=None):
             "candidates": str(output / "candidates.jsonl"), "attempt_log": str(output / "candidates.jsonl"),
             "individual_human_listened": 0, "policy_admitted": 0, "independent_STT_runs": 0,
             "actual_training_manifest_published": False, "content_review": "pending"}
+        if samples_per_phrase is not None:
+            summary.update(generation_mode="per_phrase", samples_per_phrase=samples_per_phrase,
+                           phrase_count=len(phrases))
         write_json(output / "summary.json", summary)
         return summary

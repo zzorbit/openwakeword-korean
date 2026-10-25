@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "release": "0.23.0",
+  "source_release": "0.22.2",
+  "source_commit": "9de7c7e62113d147d69e8be8cba4df466891b49f",
+  "source_computation_sha256": "194ed2bcfda035f24009c11d6a9b71f6cd79639f9a5e8a03361ca4466db4ac4c",
+  "source_stages_sha256": "3a137e646251e373319242ac3c518999a06d8ab430fe5dff66c2e50516b7ec8a",
+  "target_computation_sha256": "de8c59b13dd11d3f0688409c091c79016f27453a5d849d6b596bf31b6865758a",
+  "target_stages_sha256": "e73d5b7a8280e34852bf33090ea1f2d69ff46d79470e1bd82549480d2f20c0a5",
+  "changed_computational_files": [
+    "hard_tts.py",
+    "pool_review.py",
+    "studio_steps.py"
+  ],
+  "per_phrase_defaults": {
+    "check": 20,
+    "trial": 100,
+    "production": 500
+  },
+  "phrase_inventory": "User-selected nonempty distinct phrases; no fixed phrase-count cap",
+  "allocation": "Every phrase visits every accepted Train reference once when its target equals the reference-bank size",
+  "compatibility": {
+    "allowed": "Unstarted Hard generation with the current scale's reference-bank size; no live worker or Final lock",
+    "blocked": "Existing Hard contract, candidates, completed Hard stage, training output, or changed computational file outside this release pair",
+    "preserved": [
+      "project.json",
+      "voices.json",
+      "approval.json",
+      "existing audio",
+      "review answers",
+      "completed stage receipts",
+      "history"
+    ],
+    "before_snapshot": "Every migration preserves workflow_before.json and its SHA-256",
+    "execution": "Migration does not start workers or submit phrase approval"
+  },
+  "validation": [
+    "Hard v1/v2 generation, full phrase/reference Cartesian coverage, resume and immutable contract checks",
+    "Synthetic pool admission v1/v2 and tampered count/slot/seed rejection",
+    "Studio preset totals, legacy totals, waiting-input migration and started-generation rejection",
+    "CLI per-phrase/legacy dispatch and mutually exclusive arguments",
+    "UI live totals, more than 32 phrases, input preservation and unresolved storage accounting"
+  ],
+  "performance_claim": "Engineering defaults, not a validated Korean optimum or a population performance claim"
+}

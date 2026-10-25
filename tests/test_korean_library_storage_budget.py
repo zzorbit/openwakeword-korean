@@ -10,8 +10,16 @@ from korean_openwakeword.studio import StudioManager
 from korean_openwakeword.studio_steps import preset_settings
 
 
-def budget(**changes):
+def legacy_settings():
     settings = preset_settings("production")
+    settings.pop("hard_samples_per_phrase", None)
+    settings.pop("hard_generation_policy", None)
+    settings.update(hard_originals=2000, train_references=100)
+    return settings
+
+
+def budget(**changes):
+    settings = legacy_settings()
     settings.update(changes)
     return commercial_storage_budget(settings, base_archive_bytes=31592837906)
 
@@ -67,7 +75,7 @@ def test_site_audio_duplication_and_manual_final_example_are_explicit():
 
 
 def test_advanced_workload_updates_payload_not_common_protocol_or_approvals():
-    settings = preset_settings("production")
+    settings = legacy_settings()
     before = deepcopy(settings)
     base = commercial_storage_budget(settings, base_archive_bytes=31592837906)
     assert settings == before
@@ -101,7 +109,7 @@ def test_studio_exposes_evidence_without_starting_download_or_final(tmp_path, mo
     assert "storage_budget" not in recipes[0]
     assert "storage_budget" not in recipes[1]
     result = recipes[-1]["storage_budget"]
-    assert result == budget()
+    assert result == commercial_storage_budget(preset_settings("production"), base_archive_bytes=31592837906)
     assert recipes[-1]["estimated_workspace_bytes_scope"] == "legacy_partial_not_total"
     assert recipes[-1]["final_locked"] is True
     assert manager.registry["projects"] == {}
@@ -123,7 +131,7 @@ def test_evidence_totals_and_scope_are_internally_consistent():
 
 def test_saved_v4_budget_keeps_its_original_counts_and_new_v5_reduces_only_evaluation_payload():
     from korean_openwakeword.studio_steps import common_evaluation_policy
-    current = preset_settings("production")
+    current = legacy_settings()
     old = deepcopy(current)
     old["evaluation_policy"] = common_evaluation_policy(4)
     old["validation_originals"] = 5000
@@ -140,3 +148,55 @@ def test_saved_v4_budget_keeps_its_original_counts_and_new_v5_reduces_only_evalu
     assert "611.424" in before["scores_and_reports"]["detail"]
     assert "611.424" not in after["scores_and_reports"]["detail"]
     assert before["scores_and_reports"]["bytes"] is after["scores_and_reports"]["bytes"] is None
+
+
+def test_unselected_phrase_count_is_unknown_not_zero_or_a_fixed_inventory():
+    settings = preset_settings("production")
+    before = deepcopy(settings)
+    result = commercial_storage_budget(settings, base_archive_bytes=31592837906)
+    rows = by_id(result)
+    assert settings == before
+    assert result["hard_generation"] == {
+        "policy": "per_phrase_v1", "samples_per_phrase": 500,
+        "phrase_count": None, "total_originals": None,
+        "status": "pending_phrase_count", "included_in_reference_subtotal": False,
+        "tts_slots_per_phrase": 500,
+        "tts_audio_bytes_per_phrase": 500 * 1566856,
+        "feature_bytes_per_phrase": 500 * 6144,
+        "incremental_bytes_per_phrase": 500 * (1566856 + 6144),
+    }
+    assert result["variables"]["hard_originals"] is None
+    assert result["variables"]["tts_slots"] == 100000 + 2000 + 5000 + 500
+    assert result["variables"]["pilot_slots"] == 500
+    assert result["tts_slots_scope"] == "excluding_unselected_hard_phrases"
+    assert rows["hard_features"]["bytes"] is None
+    assert rows["hard_features"]["classification"] == "unresolved"
+    assert "terms" not in rows["hard_features"]
+    assert rows["feature_headers"]["bytes"] == 512
+    assert "유사어 제외" in rows["tts_wavs"]["label"]
+
+
+def test_selected_phrase_count_adds_only_the_corresponding_audio_and_features():
+    settings = preset_settings("production")
+    base = commercial_storage_budget(settings, base_archive_bytes=31592837906)
+    selected = commercial_storage_budget({**settings, "hard_phrase_count": 37}, base_archive_bytes=31592837906)
+    assert selected["hard_generation"]["total_originals"] == 37 * 500
+    assert selected["hard_generation"]["status"] == "calculated"
+    assert selected["hard_generation"]["included_in_reference_subtotal"] is True
+    assert selected["reference_subtotal_bytes"] - base["reference_subtotal_bytes"] == 37 * 500 * (1566856 + 6144)
+    assert selected["variables"]["tts_slots"] - base["variables"]["tts_slots"] == 37 * 500
+    assert by_id(selected)["hard_features"]["bytes"] == 37 * 500 * 6144 + 512
+    assert "feature_headers" not in by_id(selected)
+    assert selected["total_required_bytes"] is None
+    assert selected["peak_required_bytes"] is None
+
+
+@pytest.mark.parametrize("change", [
+    {"hard_samples_per_phrase": 0}, {"hard_samples_per_phrase": True},
+    {"hard_phrase_count": 0}, {"hard_phrase_count": -1}, {"hard_phrase_count": 1.5},
+])
+def test_invalid_per_phrase_storage_settings_are_rejected(change):
+    settings = preset_settings("production")
+    settings.update(change)
+    with pytest.raises(ValueError):
+        commercial_storage_budget(settings, base_archive_bytes=31592837906)

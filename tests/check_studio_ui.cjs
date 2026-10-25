@@ -183,6 +183,24 @@ function storageBudgetRecipe(overrides = {}) {
       removed_legacy_allowance_bytes: 33285996544 }, ...overrides });
 }
 
+function pendingHardStorageRecipe() {
+  const recipe = storageBudgetRecipe({ hard_samples_per_phrase: 500 }), budget = recipe.storage_budget;
+  budget.variables.tts_slots -= budget.variables.hard_originals;
+  budget.variables.hard_originals = null;
+  budget.rows = budget.rows.filter(row => row.id !== "hard_features");
+  for (const row of budget.rows) if (row.bytes !== null) row.bytes = Math.ceil(Object.entries(row.terms)
+    .reduce((sum, [key, value]) => sum + value * (key === "constant" ? 1 : budget.variables[key]), 0));
+  const unknown = { id: "hard_features", label: "유사어 음원·특징(문구 수 미정)", detail: "문구 수를 정하면 추가 계산합니다." };
+  budget.rows.push({ ...unknown, bytes: null, classification: "unresolved" }); budget.unknowns.push(unknown);
+  budget.reference_subtotal_bytes = budget.rows.reduce((sum, row) => sum + (row.bytes ?? 0), 0);
+  budget.hard_generation = { policy: "per_phrase_v1", samples_per_phrase: 500, phrase_count: null,
+    total_originals: null, status: "pending_phrase_count", included_in_reference_subtotal: false,
+    tts_slots_per_phrase: 500, tts_audio_bytes_per_phrase: 783428000, feature_bytes_per_phrase: 3072000,
+    incremental_bytes_per_phrase: 786500000 };
+  budget.tts_slots_scope = "excluding_unselected_hard_phrases";
+  return recipe;
+}
+
 (async () => {
   await test("budget request preserves selected values and does not invent overrides", () => {
     const { helpers } = browser({ noBoot: true });
@@ -307,6 +325,32 @@ function storageBudgetRecipe(overrides = {}) {
     assert.equal(updated.reference_subtotal_bytes, updated.rows.reduce((sum, row) => sum + (row.bytes ?? 0), 0));
     assert.equal(updated.rows.find(row => row.id === "archives").bytes, 1000);
     assert.equal(JSON.stringify(recipe), before);
+  });
+  await test("undecided hard phrase storage remains unknown and displays the excluded per-phrase increment", async () => {
+    const recipe = pendingHardStorageRecipe(), before = JSON.stringify(recipe);
+    const b = browser({ recipeList: [recipe] }); await flush();
+    const base = b.helpers.storageBudget(recipe), updated = b.helpers.storageBudget(recipe, { originals: 20000, rounds: 3 });
+    assert.equal(base.variables.hard_originals, null); assert.equal(updated.variables.hard_originals, null);
+    assert.equal(updated.rows.find(row => row.id === "hard_features").bytes, null);
+    assert.equal(base.reference_subtotal_bytes, recipe.storage_budget.reference_subtotal_bytes);
+    assert.equal(updated.reference_subtotal_bytes, updated.rows.reduce((sum, row) => sum + (row.bytes ?? 0), 0));
+    assert.equal(JSON.stringify(recipe), before);
+    assert.equal(b.elements.get("storage-budget-details").hidden, false);
+    assert.match(b.elements.get("source-plan-note").textContent, /유사어 분량을 제외한/);
+    const content = textOf(b.elements.get("storage-budget-content"));
+    assert.match(content, /문구 수 미정/); assert.match(content, /유사어 문구 1종당 참고 용량/);
+    assert.ok(content.includes(b.helpers.bytes(786500000)));
+    for (const mutate of [
+      budget => { delete budget.hard_generation; },
+      budget => { budget.hard_generation.samples_per_phrase = 0; },
+      budget => { budget.hard_generation.incremental_bytes_per_phrase++; },
+      budget => { budget.hard_generation.included_in_reference_subtotal = true; },
+      budget => { budget.tts_slots_scope = "including_hard_phrases"; },
+      budget => { budget.rows[0].terms.hard_originals = 1; }
+    ]) {
+      const bad = pendingHardStorageRecipe(); mutate(bad.storage_budget);
+      assert.equal(b.helpers.storageBudget(bad), null);
+    }
   });
   await test("audited storage keeps feature-only pools outside raw audio calculations and permits measured zero", () => {
     const { helpers } = browser({ noBoot: true }), recipe = storageBudgetRecipe();
@@ -1113,6 +1157,40 @@ function storageBudgetRecipe(overrides = {}) {
     await b.tick(); assert.equal(b.elements.get("input-value").value, "돌아와\n불러줘");
     await b.submit("input-form"); const request = b.calls.find(call => call.url.endsWith("/input"));
     assert.deepEqual(JSON.parse(request.options.body), { phrases: ["돌아와", "불러줘"] });
+  });
+  await test("hard-phrase totals follow user entries and per-phrase voice budgets without a phrase-count cap", async () => {
+    for (const perPhrase of [20, 100, 500]) {
+      const project = { id: "bora", wakeword: "보라야", status: "waiting_input", stage: "hard_phrases",
+        input: { kind: "hard_phrases", samples_per_phrase: perPhrase, voice_count: perPhrase, phrases: ["돌아와"] } };
+      const b = browser({ initialState: { projects: [project] } }); await flush();
+      const counts = b.elements.get("hard-generation-counts"), textarea = b.elements.get("input-value");
+      assert.equal(counts.hidden, false);
+      assert.equal(counts.textContent, `유사어 1종 · 문구당 ${perPhrase.toLocaleString("ko-KR")}개 · 총 ${perPhrase.toLocaleString("ko-KR")}개`);
+      const phrases = Array.from({ length: 40 }, (_, index) => "가" + String.fromCharCode(0xac00 + index));
+      textarea.value = phrases.join("\n"); textarea.handlers.input();
+      assert.match(counts.textContent, new RegExp(`유사어 40종.*총 ${(40 * perPhrase).toLocaleString("ko-KR")}개`));
+      await b.tick(); assert.equal(textarea.value, phrases.join("\n"));
+      await b.submit("input-form");
+      assert.deepEqual(JSON.parse(b.calls.find(call => call.url.endsWith("/input")).options.body), { phrases });
+      textarea.value = "돌아와\n돌아와\n불러줘\n"; textarea.handlers.input();
+      assert.match(counts.textContent, /유사어 2종/);
+      textarea.value = ""; textarea.handlers.input(); assert.match(counts.textContent, /총 0개/);
+    }
+    const legacy = browser({ initialState: { projects: [{ id: "bora", wakeword: "보라야", status: "waiting_input",
+      input: { kind: "hard_phrases", phrases: ["돌아와"] } }] } }); await flush();
+    assert.equal(legacy.elements.get("hard-generation-counts").hidden, true);
+  });
+  await test("materials show per-phrase budgets and leave legacy totals factual", async () => {
+    const recipeList = [20, 100, 500].map((hard_samples_per_phrase, index) => commonRecipe({
+      id: ["check", "trial", "production"][index], hard_samples_per_phrase, hard_originals: 777 }));
+    const b = browser({ recipeList }); await flush();
+    for (let index = 0; index < recipeList.length; index++) {
+      descendants(b.elements.get("presets").children[index]).find(node => node.tagName === "input").handlers.change();
+      const row = material(b.elements.get("source-preview").children[0], "유사어 음성");
+      assert.equal(withClass(row, "material-amount")[0].textContent, `문구당 ${recipeList[index].hard_samples_per_phrase}개`);
+      assert.match(textOf(row), /총량은 문구 수에 따라 결정/);
+      assert.equal(textOf(row).includes("777개"), false);
+    }
   });
   await test("backend's detailed stages map to broad stages without presenting stage count as work percent", async () => {
     const project = { id: "bora", wakeword: "보라야", status: "running", stage: { id: "features", label: "소음 증강" }, stages: [{ id: "frontend", status: "completed" }, { id: "data_download", status: "completed" }, { id: "features", status: "running" }, { id: "training", status: "pending" }], progress: { done: 13, total: 19, unit: "완료 단계" }, elapsed_seconds: 3600, current_stage_elapsed_seconds: 30 };
