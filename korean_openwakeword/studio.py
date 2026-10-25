@@ -921,13 +921,40 @@ class StudioManager:
             return self.describe(state)
 
     def _verify_history(self, state):
+        verified = []
         for entry in state.get("history", []):
             if digest(entry["result"]) != entry["sha256"]:
                 raise ValueError("이전 단계 완료 기록이 변경되었습니다.")
-            completed = read_json(entry["result"])
+            verified.append((entry, read_json(entry["result"])))
+        root, config = load_project(state["project"])
+        writers = {resolved(root, config["manifests"][role]): writer for role, writer in
+                   (("positive_train", "positives"), ("positive_validation", "positives"),
+                    ("hard_negative", "hard_connect"))}
+        latest = {}
+        for index, (entry, completed) in enumerate(verified):
+            if completed.get("error") or completed.get("result", {}).get("state") != "completed":
+                continue
             for binding in completed.get("artifact_bindings", []):
-                if digest(binding["path"]) != binding["sha256"]:
-                    raise ValueError("이전 단계의 결과 파일이 변경되었습니다: " + binding["path"])
+                path = resolved(root, binding["path"])
+                if writers.get(path) == entry["stage"]:
+                    latest[path] = (index, binding["sha256"])
+        observed = {}
+        for index, (entry, completed) in enumerate(verified):
+            for binding in completed.get("artifact_bindings", []):
+                path = resolved(root, binding["path"])
+                if path not in observed:
+                    observed[path] = digest(path)
+                if observed[path] == binding["sha256"]:
+                    continue
+                # data_connect creates empty future manifests. Only a later,
+                # verified successful writer may fill those exact placeholders.
+                # Earlier receipts and all non-placeholder artifacts stay intact.
+                replacement = latest.get(path)
+                if (entry["stage"] == "data_connect"
+                        and binding["sha256"] == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                        and replacement and replacement[0] > index and replacement[1] == observed[path]):
+                    continue
+                raise ValueError("이전 단계의 결과 파일이 변경되었습니다: " + binding["path"])
 
     def _launch(self, state):
         self._guard_config(state)
