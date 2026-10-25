@@ -1153,8 +1153,13 @@ function pendingHardStorageRecipe() {
   await test("human input is explicit; polling does not overwrite the text being edited", async () => {
     const project = { id: "bora", wakeword: "보라야", status: "waiting_input", stage: "pilot", input: { kind: "hard_phrases", phrases: ["돌아와"] } };
     const b = browser({ initialState: { projects: [project] } }); await flush();
-    assert.equal(b.elements.get("input-value").value, "돌아와"); b.elements.get("input-value").value = "돌아와\n불러줘";
-    await b.tick(); assert.equal(b.elements.get("input-value").value, "돌아와\n불러줘");
+    const fields = b.elements.get("hard-phrase-fields");
+    const first = fields.children[0].children[0];
+    assert.equal(first.value, "돌아와");
+    await b.click("hard-phrase-add");
+    fields.children[1].children[0].value = "불러줘";
+    await b.tick(); assert.equal(fields.children[0].children[0], first);
+    assert.equal(fields.children[1].children[0].value, "불러줘");
     await b.submit("input-form"); const request = b.calls.find(call => call.url.endsWith("/input"));
     assert.deepEqual(JSON.parse(request.options.body), { phrases: ["돌아와", "불러줘"] });
   });
@@ -1163,22 +1168,60 @@ function pendingHardStorageRecipe() {
       const project = { id: "bora", wakeword: "보라야", status: "waiting_input", stage: "hard_phrases",
         input: { kind: "hard_phrases", samples_per_phrase: perPhrase, voice_count: perPhrase, phrases: ["돌아와"] } };
       const b = browser({ initialState: { projects: [project] } }); await flush();
-      const counts = b.elements.get("hard-generation-counts"), textarea = b.elements.get("input-value");
+      const counts = b.elements.get("hard-generation-counts"), fields = b.elements.get("hard-phrase-fields");
+      assert.equal(b.elements.get("input-value").hidden, true);
+      assert.equal(b.elements.get("input-value").required, false);
       assert.equal(counts.hidden, false);
       assert.equal(counts.textContent, `유사어 1종 · 문구당 ${perPhrase.toLocaleString("ko-KR")}개 · 총 ${perPhrase.toLocaleString("ko-KR")}개`);
       const phrases = Array.from({ length: 40 }, (_, index) => "가" + String.fromCharCode(0xac00 + index));
-      textarea.value = phrases.join("\n"); textarea.handlers.input();
+      for (let index = 0; index < phrases.length; index++) {
+        if (index) await b.click("hard-phrase-add");
+        const input = fields.children[index].children[0]; input.value = phrases[index]; input.handlers.input();
+      }
       assert.match(counts.textContent, new RegExp(`유사어 40종.*총 ${(40 * perPhrase).toLocaleString("ko-KR")}개`));
-      await b.tick(); assert.equal(textarea.value, phrases.join("\n"));
+      const first = fields.children[0].children[0];
+      await b.tick(); assert.equal(fields.children[0].children[0], first);
+      assert.deepEqual(fields.children.map(row => row.children[0].value), phrases);
       await b.submit("input-form");
       assert.deepEqual(JSON.parse(b.calls.find(call => call.url.endsWith("/input")).options.body), { phrases });
-      textarea.value = "돌아와\n돌아와\n불러줘\n"; textarea.handlers.input();
+      fields.children.forEach((row, index) => { row.children[0].value = ["돌아와", "돌아와", "불러줘"][index] || ""; });
+      first.handlers.input();
       assert.match(counts.textContent, /유사어 2종/);
-      textarea.value = ""; textarea.handlers.input(); assert.match(counts.textContent, /총 0개/);
+      fields.children.forEach(row => { row.children[0].value = ""; });
+      first.handlers.input(); assert.match(counts.textContent, /총 0개/);
     }
     const legacy = browser({ initialState: { projects: [{ id: "bora", wakeword: "보라야", status: "waiting_input",
       input: { kind: "hard_phrases", phrases: ["돌아와"] } }] } }); await flush();
     assert.equal(legacy.elements.get("hard-generation-counts").hidden, true);
+  });
+  await test("phrase boxes add, remove and count edits without submitting on Enter or empty input", async () => {
+    const project = { id: "bora", wakeword: "보라야", status: "waiting_input", stage: "hard_phrases",
+      input: { kind: "hard_phrases", samples_per_phrase: 20, phrases: ["돌아와", "불러줘"] } };
+    const b = browser({ initialState: { projects: [project] } }); await flush();
+    const fields = b.elements.get("hard-phrase-fields"), counts = b.elements.get("hard-generation-counts");
+    assert.equal(b.elements.get("hard-phrase-editor").hidden, false);
+    assert.equal(fields.children.length, 2);
+    let prevented = false;
+    fields.children[0].children[0].handlers.keydown({ key: "Enter", isComposing: false, preventDefault() { prevented = true; } });
+    assert.equal(prevented, true); assert.equal(fields.children.length, 3);
+    assert.equal(fields.children[2].children[0].focused, true);
+    assert.match(counts.textContent, /유사어 2종.*총 40개/);
+    fields.children[2].children[0].handlers.keydown({ key: "Enter", isComposing: true, preventDefault() { throw Error("Do not intercept IME commit"); } });
+    assert.equal(fields.children.length, 3);
+    fields.children[1].children[1].handlers.click();
+    assert.equal(fields.children.length, 2); assert.match(counts.textContent, /유사어 1종.*총 20개/);
+    assert.equal(fields.children[1].children[0].getAttribute("aria-label"), "유사어 2");
+    fields.children[0].children[0].value = "  기다려  "; fields.children[0].children[0].handlers.input();
+    await b.submit("input-form");
+    assert.deepEqual(JSON.parse(b.calls.find(call => call.url.endsWith("/input")).options.body), { phrases: ["기다려"] });
+    const before = b.calls.filter(call => call.url.endsWith("/input")).length;
+    while (fields.children.length > 1) fields.children[0].children[1].handlers.click();
+    fields.children[0].children[1].handlers.click();
+    assert.equal(fields.children.length, 1); assert.equal(fields.children[0].children[0].value, "");
+    await b.submit("input-form");
+    assert.equal(b.calls.filter(call => call.url.endsWith("/input")).length, before);
+    assert.match(b.elements.get("input-description").textContent, /호출어와 헷갈릴 수 있는 표현을 입력하세요/);
+    assert.equal(b.elements.get("input-description").textContent.includes("통째로"), false);
   });
   await test("materials show per-phrase budgets and leave legacy totals factual", async () => {
     const recipeList = [20, 100, 500].map((hard_samples_per_phrase, index) => commonRecipe({

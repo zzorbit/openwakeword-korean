@@ -46,10 +46,14 @@ def test_phrase_guidance_distinguishes_text_count_from_audio_count(manager,prese
     state = waiting_phrases(manager,preset=preset)
     path = manager._path(state["id"])
     before = path.read_bytes()
-    described = manager.describe(state)["input"]
+    view = manager.describe(state)
+    described = view["input"]
     assert described["title"] == "유사어 문구 선택"
     assert f"문구마다 {per_phrase:,}개의 유사어 음성" in described["description"]
     assert described["samples_per_phrase"] == described["voice_count"] == per_phrase
+    assert described["description"] == f"문구마다 {per_phrase:,}개의 유사어 음성을 만듭니다."
+    assert described["label"] == "유사어 문구" and "한 줄" not in described["hint"]
+    assert view["next_action"] == "유사어 문구를 입력하고 저장하세요."
     assert "직접 정하세요" in described["hint"] and "1~16자" in described["hint"]
     assert described["suggestions"] == ["보리야"]
     assert path.read_bytes()==before

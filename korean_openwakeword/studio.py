@@ -1504,12 +1504,12 @@ class StudioManager:
                                                    "suggestions": result.get("suggestions", [])})
             if (view.get("input") or {}).get("kind") == "hard_phrases":
                 per_phrase = state["settings"].get("hard_samples_per_phrase")
+                view["next_action"] = "유사어 문구를 입력하고 저장하세요."
                 view["input"] = {**view["input"], "title": "유사어 문구 선택",
-                    "description": ((f"문구마다 {per_phrase:,}개의 유사어 음성을 만듭니다. " if per_phrase is not None else
-                                     f"입력한 문구로 총 {state['settings']['hard_originals']:,}개의 유사어 음성을 만듭니다. ") +
-                                    "호출어 자체나 같은 이름·낱말이 통째로 들어간 표현은 제외하세요."),
-                    "label": "유사어 문구 · 한 줄에 하나씩",
-                    "hint": "문구 수는 직접 정하세요. 한글 1~16자 문구를 한 줄에 하나씩, 띄어쓰기와 중복 없이 입력하세요.",
+                    "description": (f"문구마다 {per_phrase:,}개의 유사어 음성을 만듭니다." if per_phrase is not None else
+                                    f"입력한 문구로 총 {state['settings']['hard_originals']:,}개의 유사어 음성을 만듭니다."),
+                    "label": "유사어 문구",
+                    "hint": "문구 수는 직접 정하세요. 한글 1~16자, 띄어쓰기와 중복 없이 입력하세요.",
                     **({"samples_per_phrase": per_phrase, "voice_count": state["settings"]["train_references"]}
                        if per_phrase is not None else {})}
         final = state["results"].get("results", {})

@@ -208,6 +208,7 @@
   let newProject = false, busy = false, refreshing = false, pollTimer = null, recipeReady = false;
   let locationTimer = null, locationRevision = 0, modelLocation = { key: "", directory: "" };
   let reviewIdentity = "", referencePreviewIdentity = "", inputIdentity = "", resultIdentity = "", resultMode = "results", logProject = "";
+  let hardPhraseFields = [];
   const selectedProject = () => (snapshot.projects || []).find(project => project.id === selectedId);
 
   async function api(path, method = "GET", payload) {
@@ -702,16 +703,20 @@
     const editable = dependencies || hard || input.kind === "material_admissions";
     $("input-form").hidden = !editable;
     $("input-title").textContent = input.title || (!editable ? "작업을 확인해주세요" : dependencies ? "학습 도구를 준비해주세요" : hard ? "유사어 후보를 정해주세요" : "추가 자료를 연결해주세요");
-    $("input-description").textContent = input.description || (!editable ? "자동으로 해결할 수 없는 문제가 있어 멈췄습니다. 아래 작업 기록에서 원인과 필요한 조치를 확인하세요." : dependencies ? "이 가상 환경에 필요한 음성 생성·학습 도구를 설치합니다. 사용할 연산 환경을 선택하세요." : hard ? "호출어와 헷갈릴 수 있는 표현을 확인합니다. 호출어 자체나 같은 낱말이 통째로 포함된 표현은 넣지 않습니다." : "자동으로 준비할 수 없는 자료가 있습니다. 안내에 맞는 검수·승인 기록을 연결하면 이어서 진행합니다.");
-    $("input-label").textContent = input.label || (dependencies ? "설치할 연산 도구" : hard ? "유사어 · 한 줄에 하나씩" : "자료 승인 기록 · 한 줄에 경로 하나씩");
+    $("input-description").textContent = input.description || (!editable ? "자동으로 해결할 수 없는 문제가 있어 멈췄습니다. 아래 작업 기록에서 원인과 필요한 조치를 확인하세요." : dependencies ? "이 가상 환경에 필요한 음성 생성·학습 도구를 설치합니다. 사용할 연산 환경을 선택하세요." : hard ? "호출어와 헷갈릴 수 있는 표현을 입력하세요." : "자동으로 준비할 수 없는 자료가 있습니다. 안내에 맞는 검수·승인 기록을 연결하면 이어서 진행합니다.");
+    $("input-label").textContent = input.label || (dependencies ? "설치할 연산 도구" : hard ? "유사어 문구" : "자료 승인 기록 · 한 줄에 경로 하나씩");
     $("input-label").hidden = false; $("input-hint").hidden = false;
-    $("input-label").htmlFor = dependencies ? "dependency-backend" : "input-value";
-    $("input-value").hidden = dependencies; $("input-value").required = !dependencies;
+    $("input-label").htmlFor = dependencies ? "dependency-backend" : hard ? "hard-phrase-1" : "input-value";
+    $("input-value").hidden = dependencies || hard; $("input-value").required = !dependencies && !hard;
+    $("hard-phrase-editor").hidden = !hard;
     $("dependency-backend").hidden = !dependencies;
     $("input-submit").textContent = dependencies ? "선택한 도구 설치하고 계속" : "저장하고 이어서 진행";
     $("input-hint").textContent = input.hint || (dependencies ? "현재 가상 환경에만 설치합니다. NVIDIA GPU가 없다면 CPU용을 선택하세요." : hard ? "확인한 후보로 소수의 검수용 음성을 먼저 만듭니다." : "직접 준비한 자료의 승인 기록이 필요합니다. 원본 음원 경로만 입력하면 승인된 것으로 처리하지 않습니다.");
     if (identity !== inputIdentity) {
       $("input-value").value = (input.phrases || input.values || input.suggestions || []).join("\n");
+      hardPhraseFields = [];
+      $("hard-phrase-fields").replaceChildren();
+      if (hard) for (const value of (input.phrases || input.values || input.suggestions || []).length ? (input.phrases || input.values || input.suggestions) : [""]) addHardPhraseField(value);
       $("dependency-backend").value = input.recommended_backend === "cu128" ? "cu128" : "cpu";
       $("material-mode").value = "source";
       const source = input.source || {};
@@ -725,6 +730,42 @@
     renderInputMode(project);
     renderHardGenerationCounts(project);
     $("input-submit").disabled = busy;
+    $("hard-phrase-add").disabled = busy;
+    for (const field of hardPhraseFields) { field.input.disabled = busy; field.remove.disabled = busy; }
+  }
+  function hardPhraseValues() {
+    return hardPhraseFields.map(field => field.input.value.trim()).filter(Boolean);
+  }
+  function addHardPhraseField(value = "", focus = false) {
+    const row = document.createElement("div"), input = document.createElement("input"), remove = document.createElement("button");
+    row.className = "hard-phrase-field"; input.type = "text"; input.value = value;
+    input.placeholder = "유사어 입력"; input.maxLength = 16; input.autocomplete = "off";
+    remove.type = "button"; remove.className = "hard-phrase-remove"; remove.textContent = "×";
+    const field = { row, input, remove };
+    input.addEventListener("input", () => renderHardGenerationCounts(selectedProject()));
+    input.addEventListener("keydown", event => {
+      if (event.key === "Enter" && !event.isComposing) { event.preventDefault(); if (!busy) addHardPhraseField("", true); }
+    });
+    remove.addEventListener("click", () => {
+      if (busy) return;
+      const position = hardPhraseFields.indexOf(field);
+      hardPhraseFields = hardPhraseFields.filter(item => item !== field);
+      $("hard-phrase-fields").replaceChildren(...hardPhraseFields.map(item => item.row));
+      if (!hardPhraseFields.length) addHardPhraseField();
+      labelHardPhraseFields();
+      hardPhraseFields[Math.min(position, hardPhraseFields.length - 1)].input.focus();
+      renderHardGenerationCounts(selectedProject());
+    });
+    row.append(input, remove); hardPhraseFields.push(field); $("hard-phrase-fields").append(row);
+    labelHardPhraseFields(); renderHardGenerationCounts(selectedProject());
+    if (focus) input.focus();
+  }
+  function labelHardPhraseFields() {
+    hardPhraseFields.forEach((field, index) => {
+      field.input.id = `hard-phrase-${index + 1}`;
+      field.input.setAttribute("aria-label", `유사어 ${index + 1}`);
+      field.remove.setAttribute("aria-label", `유사어 ${index + 1} 삭제`);
+    });
   }
   function renderHardGenerationCounts(project) {
     const input = project?.input, perPhrase = input?.samples_per_phrase;
@@ -732,7 +773,7 @@
     const counts = $("hard-generation-counts");
     counts.hidden = !show;
     if (!show) { counts.textContent = ""; return; }
-    const phrases = new Set($("input-value").value.split(/\r?\n/).map(value => value.trim()).filter(Boolean));
+    const phrases = new Set(hardPhraseValues());
     counts.textContent = `유사어 ${number(phrases.size)}종 · 문구당 ${number(perPhrase)}개 · 총 ${number(phrases.size * perPhrase)}개`;
   }
   function renderInputMode(project) {
@@ -1005,7 +1046,7 @@
     event.preventDefault(); if (busy) return;
     const project = selectedProject(); if (!project?.input) return;
     if (!["dependency_setup", "hard_phrases", "material_admissions"].includes(project.input.kind)) return;
-    const values = $("input-value").value.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+    const values = project.input.kind === "hard_phrases" ? hardPhraseValues() : $("input-value").value.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
     const dependencies = project.input.kind === "dependency_setup";
     const sourceMode = project.input.kind === "material_admissions" && $("material-mode").value === "source";
     if (!dependencies && !sourceMode && !values.length) { message("안내에 맞게 한 항목 이상 입력하세요.", true); return; }
@@ -1038,7 +1079,7 @@
     for (const id of ["adv-originals", "adv-rounds", "adv-updates", "adv-generic", "adv-korean"]) $(id).addEventListener("input", () => { renderRecipe(); previewLocation(); });
     $("wakeword").addEventListener("input", previewLocation);
     $("input-form").addEventListener("submit", submitInput);
-    $("input-value").addEventListener("input", () => renderHardGenerationCounts(selectedProject()));
+    $("hard-phrase-add").addEventListener("click", () => { if (!busy) addHardPhraseField("", true); });
     $("material-mode").addEventListener("change", () => renderInputMode(selectedProject()));
     $("source-dataset").addEventListener("change", () => {
       const dataset = $("source-dataset").value;

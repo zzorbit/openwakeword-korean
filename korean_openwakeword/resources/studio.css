@@ -132,6 +132,12 @@ progress::-moz-progress-bar{background:var(--blue)}
 .open-link{margin-left:auto;font-size:12px;text-decoration:none;padding:10px}
 #input-form label{display:block;font-weight:650;margin:15px 0 8px}
 #input-form button{margin-top:8px}
+.hard-phrase-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,200px),1fr));gap:10px}
+.hard-phrase-field{position:relative;min-width:0}
+.hard-phrase-field input{width:100%;padding-right:42px}
+#input-form .hard-phrase-remove{position:absolute;right:5px;top:5px;bottom:5px;width:31px;margin:0;padding:0;border:0;background:transparent;color:var(--muted);font-size:23px;font-weight:400;line-height:1}
+#input-form .hard-phrase-remove:hover:not(:disabled){background:var(--hover);color:var(--fg)}
+#input-form .hard-phrase-add{margin:10px 0 0;padding:7px 12px;font-size:14px}
 .log-card{padding:18px 23px}
 .log-card pre{font:12px/1.7 ui-monospace,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;max-height:350px;overflow:auto;background:var(--canvas);border:1px solid var(--border);border-radius:8px;padding:15px;color:var(--fg)}
 footer{font-size:11px;color:var(--muted);text-align:center;margin:36px 0 6px}
