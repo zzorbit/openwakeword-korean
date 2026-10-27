@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "release": "0.24.0",
+  "source_release": "0.23.1",
+  "source_commit": "ef053e19061c86856d33937d312ff095365dd432",
+  "source_computation_sha256": "de8c59b13dd11d3f0688409c091c79016f27453a5d849d6b596bf31b6865758a",
+  "source_stages_sha256": "e73d5b7a8280e34852bf33090ea1f2d69ff46d79470e1bd82549480d2f20c0a5",
+  "target_computation_sha256": "41e7cbd1606ebbed420f5b07f971296207d263ed878acbab3d26a7b388f9edec",
+  "target_stages_sha256": "f13dad4d451cefc5269ff1f1bad5e9f4a740bbd97cc7b25298b51c67fa5dca7e",
+  "changed_computational_files": [
+    "pool_review.py",
+    "studio_steps.py"
+  ],
+  "unchanged_generation_training_scoring_files": {
+    "hard_tts.py": "c0c348bdb3016416a6fadce1df042cc809a8d1cd5711b1373973c7f48e885ae5",
+    "tts.py": "cc6e951d48e3340e00a8a8b5a22776d1a1ebc15e4834ba4eddf4186311052a8c",
+    "reference_qc.py": "e2401f15a3c3e0a5b34423265ebf2a14f97bdc349f4bacad76db2644b0f225ba",
+    "features.py": "2919577c43f098d3fa10b8adb81939496b19bb7738034d9fddbc8144c931a07d",
+    "train.py": "4ca273d49fad05cb949924063232a674fa91fcf0dfd3a494a4402d6e01dc7938",
+    "evaluate.py": "17cc02176696478602260f015d3054591f55f70d0a38275745b31143f73c756d"
+  },
+  "review_policy": "one_per_phrase_v1",
+  "selection": "One exact source per distinct dataset/text; balance approved Train voice requests by family, gender, age, timbre, delivery and vocal effort, then a stable seeded hash",
+  "mandatory_listening": "Only selected representatives receive actual human listened/keep/discard decisions",
+  "other_originals": "All source provenance, generation, split and technical checks remain; unlistened accepted originals are policy-admitted, never individually heard",
+  "optional_player": "Read-only full frozen Hard pool; no answers, consent, listening flags or worker starts",
+  "migration": {
+    "fresh_policy": "Only unreviewed workflows up to the Hard review gate without saved or detached Hard answers or an existing Hard admission",
+    "legacy_policy": "Existing answered/completed Hard workflows retain their original queues, answers, dispositions and admission rules",
+    "preserved": [
+      "all existing WAVs",
+      "generation contracts and journals",
+      "full original source manifest",
+      "old review queues",
+      "saved answers",
+      "history",
+      "completed receipts",
+      "project.json",
+      "approval.json"
+    ],
+    "snapshot": "workflow_before.json with its hash is retained before rebind",
+    "execution": "No automatic approval, TTS, feature extraction or model training"
+  },
+  "validation": [
+    "120 originals / six phrases select six unique phrase representatives reproducibly",
+    "real generated synthetic sources admit all originals from phrase representatives after technical and contract checks",
+    "legacy full phrase/family coverage, exact selection consent and prior discard/hold protection",
+    "read-only HTTP/player behavior and mandatory iframe reload only on changed queue hash",
+    "migration preserves artifacts, human inputs and history without starting a worker"
+  ],
+  "claim": "A reduced human review policy, not a guarantee that every unlistened pronunciation is correct"
+}

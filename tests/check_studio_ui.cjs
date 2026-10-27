@@ -1057,6 +1057,48 @@ function pendingHardStorageRecipe() {
     other.reference_preview = { url: "/reference-preview/?project=other", count: 0 }; await b.tick();
     assert.equal(details.hidden, true);
   });
+  await test("optional full hard listening stays separate from required representatives and never writes review answers", async () => {
+    const project = { id: "bora", wakeword: "보라야", status: "waiting_review", stage: "hard_review",
+      review: { queue_id: "hard-representatives", title: "유사어 발음 확인", url: "/review/?project=bora&queue=hard-representatives" },
+      hard_preview: { url: "/hard-preview/?project=bora", count: 120 } };
+    const b = browser({ initialState: { projects: [project] } }); await flush();
+    const details = b.elements.get("hard-preview"), frame = b.elements.get("hard-preview-frame");
+    const required = b.elements.get("review-frame"), requiredUrl = required.getAttribute("src");
+    assert.match(html, /<summary>유사어 전체 듣기<\/summary>/);
+    assert.doesNotMatch(html.match(/<iframe id="hard-preview-frame"[^>]*>/)[0], /\ssrc=/);
+    assert.equal(details.hidden, false); assert.equal(details.open, false);
+    assert.equal(frame.getAttribute("src"), null); assert.equal(frame.srcWrites, 0);
+    assert.match(b.elements.get("hard-preview-counts").textContent, /120개.*검수 결과에 저장되지 않습니다/);
+    details.open = true; details.handlers.toggle();
+    assert.equal(frame.getAttribute("src"), "/hard-preview/?project=bora");
+    await b.tick(); await b.tick();
+    assert.equal(details.open, true); assert.equal(frame.srcWrites, 1);
+    assert.equal(required.getAttribute("src"), requiredUrl); assert.equal(required.srcWrites, 1);
+    project.stage = "training"; project.status = "running"; await b.tick();
+    assert.equal(details.hidden, false); assert.equal(frame.srcWrites, 1);
+    details.open = false; details.handlers.toggle(); assert.equal(frame.getAttribute("src"), null);
+    assert.equal(b.calls.some(call => call.options.method === "POST" && call.url !== "/api/model-location"), false);
+  });
+  await test("optional hard listening closes on model changes, new setup and unavailable audio", async () => {
+    const project = { id: "bora", status: "waiting_review", hard_preview: { url: "/hard-preview/?project=bora", count: 120 } };
+    const other = { id: "other", status: "paused", hard_preview: { url: "/hard-preview/?project=other", count: 40 } };
+    const b = browser({ initialState: { projects: [project, other], active_project_id: "bora" } }); await flush();
+    const details = b.elements.get("hard-preview"), frame = b.elements.get("hard-preview-frame");
+    details.open = true; details.handlers.toggle();
+    b.elements.get("project-select").value = "other"; b.elements.get("project-select").handlers.change();
+    assert.equal(details.open, false); assert.equal(frame.getAttribute("src"), null);
+    details.open = true; details.handlers.toggle();
+    assert.equal(frame.getAttribute("src"), "/hard-preview/?project=other");
+    await b.click("new-project");
+    assert.equal(details.hidden, true); assert.equal(details.open, false); assert.equal(frame.getAttribute("src"), null);
+    other.hard_preview.url = "https://example.com/hard-preview/";
+    b.elements.get("project-select").value = "other"; b.elements.get("project-select").handlers.change(); await b.tick();
+    assert.equal(details.hidden, true); assert.equal(frame.getAttribute("src"), null);
+    other.hard_preview = { url: "/hard-preview/?project=other", count: 0 }; await b.tick();
+    assert.equal(details.hidden, true);
+    other.hard_preview = { available: false, url: "/hard-preview/?project=other", count: 40 }; await b.tick();
+    assert.equal(details.hidden, true);
+  });
   await test("automatic reference checking respects the task label and optional listening never replaces pilot review", async () => {
     const project = { id: "bora", wakeword: "보라야", status: "running",
       stage: { id: "references_review", kind: "task", label: "기준 목소리 자동 검사" }, stage_label: "기존 목소리 확인",
@@ -1084,6 +1126,18 @@ function pendingHardStorageRecipe() {
     assert.equal(b.elements.get("review-frame").srcWrites, 1);
     project.status = "running"; await b.tick();
     assert.equal(b.elements.get("review-section").hidden, true); assert.equal(b.elements.get("review-frame").getAttribute("src"), null);
+  });
+  await test("a new representative queue hash reloads the same review URL while normal polling preserves playback", async () => {
+    const project = { id: "bora", wakeword: "보라야", status: "waiting_review", stage: "hard_review",
+      review: { queue_id: "hard", queue_sha256: "a".repeat(64), url: "/review/?project=bora&queue=hard" } };
+    const b = browser({ initialState: { projects: [project] } }); await flush();
+    const frame = b.elements.get("review-frame");
+    assert.equal(frame.srcWrites, 1);
+    await b.tick(); await b.tick(); assert.equal(frame.srcWrites, 1);
+    project.review.queue_sha256 = "b".repeat(64); await b.tick();
+    assert.equal(frame.srcWrites, 2);
+    assert.equal(frame.getAttribute("src"), "/review/?project=bora&queue=hard");
+    await b.tick(); assert.equal(frame.srcWrites, 2);
   });
   await test("synthetic voice stages explain voice checking without changing the saved workflow or iframe", async () => {
     const project = { id: "bora", wakeword: "보라야", status: "waiting_review", stage: { id: "references_review", label: "합성 음색 듣기" }, stage_label: "합성 음색 듣기", review: { queue_id: "references", title: "음원 확인", url: "/review/?project=bora&queue=references" } };

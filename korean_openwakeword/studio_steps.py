@@ -119,6 +119,7 @@ def preset_settings(name="check"):
             "reference_admission_policy": "automatic_technical_v1",
             "pilot_review_policy": "one_per_training_voice_v1",
             "hard_generation_policy": "per_phrase_v1",
+            "hard_review_policy": "one_per_phrase_v1",
             **({"official_noise_acquisition_policy": "selective_fma_small_v1"} if name in ("check", "trial") else {}),
             **({"fma_acquisition_policy": "per_track_flac_prefetch_v1"} if name == "production" else {}),
             "final_locked": True, "positive_text_policy": "standalone_only"}
@@ -141,6 +142,8 @@ def workflow_plan(settings):
 
 
 def _validate_settings(settings):
+    if settings.get("hard_review_policy") not in (None, "one_per_phrase_v1"):
+        raise ValueError("Unsupported Hard representative review policy")
     hard_policy = settings.get("hard_generation_policy")
     if hard_policy not in (None, "per_phrase_v1"):
         raise ValueError("Unsupported Hard generation policy")
@@ -445,6 +448,11 @@ def _saved_review(root, descriptor, context):
             and all(a.get("decision") in ("keep", "discard") for a in decisions.values())
             and all(a.get("listened") is True for a in decisions.values() if a.get("decision") == "keep")
             and (not descriptor.get("pool_manifest") or report.get("whole_pool_policy_approved") is True))
+    if descriptor.get("synthetic_review_policy"):
+        selection = descriptor["representative_selection"]
+        bound_file(root, selection)
+        approved = (approved and report.get("synthetic_review_policy") == descriptor["synthetic_review_policy"]
+                    and report.get("representative_selection_sha256") == selection["sha256"])
     if approved and descriptor["kind"] == "references":
         approval = read_json(root / "approval.json")
         kept = [r for r in rows if decisions[r["sample_id"]]["decision"] == "keep"]
@@ -459,6 +467,10 @@ def _saved_review(root, descriptor, context):
         if not reviewed.get("admission"):
             return False
         admission = read_json(bound_file(root, reviewed["admission"]))
+        if descriptor.get("synthetic_review_policy") and (
+                admission.get("synthetic_review_policy") != descriptor["synthetic_review_policy"]
+                or admission.get("representative_selection", {}).get("sha256") != descriptor["representative_selection"]["sha256"]):
+            return False
         if (admission.get("state") != "accepted" or admission.get("content_review") != "accepted"
                 or admission.get("human_answers", {}).get("sha256") != digest(path)
                 or admission.get("source_manifest", {}).get("sha256") != digest(descriptor["pool_manifest"])
@@ -527,8 +539,10 @@ def _next_directory(base, marker, accept=None):
     return candidate, False
 
 
-def _hard_queue(project, workspace):
-    root, _ = load_project(project)
+def _hard_queue(project, workspace, policy=None):
+    root, config = load_project(project)
+    if policy not in (None, "one_per_phrase_v1"):
+        raise ValueError("Unsupported Hard representative review policy")
     candidates = read_rows(root / "data/generated/hard/candidates.jsonl")
     latest = {r["slot"]: r for r in candidates if r.get("technical_pass") is True}
     rows = sorted(latest.values(), key=lambda r: r["slot"])
@@ -536,17 +550,62 @@ def _hard_queue(project, workspace):
         raise ValueError("No technically usable Hard Negative originals")
     sources = _publish_rows(workspace / "hard_sources.jsonl", rows)
     seen, representatives = set(), []
-    for row in rows:
+    if policy == "one_per_phrase_v1":
+        voices = {voice["family_id"]: voice for voice in read_json(root / "voices.json")["families"]
+                  if voice["split"] == "train"}
+        groups = {}
+        for row in rows:
+            groups.setdefault((row["dataset_id"], row["text"]), []).append(row)
+        axes = ("gender", "age_group", "timbre", "style", "vocal_effort")
+        voice_counts, axis_counts = {}, {axis: {} for axis in axes}
+        selected = []
+        for (dataset, text), candidates_for_phrase in groups.items():
+            def rank(row):
+                family = row["voice_family_id"]
+                attributes = voices.get(family, {})
+                return (voice_counts.get(family, 0),
+                        tuple(axis_counts[axis].get(attributes.get(axis, "unspecified"), 0) for axis in axes),
+                        identity([config["tts"]["seed"], policy, dataset, text, family, row["sha256"]]))
+            row = min(candidates_for_phrase, key=rank)
+            selected.append(row)
+            family = row["voice_family_id"]
+            voice_counts[family] = voice_counts.get(family, 0) + 1
+            for axis in axes:
+                value = voices.get(family, {}).get(axis, "unspecified")
+                axis_counts[axis][value] = axis_counts[axis].get(value, 0) + 1
+        rows_to_review = selected
+    else:
+        rows_to_review = rows
+    for row in rows_to_review:
         group = (row["dataset_id"], row["text"], row["voice_family_id"])
         if group in seen:
             continue
         seen.add(group)
         representatives.append({**row, "sample_id": "preview_" + row["sample_id"],
             "reviewed_source": {"path": row["path"], "sha256": row["sha256"]},
-            "review_instruction": "표시된 비호출 문구가 명확하고 실제 호출어가 들리지 않으면 보존하세요.",
+            "review_instruction": ("표시된 문구의 발음이 정상적으로 들리면 보존하세요." if policy else
+                                   "표시된 비호출 문구가 명확하고 실제 호출어가 들리지 않으면 보존하세요."),
             "review_group": row["text"] + " · " + row["voice_family_id"]})
-    queue = _publish_rows(workspace / "hard_representatives.jsonl", representatives)
-    return _review_descriptor(root, queue, "content", "hard", pool_manifest=str(sources))
+    queue = _publish_rows(workspace / ("hard_representatives_per_phrase_v1.jsonl" if policy else "hard_representatives.jsonl"), representatives)
+    extra = {}
+    if policy:
+        selection = {"kind": "hard_phrase_representative_selection_v1", "policy": policy,
+            "source_manifest": {"path": sources.relative_to(root).as_posix(), "sha256": digest(sources)},
+            "representative_queue": {"path": queue.relative_to(root).as_posix(), "sha256": digest(queue)},
+            "strategy": "balanced_train_voice_axes_then_seeded_hash_v1", "seed": config["tts"]["seed"],
+            "representatives": [{"dataset_id": row["dataset_id"], "text": row["text"],
+                "voice_family_id": row["voice_family_id"], "source_sha256": row["sha256"],
+                "preview_sample_id": row["sample_id"]} for row in representatives]}
+        path = workspace / "hard_representative_selection_v1.json"
+        if path.exists() and read_json(path) != selection:
+            raise ValueError("Frozen Hard representative selection changed")
+        if not path.exists():
+            write_json(path, selection)
+        extra = {"synthetic_review_policy": policy,
+                 "representative_selection": {"path": path.relative_to(root).as_posix(), "sha256": digest(path)},
+                 "description": "문구별 대표 음원의 발음이 정상인지 확인하세요. 보존한 문구의 전체 음원을 학습에 사용합니다."}
+    return _review_descriptor(root, queue, "content", "hard", pool_manifest=str(sources),
+                              pool_sha256=digest(sources), **extra)
 
 
 def run_stage(project, workspace, settings, stage_id, context=None):
@@ -824,15 +883,15 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         incomplete = _generation_complete(summary)
         if incomplete:
             return incomplete
-        descriptor = _hard_queue(project, workspace)
+        descriptor = _hard_queue(project, workspace, settings.get("hard_review_policy"))
         return _completed({**summary, "review": descriptor}, [descriptor["queue"], descriptor["pool_manifest"]])
 
     if stage_id == "hard_review":
-        return _review_gate(root, [_hard_queue(project, workspace)], context)
+        return _review_gate(root, [_hard_queue(project, workspace, settings.get("hard_review_policy"))], context)
 
     if stage_id == "hard_connect":
         from .data import validate_admission
-        descriptor = _hard_queue(project, workspace)
+        descriptor = _hard_queue(project, workspace, settings.get("hard_review_policy"))
         if not _saved_review(root, descriptor, context):
             return {"state": "waiting_review", "reviews": [descriptor]}
         reviewed = context.get("inputs", {}).get("review_results", {}).get("hard", {})
@@ -855,14 +914,20 @@ def run_stage(project, workspace, settings, stage_id, context=None):
                 admission = {"path": admission_path.relative_to(root).as_posix(), "sha256": digest(admission_path)}
                 existing = read_json(admission_path)
                 if (existing.get("human_answers", {}).get("sha256") != digest(answer_path)
-                        or existing.get("excluded_hard_phrases") != excluded):
+                        or existing.get("excluded_hard_phrases") != excluded
+                        or descriptor.get("synthetic_review_policy") and (
+                            existing.get("synthetic_review_policy") != descriptor["synthetic_review_policy"]
+                            or existing.get("representative_selection", {}).get("sha256") != descriptor["representative_selection"]["sha256"])):
                     raise ValueError("Frozen Hard admission no longer matches saved listening decisions")
             else:
                 approved = approve_pool(project,
                     source_manifest={"path": descriptor["pool_manifest"], "sha256": digest(descriptor["pool_manifest"])},
                     representative_queue={"path": descriptor["queue"], "sha256": descriptor["queue_sha256"]},
                     answers={"path": str(answer_path), "sha256": digest(answer_path)}, output=admission_path,
-                    excluded_hard_phrases=excluded)
+                    excluded_hard_phrases=excluded,
+                    **({"synthetic_review_policy": descriptor["synthetic_review_policy"],
+                        "representative_selection": descriptor["representative_selection"]}
+                       if descriptor.get("synthetic_review_policy") else {}))
                 admission = approved["admission"]
         else:
             admission = reviewed["admission"]

@@ -326,6 +326,41 @@ def _audited_hard_per_phrase_update(previous, current):
             "evidence_sha256": audit["evidence_sha256"]}
 
 
+_AUDITED_HARD_REVIEW_UPDATES = {
+    "de8c59b13dd11d3f0688409c091c79016f27453a5d849d6b596bf31b6865758a": {
+        "source_stages_sha256": "e73d5b7a8280e34852bf33090ea1f2d69ff46d79470e1bd82549480d2f20c0a5",
+        "target_computation_sha256": "41e7cbd1606ebbed420f5b07f971296207d263ed878acbab3d26a7b388f9edec",
+        "target_stages_sha256": "f13dad4d451cefc5269ff1f1bad5e9f4a740bbd97cc7b25298b51c67fa5dca7e",
+        "evidence_sha256": "e0227e6cb109e7479b9aa10f4f721cbe1b072b4ee665ff2f3e6e896e647bfd8b",
+    },
+}
+
+
+def _audited_hard_review_update(previous, current):
+    """A release-bound review change cannot relax an unrelated computation."""
+    audit = _AUDITED_HARD_REVIEW_UPDATES.get(previous.get("computation_sha256"))
+    if not isinstance(audit, dict):
+        return None
+    old_files, new_files = previous.get("files"), current.get("files")
+    if (previous.get("schema_version") != 1 or current.get("schema_version") != 1
+            or not isinstance(old_files, dict) or not isinstance(new_files, dict)
+            or identity(old_files) != previous.get("computation_sha256")
+            or identity(new_files) != current.get("computation_sha256")
+            or current.get("computation_sha256") != audit.get("target_computation_sha256")
+            or identity(previous.get("stages")) != audit.get("source_stages_sha256")
+            or identity(current.get("stages")) != audit.get("target_stages_sha256")):
+        return None
+    changed = sorted(name for name in old_files.keys() | new_files.keys()
+                     if old_files.get(name) != new_files.get(name))
+    if (changed != ["pool_review.py", "studio_steps.py"]
+            or not re.fullmatch(r"[0-9a-f]{64}", audit.get("evidence_sha256", ""))):
+        return None
+    return {"kind": "audited_one_hard_representative_per_phrase", "changed_files": changed,
+            "source_computation_sha256": previous["computation_sha256"],
+            "target_computation_sha256": current["computation_sha256"],
+            "evidence_sha256": audit["evidence_sha256"]}
+
+
 def _audited_reference_update(previous, current):
     audit = _AUDITED_REFERENCE_UPDATES.get(previous.get("computation_sha256"))
     if not isinstance(audit, dict):
@@ -827,6 +862,7 @@ class StudioManager:
         reference_admission_update = None
         pilot_update = None
         hard_update = None
+        hard_review_update = None
         if previous:
             if (previous.get("schema_version") != 1 or previous.get("settings_sha256") != identity(state["settings"])
                     or previous.get("plan_sha256") != identity(state["plan"])):
@@ -840,20 +876,23 @@ class StudioManager:
                 reference_admission_update = _audited_reference_admission_update(previous, self._execution_contract)
                 pilot_update = _audited_pilot_update(previous, self._execution_contract)
                 hard_update = _audited_hard_per_phrase_update(previous, self._execution_contract)
+                hard_review_update = _audited_hard_review_update(previous, self._execution_contract)
                 if hard_update and not self._can_update_hard_budget(state):
                     return blocked("유사어 생성이 시작된 작업은 수량과 기존 기록을 유지합니다. 새 문구당 설정은 별도 모델에서 사용하세요.")
                 if pilot_update and not self._can_update_pilot(state):
                     return blocked("목소리별 발음 검수 수량 변경은 대량 생성 전 작업에만 적용할 수 있습니다. 기존 음원과 검수 기록은 보존됩니다.")
                 if reference_admission_update and not self._can_update_reference_admission(state):
                     return blocked("기준 목소리 자동 검사는 호출어 생성 전 작업에만 적용할 수 있습니다. 기존 자료와 검수 기록은 보존됩니다.")
-                if all(update is None for update in (audited_update, reference_update, reference_admission_update, pilot_update, hard_update)):
+                if all(update is None for update in (audited_update, reference_update, reference_admission_update, pilot_update, hard_update, hard_review_update)):
                     return blocked("남은 단계의 자료·생성·학습·채점 코드가 달라 호환 이관할 수 없습니다. 기존 자료를 보존하고 새 실험을 만드세요.")
         elif (_LEGACY_COMPATIBLE_CONTRACTS.get(state.get("implementation_id"))
               != self._execution_contract["computation_sha256"]):
             return blocked("이 구버전에는 검증된 단계 계약이 없습니다. 기존 자료를 보존하고 별도 호환 검증이 필요합니다.")
         budget_change = self._reference_budget_change(state) if reference_update else None
         return {"state": "available", "action": "migrate",
-                "reason": ("기존 호출어 음원과 검수 기록을 보존하고, 아직 시작하지 않은 유사어 생성을 문구당 수량으로 설정합니다."
+                "reason": ("기존 음원과 검수 기록을 보존합니다. 아직 답변하지 않은 유사어 검수는 문구별 대표 1개로 줄이고, 전체 듣기는 별도로 제공합니다."
+                           if hard_review_update else
+                           "기존 호출어 음원과 검수 기록을 보존하고, 아직 시작하지 않은 유사어 생성을 문구당 수량으로 설정합니다."
                            if hard_update else
                            "기존 음원과 검수 기록을 보존하고 학습용 목소리마다 호출어 1개씩 확인하도록 목록을 갱신합니다."
                            if pilot_update else
@@ -868,8 +907,27 @@ class StudioManager:
                 **({"audited_reference_admission_update": reference_admission_update} if reference_admission_update else {}),
                 **({"audited_pilot_update": pilot_update} if pilot_update else {}),
                 **({"audited_hard_per_phrase_update": hard_update} if hard_update else {}),
+                **({"audited_hard_review_update": hard_review_update} if hard_review_update else {}),
                 **({"reference_budget_change": budget_change} if budget_change else {}),
                 "preserves": ["project_settings", "completed_artifacts", "review_answers", "history"]}
+
+    def _can_update_hard_review(self, state):
+        positions = {stage["id"]: i for i, stage in enumerate(state["plan"])}
+        root = Path(state["project"]).parent
+        if (state["index"] > positions["hard_review"] or self._job_alive(state.get("job") or {})
+                or (root / "final_lock.json").exists()
+                or state.get("inputs", {}).get("review_answers", {}).get("hard")
+                or state.get("inputs", {}).get("review_results", {}).get("hard")):
+            return False
+        _, config = load_project(state["project"])
+        if read_rows(resolved(root, config["manifests"]["hard_negative"])) or state.get("results", {}).get("hard_connect"):
+            return False
+        # A detached saved answer must not be evaded by rebuilding its queue.
+        old_queues = {digest(path) for path in (root / ".studio").glob("hard_representatives*.jsonl")}
+        for path in (root / ".studio/answers").glob("*.json"):
+            if read_json(path).get("queue_sha256") in old_queues:
+                return False
+        return not (root / "review/content_results.json").exists()
 
     def _can_update_hard_budget(self, state):
         from .studio_steps import preset_settings
@@ -949,10 +1007,20 @@ class StudioManager:
                    if compatibility.get("audited_pilot_update") else {}),
                 **({"audited_hard_per_phrase_update": compatibility["audited_hard_per_phrase_update"]}
                    if compatibility.get("audited_hard_per_phrase_update") else {}),
+                **({"audited_hard_review_update": compatibility["audited_hard_review_update"]}
+                   if compatibility.get("audited_hard_review_update") else {}),
                 **({"reference_budget_change": compatibility["reference_budget_change"]}
                    if compatibility.get("reference_budget_change") else {}),
                 "preserved": compatibility["preserves"]})
             budget_change = compatibility.get("reference_budget_change")
+            if compatibility.get("audited_hard_review_update") and self._can_update_hard_review(state):
+                state["settings"]["hard_review_policy"] = "one_per_phrase_v1"
+                if state["plan"][state["index"]]["id"] == "hard_review":
+                    from .studio_steps import _hard_queue
+                    descriptor = _hard_queue(state["project"], Path(state["project"]).parent / ".studio", "one_per_phrase_v1")
+                    state["results"]["hard_review"] = {"state": "waiting_review", "reviews": [descriptor],
+                                                       "message": "문구별 대표 음원을 확인하고 저장하세요."}
+                    state.update(status="waiting_review", error=None)
             if compatibility.get("audited_hard_per_phrase_update"):
                 from .studio_steps import preset_settings
                 state["settings"].pop("hard_originals", None)
@@ -1266,6 +1334,14 @@ class StudioManager:
         if digest(path) != review.get("queue_sha256") or (review.get("pool_manifest") and
                 digest(review["pool_manifest"]) != review.get("pool_sha256")):
             raise ValueError("검수 목록 또는 승인할 원본 목록이 변경되었습니다.")
+        if review.get("synthetic_review_policy"):
+            from .common import bound_file
+            selection = read_json(bound_file(Path(state["project"]).parent, review["representative_selection"]))
+            if (review["synthetic_review_policy"] != "one_per_phrase_v1"
+                    or selection.get("policy") != review["synthetic_review_policy"]
+                    or selection.get("source_manifest", {}).get("sha256") != review["pool_sha256"]
+                    or selection.get("representative_queue", {}).get("sha256") != review["queue_sha256"]):
+                raise ValueError("유사어 대표 선정 기록이 현재 검수 목록과 다릅니다.")
         rows = read_rows(path)
         if not rows:
             raise ValueError("검수할 음원이 없습니다.")
@@ -1314,6 +1390,10 @@ class StudioManager:
                       "whole_pool_policy_approved": payload.get("policy_approved") is True}
             if review.get("pool_manifest"):
                 answer["source_manifest_sha256"] = digest(review["pool_manifest"])
+            if review.get("synthetic_review_policy"):
+                answer.update(synthetic_review_policy=review["synthetic_review_policy"],
+                              representative_selection_sha256=review["representative_selection"]["sha256"],
+                              consent_scope="Heard one representative per phrase; other technical-pass originals are policy-admitted, not individually heard")
             if evaluation_only:
                 answer.update(evaluation_only=True, intended_use="held_out_development_noise", pools=[],
                               consent_scope="Held-out Development noise evaluation only; not for training")
@@ -1343,6 +1423,36 @@ class StudioManager:
                     rows.append(row)
         if len({row["sample_id"] for row in rows}) != len(rows):
             raise ValueError("기준 목소리 목록에 중복 번호가 있습니다.")
+        return state, rows
+
+    def hard_preview_rows(self, project_id):
+        """Read the frozen full pool without granting consent or recording listening."""
+        state = self._load(project_id)
+        generated = state.get("results", {}).get("hard_generation", {})
+        descriptor = generated.get("result", generated).get("review")
+        if not descriptor:
+            raise ValueError("준비된 유사어 음원이 없습니다.")
+        root = Path(state["project"]).parent
+        path = resolved(root, descriptor["pool_manifest"])
+        expected = descriptor.get("pool_sha256")
+        if expected is None:
+            # Older generation receipts bound the full pool in the following
+            # review gate, rather than inside the generation result itself.
+            for review in state.get("results", {}).get("hard_review", {}).get("reviews", []):
+                if resolved(root, review.get("pool_manifest", "")) == path:
+                    expected = review.get("pool_sha256")
+            answer = state.get("inputs", {}).get("review_answers", {}).get("hard")
+            if expected is None and answer:
+                from .common import bound_file
+                expected = read_json(bound_file(root, answer)).get("source_manifest_sha256")
+        if not path.is_relative_to(root) or not expected or digest(path) != expected:
+            raise ValueError("유사어 전체 음원 목록이 변경되었습니다.")
+        rows = read_rows(path)
+        if not rows or any(row.get("split") != "train" or row.get("provenance") != "qwen_tts"
+                           or row.get("technical_pass") is not True for row in rows):
+            raise ValueError("유사어 전체 듣기 목록의 출처가 올바르지 않습니다.")
+        if len({row["sample_id"] for row in rows}) != len(rows):
+            raise ValueError("유사어 전체 듣기 목록에 중복 번호가 있습니다.")
         return state, rows
 
     @staticmethod
@@ -1376,6 +1486,11 @@ class StudioManager:
         if sum(preview_counts.values()):
             view["reference_preview"] = {"url": f"/reference-preview/?project={state['id']}",
                                          "count": sum(preview_counts.values()), **preview_counts}
+        hard_result = state.get("results", {}).get("hard_generation", {})
+        hard_result = hard_result.get("result", hard_result)
+        if hard_result.get("full_target_reached") and hard_result.get("review"):
+            view["hard_preview"] = {"url": f"/hard-preview/?project={state['id']}",
+                                    "count": hard_result.get("technical_pass", hard_result.get("target_originals"))}
         job = state.get("job") or {}
         if job:
             view["current_stage_elapsed_seconds"] = round(_elapsed(job.get("started_at")), 1)
@@ -1494,6 +1609,7 @@ class StudioManager:
         if reviews:
             r = reviews[0]
             view["review"] = {"queue_id": r["id"], "title": r.get("title", "음원 확인"),
+                              "queue_sha256": r["queue_sha256"],
                               "description": r.get("description", "정상 음원은 보존하고 문제가 있는 항목만 표시하세요."),
                               "remaining_queues": len(reviews),
                               "url": f"/review/?project={state['id']}&queue={quote(r['id'])}"}
@@ -1672,6 +1788,24 @@ def make_studio_server(manager, port=8793):
                     return self.respond((resources / name).read_bytes(), kind=kind)
                 if path.startswith("/api/projects/") and path.endswith("/log"):
                     return self.respond({"log": manager.log(path.split("/")[3])})
+                if path.startswith("/hard-preview/"):
+                    project_id = query["project"][0]
+                    state, rows = manager.hard_preview_rows(project_id)
+                    base = f"?project={quote(project_id)}"
+                    if path == "/hard-preview/":
+                        return self.respond((resources / "reference_preview.html").read_bytes(), kind="text/html; charset=utf-8")
+                    if path == "/hard-preview/queue":
+                        return self.respond({"kind": "hard", "count": len(rows), "items": [{
+                            "id": row["sample_id"], "text": row["text"], "voice_family_id": row["voice_family_id"],
+                            "group": row["text"] + " · " + row["voice_family_id"],
+                            "audio": f"/hard-preview/audio/{i}" + base} for i, row in enumerate(rows)]})
+                    if path.startswith("/hard-preview/audio/"):
+                        index = int(path.rsplit("/", 1)[1])
+                        if not 0 <= index < len(rows):
+                            raise ValueError("잘못된 유사어 음원 번호입니다.")
+                        from .common import bound_file
+                        audio = bound_file(Path(state["project"]).parent, rows[index])
+                        return self.send_file(audio)
                 if path.startswith("/reference-preview/"):
                     project_id = query["project"][0]
                     state, rows = manager.reference_preview_rows(project_id)
@@ -1714,6 +1848,9 @@ def make_studio_server(manager, port=8793):
                                 payload.update(policy_review=True, evaluation_only=True,
                                     intended_use="held_out_development_noise", pools=[],
                                     policy_text="이 자료를 학습에는 사용하지 않고, 학습과 분리한 소음 평가에만 사용하는 데 동의합니다.")
+                            elif review.get("synthetic_review_policy") == "one_per_phrase_v1":
+                                payload.update(policy_review=True,
+                                    policy_text="문구별 대표 음원을 듣고, 보존한 문구의 나머지 자동 검사 통과 음원도 학습에 사용하는 데 동의합니다. 폐기한 문구의 음원은 제외합니다.")
                             else:
                                 payload.update(policy_review=True, policy_text="대표 음원 청취와 출처·기술 검사에 근거해 이 자료 묶음을 학습에 사용하는 데 동의합니다. 모든 원본을 들었다는 뜻은 아닙니다.")
                         return self.respond(payload)

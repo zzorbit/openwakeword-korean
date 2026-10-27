@@ -349,6 +349,193 @@ def test_each_synthetic_phrase_family_needs_its_actual_heard_representative(synt
         _approve(synthetic_pool)
 
 
+def _refresh_phrase_selection(pool):
+    _refresh(pool)
+    by_path = {row["path"]: row for row in pool["rows"]}
+    selected = []
+    for preview in pool["representatives"]:
+        row = by_path[preview["reviewed_source"]["path"]]
+        preview.update(text=row["text"], voice_family_id=row["voice_family_id"])
+        selected.append({"dataset_id": row["dataset_id"], "text": row["text"],
+                         "voice_family_id": row["voice_family_id"], "source_sha256": row["sha256"],
+                         "preview_sample_id": preview["sample_id"]})
+    _refresh(pool)
+    receipt = {"kind": "hard_phrase_representative_selection_v1", "policy": "one_per_phrase_v1",
+               "source_manifest": _bound(pool["manifest"]), "representative_queue": _bound(pool["queue"]),
+               "representatives": selected}
+    write_json(pool["selection"], receipt)
+    answers = read_json(pool["answers"])
+    answers.update(synthetic_review_policy="one_per_phrase_v1", representative_selection_sha256=digest(pool["selection"]))
+    write_json(pool["answers"], answers)
+
+
+@pytest.fixture
+def phrase_review_pool(per_phrase_pool):
+    pool = per_phrase_pool
+    pool["rows"] = [row for row in pool["rows"] if row["provenance"] == "qwen_tts"]
+    by_path = {row["path"]: row for row in pool["rows"]}
+    seen, selected = set(), []
+    for preview in pool["representatives"]:
+        source = by_path.get(preview["reviewed_source"]["path"])
+        if source and source["text"] not in seen:
+            selected.append(preview)
+            seen.add(source["text"])
+    pool["representatives"] = selected
+    pool["selection"] = pool["root"] / "review/phrase_selection.json"
+    _refresh_phrase_selection(pool)
+    return pool
+
+
+def _approve_phrase(pool, **kwargs):
+    return approve_pool(pool["project"], source_manifest=_bound(pool["manifest"]),
+                        representative_queue=_bound(pool["queue"]), answers=_bound(pool["answers"]),
+                        output=pool["output"], synthetic_review_policy="one_per_phrase_v1",
+                        representative_selection=_bound(pool["selection"]), **kwargs)
+
+
+def test_one_per_phrase_admits_all_verified_originals_without_inventing_listening(phrase_review_pool):
+    pool = phrase_review_pool
+    before = {key: digest(pool[key]) for key in ("manifest", "queue", "answers", "selection", "contract_path")}
+    assert _approve_phrase(pool)["source_count"] == 8
+    record = read_json(pool["output"])
+    assert record["representative_preview_count"] == 2 and len(record["technical_checks"]) == 8
+    assert record["synthetic_review_policy"] == "one_per_phrase_v1"
+    assert len(record["actual_listened_previews"]) == 2
+    assert len(record["unheard_source_policy_admitted_sha256"]) == 6
+    assert len(record["synthetic_phrase_strata"]) == 2 and len(record["synthetic_phrase_family_strata"]) == 4
+    assert record["individual_source_listening_claimed"] is False
+    assert all(digest(pool[key]) == sha for key, sha in before.items())
+    root, config = load_project(pool["project"])
+    validate_admission(root, [{**row, "admission": _bound(pool["output"])} for row in pool["rows"]], config, "hard_negative")
+
+
+def test_reduced_phrase_queue_cannot_silently_relax_legacy_policy(phrase_review_pool):
+    with pytest.raises(ValueError, match="phrase/family"):
+        _approve(phrase_review_pool)
+
+
+@pytest.mark.parametrize("field,value", [("synthetic_review_policy", None), ("representative_selection_sha256", "0" * 64)])
+def test_one_per_phrase_needs_explicit_hash_bound_human_policy_consent(phrase_review_pool, field, value):
+    pool = phrase_review_pool
+    answers = read_json(pool["answers"])
+    answers[field] = value
+    write_json(pool["answers"], answers)
+    with pytest.raises(ValueError, match="explicitly bind"):
+        _approve_phrase(pool)
+
+
+@pytest.mark.parametrize("mode", ["missing", "duplicate"])
+def test_one_per_phrase_selection_must_cover_each_phrase_exactly_once(phrase_review_pool, mode):
+    pool = phrase_review_pool
+    if mode == "missing":
+        pool["representatives"] = pool["representatives"][:1]
+    else:
+        source = pool["rows"][1]
+        pool["representatives"].append({**source, "sample_id": "extra_representative", "reviewed_source": _bound(source["path"])})
+    _refresh_phrase_selection(pool)
+    with pytest.raises(ValueError, match="every distinct phrase exactly once"):
+        _approve_phrase(pool)
+
+
+def test_one_per_phrase_cannot_relax_public_pool_review(pool):
+    with pytest.raises(ValueError, match="Unsupported synthetic"):
+        approve_pool(pool["project"], source_manifest=_bound(pool["manifest"]),
+                     representative_queue=_bound(pool["queue"]), answers=_bound(pool["answers"]),
+                     output=pool["output"], synthetic_review_policy="guessed")
+
+
+def test_one_per_phrase_rejects_public_sources_even_with_explicit_selection_consent(pool):
+    pool["selection"] = pool["root"] / "review/public_selection.json"
+    write_json(pool["selection"], {"kind": "hard_phrase_representative_selection_v1", "policy": "one_per_phrase_v1",
+                                   "source_manifest": _bound(pool["manifest"]), "representative_queue": _bound(pool["queue"]),
+                                   "representatives": []})
+    answers = read_json(pool["answers"])
+    answers.update(synthetic_review_policy="one_per_phrase_v1", representative_selection_sha256=digest(pool["selection"]))
+    write_json(pool["answers"], answers)
+    with pytest.raises(ValueError, match="only admits Qwen"):
+        _approve_phrase(pool)
+
+
+def test_one_per_phrase_never_follows_heldout_audio_before_metadata_audit(phrase_review_pool, monkeypatch):
+    import korean_openwakeword.pool_review as module
+    pool = phrase_review_pool
+    pool["rows"][-1]["split"] = "final"
+    _refresh_phrase_selection(pool)
+    inspected, original = [], module.bound_file
+    def track(root, binding):
+        inspected.append(str(binding["path"]))
+        return original(root, binding)
+    monkeypatch.setattr(module, "bound_file", track)
+    with pytest.raises(ValueError, match="reserved"):
+        _approve_phrase(pool)
+    assert pool["rows"][-1]["path"] not in inspected
+
+
+def test_one_per_phrase_still_checks_unheard_generation_seed(phrase_review_pool):
+    pool = phrase_review_pool
+    pool["rows"][-1]["seed"] = -1
+    _refresh_phrase_selection(pool)
+    with pytest.raises(ValueError, match="phrase, voice and seed"):
+        _approve_phrase(pool)
+
+
+def test_one_per_phrase_still_checks_every_unheard_original_audio(phrase_review_pool):
+    pool = phrase_review_pool
+    row = pool["rows"][-1]
+    sf.write(row["path"], np.zeros(8000), 16000, subtype="PCM_16")
+    row["sha256"] = digest(row["path"])
+    _refresh_phrase_selection(pool)
+    with pytest.raises(ValueError, match="Silent"):
+        _approve_phrase(pool)
+
+
+def test_one_per_phrase_rejects_unheard_selected_preview(phrase_review_pool):
+    pool = phrase_review_pool
+    answers = read_json(pool["answers"])
+    answers["decisions"][pool["representatives"][0]["sample_id"]]["listened"] = False
+    write_json(pool["answers"], answers)
+    with pytest.raises(ValueError, match="resolution"):
+        _approve_phrase(pool)
+
+
+def _prior_hard_review(pool, bad, disposition):
+    queue, answers = pool["root"] / "review/previous_full_queue.jsonl", pool["root"] / "review/previous_full_answers.json"
+    previews = [{**row, "sample_id": "prior_" + row["sample_id"], "reviewed_source": _bound(row["path"])} for row in pool["rows"]]
+    _rows(queue, previews)
+    decisions = {row["sample_id"]: {"decision": disposition if row["reviewed_source"]["sha256"] == bad["sha256"] else "keep", "listened": True} for row in previews}
+    write_json(answers, {"kind": "content_listening_review", "wakeword": "보라야", "saved_at": "2026-10-27T00:00:00+00:00",
+                        "source_scope": "Human dispositions entered through the local review screen", "decisions": decisions,
+                        "source_manifest_sha256": digest(pool["manifest"]), "representative_queue_sha256": digest(queue),
+                        "queue_sha256": digest(queue), "queued_audio_sha256": {row["sample_id"]: row["sha256"] for row in previews}})
+    return {"queue": _bound(queue), "answers": _bound(answers)}
+
+
+@pytest.mark.parametrize("disposition", ["discard", "review"])
+def test_reduced_queue_cannot_skip_an_existing_discard_or_hold(phrase_review_pool, disposition):
+    pool = phrase_review_pool
+    prior = _prior_hard_review(pool, pool["rows"][-1], disposition)
+    before = digest(prior["answers"]["path"])
+    with pytest.raises(ValueError, match="Previously discarded"):
+        _approve_phrase(pool, prior_review_evidence=[prior])
+    assert digest(prior["answers"]["path"]) == before
+
+
+def test_prior_hold_can_only_be_cleared_by_actually_rehearing_that_exact_original(phrase_review_pool):
+    pool = phrase_review_pool
+    bad = pool["rows"][-1]
+    for index, preview in enumerate(pool["representatives"]):
+        if preview["text"] == bad["text"]:
+            pool["representatives"][index] = {**bad, "sample_id": "reheard_exact_hold", "reviewed_source": _bound(bad["path"])}
+    _refresh_phrase_selection(pool)
+    prior = _prior_hard_review(pool, bad, "review")
+    before = digest(prior["answers"]["path"])
+    _approve_phrase(pool, prior_review_evidence=[prior])
+    record = read_json(pool["output"])
+    assert record["preserved_prior_review_evidence"][0]["answers"]["sha256"] == before
+    assert len(record["prior_listened_sources_retained_sha256"]) == 8
+    assert not record["unheard_source_policy_admitted_sha256"]
+
+
 @pytest.mark.parametrize("field,value,match", [
     ("human_reference_used", True, "synthetic-only"),
     ("split", "final", "Train synthetic-only"),
@@ -452,7 +639,8 @@ def test_synthetic_category_basis_can_come_from_verified_generation_contract(syn
 
 
 @pytest.mark.parametrize("per_phrase", [False, True])
-def test_fresh_generated_references_review_pilot_and_hard_pool_need_no_manifest_rewrite(tmp_path, monkeypatch, per_phrase):
+@pytest.mark.parametrize("representative_only", [False, True])
+def test_fresh_generated_references_review_pilot_and_hard_pool_need_no_manifest_rewrite(tmp_path, monkeypatch, per_phrase, representative_only):
     """The public fresh-project flow keeps reference rows pending/immutable.
 
     A user review approves family IDs in approval.json. That is the authority
@@ -496,16 +684,41 @@ def test_fresh_generated_references_review_pilot_and_hard_pool_need_no_manifest_
     candidates = generate_hard(project, ["보리야", "돌아와"], model=model, **budget)
     assert candidates["full_target_reached"]
     sources = [r for r in read_rows(candidates["candidates"]) if r["technical_pass"]]
-    source_manifest = root / "review/fresh_sources.jsonl"
-    queue = root / "review/fresh_representatives.jsonl"
-    _rows(source_manifest, sources)
-    previews = [{**r, "sample_id": "preview_" + r["sample_id"], "reviewed_source": {"path": r["path"], "sha256": r["sha256"]}} for r in sources]
-    _rows(queue, previews)
-    result = apply_pool_review(project, queue, source_manifest,
-                              {r["sample_id"]: {"decision": "keep", "listened": True} for r in previews}, True)
+    if representative_only:
+        from pathlib import Path
+        from korean_openwakeword.studio_steps import _hard_queue
+        workspace = root / ".studio"
+        workspace.mkdir(exist_ok=True)
+        descriptor = _hard_queue(project, workspace, policy="one_per_phrase_v1")
+        source_manifest, queue = Path(descriptor["pool_manifest"]), Path(descriptor["queue"])
+        previews = read_rows(queue)
+        assert len(previews) == 2 and len(read_rows(source_manifest)) == 4
+        answers = root / "review/fresh_phrase_answers.json"
+        write_json(answers, {"kind": "content_listening_review", "wakeword": "보라야", "saved_at": "2026-10-27T00:00:00+00:00",
+                            "source_scope": "Human dispositions entered through the local review screen",
+                            "source_manifest_sha256": digest(source_manifest), "representative_queue_sha256": digest(queue),
+                            "queue_sha256": digest(queue), "queued_audio_sha256": {r["sample_id"]: r["sha256"] for r in previews},
+                            "decisions": {r["sample_id"]: {"decision": "keep", "listened": True} for r in previews},
+                            "whole_pool_policy_approved": True, "synthetic_review_policy": descriptor["synthetic_review_policy"],
+                            "representative_selection_sha256": descriptor["representative_selection"]["sha256"]})
+        result = approve_pool(project, source_manifest=_bound(source_manifest), representative_queue=_bound(queue),
+                              answers=_bound(answers), output="review/fresh_phrase_admission.json",
+                              synthetic_review_policy=descriptor["synthetic_review_policy"],
+                              representative_selection=descriptor["representative_selection"])
+    else:
+        source_manifest = root / "review/fresh_sources.jsonl"
+        queue = root / "review/fresh_representatives.jsonl"
+        _rows(source_manifest, sources)
+        previews = [{**r, "sample_id": "preview_" + r["sample_id"], "reviewed_source": {"path": r["path"], "sha256": r["sha256"]}} for r in sources]
+        _rows(queue, previews)
+        result = apply_pool_review(project, queue, source_manifest,
+                                  {r["sample_id"]: {"decision": "keep", "listened": True} for r in previews}, True)
     assert result["source_count"] == 4
     admission = read_json(root / result["admission"]["path"])
     assert len(admission["synthetic_phrase_family_strata"]) == 4
+    if representative_only:
+        assert len(admission["technical_checks"]) == 4
+        assert len(admission["actual_listened_previews"]) == len(admission["unheard_source_policy_admitted_sha256"]) == 2
     assert digest(reference_queue) == original_bank_sha
     assert {r["status"] for r in read_rows(reference_queue)} == {"pending_review"}
     _, config = load_project(project)

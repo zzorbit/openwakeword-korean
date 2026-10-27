@@ -25,8 +25,16 @@ audio{width:100%;margin-top:14px}p{margin:10px 0 0;color:#b1bac4}#error{color:#f
 const voice=document.getElementById('voice'), audio=document.getElementById('audio');
 const previous=document.getElementById('previous'), next=document.getElementById('next');
 const continuous=document.getElementById('continuous'), sentence=document.getElementById('sentence');
+const hard=location.pathname.startsWith('/hard-preview/');
+if(hard){document.title='유사어 전체 듣기';voice.setAttribute('aria-label','들을 유사어 음원');}
 let items=[], playingContinuously=false;
 function stop(){playingContinuously=false;continuous.textContent='연속 듣기';}
+function audioUrl(value){
+  if(typeof value!=='string'||!value)throw Error('음원 경로가 올바르지 않습니다.');
+  const url=new URL(value,location.href);
+  if(url.origin!==location.origin||!['http:','https:'].includes(url.protocol))throw Error('음원 경로가 올바르지 않습니다.');
+  return url.pathname+url.search;
+}
 function select(index,play=false){
   if(!items[index])return;
   voice.value=String(index);audio.src=items[index].audio;sentence.textContent=items[index].text;
@@ -49,11 +57,15 @@ audio.addEventListener('ended',()=>{
 (async()=>{
   try{
     const project=new URL(location.href).searchParams.get('project');
-    const response=await fetch('/reference-preview/queue?project='+encodeURIComponent(project));
+    const response=await fetch((hard?'/hard-preview/queue':'/reference-preview/queue')+'?project='+encodeURIComponent(project));
     const payload=await response.json();if(!response.ok)throw Error(payload.error||'목록을 불러오지 못했습니다.');
-    items=payload.items;
-    items.forEach((item,index)=>{const option=document.createElement('option');option.value=String(index);option.textContent=`${index+1}. ${item.group} · ${item.id}`;voice.append(option);});
-    if(items.length)select(0);else throw Error('준비된 기준 목소리가 없습니다.');
+    if(!Array.isArray(payload.items))throw Error('음원 목록이 올바르지 않습니다.');
+    items=payload.items.map(item=>{
+      if(!item||typeof item.text!=='string'||typeof item.id!=='string')throw Error('음원 목록이 올바르지 않습니다.');
+      return {...item,audio:audioUrl(item.audio)};
+    });
+    items.forEach((item,index)=>{const option=document.createElement('option');option.value=String(index);option.textContent=hard?`${index+1}. ${item.text} · ${item.voice_family_id||item.id}`:`${index+1}. ${item.group} · ${item.id}`;voice.append(option);});
+    if(items.length)select(0);else throw Error(hard?'준비된 유사어 음원이 없습니다.':'준비된 기준 목소리가 없습니다.');
   }catch(error){document.getElementById('error').textContent=error.message;}
 })();
 </script>

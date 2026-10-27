@@ -207,7 +207,7 @@
   let snapshot = { projects: [] }, recipes = [], selectedId = "", selectedPreset = "check";
   let newProject = false, busy = false, refreshing = false, pollTimer = null, recipeReady = false;
   let locationTimer = null, locationRevision = 0, modelLocation = { key: "", directory: "" };
-  let reviewIdentity = "", referencePreviewIdentity = "", inputIdentity = "", resultIdentity = "", resultMode = "results", logProject = "";
+  let reviewIdentity = "", referencePreviewIdentity = "", hardPreviewIdentity = "", inputIdentity = "", resultIdentity = "", resultMode = "results", logProject = "";
   let hardPhraseFields = [];
   const selectedProject = () => (snapshot.projects || []).find(project => project.id === selectedId);
 
@@ -682,7 +682,7 @@
     const show = Boolean(review && url && !activeStatuses.has(project.status));
     $("review-section").hidden = !show;
     if (!show) { if (reviewIdentity) frameSource($("review-frame"), ""); reviewIdentity = ""; renderVoiceDesign("review-voices", null); return; }
-    const identity = project.id + ":" + (review.queue_id || review.id || url);
+    const identity = project.id + ":" + (review.queue_id || review.id || url) + ":" + (typeof review.queue_sha256 === "string" ? review.queue_sha256 : "");
     const references = /^references(?:_|$)/.test(review.queue_id || "");
     const counts = project.reference_counts;
     const voiceCounts = counts && [counts.train, counts.validation].every(value => Number.isInteger(value) && value > 0)
@@ -690,7 +690,26 @@
     $("review-title").textContent = references ? "합성 목소리 확인" : review.title || "오디오 검수";
     $("review-description").textContent = references ? voiceCounts + "목소리와 음질을 확인하세요. 호출어 발음은 다음 단계에서 확인합니다." : review.description || "끝까지 들으면 자동으로 보존됩니다. 문제가 있는 항목만 바꾼 뒤 검수 완료·저장을 누르세요.";
     renderVoiceDesign("review-voices", references ? project.reference_design : null);
-    if (reviewIdentity !== identity) { frameSource($("review-frame"), url); reviewIdentity = identity; }
+    if (reviewIdentity !== identity) {
+      const frame = $("review-frame");
+      if (reviewIdentity && frame.getAttribute("src") === url) frameSource(frame, "");
+      frameSource(frame, url); reviewIdentity = identity;
+    }
+  }
+  function renderHardPreview(project) {
+    const preview = project?.hard_preview, url = localUrl(preview?.url);
+    const show = Boolean(preview?.available !== false && url && Number.isInteger(preview?.count) && preview.count > 0);
+    const details = $("hard-preview"), frame = $("hard-preview-frame");
+    const identity = show ? project.id + ":" + url : "";
+    if (hardPreviewIdentity !== identity) {
+      details.open = false;
+      frameSource(frame, "");
+      hardPreviewIdentity = identity;
+    }
+    details.hidden = !show;
+    if (!show) return;
+    $("hard-preview-counts").textContent = `생성된 유사어 ${number(preview.count)}개 · 듣기는 검수 결과에 저장되지 않습니다.`;
+    frameSource(frame, details.open ? url : "");
   }
   function renderInput(project) {
     const input = project.input;
@@ -976,7 +995,7 @@
     if (evaluating(project)) $("eta").textContent = progress && !/단계/.test(progress.unit) ? "음원 수 기준 · 긴 비호출 음원은 더 오래 걸립니다." : "평가 음원의 무결성과 형식을 확인하고 있습니다.";
     $("project-error").hidden = !project.error;
     $("project-error").textContent = project.error && typeof project.error === "object" ? project.error.message || JSON.stringify(project.error) : project.error || "";
-    renderDownloads(project); renderCounts(project); renderReferencePreview(project); renderReview(project); renderInput(project); renderResultFrame(project);
+    renderDownloads(project); renderCounts(project); renderReferencePreview(project); renderHardPreview(project); renderReview(project); renderInput(project); renderResultFrame(project);
     if (logProject !== project.id) { logProject = project.id; $("log").textContent = "작업 기록 보기를 열면 최신 기록을 불러옵니다."; if ($("log-details").open) loadLog(); }
   }
   function render() {
@@ -988,6 +1007,7 @@
     if (project && !newProject) renderProject(project);
     else {
       renderReferencePreview(null);
+      renderHardPreview(null);
       if (reviewIdentity || resultIdentity) {
         frameSource($("review-frame"), ""); frameSource($("result-frame"), "");
         reviewIdentity = ""; resultIdentity = "";
@@ -1095,6 +1115,7 @@
     $("refresh-log").addEventListener("click", loadLog);
     $("log-details").addEventListener("toggle", loadLog);
     $("reference-preview").addEventListener("toggle", () => renderReferencePreview(newProject ? null : selectedProject()));
+    $("hard-preview").addEventListener("toggle", () => renderHardPreview(newProject ? null : selectedProject()));
     $("result-tab").addEventListener("click", () => { resultMode = "results"; if (selectedProject()) renderResultFrame(selectedProject()); });
     $("mic-tab").addEventListener("click", () => { resultMode = "mic"; if (selectedProject()) renderResultFrame(selectedProject()); });
     $("analysis-tab").addEventListener("click", () => { resultMode = "analysis"; if (selectedProject()) renderResultFrame(selectedProject()); });

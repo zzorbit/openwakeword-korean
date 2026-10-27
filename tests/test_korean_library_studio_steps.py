@@ -526,7 +526,9 @@ def test_hard_representatives_cover_every_phrase_voice_pair(project):
                     dataset_id="qwen_bora", text=("보리야", "돌아와")[i % 2],
                     voice_family_id=("voice1", "voice2")[(i // 2) % 2]))
     steps._publish_rows(root / "data/generated/hard/candidates.jsonl", rows)
-    result = run(project, "hard_review")
+    legacy = steps.preset_settings()
+    legacy.pop("hard_review_policy")
+    result = run(project, "hard_review", settings=legacy)
     descriptor = result["reviews"][0]
     assert result["state"] == "waiting_review"
     assert descriptor["count"] == 4
@@ -757,7 +759,9 @@ def test_hard_worker_excludes_whole_discarded_phrase_and_resume_keeps_exact_mani
                        text=text, voice_family_id=voice, provenance="qwen_tts", human_reference_used=False)
             for i, (name, text, voice) in enumerate((("hard0", "도리야", "v0"), ("hard1", "기다려", "v0"), ("hard2", "기다려", "v1")))]
     steps._publish_rows(root / "data/generated/hard/candidates.jsonl", rows)
-    descriptor = run(project, "hard_review")["reviews"][0]
+    legacy = steps.preset_settings()
+    legacy.pop("hard_review_policy")
+    descriptor = run(project, "hard_review", settings=legacy)["reviews"][0]
     previews = read_rows(descriptor["queue"])
     decisions = {r["sample_id"]: {"decision": "keep" if r["text"] == "도리야" else "discard", "listened": True} for r in previews}
     answers = root / ".studio/hard_actual_answers.json"
@@ -779,12 +783,12 @@ def test_hard_worker_excludes_whole_discarded_phrase_and_resume_keeps_exact_mani
         write_json(output, record)
         return {"admission": {"path": output.relative_to(root).as_posix(), "sha256": digest(output)}}
     monkeypatch.setattr(pool_review, "approve_pool", approve)
-    result = run(project, "hard_connect", context)
+    result = run(project, "hard_connect", context, settings=legacy)
     assert result["state"] == "completed" and result["result"]["originals"] == 1
     manifest = root / read_json(project)["manifests"]["hard_negative"]
     before = manifest.read_bytes()
     assert [r["text"] for r in read_rows(manifest)] == ["도리야"]
-    assert run(project, "hard_connect", context)["state"] == "completed"
+    assert run(project, "hard_connect", context, settings=legacy)["state"] == "completed"
     assert manifest.read_bytes() == before and len(calls) == 1
 
 
@@ -793,7 +797,9 @@ def test_mixed_hard_phrase_dispositions_return_queue_without_rewriting_answers(p
     rows = [fake_audio(root, f"mixed{i}", slot=i, technical_pass=True, text="기다려", voice_family_id=f"v{i}", dataset_id="fixture")
             for i in range(2)]
     steps._publish_rows(root / "data/generated/hard/candidates.jsonl", rows)
-    descriptor = run(project, "hard_review")["reviews"][0]
+    legacy = steps.preset_settings()
+    legacy.pop("hard_review_policy")
+    descriptor = run(project, "hard_review", settings=legacy)["reviews"][0]
     previews = read_rows(descriptor["queue"])
     answers = root / ".studio/hard_actual_answers.json"
     write_json(answers, {"source_scope": "Human dispositions entered through the local review screen", "saved_at": "user-save",
@@ -804,7 +810,7 @@ def test_mixed_hard_phrase_dispositions_return_queue_without_rewriting_answers(p
     context = {"inputs": {"review_answers": {"hard": {"path": str(answers), "sha256": digest(answers)}},
                           "review_results": {"hard": {"state": "review_saved", "admission_pending": True}}}}
     before = answers.read_bytes()
-    result = run(project, "hard_connect", context)
+    result = run(project, "hard_connect", context, settings=legacy)
     assert result["state"] == "waiting_review" and "판정이 다릅니다" in result["message"]
     assert answers.read_bytes() == before
 
