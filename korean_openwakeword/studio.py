@@ -186,8 +186,9 @@ _LEGACY_COMPATIBLE_CONTRACTS = {
         "28f88142c4ab88361199fd2fae2ec1fca1ba863412c206fb0cd5e6b5515def14"}
 
 
-# An acquisition-only update still changes computational files. It requires an
-# audited, exact source/target pair, not a blanket exception for download code.
+# An acquisition or fixed-public-source validation update still changes
+# computational files. It requires an audited, exact source/target pair, not a
+# blanket exception for download or admission code.
 # Final release fingerprints and the preserved-input equivalence receipt are
 # filled only after the complete source tree has been frozen and tested.
 _AUDITED_ACQUISITION_UPDATES = {
@@ -198,10 +199,13 @@ _AUDITED_ACQUISITION_UPDATES = {
         "changed_files": ('downloads.py', 'evaluation_materials.py', 'evaluation_rir.py', 'material_downloads.py', 'official_music.py', 'studio_data.py', 'studio_steps.py'),
         "evidence_sha256": "250073e4bae086eefaf11e1a00a57baf169fcbff8376a0dea0e4ff12196c818c",
     },
+    # Exact 0.24.0 -> 0.24.1 original-owner validation repair.
+    "41e7cbd1606ebbed420f5b07f971296207d263ed878acbab3d26a7b388f9edec": {'source_stages_sha256': 'f13dad4d451cefc5269ff1f1bad5e9f4a740bbd97cc7b25298b51c67fa5dca7e', 'target_computation_sha256': '190472c48c47978effa8a0360fd56287ca72c8c250e321619bbe00984f518ccb', 'target_stages_sha256': '24b984a10bd10d23663ef9e463286730fbd51ea0f658235b363e0a09b2cdf966', 'changed_files': ('material_policy.py',), 'evidence_sha256': '30765776c7006abc7630249662f36039bbf2f7080d520dc412d43b2a9e98e0b6'},
 }
 _ACQUISITION_UPDATE_FILES = {
     "downloads.py", "download_control.py", "material_downloads.py", "studio_data.py",
     "evaluation_materials.py", "evaluation_rir.py", "studio_evaluation_data.py", "official_music.py", "studio_steps.py",
+    "material_policy.py",
 }
 
 # Only the audited reference-bank expansion can rebind this release. Existing
@@ -387,7 +391,7 @@ def _audited_reference_update(previous, current):
 
 
 def _audited_acquisition_update(previous, current):
-    """Return a release-bound audit only for its fully pinned acquisition diff."""
+    """Return a release-bound audit for an exact acquisition/admission diff."""
     audit = _AUDITED_ACQUISITION_UPDATES.get(previous.get("computation_sha256"))
     if not isinstance(audit, dict):
         return None
@@ -900,6 +904,8 @@ class StudioManager:
                            if reference_admission_update else
                            "기존 목소리·검수 결과를 보존하고 부족한 학습용 기준 목소리만 추가합니다. 호출어 생성 전 작업에만 수량 변경을 적용합니다."
                            if reference_update else
+                           "재사용한 공개 자료를 원래 준비 기록에 맞춰 검증하도록 수정한 업데이트입니다. 기존 음원·검수 결과·설정은 보존됩니다."
+                           if audited_update and audited_update.get("changed_files") == ["material_policy.py"] else
                            "다운로드 순서·진행 표시 변경의 자료 동일성을 확인한 업데이트입니다. 기존 설정과 완료 결과를 검증한 뒤 적용할 수 있습니다."
                            if audited_update else "남은 단계의 계산·자료 계약이 같습니다. 기존 설정과 완료 결과를 검증하고 업데이트를 적용할 수 있습니다."),
                 **({"audited_acquisition_update": audited_update} if audited_update else {}),

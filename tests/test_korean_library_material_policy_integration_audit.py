@@ -1,14 +1,16 @@
 """Exercise real fixed-source evidence through Train admission consumers."""
 from pathlib import Path
+import copy
 import json
+import shutil
 
 import numpy as np
 import pytest
 import soundfile as sf
 
-from korean_openwakeword.common import digest, identity, read_json, read_rows, write_json
+from korean_openwakeword.common import digest, identity, read_json, read_rows, resolved, write_json
 from korean_openwakeword.data import validate_admission
-from korean_openwakeword.material_policy import fixed_queue_evidence
+from korean_openwakeword.material_policy import fixed_queue_evidence, validate_library_policy_evidence
 from korean_openwakeword.negative_streams import pack_negative_streams
 from korean_openwakeword.preparation import apply_prepared_review
 from korean_openwakeword.project import create_project, load_project
@@ -50,6 +52,89 @@ def test_fixed_source_admission_respects_final_lock_before_creating_receipts(fix
         apply_prepared_review(project, preparation=preparation["preparation"],
             pools=queue["pools"], library_evidence=evidence, connect=True)
     assert not (Path(preparation["preparation"]["path"]).parent / "admitted_library_fixed_sources_v1").exists()
+
+
+@pytest.fixture
+def copied_fixed_material(fixed_zeroth):
+    """Reuse exact public metadata; its recorded owner remains the first model."""
+    project, prepared, queue, preparation = fixed_zeroth
+    evidence = fixed_queue_evidence(project, prepared, queue)
+    admitted = apply_prepared_review(project, preparation=preparation["preparation"],
+        pools=queue["pools"], library_evidence=evidence, connect=True)
+    target = project.parent.with_name("reused_model")
+    shutil.copytree(project.parent, target)
+    _, config = load_project(target / "project.json")
+    artifact = read_json(resolved(target, admitted["admission"]["path"]))
+    return project, target, config, artifact, preparation
+
+
+def test_copied_fixed_material_validates_at_its_original_owner_without_rewriting(copied_fixed_material):
+    project, target, config, artifact, preparation = copied_fixed_material
+    evidence = read_json(resolved(target, artifact["library_evidence"]["path"]))
+    assert evidence["project"] == evidence["recipe"]["project"] == str(project)
+    protected = [resolved(target, artifact["library_evidence"]["path"]),
+                 Path(preparation["preparation"]["path"]),
+                 resolved(target, config["manifests"]["noise"]),
+                 resolved(target, config["manifests"]["korean_negative"])]
+    before = {path: digest(path) for path in protected}
+    for role in ("noise", "korean_negative"):
+        rows = read_rows(resolved(target, config["manifests"][role]))
+        assert rows and all(row["individual_human_listening"] is False for row in rows)
+        validate_admission(target, iter(rows), config, role)
+    assert validate_library_policy_evidence(target, artifact, "noise") == evidence
+    assert {path: digest(path) for path in protected} == before
+
+
+@pytest.mark.parametrize("mutation", [
+    "preparation", "catalog", "waveform", "consumer_word", "scope", "owner_recipe",
+    "owner_missing", "owner_relative", "owner_filename", "owner_word",
+])
+def test_reused_fixed_material_still_rejects_changed_evidence(copied_fixed_material, monkeypatch, mutation):
+    project, target, config, artifact, preparation = copied_fixed_material
+    rows = read_rows(resolved(target, config["manifests"]["noise"]))
+    if mutation == "preparation":
+        path = Path(preparation["preparation"]["path"])
+        value = read_json(path)
+        value["technical_passed_files"] = 999
+        write_json(path, value)
+    elif mutation == "catalog":
+        from korean_openwakeword import studio_data
+        assets = copy.deepcopy(studio_data._official_assets())
+        next(item for item in assets if item["id"] == "zeroth")["sha256"] = "0" * 64
+        monkeypatch.setattr(studio_data, "_official_assets", lambda: assets)
+    elif mutation == "waveform":
+        path = resolved(target, rows[0]["path"])
+        path.write_bytes(path.read_bytes() + b"changed")
+    elif mutation == "consumer_word":
+        destination_project = target / "project.json"
+        changed_config = read_json(destination_project)
+        changed_config["wakeword"] = "다른이름아"
+        write_json(destination_project, changed_config)
+    elif mutation == "scope":
+        artifact["state"] = "accepted_for_evaluation"
+    elif mutation == "owner_word":
+        changed_config = read_json(project)
+        changed_config["wakeword"] = "다른이름아"
+        write_json(project, changed_config)
+    else:
+        path = resolved(target, artifact["library_evidence"]["path"])
+        evidence = read_json(path)
+        if mutation == "owner_recipe":
+            evidence["recipe"]["project"] = str(target / "project.json")
+        else:
+            owner = {
+                "owner_missing": str(project.parent.with_name("missing_owner") / "project.json"),
+                "owner_relative": "relative_owner/project.json",
+                "owner_filename": str(project.with_name("voices.json")),
+            }[mutation]
+            evidence["project"] = evidence["recipe"]["project"] = owner
+        write_json(path, evidence)
+        artifact["library_evidence"]["sha256"] = digest(path)
+    with pytest.raises(ValueError):
+        if mutation in ("scope", "owner_recipe", "owner_missing", "owner_relative", "owner_filename"):
+            validate_library_policy_evidence(target, artifact, "noise")
+        else:
+            validate_admission(target, iter(rows), config, "noise")
 
 
 def test_real_evaluation_policy_admission_reaches_stream_packing_without_listening(tmp_path, monkeypatch):

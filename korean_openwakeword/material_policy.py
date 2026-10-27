@@ -505,7 +505,18 @@ def validate_library_policy_evidence(root, artifact, role=None):
     queues = recipe.get("review_queues")
     _require(isinstance(queues, list) and len(queues) == 1, "evidence has no exact source queue")
     try:
-        expected = _payload(root / "project.json", recipe, queues[0])
+        # A copied fixed-source receipt keeps its original preparation owner.
+        # Reconstruct there instead of relabelling immutable evidence as the
+        # consuming project. This transfers technical source proof, not human
+        # answers, and still checks every catalog/preparation/source binding.
+        owner = Path(evidence.get("project", ""))
+        _require(owner.is_absolute() and owner.name == "project.json"
+                 and recipe.get("project") == str(owner), "evidence preparation owner changed")
+        _, consumer_config = load_project(root / "project.json")
+        _, owner_config = load_project(owner)
+        _require(consumer_config["wakeword"] == owner_config["wakeword"] == evidence["wakeword"],
+                 "evidence wakeword differs from its owner or consuming project")
+        expected = _payload(owner, recipe, queues[0])
     except (KeyError, TypeError, OSError) as error:
         raise ValueError("Fixed library material policy: incomplete or changed source evidence") from error
     _require(expected is not None and evidence == expected, "policy evidence/catalog/preparation/source lineage changed")

@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "release": "0.24.1",
+  "source_release": "0.24.0",
+  "source_commit": "4190ff379a2a74dab8b66caa17f1551c71f5dec6",
+  "source_computation_sha256": "41e7cbd1606ebbed420f5b07f971296207d263ed878acbab3d26a7b388f9edec",
+  "source_stages_sha256": "f13dad4d451cefc5269ff1f1bad5e9f4a740bbd97cc7b25298b51c67fa5dca7e",
+  "target_computation_sha256": "190472c48c47978effa8a0360fd56287ca72c8c250e321619bbe00984f518ccb",
+  "target_stages_sha256": "24b984a10bd10d23663ef9e463286730fbd51ea0f658235b363e0a09b2cdf966",
+  "changed_computational_files": [
+    "material_policy.py"
+  ],
+  "unchanged_generation_training_scoring_files": {
+    "studio_steps.py": "8877c28aeb927b3c103307edeaf9d765c5b66345e169c4737479fac7fda6db38",
+    "pool_review.py": "8721cfee81c6fbcaa902f66c271db78fe26b3a46acd1b8ed4a385cc57b02c605",
+    "features.py": "2919577c43f098d3fa10b8adb81939496b19bb7738034d9fddbc8144c931a07d",
+    "tts.py": "cc6e951d48e3340e00a8a8b5a22776d1a1ebc15e4834ba4eddf4186311052a8c",
+    "hard_tts.py": "c0c348bdb3016416a6fadce1df042cc809a8d1cd5711b1373973c7f48e885ae5",
+    "train.py": "4ca273d49fad05cb949924063232a674fa91fcf0dfd3a494a4402d6e01dc7938",
+    "evaluate.py": "17cc02176696478602260f015d3054591f55f70d0a38275745b31143f73c756d"
+  },
+  "problem": "Copied fixed-public-source evidence retains its original preparation owner. Reconstructing it with the consuming model path falsely rejects unchanged evidence.",
+  "repair": "Reconstruct the entire evidence at its recorded absolute original project; require matching recipe owner and original/consumer/evidence wakeword.",
+  "retained_checks": [
+    "local evidence hash and directory confinement",
+    "exact public catalog and provider pins",
+    "preparation contracts and receipts",
+    "source manifests and original source hashes",
+    "train/evaluation role and scope",
+    "formal admission source coverage and split audit"
+  ],
+  "migration": {
+    "preserved": [
+      "settings",
+      "history",
+      "inputs",
+      "review answers",
+      "all existing data and receipts",
+      "error stage"
+    ],
+    "snapshot": "Hash-bound workflow_before.json",
+    "execution": "No worker started by migration; resume remains explicit"
+  },
+  "validation": [
+    "real fixed-source preparation/admission copied unchanged into a second model",
+    "formal Korean-negative and noise admission succeeds with identical evidence bytes",
+    "changed source/preparation/catalog/word/scope and missing or malformed owner rejected",
+    "migration accepts only the exact audited release pair and preserves saved human review and history"
+  ]
+}
