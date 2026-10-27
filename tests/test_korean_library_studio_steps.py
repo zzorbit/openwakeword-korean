@@ -213,7 +213,7 @@ def test_explicit_install_uses_current_venv_and_project_cache_only(project, monk
     gpu_calls = []
     def gpu_setup(root):
         gpu_calls.append(root)
-        return {"state": "ready", "target": str(root / "cache/gpu_runtime")}
+        return {"state": "completed", "target": str(root / "cache/gpu_runtime")}
     monkeypatch.setattr(gpu_runtime_install, "setup_gpu_runtime", gpu_setup)
     monkeypatch.setattr(steps.sys, "prefix", str(project.parent / ".venv"))
     monkeypatch.delenv("KOWW_CACHE_ROOT", raising=False)
@@ -227,7 +227,7 @@ def test_explicit_install_uses_current_venv_and_project_cache_only(project, monk
         commands.append(command)
     monkeypatch.setattr(steps.subprocess, "run", pip)
     result = steps._install_dependencies(project.parent, "cu128")
-    assert gpu_calls == [project.parent] and result["evaluation_gpu_runtime"]["state"] == "ready"
+    assert gpu_calls == [project.parent] and result["evaluation_gpu_runtime"]["state"] == "completed"
     assert result["state"] == "completed" and len(commands) == 3
     assert commands[0][-1] == "https://download.pytorch.org/whl/cu128"
 
@@ -235,7 +235,8 @@ def test_explicit_install_uses_current_venv_and_project_cache_only(project, monk
 def test_dependency_setup_rechecks_after_explicit_choice_and_then_prepares_frontend(project, monkeypatch):
     from korean_openwakeword import assets, benchmark
     installed = []
-    monkeypatch.setattr(steps, "_install_dependencies", lambda root, backend: installed.append(backend) or {"state": "completed"})
+    monkeypatch.setattr(steps, "_install_dependencies", lambda root, backend: installed.append(backend)
+                        or {"state": "completed", "evaluation_gpu_runtime": {"state": "completed"}})
     monkeypatch.setattr(steps, "_installed_dependencies", lambda: {"onnx": "1.20.0"})
     monkeypatch.setattr(benchmark, "doctor", lambda **kw: {"tts_check": {"ready": True}, "reference_openwakeword_ready": True})
     monkeypatch.setattr(assets, "prepare_frontend", lambda path: {"pinned": True})
@@ -493,9 +494,8 @@ def test_common_evaluation_refuses_a_short_positive_pool_before_building_wavs(pr
 
 def test_complete_common_evaluation_is_not_relabeled_as_a_smoke_run_for_check_budget(project, monkeypatch):
     from korean_openwakeword import evaluate
-    bundle = project.parent / "models/fixture_bundle"
-    bundle.mkdir(parents=True)
-    write_json(bundle / "manifest.json", {"fixture": True})
+    from korean_openwakeword.runtime import sample_bundle
+    bundle = sample_bundle()
     manifest = steps._publish_rows(project.parent / ".studio/fixture_development.jsonl", [])
     calls = []
     def score(path, selected_bundle, output, **kwargs):
@@ -851,7 +851,8 @@ def test_actual_small_features_train_package_evaluate_site_without_downloads(tmp
 
     monkeypatch.setattr(requests, "get", lambda *a, **k: pytest.fail("No network in the integration fixture"))
     settings = steps.preset_settings()
-    settings.update(originals=2, updates=1, generic_hours=.0001, korean_hours=.0001, validation_originals=1)
+    settings.update(originals=2, updates=1, generic_hours=.0001, korean_hours=.0001, validation_originals=1,
+                    evaluation_backend="cpu")
     settings.pop("evaluation_policy")  # Explicit tiny integration fixture, not the full common protocol.
     path = create_project(tmp_path / "tiny", "보라야", "bora", positive_originals=2,
                           augmentation_rounds=1, updates=1, generic_hours=.0001, korean_hours=.0001,

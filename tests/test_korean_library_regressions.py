@@ -163,7 +163,7 @@ def test_duplicate_negative_cannot_inflate_fp_hours(tmp_path):
     manifest = project.parent / "data/eval/duplicated.jsonl"
     manifest.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
     with pytest.raises(ValueError, match="Repeated Negative"):
-        evaluate(project, bundle, project.parent / "reports/duplicated", manifest=manifest, smoke=True)
+        evaluate(project, bundle, project.parent / "reports/duplicated", manifest=manifest, smoke=True, backend="cpu")
 
 
 def test_replay_keeps_human_final_condition_metadata():

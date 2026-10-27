@@ -213,7 +213,7 @@ def parser():
     a.add_argument("--candidate", help="채택 판정을 확인할 모델 ID; 생략하면 현재 bundle의 실제 출력")
     a.add_argument("--workers", choices=("auto", "1", "2", "4"), default="auto", help="독립 음원 단위 CPU 병렬 평가")
     a.add_argument("--resume", action="store_true", help="입력 해시가 같은 중단된 평가만 재개")
-    a.add_argument("--backend", choices=("auto", "cpu", "cuda"), default="auto", help="평가 장치: 기본은 GPU 우선 자동 선택, CUDA는 FP32 배치·CPU 경계 재확인")
+    a.add_argument("--backend", choices=("auto", "cpu", "cuda"), default="auto", help="공통 평가: auto/cuda는 GPU 실행 실패 시 중단, CPU는 cpu로 직접 선택; CUDA FP32 배치·CPU 경계 재확인")
     a.add_argument("--gpu-batch-size", type=int, default=128)
     a.add_argument("--gpu-boundary-margin", type=float, default=.001)
     a.add_argument("--accept-gpu-numerical-differences", action="store_true", default=None, help="이전 명령 호환 옵션; GPU 평가의 미세한 점수 차이는 기본 허용하고 경계는 CPU 재확인")

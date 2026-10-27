@@ -28,8 +28,9 @@ PINS = {"onnxruntime-gpu": "1.31.0", "nvidia-cublas": "13.8.0.4",
         "nvidia-cuda-runtime": "13.4.92", "nvidia-cudnn-cu13": "9.27.0.42"}
 RUNTIME_NAME = "onnxruntime_1_31_cuda13"
 # Measured unpacked qualified Windows payload: ORT 242,971,855 + NVIDIA
-# 1,186,284,164 bytes. One additional payload is an explicit temporary pip
-# download/unpack allowance, not a claim about every pip version's exact peak.
+# 1,186,284,164 bytes. One additional payload covers sequential pip temporary
+# work or Windows publication copying; free space is rechecked before copying.
+# This is not a claim about every pip version's cache/temporary peak.
 REFERENCE_PAYLOAD_BYTES = 1429256019
 MINIMUM_FREE_BYTES = REFERENCE_PAYLOAD_BYTES * 2
 _REQUIRED_NATIVE = {"onnxruntime_pybind11_state.pyd", "onnxruntime_providers_cuda.dll",
@@ -184,6 +185,45 @@ def _artifacts(target):
             for path in sorted(target.rglob("*")) if path.is_file() and path != target / "receipt.json"]
 
 
+def _publication_copy(incoming, target, artifacts):
+    """Fresh Windows files inherit the project cache ACL, not pip's Temp ACL.
+
+    pip can move private temporary directories into --target. Renaming that
+    tree again retains their access rules, including an elevated-only owner.
+    Copy content into freshly created siblings without copying file metadata.
+    """
+    required = sum(entry["bytes"] for entry in artifacts)
+    if shutil.disk_usage(target.parent).free < required:
+        raise ValueError("Insufficient project-cache space for the verified GPU publication copy; the installation was preserved")
+    publication = target.with_name(target.name + ".publishing_" + uuid.uuid4().hex)
+    publication.mkdir(exist_ok=False)
+    expected = set()
+    for entry in artifacts:
+        relative = Path(entry["path"])
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("GPU runtime publication has an unsafe payload path")
+        source, destination = incoming / relative, publication / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+        if destination.stat().st_size != entry["bytes"] or digest(destination) != entry["sha256"]:
+            raise ValueError("GPU runtime publication copy differs from its verified installation; both copies were preserved")
+        expected.add(relative.as_posix())
+    if {path.relative_to(publication).as_posix() for path in publication.rglob("*") if path.is_file()} != expected:
+        raise ValueError("GPU runtime publication inventory differs; both copies were preserved")
+    return publication
+
+
+def _remove_new_staging(incoming, target):
+    """Best-effort cleanup of this successful install's own temporary copy."""
+    expected_parent = target.parent.resolve()
+    if (incoming.parent.resolve() != expected_parent
+            or incoming.resolve() != expected_parent / incoming.name
+            or not incoming.name.startswith(target.name + ".installing_")
+            or incoming.is_symlink() or getattr(incoming, "is_junction", lambda: False)()):
+        raise ValueError("GPU staging cleanup target is outside this installation")
+    shutil.rmtree(incoming)
+
+
 def _source_code(code):
     # Moving the staged package changes filenames, not executable bytecode.
     return code.replace(co_filename="", co_consts=tuple(_source_code(value) if isinstance(value, CodeType) else value
@@ -275,10 +315,18 @@ def setup_gpu_runtime(project_root):
         subprocess.run(command, cwd=str(root), check=True)
         versions = _validate_layout(staging)
         probe = _probe_runtime(staging, _environment(staging))
-        receipt = {"kind": "project_isolated_cuda_runtime_v1", "state": "completed", "created_at": now(),
+        artifacts = _artifacts(staging)
+        incoming = staging
+        if sys.platform == "win32":
+            staging = _publication_copy(incoming, target, artifacts)
+        # Staging can work while publication changes the effective path or
+        # access. A completed receipt must describe a successful final-path
+        # probe, not only the temporary installation directory.
+        receipt = {"kind": "project_isolated_cuda_runtime_v1", "state": "publishing", "created_at": now(),
             "path": str(target), "versions": versions, "commands": [command], "reused": False,
-            "platform": "win_amd64_cp312", "cuda_session_probe": probe, "artifacts": _artifacts(staging),
-            "probe_path_scope": "Probe module path records the fresh staging directory before atomic publication; artifact hashes bind the published payload.",
+            "platform": "win_amd64_cp312", "cuda_session_probe": probe, "artifacts": artifacts,
+            "publication_policy": "fresh_files_inherit_project_cache_acl" if incoming != staging else "atomic_staging_rename",
+            "probe_path_scope": "Staging has passed its session probe; the published path still requires validation before completion.",
             "storage_reference_installed_bytes": REFERENCE_PAYLOAD_BYTES, "setup_minimum_free_bytes": MINIMUM_FREE_BYTES,
             "scope": "Separate project/cache native payload; no base Python package, parent sys.path or machine-wide environment changed. CUDA MatMul/Conv probe is not a full model-performance qualification.",
             "native_payload_scope": "Pinned libraries from the qualified precompiled CUDA path; optional NVRTC runtime compilation libraries are not installed. Unsupported native configurations fail the actual session probe."}
@@ -286,4 +334,20 @@ def setup_gpu_runtime(project_root):
         if target.exists():
             raise RuntimeError("GPU target appeared during setup; both targets were preserved")
         staging.rename(target)
+        try:
+            _validate_layout(target)
+            published_probe = _probe_runtime(target, _environment(target))
+        except (OSError, ValueError, RuntimeError) as error:
+            raise RuntimeError("Published GPU runtime validation failed at " + str(target)
+                               + "; the incomplete payload was preserved: " + str(error)) from error
+        receipt.update(state="completed", cuda_session_probe=published_probe,
+                       staging_cuda_session_probe=probe,
+                       probe_path_scope="CUDA session verified at the final published path; artifact hashes bind the same staged payload.")
+        if incoming != staging:
+            try:
+                _remove_new_staging(incoming, target)
+            except (OSError, ValueError) as error:
+                receipt["staging_cleanup_warning"] = str(error)
+                print("GPU 환경 설치는 완료됐지만 이번 임시 설치 폴더를 정리하지 못했습니다: " + str(incoming), flush=True)
+        write_json(target / "receipt.json", receipt)
         return receipt

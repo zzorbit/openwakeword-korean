@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "release": "0.25.0",
+  "source_release": "0.24.1",
+  "source_commit": "bc21e28093c3bbba1884b498979691926558e567",
+  "source_computation_sha256": "190472c48c47978effa8a0360fd56287ca72c8c250e321619bbe00984f518ccb",
+  "source_stages_sha256": "24b984a10bd10d23663ef9e463286730fbd51ea0f658235b363e0a09b2cdf966",
+  "target_computation_sha256": "93eb771702f0dce745787f0e1493d0150118ea652896d22521c649f08e03f0a1",
+  "target_stages_sha256": "8f4ca49e07e13b564543574f39649dd0ea725267152bb5fd017bcc35dffa82d3",
+  "changed_computational_files": [
+    "evaluation_backend.py",
+    "gpu_runtime_install.py",
+    "studio_steps.py"
+  ],
+  "unchanged_numerical_files": {
+    "gpu_evaluation.py": "e1b725af143c00ac8741673461499a5137781026d373e99af13244577c4c98b3",
+    "evaluate.py": "17cc02176696478602260f015d3054591f55f70d0a38275745b31143f73c756d",
+    "evaluation_workers.py": "647ebb3d24be22d2851c51e1e387cf2b43fe9536465c331a5e9c9094a56d0beb",
+    "features.py": "2919577c43f098d3fa10b8adb81939496b19bb7738034d9fddbc8144c931a07d",
+    "paired.py": "e111c7ada15520fb726f08bc4fe7b80ae34727cc8b3b81a17acd6f7401067969",
+    "tts.py": "cc6e951d48e3340e00a8a8b5a22776d1a1ebc15e4834ba4eddf4186311052a8c",
+    "hard_tts.py": "c0c348bdb3016416a6fadce1df042cc809a8d1cd5711b1373973c7f48e885ae5",
+    "train.py": "4ca273d49fad05cb949924063232a674fa91fcf0dfd3a494a4402d6e01dc7938"
+  },
+  "default_policy": "Common auto/CUDA evaluation requires actual CUDA execution; setup, permission, runtime conflict, unsupported bundle and probe failures stop instead of selecting CPU.",
+  "explicit_cpu": "CPU evaluation remains available only by explicit backend selection. The frozen independent Final CPU reference is unchanged.",
+  "resume": "Auto only reuses matching CUDA reports/checkpoints. Existing CPU scores remain immutable and a separate GPU attempt is selected; no implicit mixed numerical prefix.",
+  "numerical_protocol": "Existing CUDA FP32 whole-session batching and CPU threshold-boundary verification remain unchanged.",
+  "installer": "Windows pip payload bytes are copied into newly created project-cache files without inherited private Temp metadata, checked by size/SHA256, and probed at the final published location before completion.",
+  "runtime_versions": {
+    "onnxruntime-gpu": "1.31.0",
+    "nvidia-cublas": "13.8.0.4",
+    "nvidia-cuda-runtime": "13.4.92",
+    "nvidia-cudnn-cu13": "9.27.0.42"
+  },
+  "preserved": [
+    "project settings and evaluation conditions",
+    "all existing model weights and source WAVs",
+    "human review answers",
+    "completed history and receipts",
+    "old CPU scoring journal/checkpoint and frame scores",
+    "old inaccessible GPU runtime"
+  ],
+  "validation": [
+    "GPU failures raise and never start CPU scoring",
+    "CPU-only training and GPU evaluation have independent preparation",
+    "CPU/CUDA partial and completed routing preserves files and uses the requested backend",
+    "fresh Windows publication verifies exact bytes and final-path CUDA execution; failed publication is not marked completed",
+    "release migration verifies exact source/target fingerprints and preserves existing CPU scores and workflow inputs",
+    "actual restored runtime native/Python payload bytes match the old recorded hashes; CUDA MatMul/Conv and actual model bundle probes pass"
+  ]
+}

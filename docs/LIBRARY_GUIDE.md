@@ -244,7 +244,7 @@ koww select-runtime --project models/bora/project.json --bundle models/bora/repo
 
 `candidate_adoptions`는 모든 단일 모델·앙상블 각각의 통과 여부이며 `adoption`은 지정한 후보의 판정입니다. `select-candidate`의 위 ID는 예시이므로 실제 결과에 표시된 ID로 바꾸세요. `mean`을 고르면 세 모델 평균, 단일 ID를 고르면 해당 모델 하나만 실행 묶음에 들어갑니다. 저장된 점수와 같은 채점 오디오를 재사용하며 자동 재학습은 없습니다. 목표 미달이면 이유를 확인하고 필요한 부분을 보완하세요. 표본 모델의 임계값을 새 호출어에 그대로 확정하지 않습니다. 기준은 [학습 계획](../plan.md#5-평가-목표)에서 확인합니다.
 
-공통 평가의 기본값은 `--backend auto`이며, 실제 CUDA 실행을 확인한 뒤 GPU를 우선 사용합니다. GPU를 사용할 수 없으면 CPU로 진행하고 사유를 기록합니다. `--backend cpu`로 CPU를 지정하거나 `--backend cuda`로 GPU를 명시할 수 있습니다. GPU는 기본 배치128로 여러 음원을 함께 계산하며, CPU와의 미세한 점수 차이는 허용하되 임계값 근처 음원 전체를 CPU로 다시 확인합니다. 중단한 평가는 처음 선택한 연산 방식을 유지합니다. 같은 비교 실험에서는 연산 정책을 고정하세요. [GPU 검증·설치 조건](VALIDATION.md#0140-평가-화면과-gpu-기본값)을 참고하세요.
+공통 평가의 기본값은 `--backend auto`이며, 실제 CUDA 실행을 확인한 뒤 GPU를 사용합니다. GPU를 사용할 수 없으면 원인을 표시하고 중단하며 CPU로 자동 전환하지 않습니다. CPU 평가는 `--backend cpu`로 직접 지정합니다. GPU는 기본 배치128로 여러 음원을 함께 계산하며, CPU와의 미세한 점수 차이는 허용하되 임계값 근처 음원 전체를 CPU로 다시 확인합니다. GPU 우선 작업은 기존 CPU 점수를 보존하고 별도의 GPU 평가로 시작합니다. 중단한 CPU 평가를 이어가려면 `--backend cpu`를 명시하세요. 같은 비교 실험에서는 연산 정책을 고정하세요. [GPU 검증·설치 조건](VALIDATION.md#0250-gpu-평가와-windows-설치-권한)을 참고하세요.
 
 웹에서 NVIDIA GPU 설치를 선택하면 평가용 GPU 도구도 준비됩니다. 개별 명령으로 설치한 Windows x64·Python3.12 환경에서는 `koww setup-gpu --project models/bora/project.json`으로 별도 GPU 도구를 프로젝트 캐시에 준비할 수 있습니다. 기존 CPU용 ONNX Runtime은 유지됩니다.
 

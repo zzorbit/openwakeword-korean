@@ -380,13 +380,13 @@ def test_exact_use_input_validation_detects_mutation_and_does_not_reopen_cpu_pre
         next(iterator)
 
 
-def test_default_evaluation_still_uses_reference_cpu_without_entering_gpu(monkeypatch, tmp_path):
+def test_explicit_cpu_evaluation_uses_reference_cpu_without_entering_gpu(monkeypatch, tmp_path):
     from korean_openwakeword import evaluate
     from test_korean_library_evaluation_preflight import _evaluation_inputs
     module = importlib.import_module("korean_openwakeword.gpu_evaluation")
-    monkeypatch.setattr(module, "score_gpu_sessions", lambda *args, **kwargs: pytest.fail("CPU default must not enter CUDA"))
+    monkeypatch.setattr(module, "score_gpu_sessions", lambda *args, **kwargs: pytest.fail("Explicit CPU must not enter CUDA"))
     project, root, bundle, manifest, _ = _evaluation_inputs(tmp_path)
-    result = evaluate.evaluate(project, bundle, root / "reports/cpu-default", manifest=manifest, workers=1, smoke=True)
+    result = evaluate.evaluate(project, bundle, root / "reports/explicit-cpu", manifest=manifest, workers=1, smoke=True, backend="cpu")
     assert result["execution"]["backend"] == "cpu"
     assert result["evaluation_binding"] == evaluate.evaluation_binding(project, bundle, manifest, smoke=True)
 

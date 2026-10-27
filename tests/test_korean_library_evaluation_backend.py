@@ -1,4 +1,4 @@
-"""New evaluations prefer verified CUDA; resumes keep their existing backend."""
+"""GPU evaluation failures stop; CPU scoring requires an explicit choice."""
 import importlib
 import json
 import os
@@ -42,25 +42,26 @@ def test_new_auto_run_prefers_a_real_verified_cuda_backend(backend, monkeypatch,
     assert result["numerical_policy"] == backend.NUMERICAL_POLICY and len(probes) == 1
 
 
-def test_auto_without_cuda_records_a_cpu_reason_but_explicit_cuda_fails(backend, monkeypatch, bundle):
+@pytest.mark.parametrize("requested", ["auto", "cuda"])
+def test_unavailable_cuda_stops_instead_of_selecting_cpu(backend, monkeypatch, bundle, requested):
     monkeypatch.setattr(backend, "probe_cuda_backend", lambda *args, **kwargs:
         {"available": False, "reason_code": "missing_cuda_dlls", "reason": "GPU DLLs are missing"})
-    result = backend.resolve_evaluation_backend(bundle=bundle)
-    assert result["backend"] == "cpu" and result["reason_code"] == "missing_cuda_dlls"
-    assert result["numerical_policy"] is None and result["runtime_environment"] == {}
-    with pytest.raises(RuntimeError, match="GPU DLLs"):
-        backend.resolve_evaluation_backend("cuda", bundle=bundle)
+    with pytest.raises(RuntimeError, match="GPU DLLs.*CPU로 자동 전환하지 않습니다"):
+        backend.resolve_evaluation_backend(requested, bundle=bundle)
 
 
-def test_invalid_managed_runtime_is_an_explicit_reason_instead_of_a_silent_change(backend, monkeypatch, bundle):
+@pytest.mark.parametrize("requested", ["auto", "cuda"])
+@pytest.mark.parametrize("error", [ValueError("Changed runtime receipt"),
+                                   PermissionError("[WinError 5] onnxruntime/__init__.py")])
+def test_invalid_managed_runtime_stops_with_the_original_reason(backend, monkeypatch, bundle, requested, error):
     def invalid(root):
-        raise ValueError("Changed runtime receipt")
+        raise error
     monkeypatch.setattr(backend, "_runtime_environment", invalid)
-    result = backend.resolve_evaluation_backend(bundle=bundle)
-    assert result["backend"] == "cpu" and result["reason_code"] == "cuda_runtime_configuration_failed"
-    assert result["detail"] == "Changed runtime receipt"
-    with pytest.raises(RuntimeError, match="Changed runtime receipt"):
-        backend.resolve_evaluation_backend("cuda", bundle=bundle)
+    with pytest.raises(RuntimeError) as caught:
+        backend.resolve_evaluation_backend(requested, bundle=bundle)
+    assert str(error) in str(caught.value)
+    assert "CPU로 자동 전환하지 않습니다" in str(caught.value)
+    assert caught.value.__cause__ is error
 
 
 def test_successful_probe_preserves_the_managed_runtime_plan(backend, monkeypatch, bundle):
@@ -75,11 +76,17 @@ def test_successful_probe_preserves_the_managed_runtime_plan(backend, monkeypatc
 
 
 @pytest.mark.parametrize("requested,resume,reason", [("cpu", None, "explicit_cpu"),
-    ("auto", "cpu", "resume_cpu_reference"), ("cpu", "cpu", "resume_cpu_reference")])
+    ("cpu", "cpu", "resume_cpu_reference")])
 def test_cpu_selection_and_legacy_cpu_resumes_do_not_probe_gpu(backend, monkeypatch, requested, resume, reason):
     monkeypatch.setattr(backend, "probe_cuda_backend", lambda *args, **kwargs: pytest.fail("CPU must not probe GPU"))
     result = backend.resolve_evaluation_backend(requested, resume_backend=resume)
     assert result["backend"] == "cpu" and result["reason_code"] == reason
+
+
+def test_auto_cannot_silently_resume_a_cpu_checkpoint(backend, monkeypatch):
+    monkeypatch.setattr(backend, "probe_cuda_backend", lambda *args, **kwargs: pytest.fail("Do not alter an existing CPU run"))
+    with pytest.raises(ValueError, match="기존 CPU 평가 기록은 보존됩니다"):
+        backend.resolve_evaluation_backend("auto", resume_backend="cpu")
 
 
 def test_cuda_resume_cannot_silently_become_cpu(backend, monkeypatch, bundle):
@@ -107,7 +114,7 @@ def test_independent_final_keeps_its_frozen_cpu_protocol(backend, monkeypatch):
 
 
 @pytest.mark.parametrize("change", ["single", "frontend"])
-def test_unqualified_bundle_stays_cpu_and_cannot_be_forced_to_cuda(backend, bundle, change):
+def test_unqualified_bundle_stops_unless_cpu_is_explicitly_chosen(backend, bundle, change):
     path = bundle / "manifest.json"
     manifest = json.loads(path.read_text(encoding="utf-8"))
     if change == "single":
@@ -115,9 +122,10 @@ def test_unqualified_bundle_stays_cpu_and_cannot_be_forced_to_cuda(backend, bund
     else:
         manifest["frontend"][0]["sha256"] = "0" * 64
     path.write_text(json.dumps(manifest), encoding="utf-8")
-    assert backend.resolve_evaluation_backend(bundle=bundle)["reason_code"] == "unsupported_gpu_bundle"
-    with pytest.raises(ValueError):
-        backend.resolve_evaluation_backend("cuda", bundle=bundle)
+    for requested in ("auto", "cuda"):
+        with pytest.raises(ValueError):
+            backend.resolve_evaluation_backend(requested, bundle=bundle)
+    assert backend.resolve_evaluation_backend("cpu", bundle=bundle)["backend"] == "cpu"
 
 
 def test_invalid_selection_and_stage_fail_before_any_probe(backend):
@@ -131,10 +139,9 @@ def test_loaded_cpu_runtime_is_not_replaced_in_a_python_process(monkeypatch, bun
     monkeypatch.setitem(sys.modules, "onnxruntime", SimpleNamespace(__file__=str(tmp_path / "cpu" / "__init__.py"),
         get_available_providers=lambda: ["CPUExecutionProvider"]))
     monkeypatch.setattr(module, "_runtime_environment", lambda root: {"KOWW_GPU_RUNTIME_PATH": str(tmp_path / "gpu")})
-    result = module.resolve_evaluation_backend(bundle=bundle)
-    assert result["backend"] == "cpu" and result["reason_code"] == "runtime_already_loaded"
-    with pytest.raises(RuntimeError, match="ONNX Runtime"):
-        module.resolve_evaluation_backend("cuda", bundle=bundle)
+    for requested in ("auto", "cuda"):
+        with pytest.raises(RuntimeError, match="ONNX Runtime"):
+            module.resolve_evaluation_backend(requested, bundle=bundle)
 
 
 def test_explicit_runtime_overrides_managed_installation(monkeypatch, tmp_path):
@@ -172,7 +179,7 @@ def test_probe_uses_an_isolated_runtime_and_really_executes_a_worker(monkeypatch
 
 
 @pytest.mark.parametrize("failure", ["timeout", "start", "invalid_json", "invalid_result", "crash"])
-def test_probe_failures_are_visible_cpu_reasons(monkeypatch, bundle, failure):
+def test_probe_failures_are_reported_without_claiming_cpu_selection(monkeypatch, bundle, failure):
     module = importlib.import_module("korean_openwakeword.evaluation_backend")
     def run(command, **options):
         if failure == "timeout":
@@ -184,6 +191,14 @@ def test_probe_failures_are_visible_cpu_reasons(monkeypatch, bundle, failure):
     monkeypatch.setattr(module.subprocess, "run", run)
     result = module.probe_cuda_backend(bundle)
     assert result["available"] is False and result["reason_code"].startswith("cuda_probe_")
+    assert "CPU를 선택" not in result.get("reason", "")
+
+
+def test_probe_failure_details_are_preserved_in_the_stopping_error(backend, monkeypatch, bundle):
+    monkeypatch.setattr(backend, "probe_cuda_backend", lambda *args, **kwargs:
+        {"available": False, "reason": "GPU session failed", "detail": "cudnn DLL cannot load"})
+    with pytest.raises(RuntimeError, match="GPU session failed.*cudnn DLL cannot load"):
+        backend.resolve_evaluation_backend(bundle=bundle)
 
 
 def test_gpu_runtime_environment_restores_paths_on_exception(monkeypatch):

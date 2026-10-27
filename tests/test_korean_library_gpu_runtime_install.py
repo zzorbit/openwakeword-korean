@@ -78,13 +78,16 @@ def test_fresh_setup_isolated_target_scoped_storage_and_verified_reuse(managed):
     assert receipt["versions"] == runtime.PINS
     assert target == managed.root / "cache/gpu_runtime" / runtime.RUNTIME_NAME
     assert receipt["artifacts"] and target.joinpath("receipt.json").is_file()
-    assert len(managed.pip) == len(managed.probes) == 1
+    assert len(managed.pip) == 1 and len(managed.probes) == 2
     command = managed.pip[0]["command"]
     assert all(option in command for option in ("--no-deps", "--no-compile", "--only-binary=:all:", "--target"))
     assert "onnxruntime==1.31.0" not in command
     assert {arg for arg in command if "==" in arg} == {name + "==" + version for name, version in runtime.PINS.items()}
     staging = Path(command[command.index("--target") + 1])
     assert staging.parent == target.parent and staging != target and not staging.exists()
+    assert [path for path, _ in managed.probes] == [staging, target]
+    assert receipt["cuda_session_probe"]["module"] == str(target / "onnxruntime/__init__.py")
+    assert receipt["staging_cuda_session_probe"]["module"] == str(staging / "onnxruntime/__init__.py")
     assert managed.pip[0]["environment"]["PIP_CACHE_DIR"] == str(managed.root / "cache/pip")
     assert managed.pip[0]["environment"]["TEMP"] == str(managed.root / "cache/tmp")
     assert os.environ == before_environment and sys.path == before_path and sys.modules.get("onnxruntime") is before_ort
@@ -95,7 +98,7 @@ def test_fresh_setup_isolated_target_scoped_storage_and_verified_reuse(managed):
     saved = (target / "receipt.json").read_bytes()
     reused = runtime.setup_gpu_runtime(managed.root)
     assert reused["reused"] and reused["current_probe"]["cuda_session_validated"]
-    assert len(managed.pip) == 1 and len(managed.probes) == 2
+    assert len(managed.pip) == 1 and len(managed.probes) == 3
     assert (target / "receipt.json").read_bytes() == saved
 
 
@@ -118,7 +121,7 @@ def test_changed_existing_runtime_refuses_overwrite_and_preserves_bytes(managed,
     snapshot = {p.relative_to(target).as_posix(): p.read_bytes() for p in target.rglob("*") if p.is_file()}
     with pytest.raises(ValueError):
         runtime.setup_gpu_runtime(managed.root)
-    assert len(managed.pip) == 1 and len(managed.probes) == 1
+    assert len(managed.pip) == 1 and len(managed.probes) == 2
     assert snapshot == {p.relative_to(target).as_posix(): p.read_bytes() for p in target.rglob("*") if p.is_file()}
 
 
@@ -136,6 +139,19 @@ def test_normal_import_bytecode_and_pre_rename_filenames_do_not_break_reuse(mana
     py_compile.compile(str(source), cfile=str(cached), dfile="previous_staging/onnxruntime/__init__.py", doraise=True)
     assert runtime.setup_gpu_runtime(managed.root)["reused"]
     assert len(managed.pip) == 1
+
+
+def test_legacy_completed_staging_probe_receipt_remains_immutable_on_verified_reuse(managed):
+    receipt = runtime.setup_gpu_runtime(managed.root)
+    target = Path(receipt["path"])
+    receipt["cuda_session_probe"] = receipt.pop("staging_cuda_session_probe")
+    receipt["probe_path_scope"] = "Probe module path records the fresh staging directory before atomic publication; artifact hashes bind the published payload."
+    path = target / "receipt.json"
+    path.write_text(json.dumps(receipt), encoding="utf-8")
+    before = path.read_bytes()
+    reused = runtime.setup_gpu_runtime(managed.root)
+    assert reused["reused"] and reused["current_probe"]["module"] == str(target / "onnxruntime/__init__.py")
+    assert path.read_bytes() == before and len(managed.pip) == 1
 
 
 def test_unrelated_or_changed_generated_bytecode_is_not_trusted(managed):
@@ -195,6 +211,112 @@ def test_failed_native_probe_preserves_staging_without_publishing(managed, monke
     staging = list(target.parent.glob(runtime.RUNTIME_NAME + ".installing_*"))
     assert len(staging) == 1 and (staging[0] / "onnxruntime/__init__.py").is_file()
     assert runtime.gpu_runtime_environment(managed.root) == {}
+
+
+@pytest.mark.parametrize("failure", ["permission", "native"])
+def test_failed_published_path_probe_cannot_claim_completed_runtime(managed, monkeypatch, failure):
+    target = runtime._target(managed.root)
+    calls = []
+
+    def probe(path, environment):
+        calls.append(path)
+        if path == target:
+            if failure == "permission":
+                raise PermissionError(13, "Access denied", str(path / "onnxruntime/__init__.py"))
+            raise ValueError("Final CUDA path could not initialize")
+        return _probe(path, environment)
+
+    monkeypatch.setattr(runtime, "_probe_runtime", probe)
+    with pytest.raises(RuntimeError, match="Published GPU runtime validation failed"):
+        runtime.setup_gpu_runtime(managed.root)
+    assert len(calls) == 2 and calls[1] == target
+    receipt = json.loads((target / "receipt.json").read_text(encoding="utf-8"))
+    assert receipt["state"] == "publishing"
+    assert (target / "onnxruntime/__init__.py").is_file()
+    assert runtime.gpu_runtime_environment(managed.root) == {}
+    incoming = list(target.parent.glob(runtime.RUNTIME_NAME + ".installing_*"))
+    assert len(incoming) == (1 if sys.platform == "win32" else 0)
+    before = (target / "receipt.json").read_bytes()
+    with pytest.raises(ValueError, match="unverified; it was preserved"):
+        runtime.setup_gpu_runtime(managed.root)
+    assert len(managed.pip) == 1 and (target / "receipt.json").read_bytes() == before
+
+
+def test_windows_publication_creates_fresh_verified_files_without_temp_metadata(managed, monkeypatch):
+    monkeypatch.setattr(runtime.sys, "platform", "win32")
+    target = runtime._target(managed.root)
+    target.parent.mkdir(parents=True)
+    incoming = target.with_name(target.name + ".installing_fixture")
+    incoming.mkdir()
+    _fake_payload(incoming)
+    original = incoming / "onnxruntime/__init__.py"
+    os.utime(original, (1000000000, 1000000000))
+    source_before = {p.relative_to(incoming): p.read_bytes() for p in incoming.rglob("*") if p.is_file()}
+    publication = runtime._publication_copy(incoming, target, runtime._artifacts(incoming))
+    copied = publication / "onnxruntime/__init__.py"
+    assert copied.stat().st_mtime != original.stat().st_mtime
+    assert copied.stat().st_ino != original.stat().st_ino
+    assert {p.relative_to(publication): p.read_bytes() for p in publication.rglob("*") if p.is_file()} == source_before
+    assert {p.relative_to(incoming): p.read_bytes() for p in incoming.rglob("*") if p.is_file()} == source_before
+    assert publication.parent == target.parent and not target.exists()
+
+
+def test_corrupted_publication_copy_is_not_published_and_preserves_incoming(managed, monkeypatch):
+    monkeypatch.setattr(runtime.sys, "platform", "win32")
+    original_copy = runtime.shutil.copyfile
+
+    def corrupt(source, destination):
+        original_copy(source, destination)
+        Path(destination).write_bytes(b"corrupted publication")
+    monkeypatch.setattr(runtime.shutil, "copyfile", corrupt)
+    with pytest.raises(ValueError, match="copy differs"):
+        runtime.setup_gpu_runtime(managed.root)
+    target = runtime._target(managed.root)
+    assert not target.exists()
+    incoming, = target.parent.glob(target.name + ".installing_*")
+    assert (incoming / "onnxruntime/__init__.py").read_bytes() == b"# fake isolated GPU package\n"
+    assert len(list(target.parent.glob(target.name + ".publishing_*"))) == 1
+
+
+def test_windows_publication_checks_remaining_space_before_creating_copy(managed, monkeypatch):
+    target = runtime._target(managed.root)
+    target.parent.mkdir(parents=True)
+    incoming = target.with_name(target.name + ".installing_fixture")
+    incoming.mkdir()
+    _fake_payload(incoming)
+    artifacts = runtime._artifacts(incoming)
+    monkeypatch.setattr(runtime.shutil, "disk_usage", lambda path: SimpleNamespace(free=0))
+    with pytest.raises(ValueError, match="publication copy"):
+        runtime._publication_copy(incoming, target, artifacts)
+    assert (incoming / "onnxruntime/__init__.py").is_file()
+    assert not list(target.parent.glob(target.name + ".publishing_*"))
+
+
+def test_successful_windows_setup_cleans_only_its_new_incoming_directory(managed, monkeypatch):
+    monkeypatch.setattr(runtime.sys, "platform", "win32")
+    target = runtime._target(managed.root)
+    old = target.with_name(target.name + ".installing_previous_failed_attempt")
+    old.mkdir(parents=True)
+    sentinel = old / "keep.txt"
+    sentinel.write_bytes(b"previous failed installation")
+    receipt = runtime.setup_gpu_runtime(managed.root)
+    assert receipt["publication_policy"] == "fresh_files_inherit_project_cache_acl"
+    assert sentinel.read_bytes() == b"previous failed installation"
+    assert list(target.parent.glob(target.name + ".installing_*")) == [old]
+
+
+def test_publication_cleanup_failure_warns_but_keeps_qualified_runtime(managed, monkeypatch, capsys):
+    monkeypatch.setattr(runtime.sys, "platform", "win32")
+
+    def cannot_cleanup(*args):
+        raise PermissionError("Cleanup denied")
+    monkeypatch.setattr(runtime, "_remove_new_staging", cannot_cleanup)
+    receipt = runtime.setup_gpu_runtime(managed.root)
+    target = Path(receipt["path"])
+    assert receipt["state"] == "completed" and "Cleanup denied" in receipt["staging_cleanup_warning"]
+    assert runtime.gpu_runtime_environment(managed.root)["KOWW_GPU_RUNTIME_PATH"] == str(target)
+    assert len(list(target.parent.glob(target.name + ".installing_*"))) == 1
+    assert "임시 설치 폴더" in capsys.readouterr().out
 
 
 def test_insufficient_space_and_system_python_do_not_install(managed, monkeypatch):

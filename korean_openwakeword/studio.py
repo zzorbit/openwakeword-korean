@@ -201,11 +201,13 @@ _AUDITED_ACQUISITION_UPDATES = {
     },
     # Exact 0.24.0 -> 0.24.1 original-owner validation repair.
     "41e7cbd1606ebbed420f5b07f971296207d263ed878acbab3d26a7b388f9edec": {'source_stages_sha256': 'f13dad4d451cefc5269ff1f1bad5e9f4a740bbd97cc7b25298b51c67fa5dca7e', 'target_computation_sha256': '190472c48c47978effa8a0360fd56287ca72c8c250e321619bbe00984f518ccb', 'target_stages_sha256': '24b984a10bd10d23663ef9e463286730fbd51ea0f658235b363e0a09b2cdf966', 'changed_files': ('material_policy.py',), 'evidence_sha256': '30765776c7006abc7630249662f36039bbf2f7080d520dc412d43b2a9e98e0b6'},
+    # Exact GPU-required evaluation / Windows publication repair.
+    "190472c48c47978effa8a0360fd56287ca72c8c250e321619bbe00984f518ccb": {'source_stages_sha256': '24b984a10bd10d23663ef9e463286730fbd51ea0f658235b363e0a09b2cdf966', 'target_computation_sha256': '93eb771702f0dce745787f0e1493d0150118ea652896d22521c649f08e03f0a1', 'target_stages_sha256': '8f4ca49e07e13b564543574f39649dd0ea725267152bb5fd017bcc35dffa82d3', 'changed_files': ('evaluation_backend.py', 'gpu_runtime_install.py', 'studio_steps.py'), 'evidence_sha256': '9010a49f2879a605120a816d6e6847ec97428da7439856ad3f2fe8278b10afd4'},
 }
 _ACQUISITION_UPDATE_FILES = {
     "downloads.py", "download_control.py", "material_downloads.py", "studio_data.py",
     "evaluation_materials.py", "evaluation_rir.py", "studio_evaluation_data.py", "official_music.py", "studio_steps.py",
-    "material_policy.py",
+    "material_policy.py", "evaluation_backend.py", "gpu_runtime_install.py",
 }
 
 # Only the audited reference-bank expansion can rebind this release. Existing
@@ -906,6 +908,8 @@ class StudioManager:
                            if reference_update else
                            "재사용한 공개 자료를 원래 준비 기록에 맞춰 검증하도록 수정한 업데이트입니다. 기존 음원·검수 결과·설정은 보존됩니다."
                            if audited_update and audited_update.get("changed_files") == ["material_policy.py"] else
+                           "GPU 평가에 실패하면 CPU로 전환하지 않고 멈춥니다. 기존 CPU 점수는 보존하고 별도의 GPU 평가로 진행합니다."
+                           if audited_update and audited_update.get("changed_files") == ["evaluation_backend.py", "gpu_runtime_install.py", "studio_steps.py"] else
                            "다운로드 순서·진행 표시 변경의 자료 동일성을 확인한 업데이트입니다. 기존 설정과 완료 결과를 검증한 뒤 적용할 수 있습니다."
                            if audited_update else "남은 단계의 계산·자료 계약이 같습니다. 기존 설정과 완료 결과를 검증하고 업데이트를 적용할 수 있습니다."),
                 **({"audited_acquisition_update": audited_update} if audited_update else {}),

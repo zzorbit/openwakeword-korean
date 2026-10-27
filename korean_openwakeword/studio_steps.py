@@ -8,6 +8,7 @@ from copy import deepcopy
 import importlib.metadata
 import json
 import math
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -388,14 +389,21 @@ def _install_dependencies(root, backend):
 def _prepare_evaluation_runtime(root):
     from .gpu_runtime_install import setup_gpu_runtime
     try:
-        return setup_gpu_runtime(root)
+        explicit = os.environ.get("KOWW_GPU_RUNTIME_PATH")
+        if explicit:
+            target = Path(explicit).resolve()
+            with (target / "onnxruntime/__init__.py").open("rb") as source:
+                source.read(1)
+            return {"state": "configured", "source": "explicit", "path": str(target),
+                    "cuda_execution_verified": False,
+                    "scope": "Explicit runtime location only; actual CUDA execution is required before evaluation."}
+        runtime = setup_gpu_runtime(root)
+        if runtime.get("state") != "completed":
+            raise RuntimeError(runtime.get("reason", "GPU 평가 도구의 준비 완료를 확인할 수 없습니다."))
+        return runtime
     except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
-        # Training CUDA and evaluation CUDA have different native requirements.
-        # Auto evaluation records a CPU reason if its optional runtime fails;
-        # an explicit CUDA evaluation still fails its own capability check.
-        reason = "평가용 GPU 도구를 준비하지 못했습니다: " + str(error)
-        print(reason + "; 공통 평가는 사용 가능한 연산 장치를 다시 확인합니다.", flush=True)
-        return {"state": "unavailable", "reason": reason, "default_evaluation_backend": "auto"}
+        raise RuntimeError("평가용 GPU 도구를 준비하지 못했습니다: " + str(error)
+                           + " CPU로 자동 전환하지 않습니다. 문제를 해결한 뒤 다시 진행하세요.") from error
 
 
 def _result(context, key):
@@ -660,9 +668,9 @@ def run_stage(project, workspace, settings, stage_id, context=None):
                             recommended_backend=_recommended_dependency_backend(),
                             required_dependencies=["torch==2.8.0", "torchaudio==2.8.0", "qwen-tts==0.1.1", "onnx>=1.16", "openwakeword==0.6.0"],
                             installation=installation)
-        if settings.get("evaluation_backend") == "auto" and checked.get("cuda_available") and backend != "cpu":
-            # Manually prepared CUDA training packages need the same managed
-            # evaluation runtime as packages installed through this screen.
+        if settings.get("evaluation_backend") in ("auto", "cuda"):
+            # Training Torch and evaluation ORT use separate runtimes. Verify
+            # GPU evaluation preparation even with CPU-only training packages.
             if not installation or not installation.get("evaluation_gpu_runtime"):
                 runtime = _prepare_evaluation_runtime(root)
                 installation = dict(installation or {}, evaluation_gpu_runtime=runtime)
@@ -1043,14 +1051,15 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         boundary_margin = settings.get("gpu_boundary_margin", .001)
         import_path = settings.get("gpu_cpu_prefix_import")
         cpu_prefix = read_json(import_path)["prefix"] if import_path else None
-        expected = (evaluation_binding(project, bundle, manifest, smoke=scoring_smoke, backend=backend,
-            gpu_batch_size=gpu_batch_size, boundary_margin=boundary_margin, cpu_prefix=cpu_prefix)
-            if backend == "cuda" else None)
+        selected_backend = "cuda" if backend == "auto" else backend
+        expected = evaluation_binding(project, bundle, manifest, smoke=scoring_smoke, backend=selected_backend,
+            gpu_batch_size=gpu_batch_size, boundary_margin=boundary_margin,
+            cpu_prefix=cpu_prefix if selected_backend == "cuda" else None)
         directory, existing = _next_directory(root / "reports/studio_evaluation", "receipt.json",
             lambda p: (read_json(p / "report.json").get("manifest_sha256") == digest(manifest)
                        and read_json(p / "report.json").get("bundle_manifest_sha256") == digest(Path(bundle) / "manifest.json")
-                       and (backend == "auto" or backend == "cpu" and read_json(p / "report.json").get("execution", {}).get("backend", "cpu") == "cpu"
-                            or read_json(p / "report.json").get("evaluation_binding") == expected)))
+                       and read_json(p / "report.json").get("execution", {}).get("backend", "cpu") == selected_backend
+                       and read_json(p / "report.json").get("evaluation_binding") == expected))
         if existing:
             verified_evaluation(project, bundle, directory)
             report = read_json(directory / "report.json")
@@ -1063,21 +1072,13 @@ def run_stage(project, workspace, settings, stage_id, context=None):
             partials = [p for p in attempts if not (p / "receipt.json").exists()
                         and (p / "_evaluation_work/checkpoint.json").is_file()]
             if partials:
-                if expected is None:
-                    expected = evaluation_binding(project, bundle, manifest, smoke=scoring_smoke)
                 for partial in partials:
                     try:
                         checkpoint = read_json(partial / "_evaluation_work/checkpoint.json")
                     except (OSError, ValueError):
                         continue  # Preserve malformed/unrelated work; never claim it is reusable.
-                    for selected_backend in (("cpu", "cuda") if backend == "auto" else (backend,)):
-                        selected_binding = (evaluation_binding(project, bundle, manifest, smoke=scoring_smoke,
-                            backend=selected_backend, gpu_batch_size=gpu_batch_size, boundary_margin=boundary_margin,
-                            cpu_prefix=cpu_prefix if selected_backend == "cuda" else None) if backend == "auto" else expected)
-                        if isinstance(checkpoint, dict) and checkpoint.get("schema_version") == 1 and checkpoint.get("binding") == selected_binding:
-                            directory, resume, backend = partial, True, selected_backend
-                            break
-                    if resume:
+                    if isinstance(checkpoint, dict) and checkpoint.get("schema_version") == 1 and checkpoint.get("binding") == expected:
+                        directory, resume, backend = partial, True, selected_backend
                         break
             report = evaluate(project, bundle, directory, manifest=manifest,
                               smoke=scoring_smoke, workers="auto", resume=resume, backend=backend,

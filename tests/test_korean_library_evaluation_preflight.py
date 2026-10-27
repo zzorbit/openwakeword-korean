@@ -124,7 +124,7 @@ def test_evaluation_preflight_hashes_each_audio_once_and_keeps_exact_scores(monk
     project, root, bundle, manifest, rows = _evaluation_inputs(tmp_path)
     files = [Path(row["path"]) for row in rows]
     hashes, headers = _count_io(monkeypatch, files)
-    cached = evaluate.evaluate(project, bundle, root / "reports/cached", manifest=manifest, workers=1, smoke=True)
+    cached = evaluate.evaluate(project, bundle, root / "reports/cached", manifest=manifest, workers=1, smoke=True, backend="cpu")
     assert cached["adoption_criteria"] == evaluate.adoption_criteria(load_project(project)[1])
     saved_report = read_json(root / "reports/cached/report.json")
     assert saved_report["adoption_criteria"] == cached["adoption_criteria"]
@@ -141,7 +141,7 @@ def test_evaluation_preflight_hashes_each_audio_once_and_keeps_exact_scores(monk
             self.clear()
             return super().inspect(root, row)
     monkeypatch.setattr(evaluate, "VerifiedAudioFiles", Uncached)
-    reference = evaluate.evaluate(project, bundle, root / "reports/uncached", manifest=manifest, workers=1, smoke=True)
+    reference = evaluate.evaluate(project, bundle, root / "reports/uncached", manifest=manifest, workers=1, smoke=True, backend="cpu")
     assert all(hashes[path] == headers[path] == 3 for path in files)
     assert reference["evaluation_binding"] == cached["evaluation_binding"]
     assert reference["models"] == cached["models"]
@@ -168,7 +168,7 @@ def test_audio_mutation_between_audit_and_format_pass_is_rejected(monkeypatch, t
         return result
     monkeypatch.setattr(evaluate, "audit_project", mutate_after_audit)
     with pytest.raises(ValueError, match="Missing or changed"):
-        evaluate.evaluate(project, bundle, root / "reports/refused", manifest=manifest, workers=1, smoke=True)
+        evaluate.evaluate(project, bundle, root / "reports/refused", manifest=manifest, workers=1, smoke=True, backend="cpu")
     assert not (root / "reports/refused").exists()
 
 
@@ -180,5 +180,5 @@ def test_cached_facts_do_not_skip_required_pcm_format_checks(tmp_path):
     row["sha256"] = digest(row["path"])
     manifest.write_text(json.dumps(row) + "\n", encoding="utf-8")
     with pytest.raises(ValueError, match="mono16kHz PCM16"):
-        evaluate.evaluate(project, bundle, root / "reports/stereo", manifest=manifest, workers=1, smoke=True)
+        evaluate.evaluate(project, bundle, root / "reports/stereo", manifest=manifest, workers=1, smoke=True, backend="cpu")
     assert not (root / "reports/stereo").exists()

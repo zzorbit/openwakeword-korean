@@ -1,6 +1,7 @@
 """Choose an evaluation device without changing an existing score contract.
 
-New Development runs prefer the qualified CUDA batch path. A separate process
+New Development runs require the qualified CUDA batch path unless CPU is chosen
+explicitly. A separate process
 checks real CUDA sessions before selection; the presence of a driver or a GPU
 package alone is not proof that its DLLs and kernels work.
 """
@@ -33,7 +34,7 @@ def _bundle_limitation(bundle):
         return "CUDA 평가에는 모델 묶음 경로가 필요합니다."
     manifest = read_json(Path(bundle).resolve() / "manifest.json")
     if len(manifest.get("members", [])) != 3 or manifest.get("aggregation") != "ordered_float64_mean_to_float32":
-        return "현재 GPU 배치 평가는 독립 모델 3개와 평균 점수 구성을 지원합니다. 이 모델은 CPU로 평가합니다."
+        return "현재 GPU 배치 평가는 독립 모델 3개와 평균 점수 구성을 지원합니다. 이 모델 구성은 GPU 평가 대상이 아닙니다."
     frontend = {Path(row["path"]).name: row.get("sha256") for row in manifest.get("frontend", [])}
     if any(frontend.get(name) != expected for name, expected in PINNED_ASSETS.items()):
         return "공유 음성 처리 모델이 GPU 배치 검증에 사용한 버전과 다릅니다."
@@ -71,7 +72,7 @@ def probe_cuda_backend(bundle, *, environment=None, timeout=30):
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except subprocess.TimeoutExpired:
         return {"available": False, "reason_code": "cuda_probe_timeout",
-                "reason": "GPU 실행 확인이 제한 시간 안에 끝나지 않아 CPU를 선택했습니다."}
+                "reason": "GPU 실행 확인이 제한 시간 안에 끝나지 않았습니다."}
     except OSError as error:
         return {"available": False, "reason_code": "cuda_probe_start_failed", "reason": str(error)}
     lines = completed.stdout.splitlines()
@@ -96,7 +97,8 @@ def resolve_evaluation_backend(requested="auto", *, stage="development", bundle=
     The returned runtime environment is applied only by the caller's dedicated
     evaluation worker. This function does not install packages, import another
     ORT build into the caller, change environment variables or rewrite records.
-    Explicit CUDA and CUDA resumes fail closed instead of becoming CPU runs.
+    Auto and CUDA fail closed instead of becoming CPU runs. An old CPU
+    checkpoint can be resumed only by an explicit CPU request.
     """
     if requested not in ("auto", "cpu", "cuda"):
         raise ValueError("Evaluation backend must be auto, cpu or cuda")
@@ -113,32 +115,30 @@ def resolve_evaluation_backend(requested="auto", *, stage="development", bundle=
               "runtime_environment": {}, "numerical_policy": None, "probe": None}
     if stage == "final":
         return {**result, "reason_code": "final_cpu_reference", "reason": "독립 최종 평가는 고정된 CPU 기준으로 진행합니다."}
-    if requested == "cpu" or resume_backend == "cpu":
+    if resume_backend == "cpu" and requested == "auto":
+        raise ValueError("기존 CPU 평가 기록은 보존됩니다. GPU 평가는 별도 평가로 시작하고, "
+                         "기존 CPU 평가를 이어가려면 CPU를 직접 선택하세요.")
+    if requested == "cpu":
         return {**result, "reason_code": "resume_cpu_reference" if resume_backend else "explicit_cpu",
                 "reason": "기존 CPU 평가의 연산 방식을 유지합니다." if resume_backend else "CPU 평가를 선택했습니다."}
     limitation = _bundle_limitation(bundle)
     if limitation:
-        if explicit_cuda:
-            raise ValueError(limitation)
-        return {**result, "reason_code": "unsupported_gpu_bundle", "reason": limitation}
+        raise ValueError(limitation + " CPU 평가는 CPU를 직접 선택한 경우에만 실행됩니다.")
     try:
         environment = _runtime_environment(project_root)
     except (ImportError, OSError, ValueError, RuntimeError) as error:
-        if explicit_cuda:
-            raise RuntimeError("CUDA runtime configuration is unavailable: " + str(error)) from error
-        return {**result, "reason_code": "cuda_runtime_configuration_failed",
-                "reason": "GPU 런타임 구성을 확인할 수 없어 CPU로 평가합니다.", "detail": str(error)[:2000]}
+        raise RuntimeError("GPU 평가 도구를 확인하지 못했습니다: " + str(error)[:2000]
+                           + " CPU로 자동 전환하지 않습니다. 문제를 해결한 뒤 다시 진행하세요.") from error
     conflict = _loaded_runtime_conflict(environment)
     if conflict:
-        if explicit_cuda:
-            raise RuntimeError(conflict)
-        return {**result, "reason_code": "runtime_already_loaded", "reason": conflict}
+        raise RuntimeError(conflict + " CPU로 자동 전환하지 않습니다.")
     probe = probe_cuda_backend(bundle, environment=environment)
     if not probe["available"]:
-        if explicit_cuda:
-            raise RuntimeError("CUDA evaluation is unavailable: " + probe.get("reason", "GPU probe failed"))
-        return {**result, "reason_code": probe.get("reason_code", "cuda_unavailable"),
-                "reason": probe.get("reason", "GPU를 사용할 수 없어 CPU로 평가합니다."), "probe": probe}
+        detail = probe.get("reason", "GPU 실행 확인에 실패했습니다.")
+        if probe.get("detail"):
+            detail += " " + str(probe["detail"])[:2000]
+        raise RuntimeError("GPU 평가를 시작하지 못했습니다: " + detail
+                           + " CPU로 자동 전환하지 않습니다. 문제를 해결한 뒤 다시 진행하세요.")
     return {**result, "backend": "cuda", "runtime_environment": environment,
             "reason_code": "resume_cuda" if resume_backend else "cuda_available",
             "reason": "GPU 배치 평가를 사용하고 임계값 근처의 음원은 CPU로 다시 확인합니다.",
