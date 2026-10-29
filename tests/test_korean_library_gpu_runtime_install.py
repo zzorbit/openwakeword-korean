@@ -45,6 +45,9 @@ def managed(tmp_path, monkeypatch):
     root.mkdir()
     monkeypatch.delenv("KOWW_CACHE_ROOT", raising=False)
     monkeypatch.setattr(runtime, "_managed_reason", lambda: None)
+    # Simulated Windows runtime state must not change the host interpreter
+    # platform used by sysconfig and other imported modules on Linux.
+    monkeypatch.setattr(runtime, "sys", SimpleNamespace(**vars(sys)))
     monkeypatch.setattr(runtime.sys, "prefix", str(root / ".venv"))
     monkeypatch.setattr(runtime.sys, "base_prefix", str(tmp_path / "system_python"))
     monkeypatch.setattr(runtime.shutil, "disk_usage", lambda path: SimpleNamespace(free=runtime.MINIMUM_FREE_BYTES))

@@ -4,7 +4,7 @@
   const $ = id => document.getElementById(id);
   const config = JSON.parse($("koww-page-config")?.textContent || "{}");
   const apiUrl = path => (config.api_base || "") + path;
-  const ui = Object.fromEntries(["wakeword", "microphone", "connect", "refresh", "retry", "deviceHint", "start", "stop", "connection", "statusHeading", "statusText", "statusDot", "level", "levelText", "elapsed", "frameCount", "lastEvent", "lastEventTime", "models", "threshold", "captureSettings"].map(id => [id, $(id)]));
+  const ui = Object.fromEntries(["wakeword", "microphone", "connect", "refresh", "retry", "deviceHint", "trial-threshold", "trial-consecutive", "reset-detection", "start", "stop", "connection", "statusHeading", "statusText", "statusDot", "level", "levelText", "elapsed", "frameCount", "lastEvent", "lastEventTime", "models", "threshold", "captureSettings"].map(id => [id, $(id)]));
   const rows = new Map();
   let info = null;
   let run = null;
@@ -12,6 +12,41 @@
   let refreshing = false;
   let probe = null;
   let initializing = false;
+  let defaultRuntime = null;
+  let thresholdEdited = false;
+
+  function displayThreshold(value) { return String(Number(value.toPrecision(6))); }
+
+  function showTrialRuntime(runtime) {
+    ui.threshold.textContent = `감지 기준 ${displayThreshold(runtime.threshold)} · 연속 ${runtime.consecutive_frames}회`;
+  }
+
+  function setDefaultFields() {
+    ui["trial-threshold"].value = displayThreshold(defaultRuntime.threshold);
+    ui["trial-consecutive"].value = String(defaultRuntime.consecutive_frames);
+    thresholdEdited = false;
+  }
+
+  function resetDetection() {
+    if (!defaultRuntime || run || probe) return;
+    setDefaultFields();
+  }
+
+  function trialSettings() {
+    const rawThreshold = ui["trial-threshold"].value.trim();
+    const rawConsecutive = ui["trial-consecutive"].value.trim();
+    const parsedThreshold = Number(rawThreshold), consecutive = Number(rawConsecutive);
+    if (!rawThreshold || !Number.isFinite(parsedThreshold) || parsedThreshold <= 0 || parsedThreshold >= 1) {
+      throw new Error("감지 기준은 0보다 크고 1보다 작은 숫자를 입력하세요.");
+    }
+    if (!rawConsecutive || !Number.isInteger(consecutive) || consecutive < 1 || consecutive > 10) {
+      throw new Error("연속 감지 수는 1~10의 정수를 입력하세요.");
+    }
+    // Keep the frozen default's full precision unless the user changes it.
+    const threshold = !thresholdEdited && rawThreshold === displayThreshold(defaultRuntime.threshold)
+      ? defaultRuntime.threshold : parsedThreshold;
+    return { threshold, consecutive_frames: consecutive };
+  }
 
   function setStatus(heading, text, phase = "idle") {
     ui.statusHeading.textContent = heading;
@@ -26,6 +61,8 @@
     ui.connect.disabled = !!run || !!probe || refreshing || document.hidden || !window.isSecureContext || !navigator.mediaDevices?.getUserMedia;
     ui.refresh.disabled = !!run || refreshing || !!probe || !navigator.mediaDevices?.enumerateDevices;
     ui.retry.disabled = initializing;
+    const settingsLocked = !info || !!run || !!probe;
+    for (const control of ["trial-threshold", "trial-consecutive", "reset-detection"]) ui[control].disabled = settingsLocked;
   }
 
   async function request(path, options = {}, timeoutMs = 5000, controller = new AbortController(), timeoutMessage = "서버 응답이 늦어 시험을 중지했습니다. 서버 상태를 확인한 뒤 다시 시작하세요.") {
@@ -246,7 +283,10 @@
 
   async function start() {
     if (!info || run || probe || document.hidden) return;
-    const target = { generation: ++generation, cancelled: false, queue: [], sequence: 0, draining: false, sessionId: null };
+    let settings;
+    try { settings = trialSettings(); }
+    catch (error) { setStatus("감지 설정을 확인하세요", error.message, "error"); return; }
+    const target = { generation: ++generation, cancelled: false, queue: [], sequence: 0, draining: false, sessionId: null, settings };
     run = target;
     syncControls(); resetMetrics();
     ui.connection.textContent = "마이크 연결 중";
@@ -265,10 +305,14 @@
       if (context.sampleRate !== 16000) throw new Error("이 브라우저가 16 kHz 마이크 분석을 지원하지 않습니다. 최신 Chrome 또는 Edge에서 열어주세요.");
       await context.audioWorklet.addModule(config.worklet_url || "/microphone_worklet.js");
       if (!isCurrent(target)) return;
-      const session = await request("/api/start", { method: "POST", headers: headers({ "Content-Type": "application/json" }), body: "{}" });
+      const session = await request("/api/start", { method: "POST", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify(target.settings) });
       if (!session.session_id) throw new Error("시험 연결 정보를 읽을 수 없습니다.");
       target.sessionId = session.session_id;
       if (!isCurrent(target)) { notifyStop(target.sessionId, true); return; }
+      if (session.runtime?.threshold !== target.settings.threshold || session.runtime?.consecutive_frames !== target.settings.consecutive_frames) {
+        throw new Error("시험 감지 설정을 확인할 수 없습니다. 화면을 새로고침한 뒤 다시 시작하세요.");
+      }
+      showTrialRuntime(session.runtime);
       renderModels(session.models || info.models);
       target.source = context.createMediaStreamSource(stream);
       target.worklet = new AudioWorkletNode(context, "koww-microphone", { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1], channelCountMode: "max" });
@@ -299,6 +343,8 @@
   ui.connect.addEventListener("click", connectMicrophone);
   ui.refresh.addEventListener("click", () => refreshDevices());
   ui.retry.addEventListener("click", initialize);
+  ui["trial-threshold"].addEventListener("input", () => { thresholdEdited = true; });
+  ui["reset-detection"].addEventListener("click", resetDetection);
   window.addEventListener("pagehide", () => { if (run || probe) stop("페이지를 떠나 마이크 시험을 중지했습니다.", false, true); });
   document.addEventListener("visibilitychange", () => { if (document.hidden && (run || probe)) stop("다른 창으로 이동하여 시험을 중지했습니다. 돌아온 뒤 다시 시작하세요.", false, true); syncControls(); });
   navigator.mediaDevices?.addEventListener("devicechange", () => { if (!probe) refreshDevices(); });
@@ -316,7 +362,14 @@
       if (info.sample_rate !== 16000 || info.frame_samples !== 1280 || !Array.isArray(info.models) || !info.models.length || !info.token || !Number.isFinite(info.warmup_s)) throw new Error("지원하지 않는 마이크 시험 설정입니다. 서버를 확인하세요.");
       ui.wakeword.textContent = `‘${info.wakeword}’`;
       document.title = `${info.wakeword} 마이크 시험 · Korean openWakeWord`;
-      ui.threshold.textContent = Number.isFinite(info.threshold) ? `고정 임계값 ${info.threshold.toFixed(4)}` : "동봉 실행 설정 사용";
+      defaultRuntime = info.default_runtime || { threshold: info.threshold, consecutive_frames: info.consecutive_frames };
+      if (!Number.isFinite(defaultRuntime.threshold) || defaultRuntime.threshold <= 0 || defaultRuntime.threshold >= 1
+          || !Number.isInteger(defaultRuntime.consecutive_frames) || defaultRuntime.consecutive_frames < 1 || defaultRuntime.consecutive_frames > 10) {
+        throw new Error("모델의 기본 감지 설정을 읽을 수 없습니다.");
+      }
+      defaultRuntime = { threshold: defaultRuntime.threshold, consecutive_frames: defaultRuntime.consecutive_frames };
+      setDefaultFields();
+      showTrialRuntime(defaultRuntime);
       renderModels(info.models);
       ui.connection.textContent = "모델 준비됨";
       setStatus("시작할 준비가 됐습니다", "시험 시작을 누르면 마이크를 연결합니다.");

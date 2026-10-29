@@ -82,6 +82,13 @@ def test_production_uses_qualified_raw_sources_without_legacy_generic_or_zeroth(
     mit = workspace / "shared/mit_fixture"
     mit_index = _write_index(mit, "mit_rir", "rir", "unknown", 9)
     monkeypatch.setattr(data, "_fetch_mit", lambda *args, **kwargs: mit)
+    from korean_openwakeword.material_downloads import MaterialDownloads
+    def training_downloads(downloads, assets, recipe, config):
+        # This fixture exercises Train source qualification and admission.
+        # Common-evaluation prefetch has its own transport contract tests.
+        assert assets == [], "Production reuses raw negatives instead of separate base/noise archives"
+        downloads.mit_directory = mit
+    monkeypatch.setattr(MaterialDownloads, "prepare", training_downloads)
     import korean_openwakeword.preparation as preparation
     real_index = preparation.create_source_index
     def source_index(directory, *, output, dataset, **kwargs):

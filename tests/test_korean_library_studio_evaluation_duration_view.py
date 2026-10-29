@@ -1,5 +1,6 @@
 """Studio duration display uses saved metadata, never scans audio on polling."""
 from copy import deepcopy
+from unittest.mock import patch
 
 import pytest
 
@@ -44,11 +45,16 @@ def _describe(tmp_path, *, version=4, candidate=None, admitted=None):
         "implementation_id": manager._implementation_id,
         "project": str(tmp_path / "not_opened/project.json"), "index": 0,
         "plan": [{"id": "data_review", "label": "검수", "kind": "review"}],
-        "settings": {"evaluation_policy": common_evaluation_policy(version)},
+        "settings": {"evaluation_policy": common_evaluation_policy(version),
+                     "train_references": 20, "validation_references": 30},
         "results": {"data_download": {"result": candidate or {}},
                     "data_connect": {"result": admitted or {}}}}
     before = deepcopy(state)
-    result = manager.describe(state)
+    def voice_metadata(path):
+        assert path == tmp_path / "not_opened/voices.json", "Duration polling must not read evaluation artifacts"
+        return {"families": []}
+    with patch("korean_openwakeword.studio.read_json", side_effect=voice_metadata):
+        result = manager.describe(state)
     assert state == before
     assert not (tmp_path / "not_opened").exists()
     return result

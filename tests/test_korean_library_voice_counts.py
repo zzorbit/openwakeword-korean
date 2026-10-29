@@ -75,6 +75,7 @@ def _save_answers(project, queue):
 
 def test_reference_growth_keeps_existing_queue_and_saved_answers_and_only_adds_sixteen(tmp_path):
     settings = steps.preset_settings()
+    settings.pop("reference_admission_policy")  # Exercise the saved human-review workflow.
     project = create_project(tmp_path / "reviewed", "보라야", "bora",
                              positive_originals=settings["originals"], augmentation_rounds=settings["rounds"],
                              updates=settings["updates"], generic_hours=settings["generic_hours"],
@@ -95,13 +96,13 @@ def test_reference_growth_keeps_existing_queue_and_saved_answers_and_only_adds_s
     assert len(read_rows(queues[1])) == 16
     context = {"results": {"references": {"queues": [str(path) for path in queues]}},
                "inputs": {"review_answers": {"references": answer}}}
-    pending = steps.run_stage(project, tmp_path, steps.preset_settings(), "references_review", context)
+    pending = steps.run_stage(project, tmp_path, settings, "references_review", context)
     assert pending["state"] == "waiting_review"
     assert len(pending["reviews"]) == 1
     assert pending["reviews"][0]["count"] == 16
     descriptor = pending["reviews"][0]
     context["inputs"]["review_answers"][descriptor["id"]] = _save_answers(project, queues[1])
-    complete = steps.run_stage(project, tmp_path, steps.preset_settings(), "references_review", context)
+    complete = steps.run_stage(project, tmp_path, settings, "references_review", context)
     assert complete["state"] == "completed" and complete["result"]["reviewed_queues"] == 2
     assert steps._publish_reference_queues(workspace, _rows(root, 20), queues) == queues
     assert base.read_bytes() == original_bytes
@@ -110,6 +111,7 @@ def test_reference_growth_keeps_existing_queue_and_saved_answers_and_only_adds_s
 @pytest.mark.parametrize("tamper", [False, True])
 def test_cli_reference_answers_survive_supplemental_summary_and_verify_archived_hash(tmp_path, tamper):
     settings = steps.preset_settings()
+    settings.pop("reference_admission_policy")  # Legacy CLI decisions remain verifiable.
     project = create_project(tmp_path / "cli_reviewed", "보라야", "bora",
                              positive_originals=settings["originals"], augmentation_rounds=settings["rounds"],
                              updates=settings["updates"], generic_hours=settings["generic_hours"],

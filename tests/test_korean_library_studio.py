@@ -843,7 +843,7 @@ def test_http_mic_assets_use_integrated_prefix_and_their_own_token(manager, http
     class Microphone:
         token = "fixture-mic-token"
         def info(self): return {"token": self.token, "wakeword": "보라야"}
-        def start(self): return {"session_id": "fixture-session"}
+        def start(self, settings=None): return {"session_id": "fixture-session", "settings": settings}
         def stop(self, session): return {"stopped": session}
         def process_frame(self, session, sequence, payload): return {"session": session, "sequence": sequence, "bytes": len(payload)}
 
@@ -866,6 +866,9 @@ def test_http_mic_assets_use_integrated_prefix_and_their_own_token(manager, http
     assert http_server(prefix + "/api/start", "POST", {},
         headers={"X-Koww-Token": microphone.token, "Origin": "https://foreign.invalid"})[0] == 403
     assert http_server(prefix + "/api/start", "POST", {}, headers={"X-Koww-Token": microphone.token})[0] == 200
+    status, content, _ = http_server(prefix + "/api/start", "POST", {"threshold": .75, "consecutive_frames": 1},
+        headers={"X-Koww-Token": microphone.token})
+    assert status == 200 and json.loads(content)["settings"] == {"threshold": .75, "consecutive_frames": 1}
     status, content, _ = http_server(prefix + "/api/frame", "POST", raw=b"\x00" * 2560,
         headers={"Content-Type": "application/octet-stream", "X-Koww-Token": microphone.token,
                  "X-Koww-Session": "fixture-session", "X-Koww-Sequence": "0"})
@@ -883,6 +886,29 @@ def test_http_mic_initialization_failure_returns_recoverable_json(manager, http_
     status, content, _ = http_server(f"/mic/{project['id']}/api/info")
     assert status == 400
     assert json.loads(content) == {"error": "Model initialization failed"}
+
+
+def test_studio_microphone_compares_original_bundle_and_preserves_old_selection(manager, monkeypatch):
+    from types import SimpleNamespace
+    from test_korean_library_microphone import FakeDetector
+    project = create(manager)
+    root = Path(manager._load(project["id"])["project"]).parent
+    original = root / "models/original"
+    write_json(original / "manifest.json", {"members": [{"path": f"{key}.onnx"} for key in FakeDetector.keys]})
+    old_selection = root / ".studio/analysis/active.json"
+    write_json(old_selection, {"bundle": "preserved-selected-single-model"})
+    before = old_selection.read_bytes()
+    put_state(manager, project["id"], results={"package": {"result": {"bundle": str(original)}}})
+    loaded = []
+    monkeypatch.setattr("korean_openwakeword.runtime.WakeWordDetector", lambda bundle: loaded.append(bundle) or FakeDetector())
+    def unexpected_selection(project_id):
+        raise AssertionError("The comparison microphone must ignore old per-model selection")
+    manager._analysis_service = SimpleNamespace(active_bundle=unexpected_selection)
+    service = manager.microphone(project["id"])
+    assert loaded == [str(original)]
+    assert [model["label"] for model in service.info()["models"]] == ["모델 1", "모델 2", "모델 3", "3개 평균 앙상블"]
+    assert old_selection.read_bytes() == before
+    assert manager.microphone(project["id"]) is service
 
 
 def worker_request(tmp_path, stage="frontend"):

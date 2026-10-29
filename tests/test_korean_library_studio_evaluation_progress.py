@@ -13,6 +13,7 @@ def _fixture(tmp_path, content=b"", *, task="active-evaluation"):
     directory.mkdir(parents=True)
     log = directory / "output.log"
     log.write_bytes(content)
+    studio.write_json(root / "voices.json", {"families": []})
     manager = object.__new__(studio.StudioManager)
     manager._implementation_id = "fixture-implementation"
     manager._timing_receipts = {}
@@ -25,7 +26,8 @@ def _fixture(tmp_path, content=b"", *, task="active-evaluation"):
         "plan": [{"id": "training", "label": "학습", "kind": "task"},
                  {"id": "evaluation", "label": "성능 평가", "kind": "task"},
                  {"id": "results", "label": "결과", "kind": "task"}],
-        "settings": {}, "results": {}, "next_action": "작업을 진행하고 있습니다.",
+        "settings": {"train_references": 20, "validation_references": 30},
+        "results": {}, "next_action": "작업을 진행하고 있습니다.",
         "job": {"task_id": task, "stage": "evaluation", "directory": str(directory), "log": str(log)}}
     return manager, state, log
 
@@ -110,7 +112,10 @@ def test_periodic_view_reads_at_most_one_24k_log_tail_and_no_large_artifacts(mon
         assert path == log, "Polling must not open a manifest, score array, WAV or prior task log"
         return Reader(original_open(path, *args, **kwargs))
     monkeypatch.setattr(Path, "open", guarded_open)
-    monkeypatch.setattr(studio, "read_json", lambda *args: pytest.fail("No evaluation JSON may be read for progress"))
+    def voice_metadata(path):
+        assert path == Path(state["project"]).parent / "voices.json", "No evaluation JSON may be read for progress"
+        return {"families": []}
+    monkeypatch.setattr(studio, "read_json", voice_metadata)
     monkeypatch.setattr(studio, "read_rows", lambda *args: pytest.fail("No audio manifest may be scanned for progress"))
     monkeypatch.setattr(studio, "digest", lambda *args: pytest.fail("Polling must not hash artifacts"))
     monkeypatch.setattr(Path, "glob", lambda *args: pytest.fail("Polling must not search evaluation attempts"))

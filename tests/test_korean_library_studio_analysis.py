@@ -149,14 +149,14 @@ def test_interrupted_worker_is_not_a_running_lock_or_fabricated_success(analysis
     assert not service.busy("fixture")
 
 
-def test_http_analysis_assets_tokens_and_explicit_job_launch(analysis):
+def test_retired_analysis_page_redirects_to_microphone_and_preserves_authenticated_legacy_api(analysis):
     service, state, project, bundle, evaluation, ids, calls = analysis
     manager = service.manager
     manager.analysis = service
     server = studio.make_studio_server(manager, port=0)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    def request(path, method="GET", payload=None, **headers):
+    def request(path, method="GET", payload=None, inspect_headers=False, **headers):
         client = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=10)
         if payload is not None:
             body = json.dumps(payload).encode()
@@ -165,14 +165,19 @@ def test_http_analysis_assets_tokens_and_explicit_job_launch(analysis):
             body = None
         client.request(method, path, body=body, headers=headers)
         response = client.getresponse()
-        result = response.status, response.read()
+        result = ((response.status, response.read(), dict(response.getheaders())) if inspect_headers
+                  else (response.status, response.read()))
         client.close()
         return result
     try:
         base = "/analysis/fixture/"
-        assert request(base)[0] == 200
-        assert request(base + "analysis.js")[0] == 200
-        assert request(base + "analysis.css")[0] == 200
+        status, body, headers = request(base, inspect_headers=True)
+        assert status == 308 and body == b"" and headers["Location"] == "/mic/fixture/"
+        assert headers["Cache-Control"] == "no-store"
+        assert request(base.rstrip("/"), inspect_headers=True)[2]["Location"] == "/mic/fixture/"
+        assert request(base + "analysis.js")[0] == 404
+        assert request(base + "analysis.css")[0] == 404
+        assert calls == []  # Opening an old page never selects or starts a trial.
         status, content = request(base + "api/status")
         assert status == 200 and json.loads(content)["selection"] is None
         assert request(base + "api/compare", "POST", {"candidate": ids[1]})[0] == 403

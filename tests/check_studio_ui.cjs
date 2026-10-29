@@ -1632,11 +1632,18 @@ function pendingHardStorageRecipe() {
     assert.equal(b.elements.get("migration-note").hidden,false);assert.equal(b.elements.get("migrate").hidden,false);assert.equal(b.elements.get("resume").hidden,true);
     assert.equal(b.calls.some(call=>call.url.endsWith("/migrate")),false);await b.click("migrate");await flush();assert.ok(b.calls.some(call=>call.url.endsWith("/migrate")&&call.options.method==="POST"));
   });
-  await test("result selection tab opens an independent page and survives polling", async () => {
-    const project={id:"bora",status:"completed",results_url:"/results/bora/"};
-    const b=browser({initialState:{projects:[project]}});await flush();b.click("analysis-tab");await flush();
-    assert.equal(b.elements.get("result-frame").getAttribute("src"),"/analysis/bora/");await b.tick();
-    assert.equal(b.elements.get("result-frame").getAttribute("src"),"/analysis/bora/");assert.equal(b.calls.some(call=>call.options.method==="POST"),false);
+  await test("results have only evaluation and all-model microphone tabs, with stable read-only polling", async () => {
+    const project={id:"bora",status:"completed",results:{url:"/results/bora/",mic_url:"/mic/bora/"}};
+    const b=browser({initialState:{projects:[project]}});await flush();
+    assert.equal(b.elements.has("analysis-tab"),false);
+    assert.equal(b.elements.get("result-frame").getAttribute("src"),"/results/bora/");
+    b.click("mic-tab");await flush();
+    assert.equal(b.elements.get("result-frame").getAttribute("src"),"/mic/bora/");await b.tick();
+    assert.equal(b.elements.get("result-frame").getAttribute("src"),"/mic/bora/");
+    assert.equal(b.elements.get("result-open").href,"/mic/bora/");
+    b.click("result-tab");await flush();
+    assert.equal(b.elements.get("result-frame").getAttribute("src"),"/results/bora/");
+    assert.equal(b.calls.some(call=>call.options.method==="POST"),false);
   });
   await test("all required download groups are visible while hundreds of RIR files expand only on demand", async () => {
     const rirs = Array.from({ length: 270 }, (_, index) => downloadFile(`rir-${index}`, { group: "mit", group_label: "MIT 잔향 자료", label: `room_${index}.wav`, total: 1024,

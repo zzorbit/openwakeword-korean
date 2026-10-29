@@ -1724,11 +1724,12 @@ class StudioManager:
                 from .runtime import WakeWordDetector
                 package = state["results"]["package"]
                 original_bundle = package.get("result", package)["bundle"]
-                bundle = self.analysis.active_bundle(project_id) or original_bundle
                 original = read_json(Path(original_bundle) / "manifest.json")
                 labels = {Path(row["path"]).stem: f"모델 {index + 1}"
                           for index, row in enumerate(original["members"])}
-                self._microphones[project_id] = MicrophoneService(WakeWordDetector(bundle), model_labels=labels)
+                # The microphone is a comparison of all original models. Old
+                # per-candidate selection artifacts remain separate records.
+                self._microphones[project_id] = MicrophoneService(WakeWordDetector(original_bundle), model_labels=labels)
         return self._microphones[project_id]
 
 
@@ -1942,12 +1943,16 @@ def make_studio_server(manager, port=8793):
                 return self.respond(manager.analysis.status(project_id))
             if rest.startswith("download/"):
                 return self.send_file(manager.analysis.download(project_id, rest.split("/", 1)[1]))
-            names = {"": "analysis.html", "analysis.js": "analysis.js", "analysis.css": "analysis.css"}
-            if rest not in names:
-                return self.respond({"error": "페이지를 찾을 수 없습니다."}, 404)
-            name = names[rest]
-            kind = "text/html; charset=utf-8" if name.endswith("html") else "text/css; charset=utf-8" if name.endswith("css") else "text/javascript; charset=utf-8"
-            return self.respond((resources / name).read_bytes(), kind=kind)
+            if not rest:
+                # Old bookmarks open the consolidated trial screen. Historical
+                # analysis records and authenticated APIs remain available.
+                self.send_response(308)
+                self.send_header("Location", "/mic/" + quote(project_id, safe="") + "/")
+                self.send_header("Content-Length", "0")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                return
+            return self.respond({"error": "페이지를 찾을 수 없습니다."}, 404)
 
         def do_POST(self):
             try:
@@ -1967,7 +1972,7 @@ def make_studio_server(manager, port=8793):
                                 raise ValueError("모델 비교·선택 작업을 마친 뒤 마이크를 연결하세요.")
                             service = manager.microphone(project_id)
                             self.guard(mutate=True, token=service.token)
-                            return self.respond(service.start())
+                            return self.respond(service.start(payload))
                     if action == "stop":
                         return self.respond(service.stop(payload.get("session_id")))
                     raise ValueError("Unsupported microphone action")

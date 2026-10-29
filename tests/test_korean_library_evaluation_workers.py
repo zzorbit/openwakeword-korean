@@ -183,6 +183,7 @@ def test_studio_reuses_only_an_incomplete_evaluation_with_exact_input_binding(tm
     from korean_openwakeword import evaluate, studio_steps
     from korean_openwakeword.project import create_project
     settings = studio_steps.preset_settings("check")
+    settings["evaluation_backend"] = "cpu"
     project = create_project(tmp_path / "word", "보라야", "resume_fixture",
         positive_originals=settings["originals"], augmentation_rounds=settings["rounds"],
         updates=settings["updates"], generic_hours=settings["generic_hours"], korean_hours=settings["korean_hours"])
@@ -217,6 +218,7 @@ def test_studio_reuses_verified_completed_evaluation_before_any_partial(tmp_path
     from korean_openwakeword.common import digest
     from korean_openwakeword.project import create_project
     settings = studio_steps.preset_settings("check")
+    settings["evaluation_backend"] = "cpu"
     project = create_project(tmp_path / "word", "보라야", "completed_fixture",
         positive_originals=settings["originals"], augmentation_rounds=settings["rounds"],
         updates=settings["updates"], generic_hours=settings["generic_hours"], korean_hours=settings["korean_hours"])
@@ -224,7 +226,10 @@ def test_studio_reuses_verified_completed_evaluation_before_any_partial(tmp_path
     manifest.write_text("", encoding="utf-8")
     base = project.parent / "reports/studio_evaluation"
     write_json(base / "report.json", {"models": [], "manifest_sha256": digest(manifest),
-                                      "bundle_manifest_sha256": digest(bundle / "manifest.json")})
+                                      "bundle_manifest_sha256": digest(bundle / "manifest.json"),
+                                      "execution": {"backend": "cpu"},
+                                      "evaluation_binding": evaluate.evaluation_binding(
+                                          project, bundle, manifest, smoke=False, backend="cpu")})
     write_json(base / "receipt.json", {"completed": True})
     write_json(base / "clips.json", [])
     verified = []

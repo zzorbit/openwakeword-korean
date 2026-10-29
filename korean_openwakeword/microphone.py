@@ -8,6 +8,7 @@ from importlib.resources import files
 from urllib.parse import urlsplit
 import hmac
 import json
+import math
 import secrets
 import threading
 import time
@@ -58,6 +59,8 @@ class MicrophoneService:
                 "sample_rate": 16000, "frame_samples": 1280,
                 "warmup_s": self.runtime["warmup_s"],
                 "threshold": self.runtime["threshold"],
+                "consecutive_frames": self.runtime["consecutive_frames"],
+                "default_runtime": {key: self.runtime[key] for key in ("threshold", "consecutive_frames")},
                 "token": self.token, "models": self.models,
                 "audio_saved": False, "training_or_tuning": False,
                 "inference_device": "CPU ONNX"}
@@ -85,21 +88,34 @@ class MicrophoneService:
             self._expire()
             return self._session is not None
 
-    def start(self):
+    def start(self, settings=None):
         with self._lock:
             self._expire()
             if self._session:
                 raise MicrophoneError("다른 시험이 진행 중입니다. 먼저 중지하세요.", 409)
+            settings = {} if settings is None else settings
+            if not isinstance(settings, dict) or set(settings) - {"threshold", "consecutive_frames"}:
+                raise MicrophoneError("감지 기준과 연속 감지 수만 설정할 수 있습니다.")
+            runtime = dict(self.runtime, **settings)
+            threshold, consecutive = runtime["threshold"], runtime["consecutive_frames"]
+            if (isinstance(threshold, bool) or not isinstance(threshold, (int, float))
+                    or not math.isfinite(threshold) or not 0 < threshold < 1):
+                raise MicrophoneError("감지 기준은 0보다 크고 1보다 작은 숫자여야 합니다.")
+            if type(consecutive) is not int or not 1 <= consecutive <= 10:
+                raise MicrophoneError("연속 감지 수는 1~10의 정수여야 합니다.")
             self.detector.reset()
             self._session = secrets.token_urlsafe(24)
             self._last_activity = self._clock()
             self._next_sequence = 0
-            self._gates = {key: EventDetector(self.runtime["threshold"],
-                self.runtime["consecutive_frames"], self.runtime["cooldown_s"])
-                for key in self.detector.keys}
+            # Trial-only gates share the unchanged scores and warmup timeline.
+            # The bundle's runtime, model weights and offline evaluation stay
+            # untouched, including the detector's original ensemble gate.
+            self._gates = {model["id"]: EventDetector(runtime["threshold"],
+                runtime["consecutive_frames"], runtime["cooldown_s"])
+                for model in self.models}
             self._stats = {m["id"]: {"max_score": 0.0, "events": 0, "last_event_s": None}
                            for m in self.models}
-            return {"session_id": self._session, "runtime": self.runtime,
+            return {"session_id": self._session, "runtime": runtime,
                     "models": self.models, "audio_saved": False}
 
     def _require_session(self, session_id):
@@ -128,10 +144,10 @@ class MicrophoneService:
                 for index, model in enumerate(self.models):
                     key = model["id"]
                     if key == self._ensemble_id:
-                        score, event = float(row["score"]), bool(row["event"])
+                        score = float(row["score"])
                     else:
                         score = float(values[index])
-                        event = self._gates[key].update(score, row["time_s"], row["eligible"])["event"]
+                    event = self._gates[key].update(score, row["time_s"], row["eligible"])["event"]
                     stat = self._stats[key]
                     stat["max_score"] = max(stat["max_score"], score)
                     if event:
@@ -248,8 +264,8 @@ def make_server(service, port=8792):
                 self._guard(mutate=True)
                 path = urlsplit(self.path).path
                 if path == "/api/start":
-                    self._body("application/json")
-                    value = service.start()
+                    body = self._body("application/json")
+                    value = service.start(body)
                 elif path == "/api/frame":
                     payload = self._body("application/octet-stream")
                     try:

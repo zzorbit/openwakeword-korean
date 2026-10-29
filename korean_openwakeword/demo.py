@@ -21,5 +21,5 @@ def run_demo(output):
         row.pop("existing_results", None)
     manifest = project.parent / "data" / "eval" / "development.jsonl"
     manifest.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
-    evaluate(project, bundle, output / "evaluation")
+    evaluate(project, bundle, output / "evaluation", backend="cpu")
     return export_site(output / "evaluation", output / "site")

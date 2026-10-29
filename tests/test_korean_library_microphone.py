@@ -82,6 +82,8 @@ def test_info_preserves_bundle_rules_without_starting_stream(service, detector):
     assert info["sample_rate"] == detector.runtime["sample_rate"]
     assert info["frame_samples"] == detector.runtime["frame_samples"]
     assert info["threshold"] == detector.runtime["threshold"]
+    assert info["consecutive_frames"] == detector.runtime["consecutive_frames"]
+    assert info["default_runtime"] == {"threshold": .5, "consecutive_frames": 2}
     assert info["warmup_s"] == detector.runtime["warmup_s"]
     assert [model["id"] for model in info["models"]] == [*detector.keys, "mean"]
     assert info["audio_saved"] is False and info["training_or_tuning"] is False
@@ -112,8 +114,8 @@ def test_exact_little_endian_pcm_and_model_responses_are_not_modified(service, d
     assert row["rms"] == pytest.approx(np.sqrt(np.mean((samples.astype(np.float64) / 32768) ** 2)))
 
 
-def test_warmup_and_events_remain_the_detector_decisions(service):
-    session = service.start()["session_id"]
+def test_trial_gates_preserve_detector_warmup_scores_and_timestamps(service):
+    session = service.start({"consecutive_frames": 1})["session_id"]
     rows = [service.process_frame(session, index, pcm()) for index in range(27)]
     assert all(not row["eligible"] and not any(response["event"] for response in row["responses"])
                for row in rows[:25])
@@ -248,7 +250,7 @@ def test_member_named_mean_keeps_independent_score_and_statistics(names):
     ids = [model["id"] for model in service.info()["models"]]
     assert ids[:3] == names and len(ids) == len(set(ids)) == 4
     assert ids[-1] not in names
-    session = service.start()["session_id"]
+    session = service.start({"threshold": .75, "consecutive_frames": 1})["session_id"]
     rows = [service.process_frame(session, sequence, pcm()) for sequence in range(27)]
     # A member's basename must not turn its raw score into the ensemble score.
     assert [response["score"] for response in rows[0]["responses"]] == pytest.approx([.7, .8, .9, .8])
@@ -259,6 +261,71 @@ def test_member_named_mean_keeps_independent_score_and_statistics(names):
     assert last[ids[-1]]["events"] == 1
     assert last[names[0]]["last_event_s"] is None
     assert last[ids[-1]]["last_event_s"] == pytest.approx(2.16)
+
+
+def test_trial_settings_apply_to_all_heads_and_ensemble_without_mutating_bundle(service, detector):
+    original = dict(detector.runtime)
+    started = service.start({"threshold": .25, "consecutive_frames": 2})
+    assert started["runtime"] == dict(original, threshold=.25)
+    assert service.runtime == detector.runtime == original
+    assert service.info()["default_runtime"] == {"threshold": .5, "consecutive_frames": 2}
+    rows = [service.process_frame(started["session_id"], index, pcm()) for index in range(26)]
+    assert not any(response["event"] for row in rows[:25] for response in row["responses"])
+    # The unchanged detector's default mean gate is false on this low frame;
+    # the trial threshold qualifies head2, head3 and the mean independently.
+    assert [response["event"] for response in rows[-1]["responses"]] == [False, True, True, True]
+    assert [response["score"] for response in rows[-1]["responses"]] == pytest.approx([.2, .3, .4, .3])
+    assert_status(409, service.start, {"threshold": .9})
+    assert detector.runtime == original
+    service.stop(started["session_id"])
+    assert service.start()["runtime"] == original
+
+
+@pytest.mark.parametrize("settings", [
+    [], True, {"threshold": 0}, {"threshold": 1}, {"threshold": -.1},
+    {"threshold": float("nan")}, {"threshold": float("inf")},
+    {"threshold": "0.5"}, {"threshold": True}, {"consecutive_frames": 0},
+    {"consecutive_frames": 11}, {"consecutive_frames": 1.5},
+    {"consecutive_frames": True}, {"consecutive_frames": "2"}, {"candidate": "head1"},
+])
+def test_invalid_trial_settings_cannot_reset_or_start_capture(service, detector, settings):
+    assert_status(400, service.start, settings)
+    assert not service.active() and detector.resets == 0
+    assert service.runtime == detector.runtime
+
+
+def test_trial_setting_response_cannot_modify_future_defaults(service, detector):
+    response = service.start({"threshold": .7})
+    response["runtime"]["threshold"] = .1
+    service.stop(response["session_id"])
+    info = service.info()
+    info["default_runtime"]["threshold"] = .2
+    assert service.start()["runtime"]["threshold"] == detector.runtime["threshold"] == .5
+
+
+def test_default_mean_gate_matches_reference_through_warmup_and_cooldown():
+    class ReferenceDetector(FakeDetector):
+        scores = [.8] * 30 + [.2] * 15 + [.8] * 20
+
+        def reset(self):
+            super().reset()
+            self.gate = EventDetector(self.runtime["threshold"], self.runtime["consecutive_frames"], self.runtime["cooldown_s"])
+            self.reference_events = []
+
+        def process(self, frame):
+            row = super().process(frame)
+            score = self.scores[len(self.frames) - 1]
+            event = self.gate.update(score, row["time_s"], row["eligible"])["event"]
+            self.reference_events.append(event)
+            return dict(row, member_scores=[score] * 3, score=score, event=event)
+
+    detector = ReferenceDetector()
+    service = MicrophoneService(detector)
+    started = service.start()
+    rows = [service.process_frame(started["session_id"], i, pcm()) for i in range(len(detector.scores))]
+    assert [row["responses"][-1]["event"] for row in rows] == detector.reference_events
+    assert [row["time_s"] for row in rows if row["responses"][-1]["event"]] == pytest.approx([2.08, 3.76])
+    assert started["runtime"] == detector.runtime
 
 
 def test_detector_failure_terminates_stream_without_reusing_partial_history(service, detector, monkeypatch):
@@ -369,6 +436,17 @@ def test_http_session_conflict_does_not_overwrite_owner(web):
     assert api(web, "/api/start", b"{}")[0] == 409
     assert api(web, "/api/stop", b'{"session_id":"wrong"}')[0] == 409
     assert api(web, "/api/stop", json.dumps({"session_id": first["session_id"]}))[0] == 200
+
+
+def test_http_trial_settings_are_bounded_and_do_not_rewrite_defaults(web, detector):
+    status, _, started = api(web, "/api/start", b'{"threshold":0.75,"consecutive_frames":1}')
+    assert status == 200 and started["runtime"]["threshold"] == .75
+    assert started["runtime"]["consecutive_frames"] == 1
+    assert detector.runtime["threshold"] == .5 and detector.runtime["consecutive_frames"] == 2
+    assert api(web, "/api/stop", json.dumps({"session_id": started["session_id"]}))[0] == 200
+    assert api(web, "/api/start", b'{"threshold":0}')[0] == 400
+    assert api(web, "/api/start", b'{"candidate":"head1"}')[0] == 400
+    assert not web[1].active()
 
 
 @pytest.mark.parametrize("token", [None, "invalid"])

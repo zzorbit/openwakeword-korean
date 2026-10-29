@@ -816,23 +816,19 @@
   function renderResultFrame(project) {
     const result = project.results || {};
     const resultUrl = localUrl(result.url || project.results_url), micUrl = localUrl(result.mic_url || project.mic_url);
-    const analysisUrl = resultUrl ? `/analysis/${encodeURIComponent(project.id)}/` : "";
     const show = Boolean(resultUrl);
     $("results-section").hidden = !show;
     if (!show) { if (resultIdentity) frameSource($("result-frame"), ""); $("evaluation-coverage").hidden = true; resultIdentity = ""; resultMode = "results"; return; }
     if (resultIdentity !== project.id + ":" + resultUrl) { resultMode = "results"; resultIdentity = project.id + ":" + resultUrl; }
     if (!micUrl && resultMode === "mic") resultMode = "results";
     $("mic-tab").hidden = !micUrl;
-    $("analysis-tab").hidden = !analysisUrl;
-    $("analysis-tab").className = "tab" + (resultMode === "analysis" ? " active" : "");
-    $("analysis-tab").setAttribute("aria-selected", String(resultMode === "analysis"));
     $("result-tab").className = "tab" + (resultMode === "results" ? " active" : "");
     $("mic-tab").className = "tab" + (resultMode === "mic" ? " active" : "");
     $("result-tab").setAttribute("aria-selected", String(resultMode === "results")); $("mic-tab").setAttribute("aria-selected", String(resultMode === "mic"));
-    const url = resultMode === "mic" ? micUrl : resultMode === "analysis" ? analysisUrl : resultUrl;
+    const url = resultMode === "mic" ? micUrl : resultUrl;
     frameSource($("result-frame"), url); $("result-open").href = url;
-    $("result-frame").title = resultMode === "mic" ? "마이크로 호출어 시험" : resultMode === "analysis" ? "모델 선택과 감지 민감도 비교" : "성능과 평가 오디오";
-    $("results-note").textContent = resultMode === "mic" ? "마이크를 허용한 뒤 호출어를 말해보세요." : resultMode === "analysis" ? "선택한 모델과 감지 설정을 별도로 저장해 시험합니다." : "같은 시험 오디오에서 모델별 성능을 비교한 결과입니다.";
+    $("result-frame").title = resultMode === "mic" ? "마이크로 호출어 시험" : "성능과 평가 오디오";
+    $("results-note").textContent = resultMode === "mic" ? "감지 설정을 조절하고 모든 모델의 반응을 함께 확인하세요." : "같은 시험 오디오에서 모델별 성능을 비교한 결과입니다.";
     const assessment = result.common_evaluation_assessment;
     $("evaluation-coverage").hidden = !assessment || resultMode !== "results";
     if (assessment) {
@@ -1118,7 +1114,6 @@
     $("hard-preview").addEventListener("toggle", () => renderHardPreview(newProject ? null : selectedProject()));
     $("result-tab").addEventListener("click", () => { resultMode = "results"; if (selectedProject()) renderResultFrame(selectedProject()); });
     $("mic-tab").addEventListener("click", () => { resultMode = "mic"; if (selectedProject()) renderResultFrame(selectedProject()); });
-    $("analysis-tab").addEventListener("click", () => { resultMode = "analysis"; if (selectedProject()) renderResultFrame(selectedProject()); });
     document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
     await refresh();
     try {

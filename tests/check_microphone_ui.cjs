@@ -31,7 +31,7 @@ function browser(config = {}) {
     get options() { return this.children; }
   }
   class Option extends Element { constructor(text, value) { super(); this.textContent = text; this.value = value; } }
-  const state = { deferredPermission: null, deferredStart: null, deferredInfo: null, failInfo: false, permissionError: null, enumerationError: null, hideDeviceNames: false, enumerations: [], failFrame: false, holdFrame: false, audioRate: 16000, permissionCalls: 0, constraints: null, ...config };
+  const state = { deferredPermission: null, deferredStart: null, deferredInfo: null, startRuntime: null, failInfo: false, permissionError: null, enumerationError: null, hideDeviceNames: false, enumerations: [], failFrame: false, holdFrame: false, audioRate: 16000, permissionCalls: 0, constraints: null, ...config };
   function makeStream() {
     const track = { label: "모의 마이크", stopped: false, onended: null, onmute: null, stop() { this.stopped = true; }, getSettings() { return { deviceId: "mic1", sampleRate: 48000, channelCount: 2, echoCancellation: false, noiseSuppression: false, autoGainControl: false }; } };
     const tracks = [track];
@@ -57,7 +57,11 @@ function browser(config = {}) {
     async close() { this.state = "closed"; }
   }
   class Worklet extends Node { constructor() { super(); this.port = { onmessage: null }; workers.push(this); } }
-  const info = { wakeword: "보라야", sample_rate: 16000, frame_samples: 1280, warmup_s: 2, threshold: .986, token: "test-local-token", models: [{ id: "head1", label: "모델 1", kind: "single" }, { id: "_mean", label: "평균 앙상블", kind: "ensemble" }] };
+  const defaultRuntime = { threshold: .9862500429153442, consecutive_frames: 2 };
+  const info = { wakeword: "보라야", sample_rate: 16000, frame_samples: 1280, warmup_s: 2, ...defaultRuntime, default_runtime: { ...defaultRuntime }, token: "test-local-token", models: [
+    { id: "head1", label: "모델 1", kind: "single" }, { id: "head2", label: "모델 2", kind: "single" },
+    { id: "head3", label: "모델 3", kind: "single" }, { id: "_mean", label: "평균 앙상블", kind: "ensemble" }
+  ] };
   const json = (data, status = 200) => ({ ok: status < 400, status, json: async () => data });
   const fetch = async (url, options = {}) => {
     calls.push({ url, options });
@@ -73,7 +77,8 @@ function browser(config = {}) {
     assert.equal(options.headers["X-Koww-Token"], info.token);
     if (url === "/api/start") {
       if (state.deferredStart) return state.deferredStart.promise;
-      return json({ session_id: `session${calls.filter(call => call.url === "/api/start").length}`, models: info.models });
+      return json({ session_id: `session${calls.filter(call => call.url === "/api/start").length}`, models: info.models,
+        runtime: state.startRuntime || { ...defaultRuntime, ...JSON.parse(options.body) } });
     }
     if (url === "/api/stop") return json({ stopped: true });
     if (url === "/api/frame") {
@@ -130,6 +135,92 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
     const b = browser(); await flush();
     assert.equal(b.state.permissionCalls, 0); assert.equal(b.elements.get("start").disabled, false);
     assert.equal(b.elements.get("wakeword").textContent, "‘보라야’");
+  });
+  await test("all four models are visible and a readable default retains its exact original threshold on start", async () => {
+    const b = browser(); await flush();
+    assert.equal(b.elements.get("models").children.length, 4);
+    assert.equal(b.elements.get("trial-threshold").value, "0.98625");
+    assert.equal(b.elements.get("trial-consecutive").value, "2");
+    assert.equal(b.elements.get("trial-threshold").disabled, false);
+    await b.click("start"); await flush();
+    const payload = JSON.parse(b.calls.find(call => call.url === "/api/start").options.body);
+    assert.deepEqual(payload, { threshold: b.info.threshold, consecutive_frames: 2 });
+    assert.equal(b.elements.get("models").children.length, 4);
+    assert.equal(b.elements.get("trial-threshold").disabled, true);
+    assert.match(b.elements.get("threshold").textContent, /0\.98625.*2회/);
+    b.click("stop"); await flush();
+  });
+  await test("trial settings are sent only on explicit start and the server's applied settings label the responses", async () => {
+    const b = browser(); await flush(); const original = JSON.stringify(b.info);
+    b.elements.get("trial-threshold").value = "0.9";
+    b.elements.get("trial-threshold").handlers.input();
+    b.elements.get("trial-consecutive").value = "3";
+    assert.equal(b.calls.length, 1); assert.equal(b.state.permissionCalls, 0);
+    await b.click("start"); await flush();
+    assert.deepEqual(JSON.parse(b.calls.find(call => call.url === "/api/start").options.body), { threshold: .9, consecutive_frames: 3 });
+    assert.match(b.elements.get("threshold").textContent, /0\.9.*3회/);
+    assert.equal(JSON.stringify(b.info), original);
+    b.frame(); await flush(); assert.equal(b.elements.get("models").children.length, 4);
+    b.click("stop"); await flush();
+    assert.equal(b.elements.get("trial-threshold").disabled, false);
+    assert.equal(b.elements.get("trial-consecutive").disabled, false);
+  });
+  await test("invalid trial settings never open the microphone or start a server session", async () => {
+    for (const [id, values] of [["trial-threshold", ["", "0", "1", "NaN", "Infinity"]], ["trial-consecutive", ["", "0", "11", "1.5"]]]) {
+      for (const value of values) {
+        const b = browser(); await flush(); b.elements.get(id).value = value;
+        await b.click("start"); await flush();
+        assert.equal(b.state.permissionCalls, 0); assert.equal(b.calls.length, 1);
+        assert.equal(b.elements.get("statusHeading").textContent, "감지 설정을 확인하세요");
+        assert.equal(b.elements.get(id).disabled, false);
+      }
+    }
+  });
+  await test("settings stay frozen while permission is pending and reset cannot change a running trial", async () => {
+    const b = browser(); await flush(); b.state.deferredPermission = deferred();
+    const started = b.click("start");
+    for (const id of ["trial-threshold", "trial-consecutive", "reset-detection"]) assert.equal(b.elements.get(id).disabled, true);
+    b.elements.get("trial-threshold").value = "0.8"; b.click("reset-detection");
+    assert.equal(b.elements.get("trial-threshold").value, "0.8");
+    b.state.deferredPermission.resolve(b.makeStream()); await started; await flush();
+    assert.equal(JSON.parse(b.calls.find(call => call.url === "/api/start").options.body).threshold, b.info.threshold);
+    b.click("stop"); await flush();
+  });
+  await test("reset restores exact defaults for the next trial without starting or saving anything", async () => {
+    const b = browser(); await flush();
+    b.elements.get("trial-threshold").value = "0.9"; b.elements.get("trial-threshold").handlers.input();
+    b.elements.get("trial-consecutive").value = "5";
+    b.click("reset-detection");
+    assert.equal(b.elements.get("trial-threshold").value, "0.98625");
+    assert.equal(b.elements.get("trial-consecutive").value, "2");
+    assert.equal(b.calls.length, 1); assert.equal(b.state.permissionCalls, 0);
+    await b.click("start"); await flush();
+    assert.equal(JSON.parse(b.calls.find(call => call.url === "/api/start").options.body).threshold, b.info.threshold);
+    b.click("stop"); await flush();
+  });
+  await test("an explicit edit of the rounded value uses that value rather than silently restoring the full default", async () => {
+    const b = browser(); await flush(); b.elements.get("trial-threshold").handlers.input();
+    await b.click("start"); await flush();
+    assert.equal(JSON.parse(b.calls.find(call => call.url === "/api/start").options.body).threshold, .98625);
+    b.click("stop"); await flush();
+  });
+  await test("a server that does not apply requested trial settings is stopped without sending microphone frames", async () => {
+    const b = browser({ startRuntime: { threshold: .5, consecutive_frames: 1 } }); await flush();
+    await b.click("start"); await flush();
+    assert.match(b.elements.get("statusText").textContent, /시험 감지 설정을 확인할 수 없습니다/);
+    assert.equal(b.streams[0].track.stopped, true);
+    assert.equal(b.calls.filter(call => call.url === "/api/stop").length, 1);
+    assert.equal(b.calls.some(call => call.url === "/api/frame"), false);
+  });
+  await test("model connection recovery fills defaults even while a separate microphone permission probe is pending", async () => {
+    const b = browser({ failInfo: true }); await flush();
+    b.state.deferredPermission = deferred(); const connecting = b.click("connect");
+    b.state.failInfo = false; await b.click("retry"); await flush();
+    assert.equal(b.elements.get("trial-threshold").value, "0.98625");
+    assert.equal(b.elements.get("trial-threshold").disabled, true);
+    b.state.deferredPermission.resolve(b.makeStream()); await connecting; await flush();
+    assert.equal(b.elements.get("trial-threshold").disabled, false);
+    assert.equal(b.calls.some(call => call.url === "/api/start"), false);
   });
   await test("nested Studio config routes info, start, PCM frames, stop and worklet without rewriting JavaScript", async () => {
     const prefix = "/mic/bora", b = browser({ pageConfig: { api_base: prefix, worklet_url: prefix + "/microphone_worklet.js" } });
