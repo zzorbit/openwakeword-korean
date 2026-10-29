@@ -15,7 +15,10 @@
   let defaultRuntime = null;
   let thresholdEdited = false;
 
-  function displayThreshold(value) { return String(Number(value.toPrecision(6))); }
+  function displayThreshold(value) {
+    const rounded = Number(value.toPrecision(6));
+    return String(rounded > 0 && rounded < 1 ? rounded : value);
+  }
 
   function showTrialRuntime(runtime) {
     ui.threshold.textContent = `감지 기준 ${displayThreshold(runtime.threshold)} · 연속 ${runtime.consecutive_frames}회`;

@@ -57,7 +57,7 @@ function browser(config = {}) {
     async close() { this.state = "closed"; }
   }
   class Worklet extends Node { constructor() { super(); this.port = { onmessage: null }; workers.push(this); } }
-  const defaultRuntime = { threshold: .9862500429153442, consecutive_frames: 2 };
+  const defaultRuntime = { threshold: .9862500429153442, consecutive_frames: 2, ...config.defaultRuntime };
   const info = { wakeword: "보라야", sample_rate: 16000, frame_samples: 1280, warmup_s: 2, ...defaultRuntime, default_runtime: { ...defaultRuntime }, token: "test-local-token", models: [
     { id: "head1", label: "모델 1", kind: "single" }, { id: "head2", label: "모델 2", kind: "single" },
     { id: "head3", label: "모델 3", kind: "single" }, { id: "_mean", label: "평균 앙상블", kind: "ensemble" }
@@ -149,6 +149,20 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
     assert.equal(b.elements.get("trial-threshold").disabled, true);
     assert.match(b.elements.get("threshold").textContent, /0\.98625.*2회/);
     b.click("stop"); await flush();
+  });
+  await test("near-one defaults stay valid on display, reset and explicit trial start", async () => {
+    for (const threshold of [.9999999, .9999999999999999]) {
+      const b = browser({ defaultRuntime: { threshold } }); await flush();
+      assert.equal(b.elements.get("trial-threshold").value, String(threshold));
+      b.elements.get("trial-threshold").value = "0.9";
+      b.elements.get("trial-threshold").handlers.input();
+      b.click("reset-detection");
+      assert.equal(b.elements.get("trial-threshold").value, String(threshold));
+      await b.click("start"); await flush();
+      assert.equal(JSON.parse(b.calls.find(call => call.url === "/api/start").options.body).threshold, threshold);
+      assert.equal(b.elements.get("models").children.length, 4);
+      b.click("stop"); await flush();
+    }
   });
   await test("trial settings are sent only on explicit start and the server's applied settings label the responses", async () => {
     const b = browser(); await flush(); const original = JSON.stringify(b.info);
