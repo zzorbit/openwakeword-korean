@@ -119,7 +119,7 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-shell .story-secondary:hover{background:#292d33}
 .story-live #review-section{display:flex;flex-direction:column;min-height:0;flex:1 1 0}
 .story-live #review-section>.section-heading,.story-live #review-description,.story-live #review-section>.hint,.story-live #review-voice-details{display:none}
-.story-live #review-frame{display:block;border:0;border-radius:0;width:100%;height:100%;min-height:0;margin:0;flex:1 1 0;background:transparent}
+.story-shell .story-live .work-section iframe#review-frame{display:block;border:0;border-radius:0;width:100%;height:0;min-height:0;max-height:100%;margin:0;flex:1 1 0;background:transparent}
 .story-shell:is([data-step="pronunciation"],[data-step="hard-review"]) .story-panel{height:100%;gap:16px}
 .story-shell:is([data-step="pronunciation"],[data-step="hard-review"]) .story-content{flex:1 1 0;min-height:0}
 .story-shell:is([data-step="pronunciation"],[data-step="hard-review"]) .story-live{flex:1 1 0;min-height:0}
@@ -145,7 +145,7 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-shell:is([data-step="results"],[data-step="microphone"]) .story-live{flex:1 1 0;min-height:0}
 .story-live #results-section{display:flex;flex-direction:column;min-height:0;flex:1 1 0}
 .story-live #results-section>.section-heading,.story-live #results-note,.story-live #results-section>.result-tabs{display:none}
-.story-live #result-frame{width:100%;height:100%;min-height:0;border:0;border-radius:0;margin:0;flex:1 1 0;background:transparent}
+.story-shell .story-live .work-section iframe#result-frame{width:100%;height:0;min-height:0;max-height:100%;border:0;border-radius:0;margin:0;flex:1 1 0;background:transparent}
 .story-live #evaluation-coverage{flex:none;font-size:14px;line-height:20px;max-height:90px;overflow:auto;margin:0 0 8px;padding:0;border:0}
 .story-shell[data-step="microphone"] .story-actions{height:36px}
 .story-loader{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:12px;color:#dce3ed;font:400 18px/26px system-ui,"Malgun Gothic",sans-serif;pointer-events:none}
@@ -181,9 +181,10 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-dialog .story-listen-body{height:min(560px,calc(100dvh - 150px));overflow:hidden;display:flex;flex-direction:column}
 .story-dialog .reference-preview{padding:0;margin:0;border:0;min-height:0;flex:1 1 0}
 .story-dialog .reference-preview[open]{display:flex;flex-direction:column}
+.story-shell .story-dialog .reference-preview[open]::details-content{display:contents}
 .story-dialog .reference-preview>summary{display:none}
 .story-dialog .reference-preview>p{font-size:14px;line-height:22px;margin:0 0 8px;flex:none}
-.story-dialog .reference-preview iframe{display:block;min-height:0;flex:1 1 0;width:100%;height:100%;margin:0;border:0;border-radius:0}
+.story-shell .story-dialog .reference-preview>iframe#reference-preview-frame,.story-shell .story-dialog .reference-preview>iframe#hard-preview-frame{display:block;min-height:0;max-height:100%;flex:1 1 0;width:100%;height:0;margin:0;border:0;border-radius:0}
 @media(max-width:900px){.story-stage{padding-left:56px;padding-right:56px}.story-index{left:8px}.story-toolbar{left:56px;right:16px;top:12px}}
 @media(max-width:760px),(max-height:700px){
   .story-panel{gap:16px}
@@ -252,6 +253,7 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
   .story-live .current-eta{font-size:13px;line-height:20px}
   .story-live #counts{display:none}
   .story-shell:is([data-step="pronunciation"],[data-step="hard-review"],[data-step="results"],[data-step="microphone"]) .story-panel{gap:8px}
+  .story-shell:is([data-step="results"],[data-step="microphone"]) .story-context{display:none}
   .story-live #project-error,.story-live #migration-note{max-height:72px;font-size:13px;line-height:20px}
 }
 @media(max-width:600px) and (max-height:560px){.story-scale .preset{min-height:60px;padding:6px 10px;gap:2px}.story-scale #presets{margin:0}}

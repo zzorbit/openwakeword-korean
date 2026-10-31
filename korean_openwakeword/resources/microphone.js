@@ -132,6 +132,7 @@
     ui.statusHeading.textContent = heading;
     ui.statusText.textContent = text;
     ui.statusDot.className = `status-dot ${phase}`;
+    if (phase === "error") { const detail = $("metrics-details"); if (detail) detail.open = true; }
   }
 
   function syncControls() {

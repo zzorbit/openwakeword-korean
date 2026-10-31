@@ -11,13 +11,14 @@ async function test(name, run) { await run(); tests.push(name); }
 function browser(tuples, {deferPages = false, pageFailure = false, staticViewer = false, viewportHeight, indexPath = "viewer-index.json", report = {wakeword: "보라야", models: []}} = {}) {
   const elements = new Map(), calls = [], deferred = new Map(), listeners = {}, parentWindow = {};
   class Element {
-    constructor(tag = "div") { this.tagName = tag; this.children = []; this.value = ""; this.textContent = ""; this.disabled = false; this.src = ""; this.plays = 0; this.pauses = 0; }
+    constructor(tag = "div") { this.tagName = tag; this.children = []; this.value = ""; this.textContent = ""; this.disabled = false; this.src = ""; this.plays = 0; this.pauses = 0; this.attributes = {}; }
     append(...nodes) { this.children.push(...nodes); }
     replaceChildren(...nodes) { this.children = nodes; }
     get options() { return this.children; }
     pause() { this.pauses++; }
     async play() { this.plays++; }
     removeAttribute(name) { this[name] = ""; }
+    setAttribute(name, value) { this.attributes[name] = value; }
   }
   for (const match of html.matchAll(/id="([^"]+)"/g)) elements.set(match[1], new Element());
   for (const id of ["summary", "conditions", "responses", "scores", "recommendations", "targetComparison"]) elements.get(id).tBodies = [new Element("tbody")];
@@ -75,6 +76,18 @@ const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "posi
     assert.equal(b.helper.state().continuous, true); assert.equal(b.helper.state().index, 127);
     assert.equal(b.elements.get("audio").src, source); assert.equal(b.elements.get("audio").pauses, pauses);
     assert.equal(b.calls.length, calls);
+    await b.elements.get("audio").onended(); assert.equal(b.helper.state().index, 128);
+  });
+  await test("compact listening subviews preserve actual playback, filters and the current result", async () => {
+    const b = browser(Array.from({length: 400}, (_, index) => tuple(index))); await b.helper.boot();
+    await b.elements.get("start").onclick(); await b.helper.move(127, true);
+    const source = b.elements.get("audio").src, pauses = b.elements.get("audio").pauses, calls = b.calls.length;
+    b.elements.get("audio-view-reactions").onclick();
+    assert.equal(b.elements.get("results-panel-audio").attributes["data-audio-view"], "reactions");
+    b.elements.get("audio-view-settings").onclick(); b.elements.get("audio-view-player").onclick();
+    assert.equal(b.elements.get("audio-view-player").attributes["aria-pressed"], "true");
+    assert.equal(b.helper.state().continuous, true); assert.equal(b.helper.state().index, 127);
+    assert.equal(b.elements.get("audio").src, source); assert.equal(b.elements.get("audio").pauses, pauses); assert.equal(b.calls.length, calls);
     await b.elements.get("audio").onended(); assert.equal(b.helper.state().index, 128);
   });
   await test("optional audio control popovers keep the user's choice across resize without resetting playback", async () => {

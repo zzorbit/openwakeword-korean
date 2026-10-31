@@ -63,6 +63,13 @@
     bindTabs("results", ["models", "conditions", "audio", "criteria"], dashboard);
     bindTabs("model", ["recommendations", "evaluation", "targets"], modelDashboard);
     dashboard(dashboardView); modelDashboard(modelView);
+    for (const view of ["player", "reactions", "settings"]) {
+      const tab = $(`audio-view-${view}`);
+      if (tab) tab.onclick = () => {
+        $("results-panel-audio")?.setAttribute?.("data-audio-view", view);
+        for (const name of ["player", "reactions", "settings"]) $(`audio-view-${name}`)?.setAttribute?.("aria-pressed", String(name === view));
+      };
+    }
   }
   function pauseFromParent(event) {
     if (!window.parent || window.parent === window || !window.location?.origin
