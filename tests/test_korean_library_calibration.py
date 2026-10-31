@@ -7,7 +7,7 @@ import pytest
 
 from korean_openwakeword import calibration
 from korean_openwakeword.calibration import PreparedScores, recommend, read_recommendation
-from korean_openwakeword.common import digest, read_json, write_json
+from korean_openwakeword.common import digest, iter_rows, read_json, write_json
 from korean_openwakeword.events import EventDetector
 from korean_openwakeword.project import create_project, load_project
 from korean_openwakeword.runtime import bundle_candidates, deployment_candidate, sample_bundle, verify_bundle
@@ -83,10 +83,11 @@ def experiment(tmp_path, monkeypatch):
     candidates = bundle_candidates(package)
     ids = [row["id"] for row in candidates]
     clips, values, offsets = [], [], [0]
-    for category, snr in [("clean", None)] + [(cat, snr) for cat in ("environment", "music", "competing_speech") for snr in (10, 5)]:
+    for reverb, category, snr in [("none", "clean", None)] + list(calibration.HARD_CONDITIONS):
         score = np.zeros((45, len(ids)), np.float32)
         score[27:32] = [.65, .96, .01, .65]
         row = {"sample_id": f"positive{len(clips)}", "kind": "positive", "category": category, "snr_db": snr,
+               "reverb_condition": reverb,
                "provenance": "qwen_tts", "duration_s": 3.6,
                "eligible_seconds": 3.6 - package["runtime"]["warmup_s"],
                "calls": [{"start_s": 2.0, "end_s": 2.8}], "results": {key: {} for key in ids}}
@@ -129,7 +130,11 @@ def test_recommendations_per_candidate_and_no_source_mutation(experiment, tmp_pa
     first, second, failed, ensemble = report["candidates"]
     assert first["runtime"]["consecutive_frames"] == 2 and first["passed"]
     assert second["runtime"]["consecutive_frames"] == 1 and second["passed"]
-    assert failed["status"] == "best_effort" and failed["passed"] is False
+    assert failed["status"] == "no_feasible_candidate" and failed["passed"] is False
+    assert failed["recommendation_available"] is False and failed["protection_passed"] is False
+    assert "Clean recall below target or unmeasured" in failed["recommendation_reasons"]
+    assert all(row["original_runtime"] == verify_bundle(bundle)["runtime"] for row in report["candidates"])
+    assert all(row["recommendation_available"] for row in (first, second, ensemble))
     assert ensemble["passed"]
     assert all(row["baseline"]["runtime"]["threshold"] == .5 and row["baseline"]["runtime"]["consecutive_frames"] == 1 for row in report["candidates"])
     assert result["selection_applied"] is False and result["network_rerun"] is False
@@ -156,6 +161,35 @@ def test_interrupted_search_resumes_and_source_change_rejected(experiment, tmp_p
         recommend(project, bundle, evaluation, directory)
 
 
+def test_resume_mid_refinement_reconstructs_the_same_search(experiment, tmp_path):
+    project, bundle, evaluation, _ = experiment
+    complete = tmp_path / "complete"
+    expected = recommend(project, bundle, evaluation, complete)
+    resumed = tmp_path / "partly_refined"
+    def interrupt(progress):
+        if progress["completed"] == 10:
+            raise InterruptedError("pause after coarse search and some refinement probes")
+    with pytest.raises(InterruptedError):
+        recommend(project, bundle, evaluation, resumed, interrupt)
+    actual = recommend(project, bundle, evaluation, resumed)
+    assert actual["candidates"] == expected["candidates"]
+    assert list(iter_rows(resumed / "comparisons.jsonl")) == list(iter_rows(complete / "comparisons.jsonl"))
+
+
+def test_refinement_follows_each_consecutive_counts_own_promising_interval(experiment, tmp_path):
+    project, bundle, evaluation, ids = experiment
+    directory = tmp_path / "per_count"
+    recommend(project, bundle, evaluation, directory)
+    # Head 2 has a one-frame negative spike at .3. Its one-frame gate must
+    # refine above that spike; two-frame confirmation can search lower values.
+    entries = [row["entry"] for row in iter_rows(directory / "comparisons.jsonl") if row["candidate"] == ids[1]]
+    one = {row["runtime"]["threshold"] for row in entries if row["runtime"]["consecutive_frames"] == 1}
+    two = {row["runtime"]["threshold"] for row in entries if row["runtime"]["consecutive_frames"] == 2}
+    assert one != two
+    assert min(two) < min(one)
+    assert len(one | two) > 2  # both start from the same two coarse thresholds
+
+
 def test_gpu_cache_is_not_mislabeled_cpu_verified(experiment, tmp_path):
     project, bundle, evaluation, _ = experiment
     report = read_json(evaluation / "report.json")
@@ -179,6 +213,7 @@ def test_no_pass_fallback_protects_clean_false_activation_and_latency_targets():
     targets = {"clean_recall": .98, "fa_per_hour": .1, "latency_p95_s": .5, "minimum_negative_hours": 20}
     def result(noise, clean, false, latency, passed=False):
         metrics = {"noise_cell_mean": noise, "clean": {"recall": clean},
+                   "hard_conditions": {"cell_mean": noise, "worst_recall": noise, "complete": True},
                    "negative": {"fa_per_hour": false, "hours": 30}, "primary": {"latency_p95_s": latency}}
         return {"runtime": {"threshold": .5, "consecutive_frames": 1}, "metrics": metrics,
                 "adoption": {"passed": passed}, "constraint_checks": calibration._constraint_checks(metrics, targets)}
@@ -191,6 +226,84 @@ def test_no_pass_fallback_protects_clean_false_activation_and_latency_targets():
     assert calibration._rank(eligible) > calibration._rank(safe)
     almost_safe = result(.7, .99, .2, .2)
     assert calibration._rank(almost_safe) > calibration._rank(noisy_always_on)
+
+
+def test_hard_conditions_have_equal_weight_and_easy_or_unknown_conditions_do_not_vote():
+    runtime = {"warmup_s": 0, "cooldown_s": 0, "call_postroll_s": .1}
+    clips, values = [], []
+    def add(condition, success):
+        reverb, category, snr = condition
+        clips.append({"sample_id": str(len(clips)), "kind": "positive", "category": category,
+                      "snr_db": snr, "reverb_condition": reverb, "eligible_seconds": .32,
+                      "calls": [{"start_s": .08, "end_s": .24}]})
+        values.extend([0, float(success), 0, 0])
+    for index, condition in enumerate(calibration.HARD_CONDITIONS):
+        for _ in range(100 if index == 0 else 1):
+            add(condition, index == 0)
+    # Extra easy, diagnostic or unknown rooms do not dilute the hard objective.
+    for condition in [("none", "clean", None), ("none", "environment", 20),
+                      ("strong", "music", 0), ("unknown", "environment", 5)]:
+        for _ in range(40):
+            add(condition, True)
+    prepared = PreparedScores(clips, np.arange(0, len(values) + 1, 4), runtime)
+    summary = prepared.summary(np.asarray(values), .5, 1, {"id": "head", "kind": "single"})
+    hard = summary["hard_conditions"]
+    assert hard["complete"] and hard["expected_cells"] == hard["measured_cells"] == 20
+    assert hard["cell_mean"] == pytest.approx(1 / 20)
+    assert hard["worst_recall"] == 0
+    assert hard["conditions"]["none:environment:10"]["calls"] == 100
+    assert summary["all_positive"]["recall"] > .8  # pooled recall is a different quantity
+
+
+@pytest.mark.parametrize("reverb", ["none", "unknown"])
+def test_missing_reverb_coverage_is_not_a_zero_or_partial_average(reverb):
+    runtime = {"warmup_s": 0, "cooldown_s": 0, "call_postroll_s": .1}
+    clips = [{"sample_id": "one", "kind": "positive", "category": "environment", "snr_db": 10,
+              "reverb_condition": reverb, "eligible_seconds": .32, "calls": [{"start_s": .08, "end_s": .24}]}]
+    prepared = PreparedScores(clips, [0, 4], runtime)
+    metrics = prepared.summary(np.asarray([0., 1., 0., 0.]), .5, 1, {"id": "head", "kind": "single"})
+    hard = metrics["hard_conditions"]
+    assert not hard["complete"] and hard["cell_mean"] is None and hard["worst_recall"] is None
+    assert hard["measured_cells"] == (1 if reverb == "none" else 0)
+    assert "strong:clean:none" in hard["missing_conditions"]
+    targets = {"clean_recall": .98, "fa_per_hour": .1, "latency_p95_s": .5, "minimum_negative_hours": 20}
+    assert not calibration._constraint_checks(metrics, targets)["hard_conditions"]
+
+
+def test_hard_success_beats_easy_average_and_overall_goal_flag_is_not_the_objective():
+    checks = dict(clean=True, false_activations=True, latency=True, negative_duration=True, hard_conditions=True)
+    def item(easy, hard, passed):
+        return {"runtime": {"threshold": .5, "consecutive_frames": 1}, "constraint_checks": checks,
+                "adoption": {"passed": passed}, "metrics": {"noise_cell_mean": easy,
+                    "hard_conditions": {"cell_mean": hard, "worst_recall": .6, "complete": True},
+                    "negative": {"fa_per_hour": 0.}, "primary": {"latency_p95_s": .2}}}
+    easy_winner = item(.99, .7, True)
+    hard_winner = item(.9, .85, False)
+    assert max([easy_winner, hard_winner], key=calibration._rank) is hard_winner
+
+
+def test_feasible_recommendation_is_distinct_from_overall_adoption(experiment, tmp_path):
+    project, bundle, evaluation, _ = experiment
+    archive = np.load(evaluation / "scores.npz", allow_pickle=False)
+    scores, offsets, ids = archive["scores"].copy(), archive["offsets"], archive["model_ids"]
+    # Remove one dry noisy call from head 2: Clean/FA/latency protections still
+    # pass, but the existing per-noise adoption target must remain failed.
+    clips = read_json(evaluation / "clips.json")
+    position = next(i for i, row in enumerate(clips) if row.get("reverb_condition") == "none"
+                    and row["category"] == "environment" and row.get("snr_db") == 10)
+    scores[offsets[position]:offsets[position + 1], 1] = 0
+    archive.close()
+    np.savez_compressed(evaluation / "scores.npz", scores=scores, offsets=offsets, model_ids=ids)
+    report = read_json(evaluation / "report.json")
+    report["score_cache_sha256"] = digest(evaluation / "scores.npz")
+    write_json(evaluation / "report.json", report)
+    receipt = read_json(evaluation / "receipt.json")
+    receipt["report_sha256"] = digest(evaluation / "report.json")
+    write_json(evaluation / "receipt.json", receipt)
+    selected = recommend(project, bundle, evaluation, tmp_path / "independent_status")["candidates"][1]
+    assert selected["status"] == "recommended" and selected["recommendation_available"]
+    assert selected["protection_passed"] and selected["recommendation_reasons"] == []
+    assert selected["passed"] is False and selected["adoption"]["passed"] is False
 
 
 def test_display_loader_checks_lightweight_source_receipt(experiment, tmp_path):

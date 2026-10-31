@@ -1756,7 +1756,10 @@ class StudioManager:
                 # The microphone is a comparison of all original models. Old
                 # per-candidate selection artifacts remain separate records.
                 recommendation = self.runtime_recommendations(state)
-                runtimes = {row["id"]: {key: row["runtime"][key] for key in ("threshold", "consecutive_frames")}
+                # A best tradeoff is not a protected recommendation. Keep that
+                # model's recorded settings unless the user makes a manual trial.
+                runtimes = {row["id"]: {key: (row["original_runtime"] if row.get("recommendation_available") is False
+                                              else row["runtime"])[key] for key in ("threshold", "consecutive_frames")}
                             for row in recommendation["candidates"]} if recommendation else None
                 self._microphones[project_id] = MicrophoneService(WakeWordDetector(original_bundle), model_labels=labels,
                     runtime_recommendations=recommendation, recommended_runtimes=runtimes)

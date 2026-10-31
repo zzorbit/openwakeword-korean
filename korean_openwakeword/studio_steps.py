@@ -121,7 +121,7 @@ def preset_settings(name="check"):
             "pilot_review_policy": "one_per_training_voice_v1",
             "hard_generation_policy": "per_phrase_v1",
             "hard_review_policy": "one_per_phrase_v1",
-            "runtime_recommendation_policy": "joint_cached_score_search_v1",
+            "runtime_recommendation_policy": "joint_cached_hard_conditions_v2",
             **({"official_noise_acquisition_policy": "selective_fma_small_v1"} if name in ("check", "trial") else {}),
             **({"fma_acquisition_policy": "per_track_flac_prefetch_v1"} if name == "production" else {}),
             "final_locked": True, "positive_text_policy": "standalone_only"}
@@ -144,7 +144,7 @@ def workflow_plan(settings):
 
 
 def _validate_settings(settings):
-    if settings.get("runtime_recommendation_policy") not in (None, "joint_cached_score_search_v1"):
+    if settings.get("runtime_recommendation_policy") not in (None, "joint_cached_score_search_v1", "joint_cached_hard_conditions_v2"):
         raise ValueError("Unsupported runtime recommendation policy")
     if settings.get("hard_review_policy") not in (None, "one_per_phrase_v1"):
         raise ValueError("Unsupported Hard representative review policy")
@@ -1092,7 +1092,7 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         assessment = None
         artifacts = [directory / "receipt.json", directory / "report.json", directory / "clips.json"]
         recommendation = None
-        if settings.get("runtime_recommendation_policy") == "joint_cached_score_search_v1":
+        if settings.get("runtime_recommendation_policy") in ("joint_cached_score_search_v1", "joint_cached_hard_conditions_v2"):
             from .calibration import recommend, SEARCH_POLICY
             def recommendation_progress(record):
                 write_json(workspace / "progress.json", {"stage": stage_id, "updated_at": now(),
@@ -1147,7 +1147,8 @@ def run_stage(project, workspace, settings, stage_id, context=None):
                   "evaluation_policy_sha256": identity(settings["evaluation_policy"]) if settings.get("evaluation_policy") else None,
                   "common_evaluation_assessment": _result(context, "evaluation").get("common_evaluation_assessment"),
                   "meets_development_targets": bool(eligible), "independent_Final_completed": False,
-                  "recommendation_meets_targets": any(row["passed"] for row in recommendation["candidates"]) if recommendation else None,
+                  "recommendation_meets_targets": any(row["passed"] and row.get("recommendation_available", True)
+                                                       for row in recommendation["candidates"]) if recommendation else None,
                   "noise_coverage": _result(context, "development").get("noise_coverage")}
         if ranked and not settings.get("runtime_recommendation_policy"):
             chosen = ranked[0]["id"]

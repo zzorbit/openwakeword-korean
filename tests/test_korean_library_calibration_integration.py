@@ -222,9 +222,11 @@ def test_site_rejects_recommendations_for_other_evaluation_evidence(tmp_path, fi
 
 
 @pytest.mark.parametrize("automatic", [True, False])
-def test_studio_recommends_after_scoring_only_for_the_versioned_policy(tmp_path, monkeypatch, automatic):
+@pytest.mark.parametrize("policy", ["joint_cached_score_search_v1", "joint_cached_hard_conditions_v2"])
+def test_studio_recommends_after_scoring_only_for_the_versioned_policy(tmp_path, monkeypatch, automatic, policy):
     from korean_openwakeword import calibration, evaluate, studio_steps as steps
     settings = steps.preset_settings("check")
+    settings["runtime_recommendation_policy"] = policy
     if not automatic:
         settings.pop("runtime_recommendation_policy")
     path = create_project(tmp_path / "workflow", "춘식아", "workflow_fixture",
@@ -278,10 +280,45 @@ def test_new_policy_does_not_add_stages_or_enable_final_access():
     from korean_openwakeword import studio_steps as steps
     for name in ("check", "trial", "production"):
         settings = steps.preset_settings(name)
-        assert settings["runtime_recommendation_policy"] == "joint_cached_score_search_v1"
+        assert settings["runtime_recommendation_policy"] == "joint_cached_hard_conditions_v2"
         plan = steps.workflow_plan(settings)
         assert len(plan) == 19
         assert not any("final" in row["id"].lower() for row in plan)
+
+
+@pytest.mark.parametrize("available", [None, True, False])
+def test_studio_microphone_uses_original_gate_for_unavailable_recommendations_only(tmp_path, monkeypatch, available):
+    import threading
+    from korean_openwakeword.studio import StudioManager
+    detector = RecommendationDetector()
+    bundle = tmp_path / "original_bundle"
+    write_json(bundle / "manifest.json", {"members": [{"path": key + ".onnx"} for key in detector.keys]})
+    original_bytes = (bundle / "manifest.json").read_bytes()
+    choices = recommendations()
+    evidence = {"candidates": [{"id": key, "runtime": value,
+                                "original_runtime": deepcopy(detector.runtime)}
+                               for key, value in choices.items()]}
+    if available is not None:
+        evidence["candidates"][1]["recommendation_available"] = available
+    state = {"project": str(tmp_path / "project.json"), "results": {
+        "package": {"result": {"bundle": str(bundle)}}}}
+    manager = object.__new__(StudioManager)
+    manager._lock, manager._microphones = threading.RLock(), {}
+    manager._load = lambda project_id: state
+    manager.runtime_recommendations = lambda value: deepcopy(evidence)
+    monkeypatch.setattr("korean_openwakeword.runtime.WakeWordDetector", lambda original: detector)
+    before = deepcopy(evidence)
+    service = manager.microphone("fixture")
+    selected = service.info()["recommended_runtimes"]
+    original_gate = {key: detector.runtime[key] for key in ("threshold", "consecutive_frames")}
+    assert selected["head2"] == (original_gate if available is False else choices["head2"])
+    assert selected["head1"] == choices["head1"]
+    assert selected["head3"] == choices["head3"] and selected["mean"] == choices["mean"]
+    start = service.start({"mode": "recommended"})
+    assert set(start["runtimes"]) == set(choices)
+    assert start["runtimes"]["head2"]["threshold"] == selected["head2"]["threshold"]
+    assert evidence == before
+    assert (bundle / "manifest.json").read_bytes() == original_bytes
 
 
 def test_unknown_recommendation_policy_stops_before_scoring():

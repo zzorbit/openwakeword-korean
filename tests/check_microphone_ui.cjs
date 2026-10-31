@@ -214,6 +214,21 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
     assert.match(b.elements.get("recommendationHint").textContent, /목표 미달/);
     assert.match(b.elements.get("recommendationHint").textContent, /저장 점수 기준/);
   });
+  await test("a model without a protected recommendation clearly keeps its original gate", async () => {
+    const original = {threshold: .9862500429153442, consecutive_frames: 2};
+    const b = browser({recommendedRuntimes: {...recommendations, head2: original}, recommendations: {candidates: [
+      {id: "head1", recommendation_available: true, deployment_backend_verified: false},
+      {id: "head2", recommendation_available: false, original_runtime: original, passed: false, deployment_backend_verified: false}
+    ]}}); await flush();
+    assert.equal(b.elements.get("trial-mode").value, "recommended");
+    assert.match(b.elements.get("recommendationHint").textContent, /모델 2: 추천 기준을 만족하는 조합이 없어 기존 설정을 유지/);
+    assert.doesNotMatch(b.elements.get("recommendationHint").textContent, /가장 나은 값을 사용/);
+    assert.equal(b.elements.get("threshold").textContent, "모델별 추천·기존값 적용");
+    await b.click("start"); await flush();
+    assert.equal(b.elements.get("models").children.length, 4);
+    assert.equal(b.elements.get("models").children[1].children[5].textContent, "0.98625");
+    b.click("stop"); await flush();
+  });
   await test("near-one defaults stay valid on display, reset and explicit trial start", async () => {
     for (const threshold of [.9999999, .9999999999999999]) {
       const b = browser({ defaultRuntime: { threshold } }); await flush();

@@ -187,13 +187,18 @@ test("recommendations show independently chosen settings and separate metrics wi
   const {ui, rows, elements} = browser(), report = sample();
   report.runtime = {threshold: .5, consecutive_frames: 1};
   report.runtime_recommendations = {schema_version: 1, candidates: report.models.map((model, index) => ({id: model.id,
-    runtime: {threshold: .8 + index * .01, consecutive_frames: index + 1}, metrics: {...model, noise_cell_mean: .95}, passed: index !== 0, deployment_backend_verified: true}))};
+    runtime: {threshold: .8 + index * .01, consecutive_frames: index + 1}, recommendation_available: true,
+    metrics: {...model, noise_cell_mean: .95, hard_conditions: {complete: true, cell_mean: .85, worst_recall: .7,
+      conditions: {"strong:environment:5": {recall: .7, reverb_condition: "strong", category: "environment", snr_db: 5}}}},
+    passed: index !== 0, deployment_backend_verified: true}))};
   const before = JSON.stringify(report); ui.renderSummary(report);
   assert.equal(elements.get("runtimeRecommendations").hidden, false);
   assert.equal(rows("recommendations").length, 4);
-  assert.deepEqual(rows("recommendations")[0], ["모델 2", "0.8", "1회", "100.00%", "95.00%", "0.100회", "미달"]);
+  assert.deepEqual(rows("recommendations")[0], ["모델 2", "추천", "0.8", "1회", "100.00%", "85.00%", "70.00%", "0.100회", "미달"]);
+  assert.equal(elements.get("recommendations").tBodies[0].children[0].children[6].title, "강한 울림 · 환경소음 · SNR 5 dB");
   assert.equal(rows("summary")[0][4], "90.00%");
-  assert.match(elements.get("recommendationNote").textContent, /모든 목표를 만족하는 조합이 없어/);
+  assert.match(elements.get("recommendationScope").textContent, /강한 소음과 울림/);
+  assert.doesNotMatch(elements.get("recommendationNote").textContent, /추천 기준을 만족하는 조합이 없는/);
   assert.match(elements.get("baselineRuntime").textContent, /감지 기준 0.5 · 연속 1회/);
   assert.equal(JSON.stringify(report), before);
 });
@@ -205,12 +210,32 @@ test("missing, invalid and cache-only recommendation evidence is never shown as 
   const metric = report.models[0];
   report.runtime_recommendations = {schema_version: 1, candidates: [{id: metric.id, runtime: {threshold: .9999999, consecutive_frames: 2}, metrics: metric, adoption: {passed: false}, deployment_backend_verified: false}]};
   ui.renderSummary(report);
-  assert.equal(rows("recommendations")[0][1], "0.9999999");
-  assert.equal(rows("recommendations")[0][6], "미달");
+  assert.equal(rows("recommendations")[0][2], "0.9999999");
+  assert.equal(rows("recommendations")[0][5], "결과 없음");
+  assert.equal(rows("recommendations")[0][8], "미달");
   assert.match(elements.get("recommendationNote").textContent, /저장 점수 기준/);
   report.runtime_recommendations.candidates[0].runtime.threshold = 1; ui.renderSummary(report);
   assert.equal(elements.get("runtimeRecommendations").hidden, true);
   assert.equal(elements.get("baselineRuntime").hidden, true);
+});
+
+test("a failed protection check is a tradeoff, never a recommendation or automatic microphone gate", () => {
+  const {ui, rows, elements} = browser(), report = sample(), model = report.models[0];
+  report.runtime_recommendations = {schema_version: 1, candidates: [{id: model.id,
+    runtime: {threshold: .999, consecutive_frames: 4}, original_runtime: {threshold: .5, consecutive_frames: 1},
+    recommendation_available: false, recommendation_reasons: ["FA/hour target failed or unmeasured"],
+    metrics: {...model, hard_conditions: {complete: true, cell_mean: .8, worst_recall: .6}}, passed: false}]};
+  const before = JSON.stringify(report); ui.renderSummary(report);
+  assert.equal(rows("recommendations")[0][1], "절충 후보");
+  assert.equal(rows("recommendations")[0][5], "80.00%");
+  assert.match(elements.get("recommendationNote").textContent, /마이크에는 그 모델의 기존 설정을 유지/);
+  assert.match(elements.get("recommendationReasons").children[0].textContent, /추천 없음: 시간당 오작동 횟수/);
+  assert.equal(JSON.stringify(report), before);
+  report.runtime_recommendations.candidates[0].metrics.hard_conditions = {complete: false, cell_mean: null, worst_recall: null};
+  report.runtime_recommendations.candidates[0].recommendation_reasons = ["Hard noise/reverberation conditions incomplete"];
+  ui.renderSummary(report);
+  assert.equal(rows("recommendations")[0][5], "자료 부족");
+  assert.match(elements.get("recommendationReasons").children[0].textContent, /강소음·울림 시험 자료 부족/);
 });
 test("recommended-setting failures describe that setting rather than the preserved baseline", () => {
   const {ui, elements, rows} = browser(), report = sample(), model = report.models[0];

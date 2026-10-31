@@ -78,27 +78,40 @@
       const row = document.createElement("tr"), metric = candidate.metrics;
       if (isEnsemble(report, candidate.id)) row.className = "ensemble";
       const passed = candidate.passed ?? candidate.adoption?.passed;
-      [modelLabel(report, candidate.id), thresholdText(candidate.runtime.threshold), `${candidate.runtime.consecutive_frames}회`,
-        percent(metric.clean?.recall), percent(metric.noise_cell_mean), finite(metric.negative?.fa_per_hour)
+      const hard = metric.hard_conditions;
+      const availability = candidate.recommendation_available;
+      const status = availability === false ? "절충 후보" : availability === true ? "추천" : "이전 추천";
+      [modelLabel(report, candidate.id), status, thresholdText(candidate.runtime.threshold), `${candidate.runtime.consecutive_frames}회`,
+        percent(metric.clean?.recall), hard?.complete === false ? "자료 부족" : percent(hard?.cell_mean),
+        hard?.complete === false ? "자료 부족" : percent(hard?.worst_recall), finite(metric.negative?.fa_per_hour)
           ? `${metric.negative.fa_per_hour.toFixed(3)}회` : "결과 없음", passed === true ? "충족" : passed === false ? "미달" : "결과 없음"]
         .forEach(value => appendCell(row, value));
+      if (hard?.complete && finite(hard.worst_recall)) {
+        row.children[6].title = Object.values(hard.conditions || {}).filter(cell => cell.recall === hard.worst_recall)
+          .map(cell => `${reverbLabel(cell.reverb_condition)} · ${noiseLabel(cell.category)}${finite(cell.snr_db) ? ` · SNR ${cell.snr_db} dB` : ""}`).join(" / ");
+      }
       rows.append(row);
-      if (passed === false && reasons) {
+      if ((passed === false || availability === false) && reasons) {
         const line = document.createElement("p");
-        const items = [...new Set((candidate.adoption?.reasons || []).map(reasonText))];
-        line.textContent = `${modelLabel(report, candidate.id)}: ${items.join(" · ") || "추가 확인 필요"}`;
+        const items = [...new Set([...(candidate.recommendation_reasons || []),
+          ...(candidate.adoption?.reasons || [])].map(reasonText))];
+        line.textContent = `${modelLabel(report, candidate.id)}${availability === false ? " · 추천 없음" : ""}: ${items.join(" · ") || "추가 확인 필요"}`;
         reasons.append(line);
         if (failures) failures.hidden = false;
       }
     }
-    if ($("recommendationScope")) $("recommendationScope").textContent = "감지 기준과 연속 감지 수를 함께 비교해 모델마다 값을 골랐습니다.";
-    const missed = measured.some(row => (row.passed ?? row.adoption?.passed) === false);
+    const hardPolicy = measured.some(row => row.metrics.hard_conditions);
+    if ($("recommendationScope")) $("recommendationScope").textContent = hardPolicy
+      ? "조용할 때의 성공률·오작동·반응 시간 기준을 지키며 강한 소음과 울림의 조건별 평균 성공률이 높은 값을 고릅니다."
+      : "감지 기준과 연속 감지 수를 함께 비교한 이전 추천입니다.";
+    const unavailable = measured.some(row => row.recommendation_available === false);
     const unverified = measured.some(row => row.deployment_backend_verified !== true);
-    if ($("recommendationNote")) $("recommendationNote").textContent = `${missed ? "미달 모델은 모든 목표를 만족하는 조합이 없어, 비교한 조합 중 가장 나은 값을 표시합니다. " : ""}${unverified ? "저장 점수 기준 비교이며 마이크 실행 결과는 별도로 확인합니다." : "실행 연산 방식에서도 추천 설정을 확인했습니다."}`;
+    if ($("recommendationNote")) $("recommendationNote").textContent = `${unavailable ? "추천 기준을 만족하는 조합이 없는 모델은 절충 후보를 표시합니다. 마이크에는 그 모델의 기존 설정을 유지합니다. " : ""}${unverified ? "저장 점수 기준 비교이며 마이크 실행 결과는 별도로 확인합니다." : "실행 연산 방식에서도 추천 설정을 확인했습니다."}`;
     if (baseline) baseline.textContent = `아래 성능과 오디오 반응은 평가 당시 설정${report.runtime ? ` · 감지 기준 ${thresholdText(report.runtime.threshold)} · 연속 ${report.runtime.consecutive_frames}회` : ""}의 결과입니다. 추천 설정의 결과는 위 표에 따로 표시합니다.`;
   }
   function reasonText(reason) {
     const text = String(reason);
+    if (text.includes("Hard noise/reverberation conditions")) return "강소음·울림 시험 자료 부족";
     if (text.includes("FP duration below")) return "오작동 시험 시간 부족";
     if (text.includes("Clean recall")) return "조용한 환경 성공률";
     if (text.includes("FA/hour")) return "시간당 오작동 횟수";

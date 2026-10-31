@@ -27,7 +27,8 @@
   }
 
   function showTrialRuntime(runtime, runtimes = null) {
-    ui.threshold.textContent = runtimes ? "모델별 추천값 적용"
+    const unavailable = info?.runtime_recommendations?.candidates?.some(row => row.recommendation_available === false);
+    ui.threshold.textContent = runtimes ? (unavailable ? "모델별 추천·기존값 적용" : "모델별 추천값 적용")
       : `감지 기준 ${displayThreshold(runtime.threshold)} · 연속 ${runtime.consecutive_frames}회`;
     for (const [id, row] of rows) {
       const value = runtimes ? runtimes[id] : runtime;
@@ -51,9 +52,11 @@
       : "감지 기준이나 연속 감지 수를 낮추면 더 쉽게 반응합니다. 변경값은 다음 마이크 시험에만 적용됩니다.";
     if (recommended) {
       const candidates = info.runtime_recommendations?.candidates || [];
+      const unavailable = candidates.filter(row => row.recommendation_available === false);
       const missed = candidates.filter(row => row.passed === false || row.adoption?.passed === false);
       const unverified = candidates.some(row => row.deployment_backend_verified !== true);
-      ui.recommendationHint.textContent = `${missed.length ? "목표 미달 모델은 비교한 조합 중 가장 나은 값을 사용합니다. " : ""}${unverified ? "저장 점수 기준 추천입니다. 마이크 반응도 확인하세요." : "모델마다 평가에서 고른 감지 설정을 사용합니다."}`;
+      const names = unavailable.map(row => info.models.find(model => model.id === row.id)?.label || "모델").join(" · ");
+      ui.recommendationHint.textContent = `${unavailable.length ? `${names}: 추천 기준을 만족하는 조합이 없어 기존 설정을 유지합니다. ` : ""}${missed.length ? "전체 목표 미달 모델이 포함돼 있습니다. " : ""}${unverified ? "저장 점수 기준 추천입니다. 마이크 반응도 확인하세요." : "적용값은 아래 모델 반응 표에 표시합니다."}`;
     }
   }
 
@@ -424,7 +427,11 @@
       recommendedRuntimes = info.recommended_runtimes && info.models.every(model => validRuntime(info.recommended_runtimes[model.id]))
         ? info.recommended_runtimes : null;
       const recommendedOption = Array.from(ui["trial-mode"].options).find(option => option.value === "recommended");
-      if (recommendedOption) recommendedOption.disabled = !recommendedRuntimes;
+      if (recommendedOption) {
+        recommendedOption.disabled = !recommendedRuntimes;
+        recommendedOption.textContent = info.runtime_recommendations?.candidates?.some(row => row.recommendation_available === false)
+          ? "모델별 추천·기존값" : "모델별 추천값";
+      }
       ui["trial-mode"].value = recommendedRuntimes ? "recommended" : "manual";
       setDefaultFields();
       renderModels(info.models);
