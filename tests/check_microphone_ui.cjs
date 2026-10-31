@@ -97,11 +97,13 @@ function browser(config = {}) {
   };
   const context = vm.createContext({ document, navigator: { mediaDevices }, fetch, Option, AudioContext: Context, AudioWorkletNode: Worklet, AbortController, performance: { now: () => clock }, setTimeout(callback, duration) { const id = ++nextTimer; timers.set(id, { callback, duration }); return id; }, clearTimeout(id) { timers.delete(id); }, setInterval(callback, duration) { const id = ++nextTimer; intervals.set(id, { callback, duration }); return id; }, clearInterval(id) { intervals.delete(id); }, console });
   context.window = context;
+  context.parent = config.embedded ? {} : context;
+  context.location = {origin: "http://127.0.0.1:8800"};
   context.innerHeight = config.viewportHeight;
   context.isSecureContext = true;
   context.addEventListener = (name, handler) => { listeners[name] = handler; };
   vm.runInContext(fs.readFileSync(path.join(resources, "microphone.js"), "utf8"), context);
-  return { state, elements, listeners, mediaListeners, contexts, workers, calls, streams, timers, intervals, devices, makeStream, info,
+  return { state, elements, listeners, mediaListeners, contexts, workers, calls, streams, timers, intervals, devices, makeStream, info, parent: context.parent,
     click(id) { return elements.get(id).handlers.click({ type: "click", target: elements.get(id) }); },
     frame() { const worker = workers.at(-1); const pcm = vm.runInContext("new ArrayBuffer(2560)", context); worker.port.onmessage?.({ data: { type: "frame", pcm } }); },
     tick(ms) { clock += ms; for (const timer of [...intervals.values()]) timer.callback(); },
@@ -142,6 +144,30 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
     const b = browser(); await flush();
     assert.equal(b.state.permissionCalls, 0); assert.equal(b.elements.get("start").disabled, false);
     assert.equal(b.elements.get("wakeword").textContent, "‘보라야’");
+  });
+  await test("story reaction bars show every real response and retain the exact detector settings", async () => {
+    const b = browser(); await flush();
+    let bars = b.elements.get("model-bars").children;
+    assert.equal(bars.length, 4);
+    assert.equal(bars[0].children[1].children[2].textContent, "0.98625 · 2회");
+    await b.click("start"); b.frame(); await flush();
+    bars = b.elements.get("model-bars").children;
+    assert.equal(bars[0].children[1].children[0].attributes["aria-valuenow"], "0.2");
+    assert.equal(bars[0].children[1].children[0].children[0].attributes.style, "width:20%");
+    assert.equal(bars[0].children[1].children[1].textContent, "0.20");
+    assert.equal(b.elements.get("models").children[0].children[1].textContent, "0.2000");
+    b.click("stop"); await flush();
+  });
+  await test("only a same-origin parent pause can stop an embedded microphone session", async () => {
+    const b = browser({embedded: true}); await flush(); await b.click("start");
+    b.listeners.message({origin: "https://other.invalid", source: b.parent, data: {type: "koww:pause"}});
+    assert.equal(b.streams[0].track.stopped, false);
+    b.listeners.message({origin: "http://127.0.0.1:8800", source: {}, data: {type: "koww:pause"}});
+    assert.equal(b.streams[0].track.stopped, false);
+    b.listeners.message({origin: "http://127.0.0.1:8800", source: b.parent, data: {type: "koww:pause"}}); await flush();
+    assert.equal(b.streams[0].track.stopped, true);
+    assert.equal(b.calls.filter(call => call.url === "/api/stop").length, 1);
+    assert.match(b.elements.get("statusText").textContent, /화면을 이동/);
   });
   await test("compact viewport metrics can be expanded without changing an active microphone trial", async () => {
     const b = browser({viewportHeight: 404}); await flush();

@@ -77,7 +77,7 @@ const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "posi
     assert.equal(b.calls.length, calls);
     await b.elements.get("audio").onended(); assert.equal(b.helper.state().index, 128);
   });
-  await test("short viewport audio controls collapse without resetting playback or selected conditions", async () => {
+  await test("optional audio control popovers keep the user's choice across resize without resetting playback", async () => {
     const b = browser(Array.from({length: 20}, (_, index) => tuple(index)), {viewportHeight: 404}); await b.helper.boot();
     assert.equal(b.elements.get("audio-filter-details").open, false);
     assert.equal(b.elements.get("clip-select-details").open, false);
@@ -85,8 +85,8 @@ const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "posi
     const source = b.elements.get("audio").src, calls = b.calls.length;
     b.elements.get("audio-filter-details").open = true; b.resize(444);
     assert.equal(b.elements.get("audio-filter-details").open, true);
-    b.resize(600); assert.equal(b.elements.get("clip-select-details").open, true);
-    b.resize(404); assert.equal(b.elements.get("audio-filter-details").open, false);
+    b.resize(600); assert.equal(b.elements.get("clip-select-details").open, false);
+    b.resize(404); assert.equal(b.elements.get("audio-filter-details").open, true);
     assert.equal(b.helper.state().continuous, true); assert.equal(b.helper.state().index, 3);
     assert.equal(b.elements.get("audio").src, source); assert.equal(b.calls.length, calls);
   });

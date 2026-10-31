@@ -215,6 +215,7 @@
   let dashboardView = "overview", dashboardProject = "", dashboardPrompt = "", setupView = "basic", audioView = "required";
   let shownDashboardView = "", shownAudioView = "required";
   let materialGroup = "training", materialSections = new Map();
+  let story = null;
   let coverageView = "training";
   const selectedProject = () => (snapshot.projects || []).find(project => project.id === selectedId);
   function renderSetupView() {
@@ -411,9 +412,9 @@
     if (!Number.isFinite(value) || value <= 0) return "";
     return value >= 1e9 ? `${(value / 1e9).toFixed(2)} GB` : value >= 1e6 ? `${(value / 1e6).toFixed(1)} MB` : `${Math.round(value / 1e3)} KB`;
   }
-  function materialGroups(recipe) {
+  function materialGroups(recipe, historical = false) {
     const hours = value => `${Number.isFinite(value) ? value.toLocaleString("ko-KR", { maximumFractionDigits: 1 }) : "—"}시간`, count = value => `${number(value)}개`;
-    const selected = (id, fallback) => $(id).value !== "" && Number.isFinite(Number($(id).value)) && Number($(id).value) >= 0 ? Number($(id).value) : fallback;
+    const selected = (id, fallback) => !historical && $(id).value !== "" && Number.isFinite(Number($(id).value)) && Number($(id).value) >= 0 ? Number($(id).value) : fallback;
     const originals = selected("adv-originals", recipe.originals ?? recipe.positive_originals);
     const genericHours = selected("adv-generic", recipe.generic_hours ?? recipe.automatic_target_hours?.generic_nominal ?? 0);
     const koreanHours = selected("adv-korean", recipe.korean_hours ?? recipe.automatic_target_hours?.korean_train ?? 0);
@@ -1141,6 +1142,7 @@
         reviewIdentity = ""; resultIdentity = "";
       }
     }
+    story?.render();
   }
   async function refresh() {
     if (refreshing) return;
@@ -1223,6 +1225,27 @@
     } catch (error) { if (id === selectedId) $("log").textContent = error.message; }
   }
   async function boot() {
+    if (window.KowwStory) story = window.KowwStory.create({
+      state: () => ({ project: newProject ? null : selectedProject(), recipes, selectedPreset, busy, recipeReady }),
+      materials: materialGroups,
+      voiceDesign: design => renderVoiceDesign("setup-voices", design),
+      create: () => create({ preventDefault() {} }),
+      action: runAction,
+      input: () => submitInput({ preventDefault() {} }),
+      view: (view, mode = "required") => {
+        const project = newProject ? null : selectedProject();
+        if (!project) return;
+        dashboardView = view; audioView = mode;
+        if (["results", "mic"].includes(view)) resultMode = view === "mic" ? "mic" : "results";
+        renderDashboard(project); renderReferencePreview(project); renderHardPreview(project);
+        renderReview(project); renderInput(project); renderResultFrame(project);
+      },
+      pause: pauseFrame,
+      preview: kind => selectAudioView(kind),
+      logs: loadLog,
+      refresh,
+      message,
+    });
     $("create-form").addEventListener("invalid", event => {
       setupView = String(event.target?.id || "").startsWith("adv-") ? "advanced" : "basic";
       renderSetupView();

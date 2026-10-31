@@ -5,12 +5,17 @@
 <header class="dashboard-heading"><h1 id="title">호출어 성능 시험 결과</h1></header>
 <nav class="dashboard-tabs" role="tablist" aria-label="결과 확인">
 <button id="results-tab-models" type="button" role="tab" aria-controls="results-panel-models" aria-selected="true">모델 비교</button>
-<button id="results-tab-conditions" type="button" role="tab" aria-controls="results-panel-conditions" aria-selected="false" tabindex="-1">조건별 성능</button>
-<button id="results-tab-audio" type="button" role="tab" aria-controls="results-panel-audio" aria-selected="false" tabindex="-1">오디오 듣기</button>
+<button id="results-tab-conditions" type="button" role="tab" aria-controls="results-panel-conditions" aria-selected="false" tabindex="-1">소음별</button>
+<button id="results-tab-audio" type="button" role="tab" aria-controls="results-panel-audio" aria-selected="false" tabindex="-1">음원</button>
+<button id="results-tab-criteria" type="button" role="tab" aria-controls="results-panel-criteria" aria-selected="false" tabindex="-1">기준</button>
 <details class="scope-disclosure"><summary>평가 정보</summary><div class="disclosure-content"><p id="scope"></p></div></details>
 </nav>
 <div class="dashboard-content">
 <section id="results-panel-models" class="workspace-panel models-panel" role="tabpanel" tabindex="0" aria-labelledby="results-tab-models">
+<div class="story-overview">
+<div class="overview-controls"><label for="overview-source" class="sr-only">비교할 결과</label><select id="overview-source" aria-label="비교할 결과"></select><label for="overview-model" class="sr-only">요약을 볼 모델</label><select id="overview-model" aria-label="요약을 볼 모델"></select></div>
+<table id="storySummary" class="story-summary"><thead><tr><th scope="col">모델</th><th scope="col">조용할 때</th><th scope="col">강한 소음·울림</th><th scope="col">오호출 / 시간</th><th scope="col">감지 기준 · 연속</th></tr></thead><tbody></tbody></table><dl id="storySummaryMetrics" class="story-summary-metrics"></dl><p id="overview-note" class="table-note"></p>
+</div><details class="result-full-details"><summary>상세 결과</summary><div class="result-detail-content">
 <nav class="model-tabs" role="tablist" aria-label="모델 비교 항목">
 <button id="model-tab-recommendations" type="button" role="tab" aria-controls="model-panel-recommendations" aria-selected="true">추천 감지 설정</button>
 <button id="model-tab-evaluation" type="button" role="tab" aria-controls="model-panel-evaluation" aria-selected="false" tabindex="-1">평가 당시 성능</button>
@@ -31,11 +36,12 @@
 <div class="panel-heading"><h2>목표와 결과 비교</h2><div id="targetControls" class="controls"><label>모델 <select id="target-model"></select></label></div></div>
 <p id="criteriaSummary" class="table-note"></p><p id="criteriaNote" class="table-note"></p><div id="candidateReasons" class="reason-list"></div>
 <div class="scroll"><table id="targetComparison"><thead><tr><th>항목</th><th>목표</th><th>실제 결과</th><th>판정</th></tr></thead><tbody></tbody></table></div>
-</div></section>
+</div></div></details></section>
+<section id="results-panel-criteria" class="workspace-panel criteria-panel" role="tabpanel" tabindex="0" aria-labelledby="results-tab-criteria" hidden><h2 class="sr-only">감지 설정 추천 기준</h2><dl id="searchCriteria" class="search-criteria"></dl><p id="searchCriteriaNote" class="table-note"></p></section>
 <section id="results-panel-conditions" class="workspace-panel conditions-panel" role="tabpanel" tabindex="0" aria-labelledby="results-tab-conditions" hidden>
-<div class="panel-heading"><h2 id="conditions-title">소음 크기별 성공률</h2><div class="controls"><label>모델 <select id="condition-model"></select></label><label>공간 울림 <select id="condition-reverb"></select></label></div><details class="conditions-help"><summary>표 안내</summary><div class="disclosure-content"><p id="condition-clean" class="clean-result"></p><p class="table-note">각 칸은 성공률과 감지 횟수 / 시험 횟수입니다. 소음 크기는 목소리를 기준으로 표시합니다.</p></div></details></div>
+<div class="panel-heading"><h2 id="conditions-title">소음 크기별 성공률</h2><div class="controls"><label>모델 <select id="condition-model"></select></label><label>공간 울림 <select id="condition-reverb"></select></label><label class="condition-snr-control">소음 크기 <select id="condition-snr"><option value="20">아주 작음</option><option value="15">작음</option><option value="10" selected>중간</option><option value="5">큼</option><option value="0">목소리와 같음</option></select></label></div><details class="conditions-help"><summary>표 안내</summary><div class="disclosure-content"><p id="condition-clean" class="clean-result"></p><p class="table-note">각 칸은 성공률과 감지 횟수 / 시험 횟수입니다. 소음 크기는 목소리를 기준으로 표시합니다.</p></div></details></div>
 
-<div class="scroll"><table id="conditions"><thead><tr><th>배경 소리</th><th>아주 작음<small>SNR 20 dB</small></th><th>작음<small>SNR 15 dB</small></th><th>중간<small>SNR 10 dB</small></th><th>큼<small>SNR 5 dB</small></th><th>목소리와 같은 크기<small>SNR 0 dB</small></th></tr></thead><tbody></tbody></table></div>
+<div class="scroll"><table id="conditions"><thead><tr><th>배경 소리</th><th>아주 작음<small>SNR 20 dB</small></th><th>작음<small>SNR 15 dB</small></th><th>중간<small>SNR 10 dB</small></th><th>큼<small>SNR 5 dB</small></th><th>목소리와 같은 크기<small>SNR 0 dB</small></th></tr></thead><tbody></tbody></table></div><dl id="conditionMetrics" class="condition-metrics"></dl>
 
 </section>
 <section id="results-panel-audio" class="workspace-panel audio-panel" role="tabpanel" tabindex="0" aria-labelledby="results-tab-audio" hidden>

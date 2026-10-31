@@ -633,6 +633,35 @@ def test_http_static_ui_state_and_bound_random_port_are_usable(manager, http_ser
     assert status == 200 and json.loads(content)["token"] == manager.token
 
 
+@pytest.mark.parametrize("name,kind", [
+    ("studio_story.js", "text/javascript; charset=utf-8"),
+    ("studio_story.css", "text/css; charset=utf-8"),
+    ("studio_background_grain.svg", "image/svg+xml"),
+    ("studio_background_atmosphere.svg", "image/svg+xml"),
+])
+def test_http_story_assets_are_served_with_their_real_type(http_server, name, kind):
+    status, content, headers = http_server('/' + name)
+    source = Path(studio.__file__).parent / 'resources' / name
+    assert status == 200 and content == source.read_bytes()
+    assert headers['Content-Type'] == kind
+    assert headers['X-Content-Type-Options'] == 'nosniff'
+    assert headers['Cache-Control'] == 'no-store'
+
+
+def test_story_settings_describe_recorded_budget_without_changing_it(manager):
+    view = create(manager)
+    state = manager._load(view['id'])
+    state['settings'].update(originals=37, rounds=2, updates=12, generic_hours=111, korean_hours=3)
+    state['settings']['private_fixture_token'] = 'not-for-display'
+    original = json.dumps(state['settings'], sort_keys=True)
+    described = manager.describe(state)
+    assert {key: described['settings'][key] for key in ('originals', 'rounds', 'updates', 'generic_hours', 'korean_hours')} == {
+        'originals': 37, 'rounds': 2, 'updates': 12, 'generic_hours': 111, 'korean_hours': 3}
+    assert 'private_fixture_token' not in described['settings']
+    described['settings']['originals'] = 99
+    assert json.dumps(state['settings'], sort_keys=True) == original
+
+
 def live_progress_record(manager, kind):
     """A live fake worker and its real files; no download or pipeline runs."""
     view = create(manager)

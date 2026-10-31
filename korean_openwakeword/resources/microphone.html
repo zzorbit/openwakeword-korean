@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
   <title>마이크 호출어 시험 · Korean openWakeWord</title>
   <link rel="stylesheet" href="microphone.css">
   <!--KOWW_PAGE_CONFIG-->
@@ -11,14 +12,14 @@
 <body>
 <main class="mic-dashboard">
   <header>
-    <h1>마이크로 호출어 시험</h1>
-    <p>마이크를 선택하고 시작한 뒤, <strong id="wakeword">호출어</strong>를 말하세요. 모든 모델과 앙상블을 함께 비교합니다.</p>
+    <h1>마이크로 시험</h1>
+    <p><strong id="wakeword">호출어</strong>를 불러보세요.</p>
   </header>
 
   <div class="mic-workspace">
   <section class="setup" aria-labelledby="setupHeading">
-    <h2 id="setupHeading">마이크와 감지 설정</h2>
-    <div class="setup-fields">
+    <h2 id="setupHeading" class="sr-only">마이크와 감지 설정</h2>
+    <div class="setup-fields"><details id="microphone-settings" class="settings-details" open><summary>마이크·감지 설정</summary><div class="settings-content">
     <div class="device-row">
       <label for="microphone">입력 장치</label>
       <select id="microphone"><option value="">시스템 기본 마이크</option></select>
@@ -27,10 +28,10 @@
     </div>
     <div id="detection-settings" class="detection-settings">
       <label for="trial-mode">감지 설정<select id="trial-mode" disabled><option value="manual">직접 설정</option><option value="recommended" disabled>모델별 추천값</option></select></label>
-      <label id="thresholdSetting" for="trial-threshold">감지 기준<input id="trial-threshold" type="number" min="0" max="1" step="any" inputmode="decimal" disabled></label>
+      <label id="thresholdSetting" for="trial-threshold">감지 기준<input id="trial-threshold" type="number" min="0" max="1" step="0.01" inputmode="decimal" disabled></label>
       <label id="consecutiveSetting" for="trial-consecutive">연속 감지 수<input id="trial-consecutive" type="number" min="1" max="10" step="1" inputmode="numeric" disabled></label>
-    </div>
-    <details id="trial-notes" class="trial-notes"><summary>연결·설정 안내</summary><p class="hint" id="deviceHint">마이크 연결을 누르고 사용을 허용하면 장치 이름을 확인할 수 있습니다.</p><button id="reset-detection" class="quiet" type="button" disabled>기본값으로</button><p class="hint">점수는 모델의 반응 크기입니다. 실제 감지는 임계값과 연속 감지 조건을 함께 적용합니다.</p><p class="hint detection-hint" id="detectionHint">감지 기준이나 연속 감지 수를 낮추면 더 쉽게 반응합니다. 변경값은 다음 마이크 시험에만 적용됩니다.</p><p class="hint" id="recommendationHint" hidden></p></details>
+    <button id="reset-detection" class="quiet" type="button" disabled>기본값</button></div>
+    <details id="trial-notes" class="trial-notes"><summary>연결·설정 안내</summary><p class="hint" id="deviceHint">연결을 누르고 마이크 사용을 허용하면 장치 이름이 표시됩니다.</p><p class="hint">점수는 모델의 반응 크기입니다. 실제 감지는 임계값과 연속 감지 조건을 함께 적용합니다.</p><p class="hint detection-hint" id="detectionHint">감지 기준이나 연속 감지 수를 낮추면 더 쉽게 반응합니다. 변경값은 다음 마이크 시험에만 적용됩니다.</p><p class="hint" id="recommendationHint" hidden></p></details></div></details>
     </div>
     <div class="actions">
       <button id="start" class="primary" type="button" disabled>시험 시작</button>
@@ -53,6 +54,7 @@
 
   <section class="model-responses" aria-labelledby="modelsHeading">
     <div class="section-heading"><div class="model-heading-title"><h2 id="modelsHeading">모델 반응</h2><button id="model-detail-toggle" type="button" aria-controls="model-values" aria-expanded="false">상세 값 보기</button></div><span id="threshold" class="hint"></span></div>
+    <div id="model-bars" class="mic-model-bars" aria-label="모델별 실시간 반응"></div>
     <div id="model-values" class="table-wrap"><table>
       <thead><tr><th>모델</th><th>현재 점수</th><th>최대 점수</th><th>감지 횟수</th><th>최근 감지 시점</th><th>감지 기준</th><th>연속 감지</th></tr></thead>
       <tbody id="models"><tr><td colspan="7">모델 정보를 읽는 중입니다.</td></tr></tbody>
@@ -69,7 +71,7 @@
     <p class="hint">분석 입력은 16 kHz 모노입니다. 마이크가 다른 샘플레이트로 입력하면 브라우저가 변환합니다. 장치 자체의 음성 처리는 브라우저에서 확인되지 않을 수 있습니다.</p>
     </div>
   </details>
-  <footer>화면을 벗어나면 시험이 멈추며, 마이크 음성은 저장하지 않습니다.</footer>
+  <footer>화면을 벗어나면 시험이 멈춥니다. 마이크 음성은 저장하지 않습니다.</footer>
 </main>
 </body>
 </html>

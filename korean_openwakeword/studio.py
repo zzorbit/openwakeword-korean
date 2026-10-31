@@ -1480,6 +1480,11 @@ class StudioManager:
         view = {key: state.get(key) for key in ("id", "wakeword", "preset", "status", "error", "next_action", "created_at")}
         timing = self._timing(state)
         view.update(directory=str(Path(state["project"]).parent), stage=stage, stage_id=stage["id"],
+                    settings={key: state["settings"][key] for key in (
+                        "originals", "rounds", "updates", "generic_hours", "korean_hours",
+                        "train_references", "validation_references", "validation_originals",
+                        "hard_originals", "hard_samples_per_phrase", "noise_material_policy")
+                        if key in state["settings"]},
                     reference_counts={"train": state["settings"]["train_references"],
                                       "validation": state["settings"]["validation_references"]},
                     reference_design=self._voice_design(read_json(Path(state["project"]).parent / "voices.json"), state["settings"]),
@@ -1826,9 +1831,11 @@ def make_studio_server(manager, port=8793):
                     return self.respond(manager.snapshot())
                 if path == "/api/recipes":
                     return self.respond(manager.recipes())
-                if path in ("/", "/studio.js", "/studio.css"):
+                if path in ("/", "/studio.js", "/studio.css", "/studio_story.js", "/studio_story.css",
+                            "/studio_background_grain.svg", "/studio_background_atmosphere.svg"):
                     name = "studio.html" if path == "/" else path[1:]
-                    kind = "text/html; charset=utf-8" if name.endswith("html") else "text/javascript; charset=utf-8" if name.endswith("js") else "text/css; charset=utf-8"
+                    kind = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
+                            ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml"}[Path(name).suffix]
                     return self.respond((resources / name).read_bytes(), kind=kind)
                 if path.startswith("/api/projects/") and path.endswith("/log"):
                     return self.respond({"log": manager.log(path.split("/")[3])})

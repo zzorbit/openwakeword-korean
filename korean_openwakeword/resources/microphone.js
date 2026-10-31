@@ -24,16 +24,24 @@
   let thresholdEdited = false;
   let recommendedRuntimes = null;
   let compactMetrics = null;
+  let compactSettings = null;
   function fitMetrics() {
     const detail = $("metrics-details");
     if (!detail || !Number.isFinite(window.innerHeight)) return;
     const compact = window.innerHeight < 520;
-    if (compact !== compactMetrics) { detail.open = !compact; compactMetrics = compact; }
+    if (compact !== compactMetrics) { detail.open = compactMetrics === null ? false : !compact; compactMetrics = compact; }
+    const settings = $("microphone-settings");
+    const collapsed = !(window.innerWidth > 760 && window.innerHeight > 560);
+    if (settings && collapsed !== compactSettings) { settings.open = !collapsed; compactSettings = collapsed; }
   }
   fitMetrics(); window.addEventListener("resize", fitMetrics);
   function showDeviceHint(text, attention = false) {
     ui.deviceHint.textContent = text;
-    if (attention) { const notes = $("trial-notes"); if (notes) notes.open = true; }
+    if (attention) {
+      const notes = $("trial-notes"), settings = $("microphone-settings");
+      if (notes) notes.open = true;
+      if (settings) settings.open = true;
+    }
   }
 
   function displayThreshold(value) {
@@ -54,6 +62,9 @@
       const value = runtimes ? runtimes[id] : runtime;
       row.cells[5].textContent = validRuntime(value) ? displayThreshold(value.threshold) : "—";
       row.cells[6].textContent = validRuntime(value) ? `${value.consecutive_frames}회` : "—";
+      if (row.runtimeLabel) row.runtimeLabel.textContent = validRuntime(value)
+        ? `${displayThreshold(value.threshold)} · ${value.consecutive_frames}회` : "—";
+      if (row.thresholdMarker) row.thresholdMarker.setAttribute("style", validRuntime(value) ? `left:${value.threshold * 100}%` : "display:none");
     }
   }
 
@@ -158,6 +169,8 @@
 
   function renderModels(models) {
     ui.models.replaceChildren();
+    const bars = $("model-bars");
+    bars?.replaceChildren();
     rows.clear();
     for (const model of models) {
       const tr = document.createElement("tr");
@@ -168,7 +181,19 @@
         tr.append(td);
         return td;
       });
-      rows.set(model.id, { tr, cells, ensemble: model.kind === "ensemble", flashUntil: 0 });
+      const row = { tr, cells, ensemble: model.kind === "ensemble", flashUntil: 0 };
+      if (bars) {
+        const item = document.createElement("div"), heading = document.createElement("div"), name = document.createElement("span"), events = document.createElement("span");
+        item.className = "mic-model-row"; heading.className = "mic-model-top"; name.textContent = model.label; events.textContent = "감지 0회"; events.className = "mic-event-count";
+        heading.append(name, events);
+        const response = document.createElement("div"), track = document.createElement("div"), fill = document.createElement("span"), marker = document.createElement("span"), score = document.createElement("span"), runtime = document.createElement("span");
+        response.className = "mic-model-response"; track.className = "mic-score-track"; fill.className = "mic-score-fill"; marker.className = "mic-score-marker";
+        track.setAttribute("role", "progressbar"); track.setAttribute("aria-label", `${model.label} 현재 점수`); track.setAttribute("aria-valuemin", "0"); track.setAttribute("aria-valuemax", "1"); track.setAttribute("aria-valuenow", "0");
+        score.className = "mic-current-score"; score.textContent = "0.00"; runtime.className = "mic-runtime-label"; runtime.textContent = "—";
+        track.append(fill, marker); response.append(track, score, runtime); item.append(heading, response); bars.append(item);
+        Object.assign(row, {item, scoreTrack: track, scoreFill: fill, thresholdMarker: marker, scoreLabel: score, eventLabel: events, runtimeLabel: runtime});
+      }
+      rows.set(model.id, row);
       ui.models.append(tr);
     }
   }
@@ -306,8 +331,16 @@
       row.cells[2].textContent = response.max_score.toFixed(4);
       row.cells[3].textContent = response.events.toLocaleString();
       row.cells[4].textContent = Number.isFinite(response.last_event_s) ? `${response.last_event_s.toFixed(2)}초` : "—";
+      if (row.scoreTrack) {
+        const bounded = Math.min(1, Math.max(0, response.score));
+        row.scoreTrack.setAttribute("aria-valuenow", String(bounded));
+        row.scoreFill.setAttribute("style", `width:${bounded * 100}%`);
+        row.scoreLabel.textContent = response.score.toFixed(2);
+        row.eventLabel.textContent = `감지 ${response.events.toLocaleString()}회`;
+      }
       if (response.event) { detected.push(response.label); row.flashUntil = performance.now() + 700; }
       row.tr.className = `${row.ensemble ? "ensemble " : ""}${performance.now() < row.flashUntil ? "detected" : ""}`.trim();
+      if (row.item) row.item.className = `mic-model-row${performance.now() < row.flashUntil ? " detected" : ""}`;
     }
     if (detected.length) {
       ui.lastEvent.textContent = detected.join(" · ");
@@ -427,6 +460,18 @@
   ui["reset-detection"].addEventListener("click", resetDetection);
   window.addEventListener("pagehide", () => { if (run || probe) stop("페이지를 떠나 마이크 시험을 중지했습니다.", false, true); });
   document.addEventListener("visibilitychange", () => { if (document.hidden && (run || probe)) stop("다른 창으로 이동하여 시험을 중지했습니다. 돌아온 뒤 다시 시작하세요.", false, true); syncControls(); });
+  window.addEventListener("message", event => {
+    if (!window.parent || window.parent === window || !window.location?.origin || event.origin !== window.location.origin
+        || event.source !== window.parent || event.data?.type !== "koww:pause") return;
+    if (run || probe) stop("화면을 이동하여 마이크 시험을 중지했습니다.", false, true);
+  });
+  window.addEventListener("keydown", event => {
+    if (event.key !== "Escape") return;
+    for (const detail of document.querySelectorAll?.("details[open]") || []) {
+      if (detail.id !== "microphone-settings" || compactSettings) detail.open = false;
+    }
+    if (modelValues?.className === "table-wrap show-details") detailToggle?.onclick?.();
+  });
   navigator.mediaDevices?.addEventListener("devicechange", () => { if (!probe) refreshDevices(); });
 
   async function initialize() {

@@ -13,10 +13,10 @@
     if (typeof window === "undefined" || !Number.isFinite(window.innerHeight)) return;
     const compact = window.innerHeight < 520;
     if (compact === compactAudio) return;
-    compactAudio = compact;
     for (const id of ["audio-filter-details", "clip-select-details"]) {
-      const detail = $(id); if (detail) detail.open = !compact;
+      const detail = $(id); if (detail && compactAudio === null) detail.open = false;
     }
+    compactAudio = compact;
   }
   function activateTabs(prefix, names, chosen, focus = false) {
     names.forEach(name => {
@@ -29,8 +29,8 @@
     });
   }
   function dashboard(view, focus = false) {
-    if (!["models", "conditions", "audio"].includes(view)) return;
-    dashboardView = view; activateTabs("results", ["models", "conditions", "audio"], view, focus);
+    if (!["models", "conditions", "audio", "criteria"].includes(view)) return;
+    dashboardView = view; activateTabs("results", ["models", "conditions", "audio", "criteria"], view, focus);
   }
   function modelDashboard(view, focus = false) {
     if (!["recommendations", "evaluation", "targets"].includes(view)) return;
@@ -60,7 +60,7 @@
   function initDashboard() {
     if (!$("results-tab-models")) return;
     if (typeof window !== "undefined" && window.parent && window.parent !== window) document.body?.classList?.add("embedded");
-    bindTabs("results", ["models", "conditions", "audio"], dashboard);
+    bindTabs("results", ["models", "conditions", "audio", "criteria"], dashboard);
     bindTabs("model", ["recommendations", "evaluation", "targets"], modelDashboard);
     dashboard(dashboardView); modelDashboard(modelView);
   }
@@ -302,6 +302,86 @@
     if ($("denominators")) $("denominators").textContent = "종합 성공률은 소음과 목소리가 같은 크기인 시험을 제외합니다. 소음 평균은 울림 없이 소음이 아주 작을 때부터 클 때까지의 평균입니다.";
     renderTargets(report);
     renderRecommendations(report);
+    renderOverview(report);
+    renderSearchCriteria(report);
+  }
+  function renderSearchCriteria(report) {
+    const target = $("searchCriteria");
+    if (!target) return;
+    const recommendation = report.runtime_recommendations;
+    const search = recommendation?.search_policy;
+    const criteria = recommendation?.recommendation_criteria;
+    const counts = Array.isArray(search?.consecutive_frames) ? search.consecutive_frames : [];
+    const consecutive = counts.length && counts.every((value, index) => Number.isInteger(value) && value > 0 && (!index || value === counts[index - 1] + 1));
+    const values = [
+      ["감지 기준 간격", finite(search?.threshold_step) ? String(search.threshold_step) : "기록 없음"],
+      ["연속 감지 수", consecutive ? counts.length === 1 ? `${counts[0]}회` : `${counts[0]}~${counts[counts.length - 1]}회 비교` : counts.length ? counts.map(value => `${value}회`).join(" · ") : "기록 없음"],
+      ["조용할 때 성공률", finite(criteria?.clean_recall) ? `${percent(criteria.clean_recall)} 이상` : "기록 없음"],
+      ["오호출 허용량", finite(criteria?.fa_per_hour) ? `시간당 ${criteria.fa_per_hour}회 이하` : "기록 없음"],
+      ["반응 속도", finite(criteria?.latency_p95_s) ? `95%가 ${criteria.latency_p95_s}초 이내` : "기록 없음"],
+      ["우선 비교", recommendation?.candidates?.some(row => row.metrics?.hard_conditions) ? "강한 소음·울림" : "이전 추천 방식"]
+    ];
+    target.replaceChildren();
+    for (const [name, value] of values) {
+      const item = document.createElement("div"), term = document.createElement("dt"), description = document.createElement("dd");
+      term.textContent = name; description.textContent = value; item.append(term, description); target.append(item);
+    }
+    const note = $("searchCriteriaNote");
+    if (note) note.textContent = criteria
+      ? "위 기준을 지키면서 소음·울림 성공률이 높은 감지 설정을 고릅니다."
+      : "이 평가에는 자동 추천 기준이 기록되지 않았습니다. 평가 당시 목표는 상세 결과에서 확인할 수 있습니다.";
+  }
+  function renderOverview(report) {
+    const table = body("storySummary"), source = $("overview-source"), modelSelect = $("overview-model");
+    if (!table || !source || !modelSelect) return;
+    const recommendations = report.runtime_recommendations?.schema_version === 1 ? report.runtime_recommendations.candidates || [] : [];
+    const previousSource = source.value, previousModel = modelSelect.value;
+    const models = [...(report.models || [])].sort((left, right) => {
+      const order = [...singleIds(report), ...report.models.filter(row => isEnsemble(report, row.id)).map(row => row.id)];
+      return order.indexOf(left.id) - order.indexOf(right.id);
+    });
+    source.replaceChildren();
+    if (recommendations.length) option(source, "recommended", "추천값 결과");
+    option(source, "baseline", "평가 당시 결과");
+    source.value = ["recommended", "baseline"].includes(previousSource) && (previousSource !== "recommended" || recommendations.length)
+      ? previousSource : recommendations.length ? "recommended" : "baseline";
+    modelSelect.replaceChildren(); models.forEach(model => option(modelSelect, model.id, modelLabel(report, model.id)));
+    modelSelect.value = models.some(model => model.id === previousModel) ? previousModel : models.find(model => isEnsemble(report, model.id))?.id || models[0]?.id || "";
+    const valuesFor = model => {
+      const chosen = recommendations.find(row => row.id === model.id);
+      const available = chosen && chosen.recommendation_available !== false && chosen.metrics && finite(chosen.runtime?.threshold)
+        && chosen.runtime.threshold > 0 && chosen.runtime.threshold < 1 && Number.isInteger(chosen.runtime?.consecutive_frames) && chosen.runtime.consecutive_frames > 0;
+      const recommended = source.value === "recommended";
+      const metric = recommended ? available ? chosen.metrics : null : model;
+      const runtime = recommended ? available ? chosen.runtime : null : report.runtime;
+      const hard = metric?.hard_conditions;
+      return [modelLabel(report, model.id), percent(metric?.clean?.recall),
+        hard?.complete === false ? "자료 부족" : percent(hard?.cell_mean),
+        finite(metric?.negative?.fa_per_hour) ? `${metric.negative.fa_per_hour.toFixed(3)}회` : "결과 없음",
+        runtime && finite(runtime.threshold) && Number.isInteger(runtime.consecutive_frames)
+          ? `${thresholdText(runtime.threshold)} · ${runtime.consecutive_frames}회` : recommended ? "추천 없음" : "기록 없음"];
+    };
+    function draw() {
+      table.replaceChildren();
+      for (const model of models) {
+        const row = document.createElement("tr"); if (isEnsemble(report, model.id)) row.className = "ensemble";
+        valuesFor(model).forEach(value => appendCell(row, value)); table.append(row);
+      }
+      const metrics = $("storySummaryMetrics"), model = models.find(row => row.id === modelSelect.value);
+      metrics?.replaceChildren();
+      if (metrics && model) {
+        const labels = ["조용할 때", "강한 소음·울림", "오호출 / 시간", "감지 기준 · 연속"];
+        valuesFor(model).slice(1).forEach((value, index) => {
+          const item = document.createElement("div"), term = document.createElement("dt"), description = document.createElement("dd");
+          term.textContent = labels[index]; description.textContent = value; item.append(term, description); metrics.append(item);
+        });
+      }
+      const note = $("overview-note");
+      if (note) note.textContent = source.value === "recommended"
+        ? "추천 기준을 만족한 설정의 결과입니다. 추천이 없는 모델은 평가 당시 결과에서 확인하세요."
+        : "저장된 평가 당시 설정의 결과입니다. 강한 소음·울림 평균이 기록되지 않은 평가는 ‘결과 없음’으로 표시합니다.";
+    }
+    source.onchange = draw; modelSelect.onchange = draw; draw();
   }
   function option(select, value, text) {
     const node = document.createElement("option"); node.value = value; node.textContent = text; select.append(node);
@@ -319,6 +399,7 @@
   }
   function renderConditions(report) {
     const modelSelect = $("condition-model"), reverbSelect = $("condition-reverb"), rows = body("conditions");
+    const snrSelect = $("condition-snr"), mobile = $("conditionMetrics");
     if (!modelSelect || !reverbSelect || !rows) return;
     const models = report.models || [];
     const previous = modelSelect.value;
@@ -349,8 +430,15 @@
         for (const level of levels) appendCell(row, statisticText(conditionValue(result?.conditions, category, level)));
         rows.append(row);
       }
+      mobile?.replaceChildren();
+      if (mobile && snrSelect) for (const category of categories) {
+        const item = document.createElement("div"), term = document.createElement("dt"), description = document.createElement("dd");
+        term.textContent = noiseLabel(category); description.textContent = statisticText(conditionValue(result?.conditions, category, Number(snrSelect.value)));
+        item.append(term, description); mobile.append(item);
+      }
       modelSelect.disabled = !models.length; reverbSelect.disabled = !models.length;
     }
+    if (snrSelect) snrSelect.onchange = drawValues;
     modelSelect.onchange = draw; reverbSelect.onchange = drawValues; draw();
   }
   function renderResponses(report, clip) {
@@ -381,6 +469,9 @@
   fitAudioControls();
   if (typeof window !== "undefined") window.addEventListener?.("resize", fitAudioControls);
   if (typeof window !== "undefined") window.addEventListener?.("message", pauseFromParent);
+  if (typeof window !== "undefined") window.addEventListener?.("keydown", event => {
+    if (event.key === "Escape") document.querySelectorAll?.("details[open]")?.forEach(detail => { detail.open = false; });
+  });
   const api = {modelLabel, noiseLabel, snrLabel, reverbLabel, renderSummary, renderConditions, renderResponses, renderRecommendations, clipLabel,
     dashboard, modelDashboard, dashboardState: () => ({view: dashboardView, modelView})};
   if (typeof window !== "undefined") window.KowwResultsUI = api;

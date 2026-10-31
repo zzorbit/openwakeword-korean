@@ -4,9 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#0d1117">
+  <meta name="theme-color" content="#171a1f">
   <title>한국어 호출어 학습</title>
   <link rel="stylesheet" href="/studio.css">
+  <link rel="stylesheet" href="/studio_story.css">
+  <script src="/studio_story.js" defer></script>
   <script src="/studio.js" defer></script>
 </head>
 <body>
@@ -21,7 +23,7 @@
         <div class="setup-workspace">
           <section id="setup-panel-basic" class="setup-panel" role="tabpanel" aria-labelledby="setup-tab-basic"><div class="card setup-card">
           <label class="field-title" for="wakeword">호출어</label>
-          <input id="wakeword" name="wakeword" class="wakeword-input" placeholder="예: 보라야" maxlength="40" autocomplete="off" required>
+          <input id="wakeword" name="wakeword" class="wakeword-input" aria-label="호출어" placeholder="예: 보라야" maxlength="40" autocomplete="off" required>
           <fieldset class="purpose"><legend class="field-title">작업 규모</legend><div id="presets" class="preset-grid" aria-live="polite"><p class="muted">설정을 불러오는 중입니다.</p></div></fieldset>
           <div class="storage-location"><span>자동 저장 위치</span><p id="storage-directory" class="directory" aria-live="polite">호출어를 입력하면 표시됩니다.</p></div>
         </div></section>

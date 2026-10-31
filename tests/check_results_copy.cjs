@@ -4,7 +4,7 @@ const fs = require("node:fs"), path = require("node:path"), vm = require("node:v
 const source = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources/results_ui.js"), "utf8");
 const cases = [];
 function test(name, run) { run(); cases.push(name); }
-function browser({dashboard = false} = {}) {
+function browser({dashboard = false, story = false} = {}) {
   class Element {
     constructor(tag = "div") { this.tagName = tag; this.children = []; this.value = ""; this.textContent = ""; this.disabled = false; this.attributes = {}; }
     append(...nodes) { this.children.push(...nodes); }
@@ -15,6 +15,10 @@ function browser({dashboard = false} = {}) {
   const elements = new Map();
   for (const id of ["summary", "candidateStatus", "candidateReasons", "denominators", "criteriaSummary", "criteriaNote", "targetControls", "target-model", "targetComparison", "responses", "scores", "condition-model", "condition-reverb", "condition-clean", "conditions", "runtimeRecommendations", "recommendations", "recommendationScope", "recommendationNote", "baselineRuntime", "recommendationFailures", "recommendationReasons"]) elements.set(id, new Element());
   for (const id of ["summary", "responses", "scores", "conditions", "targetComparison", "recommendations"]) elements.get(id).tBodies = [new Element("tbody")];
+  if (story) {
+    for (const id of ["storySummary", "overview-source", "overview-model", "storySummaryMetrics", "overview-note", "searchCriteria", "searchCriteriaNote", "condition-snr", "conditionMetrics"]) elements.set(id, new Element());
+    elements.get("storySummary").tBodies = [new Element("tbody")]; elements.get("condition-snr").value = "10";
+  }
   if (dashboard) {
     for (const [prefix, names] of [["results", ["models", "conditions", "audio"]], ["model", ["recommendations", "evaluation", "targets"]]]) {
       for (const name of names) for (const kind of ["tab", "panel"]) elements.set(`${prefix}-${kind}-${name}`, new Element());
@@ -311,5 +315,40 @@ test("recommended-setting failures describe that setting rather than the preserv
   report.runtime_recommendations.candidates[0].passed = true; ui.renderSummary(report);
   assert.equal(elements.get("recommendationFailures").hidden, true);
   assert.equal(elements.get("recommendationReasons").children.length, 0);
+});
+test("story overview separates recommended measurements from the preserved evaluation and never applies a tradeoff", () => {
+  const {ui, elements, rows} = browser({story: true}), report = sample();
+  report.runtime = {threshold: .5, consecutive_frames: 1};
+  report.runtime_recommendations = {schema_version: 1, candidates: [
+    {id: "mean", recommendation_available: true, runtime: {threshold: .97, consecutive_frames: 3}, metrics: {clean: {recall: .995}, hard_conditions: {complete: true, cell_mean: .73}, negative: {fa_per_hour: .9}}},
+    {id: "member1_seed1", recommendation_available: false, runtime: {threshold: .7, consecutive_frames: 1}, metrics: {clean: {recall: 1}, hard_conditions: {complete: true, cell_mean: .99}, negative: {fa_per_hour: 20}}}
+  ]};
+  const before = JSON.stringify(report); ui.renderSummary(report);
+  assert.equal(elements.get("overview-source").value, "recommended");
+  assert.deepEqual(rows("storySummary")[3], ["앙상블", "99.50%", "73.00%", "0.900회", "0.97 · 3회"]);
+  assert.deepEqual(rows("storySummary")[0], ["모델 1", "결과 없음", "결과 없음", "결과 없음", "추천 없음"]);
+  const metrics = elements.get("storySummaryMetrics").children;
+  assert.equal(metrics[1].children[1].textContent, "73.00%");
+  elements.get("overview-source").value = "baseline"; elements.get("overview-source").onchange();
+  assert.deepEqual(rows("storySummary")[3], ["앙상블", "100.00%", "결과 없음", "0.033회", "0.5 · 1회"]);
+  assert.equal(JSON.stringify(report), before);
+});
+test("story criteria disclose the recorded recommendation policy instead of inventing defaults for historical reports", () => {
+  const {ui, elements} = browser({story: true}), report = sample();
+  ui.renderSummary(report);
+  assert.equal(elements.get("searchCriteria").children[0].children[1].textContent, "기록 없음");
+  report.runtime_recommendations = {schema_version: 1, search_policy: {threshold_step: .01, consecutive_frames: [1, 2, 3, 4, 5, 6]},
+    recommendation_criteria: {clean_recall: .98, fa_per_hour: 1, latency_p95_s: .5}, candidates: []};
+  ui.renderSummary(report);
+  const cells = elements.get("searchCriteria").children.map(row => row.children[1].textContent);
+  assert.deepEqual(cells.slice(0, 5), ["0.01", "1~6회 비교", "98.00% 이상", "시간당 1회 이하", "95%가 0.5초 이내"]);
+});
+test("compact condition rows use the same stored cells as the full table for each noise selection", () => {
+  const {ui, elements} = browser({story: true}), report = sample(), before = JSON.stringify(report);
+  ui.renderConditions(report);
+  assert.equal(elements.get("conditionMetrics").children[0].children[1].textContent, "83.33%\n10 / 12회");
+  elements.get("condition-snr").value = "0"; elements.get("condition-snr").onchange();
+  assert.equal(elements.get("conditionMetrics").children[0].children[1].textContent, "0.00%\n0 / 12회");
+  assert.equal(JSON.stringify(report), before);
 });
 console.log(`${cases.length} result presentation tests passed`);

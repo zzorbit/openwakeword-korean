@@ -1,6 +1,6 @@
 include README.md LICENSE THIRD_PARTY_NOTICES.md plan.md CHANGELOG.md pytest.ini
 recursive-include docs *.md
-recursive-include korean_openwakeword *.py *.json *.html *.js *.css *.md *.txt *.onnx *.wav
+recursive-include korean_openwakeword *.py *.json *.html *.js *.css *.svg *.md *.txt *.onnx *.wav
 prune data
 prune logs
 prune models
