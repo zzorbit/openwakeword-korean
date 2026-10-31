@@ -24,12 +24,14 @@
       <button id="refresh" type="button">목록 새로고침</button>
     </div>
     <p class="hint" id="deviceHint">마이크 연결을 누르고 사용을 허용하면 장치 이름을 확인할 수 있습니다.</p>
-    <div class="detection-settings">
-      <label for="trial-threshold">감지 기준<input id="trial-threshold" type="number" min="0" max="1" step="any" inputmode="decimal" disabled></label>
-      <label for="trial-consecutive">연속 감지 수<input id="trial-consecutive" type="number" min="1" max="10" step="1" inputmode="numeric" disabled></label>
+    <div id="detection-settings" class="detection-settings">
+      <label for="trial-mode">감지 설정<select id="trial-mode" disabled><option value="manual">직접 설정</option><option value="recommended" disabled>모델별 추천값</option></select></label>
+      <label id="thresholdSetting" for="trial-threshold">감지 기준<input id="trial-threshold" type="number" min="0" max="1" step="any" inputmode="decimal" disabled></label>
+      <label id="consecutiveSetting" for="trial-consecutive">연속 감지 수<input id="trial-consecutive" type="number" min="1" max="10" step="1" inputmode="numeric" disabled></label>
       <button id="reset-detection" class="quiet" type="button" disabled>기본값으로</button>
     </div>
-    <p class="hint detection-hint">감지 기준이나 연속 감지 수를 낮추면 더 쉽게 반응합니다. 변경값은 다음 마이크 시험에만 적용됩니다.</p>
+    <p class="hint detection-hint" id="detectionHint">감지 기준이나 연속 감지 수를 낮추면 더 쉽게 반응합니다. 변경값은 다음 마이크 시험에만 적용됩니다.</p>
+    <p class="hint" id="recommendationHint" hidden></p>
     <div class="actions">
       <button id="start" class="primary" type="button" disabled>시험 시작</button>
       <button id="stop" type="button" disabled>중지</button>
@@ -52,8 +54,8 @@
     <div class="section-heading"><h2 id="modelsHeading">모델 반응</h2><span id="threshold" class="hint"></span></div>
     <p class="hint">점수는 모델의 반응 크기입니다. 실제 감지는 임계값과 연속 감지 조건을 함께 적용합니다.</p>
     <div class="table-wrap"><table>
-      <thead><tr><th>모델</th><th>현재 점수</th><th>최대 점수</th><th>감지 횟수</th><th>최근 감지 시점</th></tr></thead>
-      <tbody id="models"><tr><td colspan="5">모델 정보를 읽는 중입니다.</td></tr></tbody>
+      <thead><tr><th>모델</th><th>현재 점수</th><th>최대 점수</th><th>감지 횟수</th><th>최근 감지 시점</th><th>감지 기준</th><th>연속 감지</th></tr></thead>
+      <tbody id="models"><tr><td colspan="7">모델 정보를 읽는 중입니다.</td></tr></tbody>
     </table></div>
   </section>
 

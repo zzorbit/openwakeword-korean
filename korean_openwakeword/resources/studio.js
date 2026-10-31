@@ -988,7 +988,9 @@
       $("eta").textContent = remaining ? `${speed} · 이 작업 예상 남은 시간 ${remaining}` : speed;
     }
     if (transfer.phase === "retry") $("eta").textContent = `연결 재시도 ${number(transfer.attempt)} / ${number(transfer.retry_limit)}`;
-    if (evaluating(project)) $("eta").textContent = progress && !/단계/.test(progress.unit) ? "음원 수 기준 · 긴 비호출 음원은 더 오래 걸립니다." : "평가 음원의 무결성과 형식을 확인하고 있습니다.";
+    if (evaluating(project)) $("eta").textContent = transfer.phase === "runtime_recommendation"
+      ? "저장 점수에서 모델별 감지 설정을 비교하고 있습니다."
+      : progress && !/단계/.test(progress.unit) ? "음원 수 기준 · 긴 비호출 음원은 더 오래 걸립니다." : "평가 음원의 무결성과 형식을 확인하고 있습니다.";
     $("project-error").hidden = !project.error;
     $("project-error").textContent = project.error && typeof project.error === "object" ? project.error.message || JSON.stringify(project.error) : project.error || "";
     renderDownloads(project); renderCounts(project); renderReferencePreview(project); renderHardPreview(project); renderReview(project); renderInput(project); renderResultFrame(project);

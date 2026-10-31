@@ -103,7 +103,7 @@ def _source_bindings(project, bundle, evaluation):
 
 
 @project_storage
-def compare_cached(project, bundle, evaluation, output, thresholds, consecutive=(2,), candidate=None):
+def compare_cached(project, bundle, evaluation, output, thresholds, consecutive=(1,), candidate=None):
     """Compare explicit settings without selecting/deploying a model or runtime.
 
     Call this from a background job. Validation streams the original archive;
@@ -150,7 +150,7 @@ def compare_cached(project, bundle, evaluation, output, thresholds, consecutive=
             "network_rerun": False, "selection_applied": False}
 
 
-def tune(project, bundle, evaluation, output, thresholds, consecutive=(2,), candidate=None):
+def tune(project, bundle, evaluation, output, thresholds, consecutive=(1,), candidate=None):
     from .selection import verified_evaluation, copy_candidate_bundle, restrict_evaluation
     root, config, package, report, clips, scores, offsets, candidates = verified_evaluation(project, bundle, evaluation)
     if (root / "final_lock.json").exists():

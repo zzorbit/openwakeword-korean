@@ -27,7 +27,8 @@ class MicrophoneError(ValueError):
 
 class MicrophoneService:
     """One ordered microphone stream; callers cannot interleave model history."""
-    def __init__(self, detector, idle_timeout=60, clock=time.monotonic, model_labels=None):
+    def __init__(self, detector, idle_timeout=60, clock=time.monotonic, model_labels=None,
+                 runtime_recommendations=None, recommended_runtimes=None):
         if idle_timeout <= 0:
             raise ValueError("Idle timeout must be positive")
         self.detector = detector
@@ -44,6 +45,15 @@ class MicrophoneService:
             while self._ensemble_id in detector.keys:
                 self._ensemble_id = "_" + self._ensemble_id
             self.models.append({"id": self._ensemble_id, "label": "3개 평균 앙상블", "kind": "ensemble"})
+        from copy import deepcopy
+        self.runtime_recommendations = deepcopy(runtime_recommendations)
+        self.recommended_runtimes = deepcopy(recommended_runtimes or {})
+        if self.recommended_runtimes and set(self.recommended_runtimes) != {m["id"] for m in self.models}:
+            raise ValueError("Recommended microphone settings must bind every compared model")
+        for value in self.recommended_runtimes.values():
+            if not isinstance(value, dict) or set(value) != {"threshold", "consecutive_frames"}:
+                raise ValueError("Recommendations may only change threshold and consecutive frames")
+            self._validate_gate(value)
         self._lock = threading.Lock()
         self._clock = clock
         self._idle_timeout = idle_timeout
@@ -61,6 +71,8 @@ class MicrophoneService:
                 "threshold": self.runtime["threshold"],
                 "consecutive_frames": self.runtime["consecutive_frames"],
                 "default_runtime": {key: self.runtime[key] for key in ("threshold", "consecutive_frames")},
+                "runtime_recommendations": self.runtime_recommendations,
+                "recommended_runtimes": self.recommended_runtimes,
                 "token": self.token, "models": self.models,
                 "audio_saved": False, "training_or_tuning": False,
                 "inference_device": "CPU ONNX"}
@@ -94,15 +106,17 @@ class MicrophoneService:
             if self._session:
                 raise MicrophoneError("다른 시험이 진행 중입니다. 먼저 중지하세요.", 409)
             settings = {} if settings is None else settings
-            if not isinstance(settings, dict) or set(settings) - {"threshold", "consecutive_frames"}:
+            if not isinstance(settings, dict) or set(settings) - {"threshold", "consecutive_frames", "mode"}:
                 raise MicrophoneError("감지 기준과 연속 감지 수만 설정할 수 있습니다.")
-            runtime = dict(self.runtime, **settings)
-            threshold, consecutive = runtime["threshold"], runtime["consecutive_frames"]
-            if (isinstance(threshold, bool) or not isinstance(threshold, (int, float))
-                    or not math.isfinite(threshold) or not 0 < threshold < 1):
-                raise MicrophoneError("감지 기준은 0보다 크고 1보다 작은 숫자여야 합니다.")
-            if type(consecutive) is not int or not 1 <= consecutive <= 10:
-                raise MicrophoneError("연속 감지 수는 1~10의 정수여야 합니다.")
+            mode = settings.get("mode", "manual")
+            if mode not in ("manual", "recommended") or (mode == "recommended" and set(settings) != {"mode"}):
+                raise MicrophoneError("추천값과 직접 입력한 설정을 함께 지정할 수 없습니다.")
+            if mode == "recommended" and not self.recommended_runtimes:
+                raise MicrophoneError("이 모델의 추천 감지 설정이 아직 준비되지 않았습니다.")
+            runtime = dict(self.runtime, **{k: v for k, v in settings.items() if k != "mode"})
+            self._validate_gate(runtime)
+            runtimes = {m["id"]: dict(runtime, **(self.recommended_runtimes[m["id"]]
+                        if mode == "recommended" else {})) for m in self.models}
             self.detector.reset()
             self._session = secrets.token_urlsafe(24)
             self._last_activity = self._clock()
@@ -110,13 +124,21 @@ class MicrophoneService:
             # Trial-only gates share the unchanged scores and warmup timeline.
             # The bundle's runtime, model weights and offline evaluation stay
             # untouched, including the detector's original ensemble gate.
-            self._gates = {model["id"]: EventDetector(runtime["threshold"],
-                runtime["consecutive_frames"], runtime["cooldown_s"])
-                for model in self.models}
+            self._gates = {key: EventDetector(value["threshold"], value["consecutive_frames"], value["cooldown_s"])
+                           for key, value in runtimes.items()}
             self._stats = {m["id"]: {"max_score": 0.0, "events": 0, "last_event_s": None}
                            for m in self.models}
-            return {"session_id": self._session, "runtime": runtime,
+            return {"session_id": self._session, "runtime": runtime, "runtimes": runtimes, "mode": mode,
                     "models": self.models, "audio_saved": False}
+
+    @staticmethod
+    def _validate_gate(runtime):
+        threshold, consecutive = runtime.get("threshold"), runtime.get("consecutive_frames")
+        if (isinstance(threshold, bool) or not isinstance(threshold, (int, float))
+                or not math.isfinite(threshold) or not 0 < threshold < 1):
+            raise MicrophoneError("감지 기준은 0보다 크고 1보다 작은 숫자여야 합니다.")
+        if type(consecutive) is not int or not 1 <= consecutive <= 10:
+            raise MicrophoneError("연속 감지 수는 1~10의 정수여야 합니다.")
 
     def _require_session(self, session_id):
         if self._expire():

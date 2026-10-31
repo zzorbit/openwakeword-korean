@@ -11,8 +11,8 @@ function browser() {
     replaceChildren(...nodes) { this.children = nodes; }
   }
   const elements = new Map();
-  for (const id of ["summary", "candidateStatus", "candidateReasons", "denominators", "criteriaSummary", "criteriaNote", "targetControls", "target-model", "targetComparison", "responses", "scores", "condition-model", "condition-reverb", "condition-clean", "conditions"]) elements.set(id, new Element());
-  for (const id of ["summary", "responses", "scores", "conditions", "targetComparison"]) elements.get(id).tBodies = [new Element("tbody")];
+  for (const id of ["summary", "candidateStatus", "candidateReasons", "denominators", "criteriaSummary", "criteriaNote", "targetControls", "target-model", "targetComparison", "responses", "scores", "condition-model", "condition-reverb", "condition-clean", "conditions", "runtimeRecommendations", "recommendations", "recommendationScope", "recommendationNote", "baselineRuntime", "recommendationFailures", "recommendationReasons"]) elements.set(id, new Element());
+  for (const id of ["summary", "responses", "scores", "conditions", "targetComparison", "recommendations"]) elements.get(id).tBodies = [new Element("tbody")];
   const context = vm.createContext({document: {getElementById: id => elements.get(id), createElement: tag => new Element(tag)}});
   context.window = context; vm.runInContext(source, context);
   return {elements, ui: context.KowwResultsUI, rows: id => elements.get(id).tBodies[0].children.map(row => row.children.map(cell => cell.textContent))};
@@ -182,5 +182,49 @@ test("audio titles avoid internal filenames and do not claim a negative clip con
   const {ui} = browser();
   assert.equal(ui.clipLabel({kind: "positive", category: "environment", original_order: 12, sample_id: "opaque-file"}), "음성 12 · 환경소음");
   assert.equal(ui.clipLabel({kind: "negative", category: "music", original_order: 12}), "호출어 없는 음원 · 음악·전자음");
+});
+test("recommendations show independently chosen settings and separate metrics without changing original results", () => {
+  const {ui, rows, elements} = browser(), report = sample();
+  report.runtime = {threshold: .5, consecutive_frames: 1};
+  report.runtime_recommendations = {schema_version: 1, candidates: report.models.map((model, index) => ({id: model.id,
+    runtime: {threshold: .8 + index * .01, consecutive_frames: index + 1}, metrics: {...model, noise_cell_mean: .95}, passed: index !== 0, deployment_backend_verified: true}))};
+  const before = JSON.stringify(report); ui.renderSummary(report);
+  assert.equal(elements.get("runtimeRecommendations").hidden, false);
+  assert.equal(rows("recommendations").length, 4);
+  assert.deepEqual(rows("recommendations")[0], ["모델 2", "0.8", "1회", "100.00%", "95.00%", "0.100회", "미달"]);
+  assert.equal(rows("summary")[0][4], "90.00%");
+  assert.match(elements.get("recommendationNote").textContent, /모든 목표를 만족하는 조합이 없어/);
+  assert.match(elements.get("baselineRuntime").textContent, /감지 기준 0.5 · 연속 1회/);
+  assert.equal(JSON.stringify(report), before);
+});
+test("missing, invalid and cache-only recommendation evidence is never shown as confirmed success", () => {
+  const {ui, rows, elements} = browser(), report = sample();
+  ui.renderSummary(report);
+  assert.equal(elements.get("runtimeRecommendations").hidden, true);
+  assert.equal(rows("recommendations").length, 0);
+  const metric = report.models[0];
+  report.runtime_recommendations = {schema_version: 1, candidates: [{id: metric.id, runtime: {threshold: .9999999, consecutive_frames: 2}, metrics: metric, adoption: {passed: false}, deployment_backend_verified: false}]};
+  ui.renderSummary(report);
+  assert.equal(rows("recommendations")[0][1], "0.9999999");
+  assert.equal(rows("recommendations")[0][6], "미달");
+  assert.match(elements.get("recommendationNote").textContent, /저장 점수 기준/);
+  report.runtime_recommendations.candidates[0].runtime.threshold = 1; ui.renderSummary(report);
+  assert.equal(elements.get("runtimeRecommendations").hidden, true);
+  assert.equal(elements.get("baselineRuntime").hidden, true);
+});
+test("recommended-setting failures describe that setting rather than the preserved baseline", () => {
+  const {ui, elements, rows} = browser(), report = sample(), model = report.models[0];
+  report.runtime_recommendations = {schema_version: 1, candidates: [{id: model.id,
+    runtime: {threshold: .8, consecutive_frames: 2}, metrics: model, passed: false,
+    adoption: {passed: false, reasons: ["Latency target failed or unmeasured", "music SNR10 below target or unmeasured"]}}]};
+  const before = JSON.stringify(report); ui.renderSummary(report);
+  assert.equal(elements.get("recommendationFailures").hidden, false);
+  assert.equal(elements.get("recommendationReasons").children[0].textContent, "모델 2: 반응 시간 · 음악·전자음 성공률 · SNR 10 dB");
+  assert.equal(elements.get("candidateReasons").children[0].textContent, "모델 2: 시간당 오작동 횟수 · 환경소음 성공률 · SNR 5 dB");
+  assert.equal(rows("summary")[0][4], "90.00%");
+  assert.equal(JSON.stringify(report), before);
+  report.runtime_recommendations.candidates[0].passed = true; ui.renderSummary(report);
+  assert.equal(elements.get("recommendationFailures").hidden, true);
+  assert.equal(elements.get("recommendationReasons").children.length, 0);
 });
 console.log(`${cases.length} result presentation tests passed`);

@@ -50,13 +50,24 @@ def _copy_verified_audio(source, destination, expected, sources, destinations):
     destinations[destination_key, expected] = _file_identity(destination)
 
 
-def export_site(evaluation, output):
+def export_site(evaluation, output, runtime_recommendations=None):
     evaluation, output = Path(evaluation).resolve(), Path(output).resolve()
     receipt = read_json(evaluation / "receipt.json")
     for name in ("report.json", "clips.json"):
         if digest(evaluation / name) != receipt[name.split(".")[0] + "_sha256"]:
             raise ValueError("Completed evaluation report/clip binding changed")
     report = read_json(evaluation / "report.json")
+    if runtime_recommendations is not None:
+        expected = {"source_report_sha256": receipt["report_sha256"],
+                    "source_clips_sha256": receipt["clips_sha256"],
+                    "source_bundle_manifest_sha256": report.get("bundle_manifest_sha256"),
+                    "source_score_cache_sha256": report.get("score_cache_sha256")}
+        bindings = runtime_recommendations.get("bindings", {}) if isinstance(runtime_recommendations, dict) else {}
+        if any(value is None or bindings.get(key) != value for key, value in expected.items()):
+            raise ValueError("Detection recommendations belong to a different evaluation")
+        # This is a new display document. The frozen scoring report is never
+        # overwritten or presented as having used these newly selected gates.
+        report["runtime_recommendations"] = runtime_recommendations
     if output.exists() and any(output.iterdir()):
         raise ValueError("Site exports are immutable")
     clips = None if (evaluation / "clips.json").stat().st_size > 4 * 1024 ** 2 else read_json(evaluation / "clips.json")

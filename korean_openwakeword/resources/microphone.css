@@ -25,8 +25,11 @@ a { color: var(--blue); }
 .hint,.metric-note,footer { color: var(--muted); font-size: 13px; }
 .actions { display: flex; align-items: center; gap: 10px; margin-top: 19px; flex-wrap: wrap; }
 .connection { margin-left: 3px; font-size: 13px; color: var(--muted); }
-.detection-settings { display: grid; grid-template-columns: minmax(150px,1fr) minmax(130px,1fr) auto; align-items: end; gap: 14px; margin-top: 20px; padding-top: 19px; border-top: 1px solid var(--line); }
+.detection-settings { display: grid; grid-template-columns: minmax(160px,1.2fr) minmax(120px,1fr) minmax(110px,1fr) auto; align-items: end; gap: 14px; margin-top: 20px; padding-top: 19px; border-top: 1px solid var(--line); }
 .detection-settings label { display: grid; gap: 8px; }
+.detection-settings > [hidden] { display: none; }
+.detection-settings.recommended { grid-template-columns: minmax(160px,1fr) auto; }
+.detection-settings.recommended select { max-width: 330px; }
 .detection-settings .quiet { background: transparent; color: var(--muted); }
 .detection-hint { margin-bottom: 0; }
 .status-line { display: flex; align-items: center; gap: 10px; }

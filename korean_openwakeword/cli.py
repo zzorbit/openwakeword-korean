@@ -225,8 +225,11 @@ def parser():
     a = sub.add_parser("tune", help="개발 점수 캐시로 임계값·연속 프레임 비교")
     a.add_argument("--project", type=Path, required=True); a.add_argument("--bundle", type=Path, required=True)
     a.add_argument("--evaluation", type=Path, required=True); a.add_argument("--output", type=Path, required=True)
-    a.add_argument("--thresholds", type=float, nargs="+", required=True); a.add_argument("--consecutive", type=int, nargs="+", default=[2])
+    a.add_argument("--thresholds", type=float, nargs="+", required=True); a.add_argument("--consecutive", type=int, nargs="+", default=[1])
     a.add_argument("--candidate", help="감지 기준을 비교할 모델 ID; 생략하면 실제 bundle 출력")
+    a = sub.add_parser("recommend", help="공통 평가 점수로 모든 모델의 감지 설정 자동 추천")
+    a.add_argument("--project", type=Path, required=True); a.add_argument("--bundle", type=Path, required=True)
+    a.add_argument("--evaluation", type=Path, required=True); a.add_argument("--output", type=Path, required=True)
     a = sub.add_parser("select-runtime", help="선택한 개발 실행 설정을 새 프로젝트에 적용")
     a.add_argument("--project", type=Path, required=True); a.add_argument("--bundle", type=Path, required=True)
     a = sub.add_parser("import-references", help="청취 근거가 있는 Qwen 합성 참조 뱅크 재사용")
@@ -493,6 +496,9 @@ def dispatch(a):
     if a.command == "tune":
         from .tune import tune
         return tune(a.project, a.bundle, a.evaluation, a.output, a.thresholds, a.consecutive, a.candidate)
+    if a.command == "recommend":
+        from .calibration import recommend
+        return recommend(a.project, a.bundle, a.evaluation, a.output)
     if a.command == "select-runtime":
         from .tune import select_runtime
         return select_runtime(a.project, a.bundle)

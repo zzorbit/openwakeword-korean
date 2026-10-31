@@ -62,6 +62,8 @@ function browser(config = {}) {
     { id: "head1", label: "모델 1", kind: "single" }, { id: "head2", label: "모델 2", kind: "single" },
     { id: "head3", label: "모델 3", kind: "single" }, { id: "_mean", label: "평균 앙상블", kind: "ensemble" }
   ] };
+  if (config.recommendedRuntimes) info.recommended_runtimes = config.recommendedRuntimes;
+  if (config.recommendations) info.runtime_recommendations = config.recommendations;
   const json = (data, status = 200) => ({ ok: status < 400, status, json: async () => data });
   const fetch = async (url, options = {}) => {
     calls.push({ url, options });
@@ -77,6 +79,8 @@ function browser(config = {}) {
     assert.equal(options.headers["X-Koww-Token"], info.token);
     if (url === "/api/start") {
       if (state.deferredStart) return state.deferredStart.promise;
+      if (JSON.parse(options.body).mode === "recommended") return json({ session_id: "recommended-session", models: info.models,
+        runtimes: state.startRuntimes || info.recommended_runtimes });
       return json({ session_id: `session${calls.filter(call => call.url === "/api/start").length}`, models: info.models,
         runtime: state.startRuntime || { ...defaultRuntime, ...JSON.parse(options.body) } });
     }
@@ -149,6 +153,66 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
     assert.equal(b.elements.get("trial-threshold").disabled, true);
     assert.match(b.elements.get("threshold").textContent, /0\.98625.*2회/);
     b.click("stop"); await flush();
+  });
+  const recommendations = {head1: {threshold: .6, consecutive_frames: 1}, head2: {threshold: .7, consecutive_frames: 2},
+    head3: {threshold: .8, consecutive_frames: 3}, _mean: {threshold: .9, consecutive_frames: 2}};
+  await test("complete per-model recommendations are the initial microphone mode without hiding any model", async () => {
+    const b = browser({defaultRuntime: {threshold: .5, consecutive_frames: 1}, recommendedRuntimes: recommendations}); await flush();
+    assert.equal(b.elements.get("trial-mode").value, "recommended");
+    assert.equal(b.elements.get("trial-threshold").disabled, true);
+    assert.equal(b.elements.get("trial-mode").disabled, false);
+    const rows = b.elements.get("models").children;
+    assert.equal(rows.length, 4);
+    assert.deepEqual(rows.map(row => row.children.slice(5).map(cell => cell.textContent)), [["0.6", "1회"], ["0.7", "2회"], ["0.8", "3회"], ["0.9", "2회"]]);
+    await b.click("start"); await flush();
+    assert.deepEqual(JSON.parse(b.calls.find(call => call.url === "/api/start").options.body), {mode: "recommended"});
+    assert.equal(b.elements.get("trial-mode").disabled, true);
+    assert.equal(b.elements.get("threshold").textContent, "모델별 추천값 적용");
+    b.frame(); await flush(); assert.equal(b.elements.get("models").children.length, 4);
+    b.click("stop"); await flush();
+  });
+  await test("reset leaves recommendation mode and restores the project's exact starting settings", async () => {
+    const b = browser({defaultRuntime: {threshold: .5, consecutive_frames: 1}, recommendedRuntimes: recommendations}); await flush();
+    b.click("reset-detection");
+    assert.equal(b.elements.get("trial-mode").value, "manual");
+    assert.equal(b.elements.get("trial-threshold").value, "0.5");
+    assert.equal(b.elements.get("trial-consecutive").value, "1");
+    assert.equal(b.elements.get("trial-threshold").disabled, false);
+    await b.click("start"); await flush();
+    assert.deepEqual(JSON.parse(b.calls.find(call => call.url === "/api/start").options.body), {threshold: .5, consecutive_frames: 1});
+    b.click("stop"); await flush();
+  });
+  await test("manual and per-model trial modes can switch without saving or opening a microphone", async () => {
+    const b = browser({recommendedRuntimes: recommendations}); await flush();
+    b.elements.get("trial-mode").value = "manual"; b.elements.get("trial-mode").handlers.change();
+    assert.equal(b.elements.get("trial-threshold").disabled, false);
+    assert.equal(b.elements.get("recommendationHint").hidden, true);
+    b.elements.get("trial-mode").value = "recommended"; b.elements.get("trial-mode").handlers.change();
+    assert.equal(b.elements.get("trial-threshold").disabled, true);
+    assert.equal(b.elements.get("recommendationHint").hidden, false);
+    assert.equal(b.state.permissionCalls, 0);
+    assert.equal(b.calls.length, 1);
+  });
+  await test("incomplete or invalid recommendations never partially apply to some microphone models", async () => {
+    for (const value of [{head1: recommendations.head1}, {...recommendations, head2: {threshold: 1, consecutive_frames: 2}}, {...recommendations, _mean: {threshold: .6, consecutive_frames: 0}}]) {
+      const b = browser({recommendedRuntimes: value}); await flush();
+      assert.equal(b.elements.get("trial-mode").value, "manual");
+      assert.equal(b.elements.get("trial-mode").disabled, true);
+      assert.equal(b.elements.get("trial-threshold").disabled, false);
+    }
+  });
+  await test("a recommendation changed by the server is rejected before microphone frames are sent", async () => {
+    const b = browser({recommendedRuntimes: recommendations, startRuntimes: {...recommendations, head2: {threshold: .8, consecutive_frames: 2}}}); await flush();
+    await b.click("start"); await flush();
+    assert.match(b.elements.get("statusText").textContent, /시험 감지 설정을 확인할 수 없습니다/);
+    assert.equal(b.calls.some(call => call.url === "/api/frame"), false);
+    assert.equal(b.streams[0].track.stopped, true);
+    assert.equal(b.calls.some(call => call.url === "/api/stop"), true);
+  });
+  await test("target-miss and cache-only recommendations remain explicitly qualified", async () => {
+    const b = browser({recommendedRuntimes: recommendations, recommendations: {candidates: [{id: "head1", passed: false, deployment_backend_verified: false}]}}); await flush();
+    assert.match(b.elements.get("recommendationHint").textContent, /목표 미달/);
+    assert.match(b.elements.get("recommendationHint").textContent, /저장 점수 기준/);
   });
   await test("near-one defaults stay valid on display, reset and explicit trial start", async () => {
     for (const threshold of [.9999999, .9999999999999999]) {

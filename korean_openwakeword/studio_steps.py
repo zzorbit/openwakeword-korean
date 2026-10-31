@@ -121,6 +121,7 @@ def preset_settings(name="check"):
             "pilot_review_policy": "one_per_training_voice_v1",
             "hard_generation_policy": "per_phrase_v1",
             "hard_review_policy": "one_per_phrase_v1",
+            "runtime_recommendation_policy": "joint_cached_score_search_v1",
             **({"official_noise_acquisition_policy": "selective_fma_small_v1"} if name in ("check", "trial") else {}),
             **({"fma_acquisition_policy": "per_track_flac_prefetch_v1"} if name == "production" else {}),
             "final_locked": True, "positive_text_policy": "standalone_only"}
@@ -143,6 +144,8 @@ def workflow_plan(settings):
 
 
 def _validate_settings(settings):
+    if settings.get("runtime_recommendation_policy") not in (None, "joint_cached_score_search_v1"):
+        raise ValueError("Unsupported runtime recommendation policy")
     if settings.get("hard_review_policy") not in (None, "one_per_phrase_v1"):
         raise ValueError("Unsupported Hard representative review policy")
     hard_policy = settings.get("hard_generation_policy")
@@ -1043,6 +1046,7 @@ def run_stage(project, workspace, settings, stage_id, context=None):
     if stage_id == "evaluation":
         from .evaluate import evaluate, evaluation_binding
         from .selection import verified_evaluation
+        write_json(workspace / "progress.json", {"stage": stage_id, "updated_at": now(), "phase": "scoring"})
         bundle = _result(context, "package")["bundle"]
         manifest = _result(context, "development")["manifest"]
         scoring_smoke = settings["functional_check_only"] and not settings.get("evaluation_policy")
@@ -1087,6 +1091,16 @@ def run_stage(project, workspace, settings, stage_id, context=None):
                               numerical_differences_approved=settings.get("gpu_numerical_differences_approved"))
         assessment = None
         artifacts = [directory / "receipt.json", directory / "report.json", directory / "clips.json"]
+        recommendation = None
+        if settings.get("runtime_recommendation_policy") == "joint_cached_score_search_v1":
+            from .calibration import recommend, SEARCH_POLICY
+            def recommendation_progress(record):
+                write_json(workspace / "progress.json", {"stage": stage_id, "updated_at": now(),
+                    "phase": "runtime_recommendation", **record})
+            recommendation = recommend(project, bundle, directory,
+                root / "reports" / ("studio_runtime_recommendations_" + digest(directory / "report.json")[:16] + "_" + identity(SEARCH_POLICY)[:12]),
+                progress_callback=recommendation_progress)
+            artifacts.extend([Path(recommendation["recommendation"]), Path(recommendation["receipt"])])
         if settings.get("evaluation_policy"):
             from .evaluation_coverage import assess_common_evaluation
             coverage = _result(context, "development").get("noise_coverage")
@@ -1099,6 +1113,7 @@ def run_stage(project, workspace, settings, stage_id, context=None):
                 write_json(assessment_path, assessment)
             artifacts.append(assessment_path)
         return _completed({"evaluation": str(directory), "report": report,
+                           "runtime_recommendations": recommendation,
                            "functional_check_only": settings["functional_check_only"], "Final_accessed": False,
                            "evaluation_functional_check_only": settings["functional_check_only"] and not bool(settings.get("evaluation_policy")),
                            "evaluation_policy": deepcopy(settings.get("evaluation_policy")),
@@ -1112,9 +1127,12 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         from .selection import select_candidate
         evaluation = Path(_result(context, "evaluation")["evaluation"])
         report = read_json(evaluation / "report.json")
+        recommended = _result(context, "evaluation").get("runtime_recommendations")
+        recommendation = read_json(recommended["recommendation"]) if recommended else None
         directory, existing = _next_directory(root / "reports/studio_results", "provenance.json",
             lambda p: read_json(p / "provenance.json").get("evaluation_receipt_sha256") == digest(evaluation / "receipt.json"))
-        site = {"site": str(directory / "index.html")} if existing else export_site(evaluation, directory)
+        site = {"site": str(directory / "index.html")} if existing else (
+            export_site(evaluation, directory, runtime_recommendations=recommendation) if recommendation else export_site(evaluation, directory))
         candidates = report.get("candidate_adoptions", {})
         eligible = [r for r in report["models"] if candidates.get(r["id"], {}).get("passed")]
         ranked = sorted(eligible or report["models"], key=lambda r: (
@@ -1122,14 +1140,16 @@ def run_stage(project, workspace, settings, stage_id, context=None):
             -(r["clean"]["recall"] if r["clean"]["recall"] is not None else -1),
             r["negative"]["fa_per_hour"] if r["negative"]["fa_per_hour"] is not None else math.inf, r["id"]))
         result = {**site, "bundle": _result(context, "package")["bundle"],
+                  "runtime_recommendations": recommended,
                   "ranking": [r["id"] for r in ranked], "Final_accessed": False,
                   "functional_check_only": settings["functional_check_only"],
                   "evaluation_policy": deepcopy(settings.get("evaluation_policy")),
                   "evaluation_policy_sha256": identity(settings["evaluation_policy"]) if settings.get("evaluation_policy") else None,
                   "common_evaluation_assessment": _result(context, "evaluation").get("common_evaluation_assessment"),
                   "meets_development_targets": bool(eligible), "independent_Final_completed": False,
+                  "recommendation_meets_targets": any(row["passed"] for row in recommendation["candidates"]) if recommendation else None,
                   "noise_coverage": _result(context, "development").get("noise_coverage")}
-        if ranked:
+        if ranked and not settings.get("runtime_recommendation_policy"):
             chosen = ranked[0]["id"]
             selection_directory, selected = _next_directory(root / "models/studio_selected", "receipt.json",
                 lambda p: (read_json(p / "selection.json").get("source_report_sha256") == digest(evaluation / "report.json")

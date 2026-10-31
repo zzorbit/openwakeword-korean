@@ -507,7 +507,12 @@ def test_complete_common_evaluation_is_not_relabeled_as_a_smoke_run_for_check_bu
     monkeypatch.setattr(evaluate, "evaluate", score)
     context = {"results": {"package": {"result": {"bundle": str(bundle)}},
                            "development": {"result": {"manifest": str(manifest)}}}}
-    output = run(project, "evaluation", context)
+    # This fixture exercises the preserved common-evaluation scope, without
+    # actual score/cache evidence for the new automatic gate-search policy.
+    # The search's post-scoring integration has its own complete fixture.
+    settings = steps.preset_settings()
+    settings.pop("runtime_recommendation_policy")
+    output = run(project, "evaluation", context, settings=settings)
     result = output["result"]
     assert calls[0]["smoke"] is False
     assert result["functional_check_only"] is True  # The training budget remains the check preset.
@@ -905,15 +910,41 @@ def test_actual_small_features_train_package_evaluate_site_without_downloads(tmp
                     kind="negative", category="environment", calls=[])
     negative_manifest = steps._publish_rows(root / ".studio/negative_validation.jsonl", [negative])
     context = {"results": {"data_connect": {"result": {"negative_validation_manifest": str(negative_manifest)}}}}
+    protected_bundle, protected_evaluation = {}, {}
     with storage_environment(root):
         for stage in ("features", "training", "package", "development", "evaluation", "results"):
             result = steps.run_stage(path, tmp_path, settings, stage, context)
             assert result["state"] == "completed", (stage, result)
             context["results"][stage] = result
+            if stage == "package":
+                directory = Path(result["result"]["bundle"])
+                protected_bundle = {p: digest(p) for p in directory.rglob("*") if p.is_file()}
+            elif stage == "evaluation":
+                directory = Path(result["result"]["evaluation"])
+                protected_evaluation = {directory / name: digest(directory / name)
+                                        for name in ("report.json", "clips.json", "scores.npz", "receipt.json")}
     result = context["results"]["results"]["result"]
     assert Path(result["site"]).is_file()
-    assert len(verify_bundle(result["bundle"])["members"]) == 3
-    assert Path(result["selected_bundle"], "manifest.json").is_file()
+    bundle = verify_bundle(result["bundle"])
+    assert len(bundle["members"]) == 3
+    assert "selected_bundle" not in result  # Recommendations never silently select/deploy a candidate.
+    recommendation_result = result["runtime_recommendations"]
+    recommendation = read_json(recommendation_result["recommendation"])
+    from korean_openwakeword.runtime import bundle_candidates
+    expected_ids = {candidate["id"] for candidate in bundle_candidates(bundle)}
+    assert {candidate["id"] for candidate in recommendation["candidates"]} == expected_ids
+    assert len(expected_ids) == 4
+    assert all(candidate["baseline"]["runtime"]["threshold"] == .5
+               and candidate["baseline"]["runtime"]["consecutive_frames"] == 1
+               for candidate in recommendation["candidates"])
+    evaluation = Path(context["results"]["evaluation"]["result"]["evaluation"])
+    assert recommendation["bindings"]["source_report_sha256"] == digest(evaluation / "report.json")
+    assert recommendation["bindings"]["source_clips_sha256"] == digest(evaluation / "clips.json")
+    assert recommendation["bindings"]["source_score_cache_sha256"] == digest(evaluation / "scores.npz")
+    assert recommendation["bindings"]["source_bundle_manifest_sha256"] == digest(Path(result["bundle"]) / "manifest.json")
+    assert read_json(recommendation_result["receipt"])["recommendation_sha256"] == digest(recommendation_result["recommendation"])
+    assert {p: digest(p) for p in protected_bundle} == protected_bundle
+    assert {p: digest(p) for p in protected_evaluation} == protected_evaluation
     report = context["results"]["evaluation"]["result"]["report"]
     assert report["smoke_test_only"] is True and report["stage"] == "development"
     assert report["sessions"] == 17 and len(report["models"]) == 4

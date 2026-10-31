@@ -53,6 +53,50 @@
     return `${percent(value.recall)}${finite(value.successes) && finite(value.calls) ? `\n${count(value.successes)} / ${count(value.calls)}회` : ""}`;
   }
   function reactionTime(value) { return finite(value) ? `${Math.abs(value).toFixed(2)}초${value < 0 ? " 전" : ""}` : "결과 없음"; }
+  function thresholdText(value) {
+    if (!finite(value) || value <= 0 || value >= 1) return "결과 없음";
+    const rounded = Number(value.toPrecision(6));
+    return String(rounded > 0 && rounded < 1 ? rounded : value);
+  }
+  function renderRecommendations(report) {
+    const section = $("runtimeRecommendations"), rows = body("recommendations");
+    if (!section || !rows) return;
+    const source = report.runtime_recommendations;
+    const candidates = source?.schema_version === 1 && Array.isArray(source.candidates) ? source.candidates : [];
+    const known = new Set((report.models || []).map(row => row.id));
+    const measured = candidates.filter(row => known.has(row.id) && finite(row.runtime?.threshold)
+      && row.runtime.threshold > 0 && row.runtime.threshold < 1
+      && Number.isInteger(row.runtime.consecutive_frames) && row.runtime.consecutive_frames > 0 && row.metrics);
+    rows.replaceChildren(); section.hidden = !measured.length;
+    const reasons = $("recommendationReasons"), failures = $("recommendationFailures");
+    reasons?.replaceChildren();
+    if (failures) failures.hidden = true;
+    const baseline = $("baselineRuntime");
+    if (baseline) baseline.hidden = !measured.length;
+    if (!measured.length) return;
+    for (const candidate of measured) {
+      const row = document.createElement("tr"), metric = candidate.metrics;
+      if (isEnsemble(report, candidate.id)) row.className = "ensemble";
+      const passed = candidate.passed ?? candidate.adoption?.passed;
+      [modelLabel(report, candidate.id), thresholdText(candidate.runtime.threshold), `${candidate.runtime.consecutive_frames}회`,
+        percent(metric.clean?.recall), percent(metric.noise_cell_mean), finite(metric.negative?.fa_per_hour)
+          ? `${metric.negative.fa_per_hour.toFixed(3)}회` : "결과 없음", passed === true ? "충족" : passed === false ? "미달" : "결과 없음"]
+        .forEach(value => appendCell(row, value));
+      rows.append(row);
+      if (passed === false && reasons) {
+        const line = document.createElement("p");
+        const items = [...new Set((candidate.adoption?.reasons || []).map(reasonText))];
+        line.textContent = `${modelLabel(report, candidate.id)}: ${items.join(" · ") || "추가 확인 필요"}`;
+        reasons.append(line);
+        if (failures) failures.hidden = false;
+      }
+    }
+    if ($("recommendationScope")) $("recommendationScope").textContent = "감지 기준과 연속 감지 수를 함께 비교해 모델마다 값을 골랐습니다.";
+    const missed = measured.some(row => (row.passed ?? row.adoption?.passed) === false);
+    const unverified = measured.some(row => row.deployment_backend_verified !== true);
+    if ($("recommendationNote")) $("recommendationNote").textContent = `${missed ? "미달 모델은 모든 목표를 만족하는 조합이 없어, 비교한 조합 중 가장 나은 값을 표시합니다. " : ""}${unverified ? "저장 점수 기준 비교이며 마이크 실행 결과는 별도로 확인합니다." : "실행 연산 방식에서도 추천 설정을 확인했습니다."}`;
+    if (baseline) baseline.textContent = `아래 성능과 오디오 반응은 평가 당시 설정${report.runtime ? ` · 감지 기준 ${thresholdText(report.runtime.threshold)} · 연속 ${report.runtime.consecutive_frames}회` : ""}의 결과입니다. 추천 설정의 결과는 위 표에 따로 표시합니다.`;
+  }
   function reasonText(reason) {
     const text = String(reason);
     if (text.includes("FP duration below")) return "오작동 시험 시간 부족";
@@ -165,6 +209,7 @@
     }
     if ($("denominators")) $("denominators").textContent = "종합 성공률은 소음과 목소리가 같은 크기인 시험을 제외합니다. 소음 평균은 울림 없이 소음이 아주 작을 때부터 클 때까지의 평균입니다.";
     renderTargets(report);
+    renderRecommendations(report);
   }
   function option(select, value, text) {
     const node = document.createElement("option"); node.value = value; node.textContent = text; select.append(node);
@@ -240,7 +285,7 @@
     if (clip.kind === "negative") return `호출어 없는 음원 · ${noiseLabel(clip.category)}`;
     return `${clip.original_order ? `음성 ${clip.original_order}` : "호출어 음성"} · ${noiseLabel(clip.category)}`;
   }
-  const api = {modelLabel, noiseLabel, snrLabel, reverbLabel, renderSummary, renderConditions, renderResponses, clipLabel};
+  const api = {modelLabel, noiseLabel, snrLabel, reverbLabel, renderSummary, renderConditions, renderResponses, renderRecommendations, clipLabel};
   if (typeof window !== "undefined") window.KowwResultsUI = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })();

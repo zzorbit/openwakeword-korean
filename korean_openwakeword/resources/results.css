@@ -26,5 +26,6 @@ footer{font-size:13px;line-height:1.6;color:var(--muted);margin:25px 4px}
 input[type=number]{width:6em}.section-hint,.table-note{font-size:13px;margin:6px 0 16px}.selected-model,.clean-result{font-weight:600;color:var(--fg)}
 .coverage-details{margin:8px 0 18px;font-size:13px}small{display:block;font-size:11px;font-weight:400;color:var(--muted)}
 #summary{font-size:13px;min-width:690px}#summary td:nth-child(3),#summary td:nth-child(4),#summary td:nth-child(6){font-variant-numeric:tabular-nums}
+#recommendations{font-size:13px;min-width:650px}#recommendations td{font-variant-numeric:tabular-nums}#runtimeRecommendations{border-color:#4493f866}
 #conditions{table-layout:fixed;min-width:620px;font-size:13px}#conditions th:first-child{width:125px}#conditions td:first-child{white-space:nowrap}#conditions td:not(:first-child){text-align:center;font-variant-numeric:tabular-nums}#conditions th{text-align:center}#conditions th:first-child{text-align:left}
 @media(max-width:600px){main{margin:24px auto;padding:0 12px}section{padding:18px}h1{font-size:27px}.controls label{flex-wrap:wrap}}

@@ -131,9 +131,9 @@ def _execution_contract():
         "features": {"features.py", "paired.py", "preparation.py"},
         "training": {"train.py"},
         "models": {"bundle.py", "final_integrity.py", "runtime.py", "events.py"},
-        "results": {"selection.py", "cache_analysis.py"},
+        "results": {"selection.py", "cache_analysis.py", "calibration.py"},
         "evaluation": {"evaluate.py", "evaluation_backend.py", "evaluation_coverage.py", "evaluation_rir.py",
-                       "evaluation_workers.py", "gpu_evaluation.py", "negative_streams.py", "tune.py"}}
+                       "evaluation_workers.py", "gpu_evaluation.py", "negative_streams.py", "tune.py", "calibration.py"}}
     stage_groups = {
         "frontend": set(), "data_download": {"data"}, "data_review": {"data"}, "data_connect": {"data"},
         "references": {"tts"}, "references_review": {"tts"}, "pilot": {"tts"}, "pilot_review": {"tts"},
@@ -1566,6 +1566,12 @@ class StudioManager:
                     view["next_action"] = "평가 음원의 무결성과 형식을 확인하고 있습니다."
                 elif phase == "finalizing":
                     view["next_action"] = "채점을 마쳤으며 결과를 정리하고 있습니다."
+                if material_progress.exists():
+                    record = _read_optional_progress(material_progress)
+                    if record and record.get("stage") == "evaluation" and record.get("phase") == "runtime_recommendation":
+                        view["progress"] = record
+                        view["progress_note"] = "저장된 점수로 모델별 감지 기준과 연속 감지 수를 비교합니다."
+                        view["next_action"] = "채점을 마쳤으며 모델별 추천 감지 설정을 찾고 있습니다."
             current = view["progress"]
             if (job["stage"] != "evaluation" and current.get("phase") not in ("retry", "download_many")
                     and view["eta_seconds"] is None and current.get("total") and current.get("done") is not None
@@ -1712,6 +1718,26 @@ class StudioManager:
                 self._analysis_service = StudioAnalysis(self)
             return self._analysis_service
 
+    def runtime_recommendations(self, state):
+        """Read a separately completed recommendation, never rewrite history.
+
+        Serving its frozen summary needs the bound reports, not another scan
+        of the hundreds of MB of score/clip evidence already checked at search.
+        """
+        def result(key):
+            row = state.get("results", {}).get(key, {})
+            return row.get("result", row)
+        bundle, evaluation = result("package").get("bundle"), result("evaluation").get("evaluation")
+        if not bundle or not evaluation:
+            return None
+        root = Path(state["project"]).resolve().parent
+        report = Path(evaluation) / "report.json"
+        from .calibration import read_recommendation, SEARCH_POLICY
+        directory = root / "reports" / ("studio_runtime_recommendations_" + digest(report)[:16] + "_" + identity(SEARCH_POLICY)[:12])
+        if not (directory / "receipt.json").is_file():
+            return None
+        return read_recommendation(state["project"], bundle, evaluation, directory, verify_inputs=False)
+
     def microphone(self, project_id):
         if project_id not in self._microphones:
             with self._lock:
@@ -1729,7 +1755,11 @@ class StudioManager:
                           for index, row in enumerate(original["members"])}
                 # The microphone is a comparison of all original models. Old
                 # per-candidate selection artifacts remain separate records.
-                self._microphones[project_id] = MicrophoneService(WakeWordDetector(original_bundle), model_labels=labels)
+                recommendation = self.runtime_recommendations(state)
+                runtimes = {row["id"]: {key: row["runtime"][key] for key in ("threshold", "consecutive_frames")}
+                            for row in recommendation["candidates"]} if recommendation else None
+                self._microphones[project_id] = MicrophoneService(WakeWordDetector(original_bundle), model_labels=labels,
+                    runtime_recommendations=recommendation, recommended_runtimes=runtimes)
         return self._microphones[project_id]
 
 
@@ -1884,6 +1914,21 @@ def make_studio_server(manager, port=8793):
                     target = (site / (parts[3] or "index.html")).resolve()
                     if not target.is_relative_to(site.resolve()):
                         raise PermissionError("잘못된 결과 경로입니다.")
+                    # View assets can improve without changing the archived
+                    # evaluation or its original, immutable site export.
+                    view_assets = {"index.html": "results_paged.html" if (site / "viewer-index.json").is_file() else "results.html",
+                        **{name: name for name in ("results_ui.js", "results_scope.js", "results_paged.js", "results.js", "results.css")}}
+                    name = parts[3] or "index.html"
+                    if name in view_assets:
+                        kind = "text/html; charset=utf-8" if name.endswith("html") else "text/css; charset=utf-8" if name.endswith("css") else "text/javascript; charset=utf-8"
+                        return self.respond((resources / view_assets[name]).read_bytes(), kind=kind)
+                    if name == "results-data.js":
+                        data = target.read_bytes()
+                        recommendation = manager.runtime_recommendations(state)
+                        if recommendation:
+                            data += ("\nwindow.KOWW_RESULTS.report.runtime_recommendations=" +
+                                     json.dumps(recommendation, ensure_ascii=False, allow_nan=False).replace("<", "\\u003c") + ";\n").encode("utf-8")
+                        return self.respond(data, kind="text/javascript; charset=utf-8")
                     return self.send_file(target)
                 if path.startswith("/mic/"):
                     return self.mic_get(path)

@@ -4,7 +4,7 @@
   const $ = id => document.getElementById(id);
   const config = JSON.parse($("koww-page-config")?.textContent || "{}");
   const apiUrl = path => (config.api_base || "") + path;
-  const ui = Object.fromEntries(["wakeword", "microphone", "connect", "refresh", "retry", "deviceHint", "trial-threshold", "trial-consecutive", "reset-detection", "start", "stop", "connection", "statusHeading", "statusText", "statusDot", "level", "levelText", "elapsed", "frameCount", "lastEvent", "lastEventTime", "models", "threshold", "captureSettings"].map(id => [id, $(id)]));
+  const ui = Object.fromEntries(["wakeword", "microphone", "connect", "refresh", "retry", "deviceHint", "detection-settings", "thresholdSetting", "consecutiveSetting", "detectionHint", "trial-mode", "trial-threshold", "trial-consecutive", "reset-detection", "recommendationHint", "start", "stop", "connection", "statusHeading", "statusText", "statusDot", "level", "levelText", "elapsed", "frameCount", "lastEvent", "lastEventTime", "models", "threshold", "captureSettings"].map(id => [id, $(id)]));
   const rows = new Map();
   let info = null;
   let run = null;
@@ -14,14 +14,47 @@
   let initializing = false;
   let defaultRuntime = null;
   let thresholdEdited = false;
+  let recommendedRuntimes = null;
 
   function displayThreshold(value) {
     const rounded = Number(value.toPrecision(6));
     return String(rounded > 0 && rounded < 1 ? rounded : value);
   }
 
-  function showTrialRuntime(runtime) {
-    ui.threshold.textContent = `감지 기준 ${displayThreshold(runtime.threshold)} · 연속 ${runtime.consecutive_frames}회`;
+  function validRuntime(runtime) {
+    return Number.isFinite(runtime?.threshold) && runtime.threshold > 0 && runtime.threshold < 1
+      && Number.isInteger(runtime.consecutive_frames) && runtime.consecutive_frames >= 1 && runtime.consecutive_frames <= 10;
+  }
+
+  function showTrialRuntime(runtime, runtimes = null) {
+    ui.threshold.textContent = runtimes ? "모델별 추천값 적용"
+      : `감지 기준 ${displayThreshold(runtime.threshold)} · 연속 ${runtime.consecutive_frames}회`;
+    for (const [id, row] of rows) {
+      const value = runtimes ? runtimes[id] : runtime;
+      row.cells[5].textContent = validRuntime(value) ? displayThreshold(value.threshold) : "—";
+      row.cells[6].textContent = validRuntime(value) ? `${value.consecutive_frames}회` : "—";
+    }
+  }
+
+  function syncDetectionDisplay() {
+    const recommended = ui["trial-mode"].value === "recommended" && recommendedRuntimes;
+    if (recommended) showTrialRuntime(null, recommendedRuntimes);
+    else {
+      const threshold = Number(ui["trial-threshold"].value), consecutive_frames = Number(ui["trial-consecutive"].value);
+      if (validRuntime({threshold, consecutive_frames})) showTrialRuntime({threshold, consecutive_frames});
+    }
+    ui.recommendationHint.hidden = !recommended;
+    ui.thresholdSetting.hidden = !!recommended;
+    ui.consecutiveSetting.hidden = !!recommended;
+    ui["detection-settings"].className = `detection-settings${recommended ? " recommended" : ""}`;
+    ui.detectionHint.textContent = recommended ? "각 모델에 적용할 값은 아래 모델 반응 표에서 확인하세요."
+      : "감지 기준이나 연속 감지 수를 낮추면 더 쉽게 반응합니다. 변경값은 다음 마이크 시험에만 적용됩니다.";
+    if (recommended) {
+      const candidates = info.runtime_recommendations?.candidates || [];
+      const missed = candidates.filter(row => row.passed === false || row.adoption?.passed === false);
+      const unverified = candidates.some(row => row.deployment_backend_verified !== true);
+      ui.recommendationHint.textContent = `${missed.length ? "목표 미달 모델은 비교한 조합 중 가장 나은 값을 사용합니다. " : ""}${unverified ? "저장 점수 기준 추천입니다. 마이크 반응도 확인하세요." : "모델마다 평가에서 고른 감지 설정을 사용합니다."}`;
+    }
   }
 
   function setDefaultFields() {
@@ -32,10 +65,16 @@
 
   function resetDetection() {
     if (!defaultRuntime || run || probe) return;
+    ui["trial-mode"].value = "manual";
     setDefaultFields();
+    syncControls(); resetMetrics();
   }
 
   function trialSettings() {
+    if (ui["trial-mode"].value === "recommended") {
+      if (!recommendedRuntimes) throw new Error("모델별 추천 설정을 아직 사용할 수 없습니다.");
+      return { mode: "recommended" };
+    }
     const rawThreshold = ui["trial-threshold"].value.trim();
     const rawConsecutive = ui["trial-consecutive"].value.trim();
     const parsedThreshold = Number(rawThreshold), consecutive = Number(rawConsecutive);
@@ -65,7 +104,9 @@
     ui.refresh.disabled = !!run || refreshing || !!probe || !navigator.mediaDevices?.enumerateDevices;
     ui.retry.disabled = initializing;
     const settingsLocked = !info || !!run || !!probe;
-    for (const control of ["trial-threshold", "trial-consecutive", "reset-detection"]) ui[control].disabled = settingsLocked;
+    ui["trial-mode"].disabled = settingsLocked || !recommendedRuntimes;
+    for (const control of ["trial-threshold", "trial-consecutive"]) ui[control].disabled = settingsLocked || ui["trial-mode"].value === "recommended";
+    ui["reset-detection"].disabled = settingsLocked;
   }
 
   async function request(path, options = {}, timeoutMs = 5000, controller = new AbortController(), timeoutMessage = "서버 응답이 늦어 시험을 중지했습니다. 서버 상태를 확인한 뒤 다시 시작하세요.") {
@@ -94,7 +135,7 @@
     for (const model of models) {
       const tr = document.createElement("tr");
       if (model.kind === "ensemble") tr.className = "ensemble";
-      const cells = [model.label, "0.0000", "0.0000", "0", "—"].map(text => {
+      const cells = [model.label, "0.0000", "0.0000", "0", "—", "—", "—"].map(text => {
         const td = document.createElement("td");
         td.textContent = text;
         tr.append(td);
@@ -113,6 +154,7 @@
     ui.lastEvent.textContent = "아직 없음";
     ui.lastEventTime.textContent = "시작 후 호출어를 말하세요.";
     renderModels(info.models);
+    syncDetectionDisplay();
   }
 
   function renderSettings(stream, context) {
@@ -312,11 +354,17 @@
       if (!session.session_id) throw new Error("시험 연결 정보를 읽을 수 없습니다.");
       target.sessionId = session.session_id;
       if (!isCurrent(target)) { notifyStop(target.sessionId, true); return; }
-      if (session.runtime?.threshold !== target.settings.threshold || session.runtime?.consecutive_frames !== target.settings.consecutive_frames) {
+      const recommended = target.settings.mode === "recommended";
+      const matches = recommended
+        ? info.models.every(model => validRuntime(session.runtimes?.[model.id])
+          && session.runtimes[model.id].threshold === recommendedRuntimes[model.id].threshold
+          && session.runtimes[model.id].consecutive_frames === recommendedRuntimes[model.id].consecutive_frames)
+        : session.runtime?.threshold === target.settings.threshold && session.runtime?.consecutive_frames === target.settings.consecutive_frames;
+      if (!matches) {
         throw new Error("시험 감지 설정을 확인할 수 없습니다. 화면을 새로고침한 뒤 다시 시작하세요.");
       }
-      showTrialRuntime(session.runtime);
       renderModels(session.models || info.models);
+      showTrialRuntime(session.runtime, recommended ? session.runtimes : null);
       target.source = context.createMediaStreamSource(stream);
       target.worklet = new AudioWorkletNode(context, "koww-microphone", { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1], channelCountMode: "max" });
       target.silence = context.createGain();
@@ -346,7 +394,9 @@
   ui.connect.addEventListener("click", connectMicrophone);
   ui.refresh.addEventListener("click", () => refreshDevices());
   ui.retry.addEventListener("click", initialize);
-  ui["trial-threshold"].addEventListener("input", () => { thresholdEdited = true; });
+  ui["trial-threshold"].addEventListener("input", () => { if (!info || run || probe) return; thresholdEdited = true; resetMetrics(); });
+  ui["trial-consecutive"].addEventListener("input", () => { if (info && !run && !probe) resetMetrics(); });
+  ui["trial-mode"].addEventListener("change", () => { if (run || probe) return; syncControls(); if (info) resetMetrics(); });
   ui["reset-detection"].addEventListener("click", resetDetection);
   window.addEventListener("pagehide", () => { if (run || probe) stop("페이지를 떠나 마이크 시험을 중지했습니다.", false, true); });
   document.addEventListener("visibilitychange", () => { if (document.hidden && (run || probe)) stop("다른 창으로 이동하여 시험을 중지했습니다. 돌아온 뒤 다시 시작하세요.", false, true); syncControls(); });
@@ -371,9 +421,14 @@
         throw new Error("모델의 기본 감지 설정을 읽을 수 없습니다.");
       }
       defaultRuntime = { threshold: defaultRuntime.threshold, consecutive_frames: defaultRuntime.consecutive_frames };
+      recommendedRuntimes = info.recommended_runtimes && info.models.every(model => validRuntime(info.recommended_runtimes[model.id]))
+        ? info.recommended_runtimes : null;
+      const recommendedOption = Array.from(ui["trial-mode"].options).find(option => option.value === "recommended");
+      if (recommendedOption) recommendedOption.disabled = !recommendedRuntimes;
+      ui["trial-mode"].value = recommendedRuntimes ? "recommended" : "manual";
       setDefaultFields();
-      showTrialRuntime(defaultRuntime);
       renderModels(info.models);
+      syncDetectionDisplay();
       ui.connection.textContent = "모델 준비됨";
       setStatus("시작할 준비가 됐습니다", "시험 시작을 누르면 마이크를 연결합니다.");
     } catch (error) {

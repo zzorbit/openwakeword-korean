@@ -25,6 +25,9 @@ def default_profile():
     # New projects record the sentence explicitly. Do not modify the frozen
     # resource or backfill existing configs: both can bind historical receipts.
     profile["tts"].setdefault("reference_text", DEFAULT_VOICE_SAMPLE_TEXT)
+    # Starting gates are not a calibration result. Keep the historical resource
+    # and existing project/bundle JSON intact; only new configurations use these.
+    profile["runtime"].update(threshold=0.5, consecutive_frames=1)
     return profile
 
 

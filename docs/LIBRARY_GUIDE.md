@@ -230,11 +230,21 @@ koww site --evaluation models/bora/reports/dev_selected --output models/bora/rep
 koww serve --directory models/bora/reports/dev_selected/site --port 8791
 ```
 
-[http://127.0.0.1:8791/](http://127.0.0.1:8791/)에서 단일 모델과 앙상블을 비교하고 Ctrl+C로 서버를 종료합니다. 사용할 후보를 선택한 뒤 감지 설정을 비교하세요.
+[http://127.0.0.1:8791/](http://127.0.0.1:8791/)에서 단일 모델과 앙상블을 비교하고 Ctrl+C로 서버를 종료합니다. 새 설정의 시작값은 **임계값 0.5·연속 감지 1회**이며, 동봉 모델과 기존 학습의 값은 유지합니다.
+
+웹에서는 공통 평가 후 **모델마다 임계값과 연속 감지 1–6회**를 함께 비교해 추천합니다. 저장된 점수를 재사용하고, 미리 정한 범위에서 넓게 비교한 뒤 유망한 임계값 구간을 세분화합니다. 모든 목표를 충족한 조합 중 소음 평균 성공률·오호출·반응 시간 순서로 고릅니다. 충족한 조합이 없으면 **목표 미달**로 남기며, 오호출 목표에도 미달한 후보끼리는 오호출이 더 적은 조합을 우선합니다. 직접 명령을 쓸 때는 다음으로 추천 기록을 별도 폴더에 만듭니다.
+
+```powershell
+koww recommend --project models/bora/project.json --bundle models/bora/models/candidate_selected --evaluation models/bora/reports/dev_selected --output models/bora/reports/runtime_recommendations_v1
+```
+
+`recommendation.json`에 모델별 추천 설정과 성능, 비교 범위, 원본 평가의 해시를 기록합니다. 기존 모델·평가·검수 기록은 변경하지 않습니다. GPU 평가의 CPU 재확인은 원래 임계값 주변에 대한 것이므로, 새 임계값에서도 CPU 실행과 같은 판정이라는 뜻은 아닙니다. 별도 검증 전에는 저장 점수 기준 추천으로 구분합니다. 독립 최종 평가는 추천에 사용하지 않습니다.
+
+특정 후보를 별도 실행 묶음으로 내보내거나 비교 범위를 직접 정하려면 아래 고급 명령을 사용합니다.
 
 ```powershell
 koww select-candidate --project models/bora/project.json --bundle models/bora/models/candidate_selected --evaluation models/bora/reports/dev_selected --candidate member3_seed20260930 --output models/bora/models/selected_v1
-koww tune --project models/bora/project.json --bundle models/bora/models/selected_v1/bundle --evaluation models/bora/models/selected_v1/evaluation --output models/bora/reports/gates_selected --thresholds 0.5 0.7 0.85 0.9 0.95 0.98 0.9862500429153442 0.995 --consecutive 1 2 3
+koww tune --project models/bora/project.json --bundle models/bora/models/selected_v1/bundle --evaluation models/bora/models/selected_v1/evaluation --output models/bora/reports/gates_selected --thresholds 0.5 0.6 0.7 0.8 0.9 0.95 0.98 0.995 --consecutive 1 2 3
 koww select-runtime --project models/bora/project.json --bundle models/bora/reports/gates_selected/bundle
 ```
 
@@ -349,7 +359,7 @@ koww mic --bundle models/bora/models/candidate_selected
 4. 입력 크기와 각 모델의 점수·감지 여부·감지 횟수를 확인합니다. 모델 3개가 있는 묶음은 세 점수의 평균에 따른 앙상블 결과도 보여줍니다.
 5. **중지**를 누르면 마이크 입력을 종료합니다. 다시 시작하면 모델의 입력 이력과 준비 시간이 초기화됩니다.
 
-마이크 시험은 **기존 모델의 반응을 확인하는 기능**입니다. 임계값·연속 프레임·초기 준비·재감지 간격은 모델 묶음의 실행 설정을 그대로 사용합니다. 개인 음성은 녹음 파일로 저장하지 않으며, 학습·임계값 조정·TTS 참조로 사용하지 않습니다.
+마이크 시험은 **기존 모델의 반응을 확인하는 기능**입니다. 웹에서 추천값이 준비되면 각 모델에 따로 적용하며, **직접 설정**에서는 임계값·연속 감지 수를 같은 값으로 바꿔 비교할 수 있습니다. 개별 `mic` 명령은 지정한 모델 묶음의 설정으로 시작합니다. 시험용 변경값은 메모리에서만 사용하고 모델·평가 기록을 바꾸지 않습니다. 초기 준비·재감지 간격과 약 2초 입력 범위는 유지합니다. 개인 음성은 녹음 파일로 저장하지 않으며, 학습·자동 추천·TTS 참조로 사용하지 않습니다.
 
 자동 음량 보정은 하지 않습니다. 브라우저의 자동 음량 조절·소음 제거·에코 제거를 끄도록 요청하고 실제 장치 설정을 화면에 표시합니다. 장치나 운영체제에서 별도로 적용하는 음성 처리는 다를 수 있습니다.
 
