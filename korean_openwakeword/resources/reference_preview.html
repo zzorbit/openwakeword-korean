@@ -29,6 +29,7 @@ const hard=location.pathname.startsWith('/hard-preview/');
 if(hard){document.title='유사어 전체 듣기';voice.setAttribute('aria-label','들을 유사어 음원');}
 let items=[], playingContinuously=false;
 function stop(){playingContinuously=false;continuous.textContent='연속 듣기';}
+window.addEventListener('message',event=>{if(event.origin!==location.origin||event.source!==window.parent||event.data?.type!=='koww:pause')return;stop();audio.pause();});
 function audioUrl(value){
   if(typeof value!=='string'||!value)throw Error('음원 경로가 올바르지 않습니다.');
   const url=new URL(value,location.href);

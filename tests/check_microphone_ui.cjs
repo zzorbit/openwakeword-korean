@@ -24,10 +24,11 @@ function browser(config = {}) {
   let clock = 0, nextTimer = 0;
   const timers = new Map(), intervals = new Map();
   class Element {
-    constructor(id = "") { this.id = id; this.textContent = ""; this.children = []; this.handlers = {}; this.disabled = false; this.value = ""; this.className = ""; }
+    constructor(id = "") { this.id = id; this.textContent = ""; this.children = []; this.handlers = {}; this.disabled = false; this.value = ""; this.className = ""; this.attributes = {}; }
     append(...children) { this.children.push(...children); }
     replaceChildren(...children) { this.children = children; }
     addEventListener(name, handler) { this.handlers[name] = handler; }
+    setAttribute(name, value) { this.attributes[name] = value; }
     get options() { return this.children; }
   }
   class Option extends Element { constructor(text, value) { super(); this.textContent = text; this.value = value; } }
@@ -139,6 +140,22 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
     const b = browser(); await flush();
     assert.equal(b.state.permissionCalls, 0); assert.equal(b.elements.get("start").disabled, false);
     assert.equal(b.elements.get("wakeword").textContent, "‘보라야’");
+  });
+  await test("compact response details expand without restarting or changing an active microphone trial", async () => {
+    const b = browser(); await flush(); await b.click("start"); b.frame(); await flush();
+    const calls = b.calls.length, models = b.elements.get("models").children;
+    b.elements.get("model-detail-toggle").onclick();
+    assert.equal(b.elements.get("model-values").className, "table-wrap show-details");
+    assert.equal(b.elements.get("model-detail-toggle").attributes["aria-expanded"], "true");
+    assert.equal(b.elements.get("model-detail-toggle").textContent, "간단히 보기");
+    assert.equal(b.calls.length, calls); assert.equal(b.streams[0].track.stopped, false);
+    assert.equal(b.elements.get("models").children, models);
+    assert.equal(models.length, 4); assert.ok(models.every(row => row.children.length === 7));
+    b.elements.get("model-detail-toggle").onclick();
+    assert.equal(b.elements.get("model-values").className, "table-wrap");
+    assert.equal(b.elements.get("model-detail-toggle").attributes["aria-expanded"], "false");
+    b.frame(); await flush(); assert.equal(b.calls.filter(call => call.url === "/api/frame").length, 2);
+    b.click("stop"); await flush();
   });
   await test("all four models are visible and a readable default retains its exact original threshold on start", async () => {
     const b = browser(); await flush();

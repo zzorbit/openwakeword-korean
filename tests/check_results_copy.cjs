@@ -4,15 +4,23 @@ const fs = require("node:fs"), path = require("node:path"), vm = require("node:v
 const source = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources/results_ui.js"), "utf8");
 const cases = [];
 function test(name, run) { run(); cases.push(name); }
-function browser() {
+function browser({dashboard = false} = {}) {
   class Element {
-    constructor(tag = "div") { this.tagName = tag; this.children = []; this.value = ""; this.textContent = ""; this.disabled = false; }
+    constructor(tag = "div") { this.tagName = tag; this.children = []; this.value = ""; this.textContent = ""; this.disabled = false; this.attributes = {}; }
     append(...nodes) { this.children.push(...nodes); }
     replaceChildren(...nodes) { this.children = nodes; }
+    setAttribute(name, value) { this.attributes[name] = value; }
+    focus() { this.focused = true; }
   }
   const elements = new Map();
   for (const id of ["summary", "candidateStatus", "candidateReasons", "denominators", "criteriaSummary", "criteriaNote", "targetControls", "target-model", "targetComparison", "responses", "scores", "condition-model", "condition-reverb", "condition-clean", "conditions", "runtimeRecommendations", "recommendations", "recommendationScope", "recommendationNote", "baselineRuntime", "recommendationFailures", "recommendationReasons"]) elements.set(id, new Element());
   for (const id of ["summary", "responses", "scores", "conditions", "targetComparison", "recommendations"]) elements.get(id).tBodies = [new Element("tbody")];
+  if (dashboard) {
+    for (const [prefix, names] of [["results", ["models", "conditions", "audio"]], ["model", ["recommendations", "evaluation", "targets"]]]) {
+      for (const name of names) for (const kind of ["tab", "panel"]) elements.set(`${prefix}-${kind}-${name}`, new Element());
+    }
+    elements.set("audio", Object.assign(new Element("audio"), {src: "unchanged.wav", currentTime: 2.5}));
+  }
   const context = vm.createContext({document: {getElementById: id => elements.get(id), createElement: tag => new Element(tag)}});
   context.window = context; vm.runInContext(source, context);
   return {elements, ui: context.KowwResultsUI, rows: id => elements.get(id).tBodies[0].children.map(row => row.children.map(cell => cell.textContent))};
@@ -45,6 +53,38 @@ test("model names follow declared identities rather than ranked position", () =>
   const collision = {candidate_definitions: [{id: "mean", kind: "single"}, {id: "_mean", kind: "ensemble"}], models: []};
   assert.equal(ui.modelLabel(collision, "mean"), "모델 1");
   assert.equal(ui.modelLabel(collision, "_mean"), "앙상블");
+});
+test("dashboard tabs switch one panel without replacing audio or resetting model subview", () => {
+  const {ui, elements} = browser({dashboard: true});
+  const audio = elements.get("audio");
+  assert.equal(elements.get("results-panel-models").hidden, false);
+  assert.equal(elements.get("results-panel-conditions").hidden, true);
+  assert.equal(elements.get("results-panel-audio").hidden, true);
+  elements.get("model-tab-targets").onclick();
+  elements.get("results-tab-audio").onclick();
+  assert.equal(elements.get("results-panel-models").hidden, true);
+  assert.equal(elements.get("results-panel-audio").hidden, false);
+  assert.equal(elements.get("results-tab-audio").attributes["aria-selected"], "true");
+  elements.get("results-tab-models").onclick();
+  assert.equal(ui.dashboardState().modelView, "targets");
+  assert.equal(elements.get("model-panel-targets").hidden, false);
+  assert.equal(elements.get("model-panel-evaluation").hidden, true);
+  assert.equal(elements.get("audio"), audio);
+  assert.equal(audio.src, "unchanged.wav"); assert.equal(audio.currentTime, 2.5);
+});
+test("dashboard tabs support keyboard navigation and skip unavailable recommendations", () => {
+  const {ui, elements} = browser({dashboard: true});
+  ui.renderSummary(sample());
+  assert.equal(elements.get("model-tab-recommendations").hidden, true);
+  assert.equal(elements.get("model-panel-evaluation").hidden, false);
+  let prevented = false;
+  elements.get("model-tab-evaluation").onkeydown({key: "ArrowLeft", preventDefault() { prevented = true; }});
+  assert.equal(prevented, true); assert.equal(ui.dashboardState().modelView, "targets");
+  assert.equal(elements.get("model-tab-targets").focused, true);
+  elements.get("results-tab-models").onkeydown({key: "End", preventDefault() {}});
+  assert.equal(ui.dashboardState().view, "audio");
+  assert.equal(elements.get("results-tab-audio").tabIndex, 0);
+  assert.equal(elements.get("results-tab-models").tabIndex, -1);
 });
 test("legacy reports label stable model numbers without changing source order", () => {
   const {ui} = browser(), report = {models: [{id: "member10", kind: "single"}, {id: "member2", kind: "single"}, {id: "mean", kind: "ensemble"}]};

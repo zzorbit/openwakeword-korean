@@ -2,13 +2,14 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs"), path = require("node:path"), vm = require("node:vm");
 const script = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources/results_paged.js"), "utf8");
+const staticScript = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources/results.js"), "utf8");
 const presentation = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources/results_ui.js"), "utf8");
 const html = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources/results_paged.html"), "utf8");
 const flush = async () => { for (let count = 0; count < 8; count++) await new Promise(resolve => setImmediate(resolve)); };
 const tests = [];
 async function test(name, run) { await run(); tests.push(name); }
-function browser(tuples, {deferPages = false, pageFailure = false, indexPath = "viewer-index.json", report = {wakeword: "보라야", models: []}} = {}) {
-  const elements = new Map(), calls = [], deferred = new Map();
+function browser(tuples, {deferPages = false, pageFailure = false, staticViewer = false, indexPath = "viewer-index.json", report = {wakeword: "보라야", models: []}} = {}) {
+  const elements = new Map(), calls = [], deferred = new Map(), listeners = {}, parentWindow = {};
   class Element {
     constructor(tag = "div") { this.tagName = tag; this.children = []; this.value = ""; this.textContent = ""; this.disabled = false; this.src = ""; this.plays = 0; this.pauses = 0; }
     append(...nodes) { this.children.push(...nodes); }
@@ -19,12 +20,12 @@ function browser(tuples, {deferPages = false, pageFailure = false, indexPath = "
     removeAttribute(name) { this[name] = ""; }
   }
   for (const match of html.matchAll(/id="([^"]+)"/g)) elements.set(match[1], new Element());
-  for (const id of ["summary", "conditions", "responses", "scores"]) elements.get(id).tBodies = [new Element("tbody")];
+  for (const id of ["summary", "conditions", "responses", "scores", "recommendations", "targetComparison"]) elements.get(id).tBodies = [new Element("tbody")];
   for (const value of ["none", "moderate", "strong"]) { const option = new Element("option"); option.value = value; elements.get("reverb").append(option); }
   elements.get("reverb").value = "none"; elements.get("category").value = "all";
   const row = (tuple, sourceIndex) => ({sample_id: tuple[0], path: `audio/${sourceIndex}.wav`, sha256: `sha${sourceIndex}`, kind: tuple[1], category: tuple[2], snr_db: tuple[3], reverb_condition: tuple[4], original_id: tuple[5], original_order: tuple[6], duration_s: tuple[7], calls: tuple[1] === "positive" ? [{start_s: 2, end_s: 3}] : [], noise_eval_label: "시험 배경", results: {mean: {success: true, false_activations: 0, max_score: 0.999, clean_score_drop: 0.01, latency_s: 0.08}}});
   const page = number => ({start: number * 128, clips: tuples.slice(number * 128, (number + 1) * 128).map((tuple, offset) => row(tuple, number * 128 + offset))});
-  const context = vm.createContext({document: {getElementById: id => elements.get(id), createElement: tag => new Element(tag)}, console, evaluationBackgroundTypeText: clip => clip.noise_eval_label || "", fetch: async url => {
+  const context = vm.createContext({document: {getElementById: id => elements.get(id), createElement: tag => new Element(tag)}, console, evaluationScopeText: () => "시험 범위", evaluationNoiseCoverageText: () => "시험 배경", evaluationBackgroundTypeText: clip => clip.noise_eval_label || "", fetch: async url => {
     calls.push(url);
     if (url === indexPath) return {ok: true, json: async () => ({schema_version: 1, scope_text: "정확한 평가 범위", noise_coverage_text: "전체 음원 사용", clips: tuples})};
     const number = Number(url.match(/page-(\d+)\.json/)[1]);
@@ -33,10 +34,12 @@ function browser(tuples, {deferPages = false, pageFailure = false, indexPath = "
     return {ok: true, json: async () => page(number)};
   }});
   context.window = context; context.location = new URL("http://127.0.0.1/results/bora/"); context.URL = URL; context.KOWW_RESULTS_TEST = true;
-  context.KOWW_RESULTS = {report, viewer: {schema_version: 1, index_path: indexPath, page_size: 128}};
+  context.parent = parentWindow; context.addEventListener = (name, listener) => { listeners[name] = listener; };
+  context.KOWW_RESULTS = {report, clips: tuples.map(row), viewer: {schema_version: 1, index_path: indexPath, page_size: 128}};
   vm.runInContext(presentation, context);
-  vm.runInContext(script, context);
-  return {elements, calls, deferred, helper: context.KowwResults};
+  vm.runInContext(staticViewer ? staticScript : script, context);
+  return {elements, calls, deferred, helper: context.KowwResults,
+    message: extra => listeners.message({origin: context.location.origin, source: parentWindow, data: {type: "koww:pause"}, ...extra})};
 }
 const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "positive", ["environment", "music", "competing_speech"][index % 3], 10, "none", `original_${Math.floor(index / 3)}`, Math.floor(index / 3) + 1, 4]; for (const [key, field] of Object.entries(overrides)) value[Number(key)] = field; return value; };
 
@@ -59,6 +62,49 @@ const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "posi
     assert.equal(b.elements.get("item").children.length, 100);
     assert.equal(b.elements.get("item").value, "128");
     assert.equal(b.elements.get("hash").textContent, "SHA256 sha128");
+  });
+  await test("dashboard navigation keeps continuous audio and the current queue position", async () => {
+    const b = browser(Array.from({length: 400}, (_, index) => tuple(index))); await b.helper.boot();
+    b.elements.get("results-tab-audio").onclick();
+    await b.elements.get("start").onclick(); await b.helper.move(127, true);
+    const source = b.elements.get("audio").src, pauses = b.elements.get("audio").pauses, calls = b.calls.length;
+    b.elements.get("results-tab-models").onclick(); b.elements.get("model-tab-targets").onclick();
+    b.elements.get("results-tab-conditions").onclick(); b.elements.get("results-tab-audio").onclick();
+    assert.equal(b.helper.state().continuous, true); assert.equal(b.helper.state().index, 127);
+    assert.equal(b.elements.get("audio").src, source); assert.equal(b.elements.get("audio").pauses, pauses);
+    assert.equal(b.calls.length, calls);
+    await b.elements.get("audio").onended(); assert.equal(b.helper.state().index, 128);
+  });
+  await test("only a same-origin exact parent can pause audio without resetting its queue or filters", async () => {
+    const b = browser(Array.from({length: 400}, (_, index) => tuple(index))); await b.helper.boot();
+    await b.elements.get("start").onclick(); await b.helper.move(127, true);
+    const audio = b.elements.get("audio"), source = audio.src, pauses = audio.pauses, calls = b.calls.length;
+    const filters = ["snr", "category", "reverb"].map(id => b.elements.get(id).value);
+    b.message({origin: "https://unrelated.example"});
+    b.message({source: {}});
+    b.message({data: {type: "something-else"}});
+    b.message({data: null});
+    assert.equal(audio.pauses, pauses); assert.equal(b.helper.state().continuous, true);
+    b.message();
+    assert.equal(audio.pauses, pauses + 1); assert.equal(b.helper.state().continuous, false);
+    assert.equal(b.helper.state().index, 127); assert.equal(audio.src, source);
+    assert.deepEqual(["snr", "category", "reverb"].map(id => b.elements.get(id).value), filters);
+    assert.equal(b.calls.length, calls);
+    await audio.onended(); assert.equal(b.helper.state().index, 127);
+    await b.elements.get("resume").onclick(); assert.equal(b.helper.state().continuous, true);
+    assert.equal(b.helper.state().index, 127);
+  });
+  await test("static exports also retain the current clip when their parent pauses continuous listening", async () => {
+    const b = browser(Array.from({length: 9}, (_, index) => tuple(index)), {staticViewer: true});
+    await b.elements.get("start").onclick();
+    b.elements.get("item").value = "2"; b.elements.get("item").onchange(); await flush();
+    const audio = b.elements.get("audio"), source = audio.src, pauses = audio.pauses;
+    b.message({origin: "https://unrelated.example"}); assert.equal(audio.pauses, pauses);
+    b.message(); assert.equal(audio.pauses, pauses + 1);
+    audio.onended(); assert.equal(audio.src, source); assert.equal(b.elements.get("item").value, "2");
+    await b.elements.get("resume").onclick(); assert.equal(audio.src, source);
+    audio.onended(); await flush(); assert.notEqual(audio.src, source); assert.equal(b.elements.get("item").value, "3");
+    assert.equal(b.calls.length, 0);
   });
   await test("only two detail pages are retained with LRU eviction", async () => {
     const b = browser(Array.from({length: 600}, (_, index) => tuple(index))); await b.helper.boot();

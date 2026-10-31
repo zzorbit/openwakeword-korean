@@ -17,12 +17,14 @@ async function screen(mode, items, { error, ok = true } = {}) {
     pause() { this.paused++; }
   }
   for (const match of html.matchAll(/id="([^"]+)"/g)) nodes.set(match[1], new Element());
-  const calls = [], document = { title: "기준 목소리 듣기", getElementById: id => nodes.get(id), createElement: () => new Element() };
+  const calls = [], messages = {}, document = { title: "기준 목소리 듣기", getElementById: id => nodes.get(id), createElement: () => new Element() };
   const context = vm.createContext({ document, URL, location: new URL(`http://127.0.0.1:8793/${mode}/?project=bora`),
     fetch: async (url, options) => { calls.push({ url, options }); return { ok, json: async () => ({ items, error }) }; } });
+  context.window = context; context.parent = {};
+  context.addEventListener = (name, callback) => { messages[name] = callback; };
   vm.runInContext(script, context);
   for (let index = 0; index < 8; index++) await new Promise(resolve => setImmediate(resolve));
-  return { nodes, calls, document };
+  return { nodes, calls, document, messages, parent: context.parent };
 }
 
 (async () => {
@@ -50,6 +52,18 @@ async function screen(mode, items, { error, ok = true } = {}) {
   assert.equal(reference.document.title, "기준 목소리 듣기");
   assert.equal(reference.nodes.get("voice").children[0].textContent, "1. 학습용 · train1");
   assert.deepEqual(reference.calls, [{ url: "/reference-preview/queue?project=bora", options: undefined }]);
+  const paused = await screen("hard-preview", items);
+  paused.nodes.get("next").handlers.click();
+  paused.nodes.get("continuous").handlers.click();
+  paused.messages.message({origin: "https://other.example", source: paused.parent, data: {type: "koww:pause"}});
+  paused.messages.message({origin: "http://127.0.0.1:8793", source: {}, data: {type: "koww:pause"}});
+  assert.equal(paused.nodes.get("audio").paused, 0);
+  paused.messages.message({origin: "http://127.0.0.1:8793", source: paused.parent, data: {type: "koww:pause"}});
+  assert.equal(paused.nodes.get("audio").paused, 1);
+  assert.equal(paused.nodes.get("audio").src, items[1].audio);
+  assert.equal(paused.nodes.get("voice").value, "1");
+  assert.equal(paused.nodes.get("continuous").textContent, "연속 듣기");
+  assert.equal(paused.calls.length, 1);
   for (const audio of ["https://example.com/private.wav", "javascript:alert(1)", "", null]) {
     const invalid = await screen("hard-preview", [{ ...items[0], audio }]);
     assert.match(invalid.nodes.get("error").textContent, /음원 경로가 올바르지 않습니다/);

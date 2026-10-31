@@ -1,10 +1,18 @@
 "use strict";
 
 (() => {
+  if (window.parent && window.parent !== window) document.body?.classList?.add("embedded");
   const $ = id => document.getElementById(id);
   const config = JSON.parse($("koww-page-config")?.textContent || "{}");
   const apiUrl = path => (config.api_base || "") + path;
   const ui = Object.fromEntries(["wakeword", "microphone", "connect", "refresh", "retry", "deviceHint", "detection-settings", "thresholdSetting", "consecutiveSetting", "detectionHint", "trial-mode", "trial-threshold", "trial-consecutive", "reset-detection", "recommendationHint", "start", "stop", "connection", "statusHeading", "statusText", "statusDot", "level", "levelText", "elapsed", "frameCount", "lastEvent", "lastEventTime", "models", "threshold", "captureSettings"].map(id => [id, $(id)]));
+  const detailToggle = $("model-detail-toggle"), modelValues = $("model-values");
+  if (detailToggle && modelValues) detailToggle.onclick = () => {
+    const expanded = modelValues.className === "table-wrap show-details";
+    modelValues.className = expanded ? "table-wrap" : "table-wrap show-details";
+    detailToggle.setAttribute?.("aria-expanded", String(!expanded));
+    detailToggle.textContent = expanded ? "상세 값 보기" : "간단히 보기";
+  };
   const rows = new Map();
   let info = null;
   let run = null;

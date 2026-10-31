@@ -7,6 +7,63 @@
   const percent = value => finite(value) ? `${(value * 100).toFixed(2)}%` : "결과 없음";
   const categories = ["environment", "music", "competing_speech"];
   const levels = [20, 15, 10, 5, 0];
+  let dashboardView = "models", modelView = "recommendations";
+  function activateTabs(prefix, names, chosen, focus = false) {
+    names.forEach(name => {
+      const tab = $(`${prefix}-tab-${name}`), panel = $(`${prefix}-panel-${name}`);
+      if (!tab || !panel) return;
+      const selected = name === chosen;
+      tab.setAttribute?.("aria-selected", String(selected)); tab.tabIndex = selected ? 0 : -1;
+      panel.hidden = !selected;
+      if (focus && selected) tab.focus?.();
+    });
+  }
+  function dashboard(view, focus = false) {
+    if (!["models", "conditions", "audio"].includes(view)) return;
+    dashboardView = view; activateTabs("results", ["models", "conditions", "audio"], view, focus);
+  }
+  function modelDashboard(view, focus = false) {
+    if (!["recommendations", "evaluation", "targets"].includes(view)) return;
+    modelView = view; activateTabs("model", ["recommendations", "evaluation", "targets"], view, focus);
+  }
+  function bindTabs(prefix, names, select) {
+    names.forEach(name => {
+      const tab = $(`${prefix}-tab-${name}`);
+      if (!tab) return;
+      tab.onclick = () => select(name);
+      tab.onkeydown = event => {
+        const available = names.filter(value => {
+          const item = $(`${prefix}-tab-${value}`);
+          return item && !item.hidden && !item.disabled;
+        });
+        const position = available.indexOf(name);
+        let next;
+        if (event.key === "ArrowRight") next = (position + 1) % available.length;
+        if (event.key === "ArrowLeft") next = (position - 1 + available.length) % available.length;
+        if (event.key === "Home") next = 0;
+        if (event.key === "End") next = available.length - 1;
+        if (next === undefined) return;
+        event.preventDefault(); select(available[next], true);
+      };
+    });
+  }
+  function initDashboard() {
+    if (!$("results-tab-models")) return;
+    if (typeof window !== "undefined" && window.parent && window.parent !== window) document.body?.classList?.add("embedded");
+    bindTabs("results", ["models", "conditions", "audio"], dashboard);
+    bindTabs("model", ["recommendations", "evaluation", "targets"], modelDashboard);
+    dashboard(dashboardView); modelDashboard(modelView);
+  }
+  function pauseFromParent(event) {
+    if (!window.parent || window.parent === window || !window.location?.origin
+        || event.origin !== window.location.origin || event.source !== window.parent
+        || event.data?.type !== "koww:pause") return;
+    const pause = $("pause");
+    // Reuse the viewer's own pause path so queue state and in-flight autoplay
+    // cancellation stay consistent in both static and paged exports.
+    if (typeof pause?.onclick === "function") pause.onclick();
+    else $("audio")?.pause?.();
+  }
   const noiseNames = {clean: "조용한 환경", environment: "환경소음", music: "음악·전자음", competing_speech: "다른 사람 말소리"};
   const reverbNames = {none: "울림 추가 없음", moderate: "보통 울림", strong: "강한 울림"};
   function noiseLabel(category) { return noiseNames[category] || "기타 배경"; }
@@ -73,7 +130,12 @@
     if (failures) failures.hidden = true;
     const baseline = $("baselineRuntime");
     if (baseline) baseline.hidden = !measured.length;
-    if (!measured.length) return;
+    const recommendationTab = $("model-tab-recommendations");
+    if (recommendationTab) recommendationTab.hidden = !measured.length;
+    if (!measured.length) {
+      if (modelView === "recommendations") modelDashboard("evaluation");
+      return;
+    }
     for (const candidate of measured) {
       const row = document.createElement("tr"), metric = candidate.metrics;
       if (isEnsemble(report, candidate.id)) row.className = "ensemble";
@@ -114,7 +176,7 @@
     const previousGoal = finite(originalFaLimit) && finite(faLimit) && originalFaLimit !== faLimit
       ? `기존 평가 목표의 오작동 한도는 시간당 ${originalFaLimit}회이며, 추천 기준과 별도로 표시합니다. ` : "";
     if ($("recommendationNote")) $("recommendationNote").textContent = `${unavailable ? "추천 기준을 만족하는 조합이 없는 모델은 절충 후보를 표시합니다. 마이크에는 그 모델의 기존 설정을 유지합니다. " : ""}${previousGoal}${unverified ? "저장 점수 기준 비교이며 마이크 실행 결과는 별도로 확인합니다." : "실행 연산 방식에서도 추천 설정을 확인했습니다."}`;
-    if (baseline) baseline.textContent = `아래 성능과 오디오 반응은 평가 당시 설정${report.runtime ? ` · 감지 기준 ${thresholdText(report.runtime.threshold)} · 연속 ${report.runtime.consecutive_frames}회` : ""}의 결과입니다. 추천 설정의 결과는 위 표에 따로 표시합니다.`;
+    if (baseline) baseline.textContent = `평가 당시 설정${report.runtime ? ` · 감지 기준 ${thresholdText(report.runtime.threshold)} · 연속 ${report.runtime.consecutive_frames}회` : ""}의 결과입니다. 추천값 결과는 ‘추천 감지 설정’에서 확인하세요.`;
   }
   function reasonText(reason) {
     const text = String(reason);
@@ -305,7 +367,10 @@
     if (clip.kind === "negative") return `호출어 없는 음원 · ${noiseLabel(clip.category)}`;
     return `${clip.original_order ? `음성 ${clip.original_order}` : "호출어 음성"} · ${noiseLabel(clip.category)}`;
   }
-  const api = {modelLabel, noiseLabel, snrLabel, reverbLabel, renderSummary, renderConditions, renderResponses, renderRecommendations, clipLabel};
+  initDashboard();
+  if (typeof window !== "undefined") window.addEventListener?.("message", pauseFromParent);
+  const api = {modelLabel, noiseLabel, snrLabel, reverbLabel, renderSummary, renderConditions, renderResponses, renderRecommendations, clipLabel,
+    dashboard, modelDashboard, dashboardState: () => ({view: dashboardView, modelView})};
   if (typeof window !== "undefined") window.KowwResultsUI = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })();

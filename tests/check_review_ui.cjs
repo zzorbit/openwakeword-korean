@@ -8,18 +8,23 @@ const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 
 async function screen(queue, search, saved = {}, config = {}) {
   const nodes = new Map([...html.matchAll(/id="([^"]+)"/g)].map(match => [match[1], { textContent: "", innerHTML: "", children: [], append(node) { this.children.push(node); } }]));
-  const calls = [], writes = [];
+  const calls = [], writes = [], listeners = {}, audioEffects = {pauses: 0};
+  nodes.get("audio").pause = () => { audioEffects.pauses++; };
+  nodes.get("audio").play = async () => {};
   nodes.set("koww-page-config", { textContent: JSON.stringify(config) });
   const existing = JSON.stringify(saved);
   const context = vm.createContext({
     document: { getElementById: id => nodes.get(id), createElement: () => ({}) },
-    URLSearchParams, location: { search },
+    URLSearchParams, location: { search, origin: "http://127.0.0.1:8794" },
     localStorage: { getItem(key) { assert.equal(key, "koww:" + queue.queue_sha256); return existing; }, setItem(...args) { writes.push(args); } },
     fetch: async (url, options) => { calls.push({ url, options }); return { ok: true, json: async () => options?.method === "POST" ? { state: "saved" } : queue }; }
   });
+  context.window = context;
+  context.parent = {};
+  context.addEventListener = (type, handler) => { listeners[type] = handler; };
   vm.runInContext(script, context);
   for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve));
-  return { nodes, calls, writes };
+  return { nodes, calls, writes, listeners, audioEffects, parent: context.parent };
 }
 
 (async () => {
@@ -62,5 +67,19 @@ async function screen(queue, search, saved = {}, config = {}) {
   assert.equal(standalone.calls[1].url, "/save");
   assert.equal(standalone.calls[1].options.headers["X-Koww-Token"], undefined);
   assert.deepEqual(JSON.parse(standalone.calls[1].options.body), heard);
+  const paused = await screen(queue, "?queue=pilot");
+  paused.nodes.get("items").value = "1";
+  paused.nodes.get("items").onchange();
+  const title = paused.nodes.get("title").textContent, source = paused.nodes.get("audio").src;
+  paused.listeners.message({origin: "https://elsewhere.example", source: paused.parent, data: {type: "koww:pause"}});
+  paused.listeners.message({origin: "http://127.0.0.1:8794", source: {}, data: {type: "koww:pause"}});
+  paused.listeners.message({origin: "http://127.0.0.1:8794", source: paused.parent, data: {type: "other"}});
+  assert.equal(paused.audioEffects.pauses, 0);
+  paused.listeners.message({origin: "http://127.0.0.1:8794", source: paused.parent, data: {type: "koww:pause"}});
+  assert.equal(paused.audioEffects.pauses, 1);
+  assert.equal(paused.nodes.get("title").textContent, title);
+  assert.equal(paused.nodes.get("audio").src, source);
+  assert.equal(paused.writes.length, 0);
+  assert.equal(paused.calls.length, 1);
   console.log("Review UI: voice purpose, saved decisions, unheard gate and other review types passed");
 })().catch(error => { console.error(error); process.exitCode = 1; });

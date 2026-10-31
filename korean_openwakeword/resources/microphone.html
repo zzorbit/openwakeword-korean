@@ -9,14 +9,16 @@
   <script src="microphone.js" defer></script>
 </head>
 <body>
-<main>
+<main class="mic-dashboard">
   <header>
     <h1>마이크로 호출어 시험</h1>
     <p>마이크를 선택하고 시작한 뒤, <strong id="wakeword">호출어</strong>를 말하세요. 모든 모델과 앙상블을 함께 비교합니다.</p>
   </header>
 
+  <div class="mic-workspace">
   <section class="setup" aria-labelledby="setupHeading">
     <h2 id="setupHeading">마이크와 감지 설정</h2>
+    <div class="setup-fields">
     <div class="device-row">
       <label for="microphone">입력 장치</label>
       <select id="microphone"><option value="">시스템 기본 마이크</option></select>
@@ -30,8 +32,8 @@
       <label id="consecutiveSetting" for="trial-consecutive">연속 감지 수<input id="trial-consecutive" type="number" min="1" max="10" step="1" inputmode="numeric" disabled></label>
       <button id="reset-detection" class="quiet" type="button" disabled>기본값으로</button>
     </div>
-    <p class="hint detection-hint" id="detectionHint">감지 기준이나 연속 감지 수를 낮추면 더 쉽게 반응합니다. 변경값은 다음 마이크 시험에만 적용됩니다.</p>
-    <p class="hint" id="recommendationHint" hidden></p>
+    <details class="trial-notes"><summary>추천·설정 안내</summary><p class="hint detection-hint" id="detectionHint">감지 기준이나 연속 감지 수를 낮추면 더 쉽게 반응합니다. 변경값은 다음 마이크 시험에만 적용됩니다.</p><p class="hint" id="recommendationHint" hidden></p></details>
+    </div>
     <div class="actions">
       <button id="start" class="primary" type="button" disabled>시험 시작</button>
       <button id="stop" type="button" disabled>중지</button>
@@ -40,6 +42,7 @@
     </div>
   </section>
 
+  <div class="mic-results">
   <section class="live" aria-labelledby="statusHeading">
     <div class="status-line"><span id="statusDot" class="status-dot"></span><h2 id="statusHeading">준비 중</h2></div>
     <p id="statusText" role="status" aria-live="polite">모델 정보를 확인하고 있습니다.</p>
@@ -50,22 +53,26 @@
     </div>
   </section>
 
-  <section aria-labelledby="modelsHeading">
-    <div class="section-heading"><h2 id="modelsHeading">모델 반응</h2><span id="threshold" class="hint"></span></div>
+  <section class="model-responses" aria-labelledby="modelsHeading">
+    <div class="section-heading"><div class="model-heading-title"><h2 id="modelsHeading">모델 반응</h2><button id="model-detail-toggle" type="button" aria-controls="model-values" aria-expanded="false">상세 값 보기</button></div><span id="threshold" class="hint"></span></div>
     <p class="hint">점수는 모델의 반응 크기입니다. 실제 감지는 임계값과 연속 감지 조건을 함께 적용합니다.</p>
-    <div class="table-wrap"><table>
+    <div id="model-values" class="table-wrap"><table>
       <thead><tr><th>모델</th><th>현재 점수</th><th>최대 점수</th><th>감지 횟수</th><th>최근 감지 시점</th><th>감지 기준</th><th>연속 감지</th></tr></thead>
       <tbody id="models"><tr><td colspan="7">모델 정보를 읽는 중입니다.</td></tr></tbody>
     </table></div>
   </section>
+  </div>
+  </div>
 
-  <details>
+  <details class="capture-details">
     <summary>마이크 처리 설정</summary>
+    <div class="capture-content">
     <p>브라우저에 에코 제거·소음 억제·자동 음량 조절을 끄도록 요청합니다. 실제 적용 여부는 아래 설정을 확인하세요.</p>
     <dl id="captureSettings"><dt>입력 설정</dt><dd>시험을 시작하면 표시됩니다.</dd></dl>
     <p class="hint">분석 입력은 16 kHz 모노입니다. 마이크가 다른 샘플레이트로 입력하면 브라우저가 변환합니다. 장치 자체의 음성 처리는 브라우저에서 확인되지 않을 수 있습니다.</p>
+    </div>
   </details>
-  <footer>소리는 이 컴퓨터에서 분석하며 녹음 파일로 저장하지 않습니다. 이 창을 벗어나면 시험이 멈춥니다. 직접 호출 횟수를 세지 않으므로 성공률은 계산하지 않습니다.</footer>
+  <footer>소리는 이 컴퓨터에서 처리하며 저장하지 않습니다. 화면을 벗어나면 시험이 멈춥니다. 감지 횟수만 표시합니다.</footer>
 </main>
 </body>
 </html>

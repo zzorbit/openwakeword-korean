@@ -1074,6 +1074,11 @@ function pendingHardStorageRecipe() {
     await b.tick(); await b.tick();
     assert.equal(details.open, true); assert.equal(frame.srcWrites, 1);
     assert.equal(required.getAttribute("src"), requiredUrl); assert.equal(required.srcWrites, 1);
+    b.click("audio-tab-required"); await flush();
+    assert.equal(required.getAttribute("src"), requiredUrl); assert.equal(required.srcWrites, 1);
+    assert.equal(frame.getAttribute("src"), "/hard-preview/?project=bora");
+    b.click("audio-tab-hard"); await flush();
+    assert.equal(frame.getAttribute("src"), "/hard-preview/?project=bora");
     project.stage = "training"; project.status = "running"; await b.tick();
     assert.equal(details.hidden, false); assert.equal(frame.srcWrites, 1);
     details.open = false; details.handlers.toggle(); assert.equal(frame.getAttribute("src"), null);
@@ -1096,8 +1101,10 @@ function pendingHardStorageRecipe() {
     assert.equal(details.hidden, true); assert.equal(frame.getAttribute("src"), null);
     other.hard_preview = { url: "/hard-preview/?project=other", count: 0 }; await b.tick();
     assert.equal(details.hidden, true);
+    assert.equal(b.elements.get("dashboard-review").disabled, true);
     other.hard_preview = { available: false, url: "/hard-preview/?project=other", count: 40 }; await b.tick();
     assert.equal(details.hidden, true);
+    assert.equal(b.elements.get("dashboard-review").disabled, true);
   });
   await test("automatic reference checking respects the task label and optional listening never replaces pilot review", async () => {
     const project = { id: "bora", wakeword: "보라야", status: "running",
@@ -1112,10 +1119,13 @@ function pendingHardStorageRecipe() {
     assert.equal(b.elements.get("review-section").hidden, false);
     assert.equal(b.elements.get("review-title").textContent, "호출어 발음 확인");
     assert.equal(b.elements.get("start").hidden, true);
-    assert.equal(b.elements.get("review-frame").getAttribute("src"), "/review/?project=bora&queue=pilot");
     await b.tick();
+    assert.equal(b.elements.get("review-frame").getAttribute("src"), "/review/?project=bora&queue=pilot");
     assert.equal(b.elements.get("review-frame").srcWrites, 1);
     assert.equal(b.elements.get("reference-preview-frame").srcWrites, 1);
+    b.click("audio-tab-required"); await flush();
+    assert.equal(b.elements.get("review-frame").getAttribute("src"), "/review/?project=bora&queue=pilot");
+    assert.equal(b.elements.get("reference-preview-frame").getAttribute("src"), "/reference-preview/?project=bora");
     assert.equal(b.calls.some(call => call.options.method === "POST" && call.url !== "/api/model-location"), false);
   });
   await test("state polling preserves an active review iframe; starting work hides and unloads it", async () => {
@@ -1768,6 +1778,88 @@ function pendingHardStorageRecipe() {
     row.state = "complete"; row.done = row.total; await b.tick();
     assert.match(textOf(b.elements.get("downloads-list")), /평가용 공간 울림 · OpenSLR RIR/);
     assert.equal(b.calls.some(call => call.options.method === "POST"), false);
+  });
+  await test("setup tabs preserve entered values and separate training from evaluation materials", async () => {
+    const b = browser({ recipeOverrides: commonRecipe() }); await flush();
+    b.elements.get("wakeword").value = "보라야";
+    b.click("setup-tab-materials");
+    assert.equal(b.elements.get("setup-panel-basic").hidden, true);
+    assert.equal(b.elements.get("setup-panel-materials").hidden, false);
+    const groups = b.elements.get("source-preview").children;
+    assert.equal(groups[0].hidden, false); assert.equal(groups[1].hidden, true);
+    b.click("materials-tab-evaluation");
+    assert.equal(groups[0].hidden, true); assert.equal(groups[1].hidden, false);
+    b.click("setup-tab-basic"); await b.tick();
+    assert.equal(b.elements.get("wakeword").value, "보라야");
+    assert.equal(b.elements.get("setup-tab-basic").getAttribute("aria-selected"), "true");
+    assert.equal(b.elements.get("setup-panel-materials").hidden, true);
+    assert.equal(b.calls.some(call => call.url === "/api/projects"), false);
+  });
+  await test("dashboard navigation survives polling and leaving the microphone unloads capture", async () => {
+    const project = { id:"bora", status:"completed", results:{url:"/results/bora/",mic_url:"/mic/bora/"} };
+    const b = browser({initialState:{projects:[project]}}); await flush();
+    assert.equal(b.elements.get("project").getAttribute("data-view"), "results");
+    b.click("dashboard-mic"); await flush();
+    const frame = b.elements.get("result-frame"), writes = frame.srcWrites;
+    assert.equal(frame.getAttribute("src"), "/mic/bora/");
+    await b.tick(); await b.tick(); assert.equal(frame.srcWrites, writes);
+    b.click("dashboard-materials"); await flush();
+    assert.equal(frame.getAttribute("src"), null);
+    assert.equal(b.elements.get("view-materials").hidden, false);
+    await b.tick();
+    assert.equal(b.elements.get("view-materials").hidden, false); assert.equal(frame.getAttribute("src"), null);
+    b.click("dashboard-results"); await flush();
+    assert.equal(frame.getAttribute("src"), "/results/bora/");
+    const messages = [];
+    frame.contentWindow = { postMessage(value, origin) { messages.push([value.type, origin]); } };
+    const resultWrites = frame.srcWrites;
+    b.click("dashboard-logs"); await flush();
+    assert.equal(frame.getAttribute("src"), "/results/bora/");
+    assert.deepEqual(messages, [["koww:pause", "http://127.0.0.1:8800"]]);
+    await b.tick(); await b.tick();
+    assert.equal(messages.length, 1); assert.equal(frame.srcWrites, resultWrites);
+    b.click("dashboard-results"); await flush();
+    assert.equal(frame.srcWrites, resultWrites);
+    assert.equal(b.calls.some(call=>call.options.method==="POST"), false);
+  });
+  await test("new required prompts open once without overriding a user's later dashboard choice", async () => {
+    const project = {id:"bora",status:"running",stage:"generate"};
+    const b=browser({initialState:{projects:[project]}});await flush();
+    b.click("dashboard-logs");await flush();
+    project.status="waiting_review"; project.review={queue_id:"pilot",queue_sha256:"a",url:"/review/?project=bora&queue=pilot"};await b.tick();
+    assert.equal(b.elements.get("view-review").hidden,false);
+    assert.equal(b.elements.get("review-frame").getAttribute("src"),project.review.url);
+    const frame=b.elements.get("review-frame"), messages=[];
+    frame.contentWindow={postMessage(value,origin){messages.push([value.type,origin]);}};
+    const writes=frame.srcWrites;
+    b.click("dashboard-overview");await b.tick();
+    assert.equal(b.elements.get("view-overview").hidden,false);
+    assert.equal(frame.getAttribute("src"),project.review.url);
+    assert.deepEqual(messages,[["koww:pause","http://127.0.0.1:8800"]]);
+    await b.tick();assert.equal(messages.length,1);assert.equal(frame.srcWrites,writes);
+    b.click("dashboard-review");await b.tick();assert.equal(frame.srcWrites,writes);
+    b.click("dashboard-overview");await b.tick();
+    project.review.queue_sha256="b";await b.tick();
+    assert.equal(b.elements.get("view-review").hidden,false);
+    assert.equal(b.elements.get("review-frame").getAttribute("src"),project.review.url);
+    assert.equal(frame.srcWrites,writes+1);
+  });
+  await test("dashboard keyboard navigation skips unavailable views and reveals invalid setup fields", async () => {
+    const b=browser({initialState:{projects:[{id:"bora",status:"ready"}]}});await flush();
+    assert.equal(b.elements.get("dashboard-results").disabled,true);
+    let prevented=false;
+    b.elements.get("dashboard-materials").handlers.keydown({key:"ArrowDown",currentTarget:b.elements.get("dashboard-materials"),preventDefault(){prevented=true;}});
+    await flush();assert.equal(prevented,true);
+    assert.equal(b.elements.get("dashboard-logs").getAttribute("aria-current"),"page");
+    assert.equal(b.elements.get("dashboard-logs").focused,true);
+    b.click("new-project");await flush();
+    b.click("setup-tab-materials");
+    // The tiny DOM shim does not derive element IDs from markup.
+    b.elements.get("adv-originals").id="adv-originals";
+    b.elements.get("create-form").handlers.invalid({target:b.elements.get("adv-originals")});
+    assert.equal(b.elements.get("setup-panel-advanced").hidden,false);
+    b.click("new-project");await flush();
+    assert.equal(b.elements.get("setup-panel-basic").hidden,false);
   });
   console.log(`Studio UI: ${tests.length} tests passed`);
   for (const name of tests) console.log("  ✓ " + name);
