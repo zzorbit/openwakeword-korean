@@ -215,6 +215,7 @@
   let dashboardView = "overview", dashboardProject = "", dashboardPrompt = "", setupView = "basic", audioView = "required";
   let shownDashboardView = "", shownAudioView = "required";
   let materialGroup = "training", materialSections = new Map();
+  let coverageView = "training";
   const selectedProject = () => (snapshot.projects || []).find(project => project.id === selectedId);
   function renderSetupView() {
     for (const view of setupViews) {
@@ -262,7 +263,9 @@
       pauseFrame($(shownAudioView === "reference" ? "reference-preview-frame" : shownAudioView === "hard" ? "hard-preview-frame" : "review-frame"));
     }
     if (shownDashboardView === "results" && dashboardView !== "results") pauseFrame($("result-frame"));
-    if (shownDashboardView === "mic" && dashboardView !== "mic") frameSource($("result-frame"), "");
+    // Switching straight back to results replaces the microphone document once.
+    // A blank navigation followed immediately by another src can race in Chromium.
+    if (shownDashboardView === "mic" && !["mic", "results"].includes(dashboardView)) frameSource($("result-frame"), "");
     shownDashboardView = dashboardView; shownAudioView = audioView;
     for (const view of audioViews) {
       $("audio-tab-" + view).disabled = !listening[view];
@@ -271,6 +274,7 @@
     }
     $("review-empty").hidden = listening.required;
     $("materials-empty").hidden = Boolean(project.training_materials || project.evaluation_materials);
+    renderCoverageView(project);
     $("overview-empty").hidden = Boolean(project.counts && Object.keys(project.counts).length || project.progress?.files?.length);
   }
   function selectDashboardView(view) {
@@ -305,6 +309,18 @@
       $("materials-tab-" + group).tabIndex = selected ? 0 : -1;
       if (materialSections.has(group)) materialSections.get(group).hidden = !selected;
     }
+  }
+  function renderCoverageView(project) {
+    const available = { training: Boolean(project?.training_materials), evaluation: Boolean(project?.evaluation_materials) };
+    if (!available[coverageView]) coverageView = available.training ? "training" : "evaluation";
+    $("coverage-tabs").hidden = !available.training && !available.evaluation;
+    for (const view of ["training", "evaluation"]) {
+      const selected = coverageView === view && available[view], button = $("coverage-tab-" + view);
+      button.disabled = !available[view]; button.setAttribute("aria-selected", String(selected)); button.tabIndex = selected ? 0 : -1;
+      $("coverage-panel-" + view).hidden = !selected;
+    }
+    if (available.training) $("training-material-coverage").open = true;
+    if (available.evaluation) $("material-coverage").open = true;
   }
 
   async function api(path, method = "GET", payload) {
@@ -783,7 +799,7 @@
     const url = localUrl(review?.url);
     const show = Boolean(review && url && !activeStatuses.has(project.status));
     $("review-section").hidden = !show;
-    if (!show) { if (reviewIdentity) frameSource($("review-frame"), ""); reviewIdentity = ""; renderVoiceDesign("review-voices", null); return; }
+    if (!show) { if (reviewIdentity) frameSource($("review-frame"), ""); reviewIdentity = ""; renderVoiceDesign("review-voices", null); $("review-voice-details").hidden = true; return; }
     const identity = project.id + ":" + (review.queue_id || review.id || url) + ":" + (typeof review.queue_sha256 === "string" ? review.queue_sha256 : "");
     const references = /^references(?:_|$)/.test(review.queue_id || "");
     const counts = project.reference_counts;
@@ -792,6 +808,8 @@
     $("review-title").textContent = references ? "합성 목소리 확인" : review.title || "오디오 검수";
     $("review-description").textContent = references ? voiceCounts + "목소리와 음질을 확인하세요. 호출어 발음은 다음 단계에서 확인합니다." : review.description || "끝까지 들으면 자동으로 보존됩니다. 문제가 있는 항목만 바꾼 뒤 검수 완료·저장을 누르세요.";
     renderVoiceDesign("review-voices", references ? project.reference_design : null);
+    $("review-voice-details").hidden = $("review-voices").hidden;
+    if (reviewIdentity !== identity) $("review-voice-details").open = false;
     const visible = dashboardView === "review" && audioView === "required";
     if (reviewIdentity !== identity && reviewIdentity) frameSource($("review-frame"), "");
     if (!visible) { reviewIdentity = identity; return; }
@@ -819,6 +837,7 @@
   function renderInput(project) {
     const input = project.input;
     const show = Boolean(input && !activeStatuses.has(project.status));
+    $("input-section").setAttribute("data-input-kind", input?.kind || "");
     $("input-section").hidden = !show;
     if (!show) { inputIdentity = ""; $("hard-generation-counts").hidden = true; return; }
     const identity = project.id + ":" + (input.id || input.kind);
@@ -1110,6 +1129,7 @@
     renderSetupView();
     $("setup").hidden = Boolean(project) && !newProject;
     $("project").hidden = !project || newProject;
+    $("project-actions").hidden = !project || newProject;
     $("create").disabled = busy || !recipeReady || !locationReady();
     if (project && !newProject) renderProject(project);
     else {
@@ -1221,6 +1241,11 @@
       const select = value => { materialGroup = value; renderMaterialGroup(); };
       $("materials-tab-" + group).addEventListener("click", () => select(group));
       $("materials-tab-" + group).addEventListener("keydown", event => navKeys(event, ["training", "evaluation"], "materials-tab-", select));
+    }
+    for (const view of ["training", "evaluation"]) {
+      const select = value => { coverageView = value; renderCoverageView(selectedProject()); };
+      $("coverage-tab-" + view).addEventListener("click", () => select(view));
+      $("coverage-tab-" + view).addEventListener("keydown", event => navKeys(event, ["training", "evaluation"], "coverage-tab-", select));
     }
     $("create-form").addEventListener("submit", create);
     for (const id of ["adv-originals", "adv-rounds", "adv-updates", "adv-generic", "adv-korean"]) $(id).addEventListener("input", () => { renderRecipe(); previewLocation(); });

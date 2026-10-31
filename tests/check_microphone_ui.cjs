@@ -97,6 +97,7 @@ function browser(config = {}) {
   };
   const context = vm.createContext({ document, navigator: { mediaDevices }, fetch, Option, AudioContext: Context, AudioWorkletNode: Worklet, AbortController, performance: { now: () => clock }, setTimeout(callback, duration) { const id = ++nextTimer; timers.set(id, { callback, duration }); return id; }, clearTimeout(id) { timers.delete(id); }, setInterval(callback, duration) { const id = ++nextTimer; intervals.set(id, { callback, duration }); return id; }, clearInterval(id) { intervals.delete(id); }, console });
   context.window = context;
+  context.innerHeight = config.viewportHeight;
   context.isSecureContext = true;
   context.addEventListener = (name, handler) => { listeners[name] = handler; };
   vm.runInContext(fs.readFileSync(path.join(resources, "microphone.js"), "utf8"), context);
@@ -105,6 +106,7 @@ function browser(config = {}) {
     frame() { const worker = workers.at(-1); const pcm = vm.runInContext("new ArrayBuffer(2560)", context); worker.port.onmessage?.({ data: { type: "frame", pcm } }); },
     tick(ms) { clock += ms; for (const timer of [...intervals.values()]) timer.callback(); },
     hidden() { document.hidden = true; listeners.visibilitychange(); },
+    resize(height) { context.innerHeight = height; listeners.resize?.(); },
     response: json,
   };
 }
@@ -140,6 +142,26 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
     const b = browser(); await flush();
     assert.equal(b.state.permissionCalls, 0); assert.equal(b.elements.get("start").disabled, false);
     assert.equal(b.elements.get("wakeword").textContent, "‘보라야’");
+  });
+  await test("compact viewport metrics can be expanded without changing an active microphone trial", async () => {
+    const b = browser({viewportHeight: 404}); await flush();
+    assert.equal(b.elements.get("metrics-details").open, false);
+    await b.click("start"); b.frame(); await flush();
+    const calls = b.calls.length, models = b.elements.get("models").children;
+    b.elements.get("metrics-details").open = true; b.resize(444);
+    assert.equal(b.elements.get("metrics-details").open, true);
+    b.resize(600); assert.equal(b.elements.get("metrics-details").open, true);
+    b.resize(404); assert.equal(b.elements.get("metrics-details").open, false);
+    assert.equal(b.calls.length, calls); assert.equal(b.streams[0].track.stopped, false);
+    assert.equal(b.elements.get("models").children, models); assert.equal(models.length, 4);
+    b.click("stop"); await flush();
+  });
+  await test("device permission errors open the compact connection guide", async () => {
+    const error = new Error("permission denied"); error.name = "NotAllowedError";
+    const b = browser({viewportHeight: 404, permissionError: error}); await flush();
+    await b.click("connect");
+    assert.equal(b.elements.get("trial-notes").open, true);
+    assert.match(b.elements.get("deviceHint").textContent, /마이크 권한이 거부/);
   });
   await test("compact response details expand without restarting or changing an active microphone trial", async () => {
     const b = browser(); await flush(); await b.click("start"); b.frame(); await flush();

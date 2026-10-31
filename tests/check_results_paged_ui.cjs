@@ -8,7 +8,7 @@ const html = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resour
 const flush = async () => { for (let count = 0; count < 8; count++) await new Promise(resolve => setImmediate(resolve)); };
 const tests = [];
 async function test(name, run) { await run(); tests.push(name); }
-function browser(tuples, {deferPages = false, pageFailure = false, staticViewer = false, indexPath = "viewer-index.json", report = {wakeword: "보라야", models: []}} = {}) {
+function browser(tuples, {deferPages = false, pageFailure = false, staticViewer = false, viewportHeight, indexPath = "viewer-index.json", report = {wakeword: "보라야", models: []}} = {}) {
   const elements = new Map(), calls = [], deferred = new Map(), listeners = {}, parentWindow = {};
   class Element {
     constructor(tag = "div") { this.tagName = tag; this.children = []; this.value = ""; this.textContent = ""; this.disabled = false; this.src = ""; this.plays = 0; this.pauses = 0; }
@@ -34,11 +34,13 @@ function browser(tuples, {deferPages = false, pageFailure = false, staticViewer 
     return {ok: true, json: async () => page(number)};
   }});
   context.window = context; context.location = new URL("http://127.0.0.1/results/bora/"); context.URL = URL; context.KOWW_RESULTS_TEST = true;
+  context.innerHeight = viewportHeight;
   context.parent = parentWindow; context.addEventListener = (name, listener) => { listeners[name] = listener; };
-  context.KOWW_RESULTS = {report, clips: tuples.map(row), viewer: {schema_version: 1, index_path: indexPath, page_size: 128}};
+  context.KOWW_RESULTS = {report, clips: staticViewer ? tuples.map(row) : undefined, viewer: {schema_version: 1, index_path: indexPath, page_size: 128}};
   vm.runInContext(presentation, context);
   vm.runInContext(staticViewer ? staticScript : script, context);
   return {elements, calls, deferred, helper: context.KowwResults,
+    resize(height) { context.innerHeight = height; listeners.resize?.(); },
     message: extra => listeners.message({origin: context.location.origin, source: parentWindow, data: {type: "koww:pause"}, ...extra})};
 }
 const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "positive", ["environment", "music", "competing_speech"][index % 3], 10, "none", `original_${Math.floor(index / 3)}`, Math.floor(index / 3) + 1, 4]; for (const [key, field] of Object.entries(overrides)) value[Number(key)] = field; return value; };
@@ -74,6 +76,19 @@ const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "posi
     assert.equal(b.elements.get("audio").src, source); assert.equal(b.elements.get("audio").pauses, pauses);
     assert.equal(b.calls.length, calls);
     await b.elements.get("audio").onended(); assert.equal(b.helper.state().index, 128);
+  });
+  await test("short viewport audio controls collapse without resetting playback or selected conditions", async () => {
+    const b = browser(Array.from({length: 20}, (_, index) => tuple(index)), {viewportHeight: 404}); await b.helper.boot();
+    assert.equal(b.elements.get("audio-filter-details").open, false);
+    assert.equal(b.elements.get("clip-select-details").open, false);
+    await b.elements.get("start").onclick(); await b.helper.move(3, true);
+    const source = b.elements.get("audio").src, calls = b.calls.length;
+    b.elements.get("audio-filter-details").open = true; b.resize(444);
+    assert.equal(b.elements.get("audio-filter-details").open, true);
+    b.resize(600); assert.equal(b.elements.get("clip-select-details").open, true);
+    b.resize(404); assert.equal(b.elements.get("audio-filter-details").open, false);
+    assert.equal(b.helper.state().continuous, true); assert.equal(b.helper.state().index, 3);
+    assert.equal(b.elements.get("audio").src, source); assert.equal(b.calls.length, calls);
   });
   await test("only a same-origin exact parent can pause audio without resetting its queue or filters", async () => {
     const b = browser(Array.from({length: 400}, (_, index) => tuple(index))); await b.helper.boot();

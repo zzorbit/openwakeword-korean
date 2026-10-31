@@ -1844,6 +1844,25 @@ function pendingHardStorageRecipe() {
     assert.equal(b.elements.get("review-frame").getAttribute("src"),project.review.url);
     assert.equal(frame.srcWrites,writes+1);
   });
+  await test("microphone-to-results uses one direct navigation while leaving for other views unloads capture", async () => {
+    const project={id:"bora",status:"completed",results:{url:"/results/bora/",mic_url:"/mic/bora/"}};
+    const b=browser({initialState:{projects:[project]}});await flush();
+    const frame=b.elements.get("result-frame"), cleared=[];
+    const originalRemove=frame.removeAttribute.bind(frame);
+    frame.removeAttribute=name=>{if(name==="src")cleared.push(frame.getAttribute("src"));originalRemove(name);};
+    for(let round=0;round<3;round++){
+      b.click("dashboard-mic");await flush();assert.equal(frame.getAttribute("src"),"/mic/bora/");
+      const writes=frame.srcWrites;
+      b.click("dashboard-results");await flush();
+      assert.equal(frame.getAttribute("src"),"/results/bora/");
+      assert.equal(frame.srcWrites,writes+1);assert.equal(cleared.length,0);
+      await b.tick();assert.equal(frame.srcWrites,writes+1);
+    }
+    b.click("dashboard-mic");await flush();b.click("dashboard-logs");await flush();
+    assert.equal(frame.getAttribute("src"),null);assert.equal(cleared[0],"/mic/bora/");
+    assert.equal(b.calls.some(call=>call.options.method==="POST"),false);
+    assert.match(html,/id="result-frame"[^>]+loading="eager"/);
+  });
   await test("dashboard keyboard navigation skips unavailable views and reveals invalid setup fields", async () => {
     const b=browser({initialState:{projects:[{id:"bora",status:"ready"}]}});await flush();
     assert.equal(b.elements.get("dashboard-results").disabled,true);
@@ -1860,6 +1879,41 @@ function pendingHardStorageRecipe() {
     assert.equal(b.elements.get("setup-panel-advanced").hidden,false);
     b.click("new-project");await flush();
     assert.equal(b.elements.get("setup-panel-basic").hidden,false);
+  });
+  await test("global task actions stay accessible outside overview and disappear in new-model setup", async () => {
+    const b=browser({initialState:{projects:[{id:"bora",status:"running",stage:"train"}]}});await flush();
+    assert.equal(b.elements.get("project-actions").hidden,false);
+    assert.equal(b.elements.get("pause").hidden,false);
+    b.click("dashboard-logs");await flush();
+    assert.equal(b.elements.get("project-actions").hidden,false);
+    assert.equal(b.elements.get("pause").hidden,false);
+    b.click("dashboard-materials");await flush();
+    assert.equal(b.elements.get("project-actions").hidden,false);
+    b.click("new-project");await flush();
+    assert.equal(b.elements.get("project-actions").hidden,true);
+    assert.equal(b.elements.get("setup").hidden,false);
+    assert.equal(b.calls.some(call=>/\/(start|resume|pause)$/.test(call.url)),false);
+  });
+  await test("prepared-material tabs keep the chosen category across polling and fall back when unavailable", async () => {
+    const project={id:"bora",status:"running",training_materials:{targets:{generic_negative:2000,korean_negative:1}},evaluation_materials:{}};
+    const b=browser({initialState:{projects:[project]}});await flush();
+    b.click("dashboard-materials");
+    assert.equal(b.elements.get("coverage-panel-training").hidden,false);
+    assert.equal(b.elements.get("coverage-panel-evaluation").hidden,true);
+    b.click("coverage-tab-evaluation");await b.tick();
+    assert.equal(b.elements.get("coverage-panel-training").hidden,true);
+    assert.equal(b.elements.get("coverage-panel-evaluation").hidden,false);
+    assert.equal(b.elements.get("coverage-tab-evaluation").getAttribute("aria-selected"),"true");
+    let prevented=false;
+    b.elements.get("coverage-tab-evaluation").handlers.keydown({key:"ArrowLeft",currentTarget:b.elements.get("coverage-tab-evaluation"),preventDefault(){prevented=true;}});
+    assert.equal(prevented,true);assert.equal(b.elements.get("coverage-panel-training").hidden,false);
+    delete project.training_materials;await b.tick();
+    assert.equal(b.elements.get("coverage-tab-training").disabled,true);
+    assert.equal(b.elements.get("coverage-panel-evaluation").hidden,false);
+    delete project.evaluation_materials;await b.tick();
+    assert.equal(b.elements.get("coverage-tabs").hidden,true);
+    assert.equal(b.elements.get("materials-empty").hidden,false);
+    assert.equal(b.calls.some(call=>call.options.method==="POST"),false);
   });
   console.log(`Studio UI: ${tests.length} tests passed`);
   for (const name of tests) console.log("  ✓ " + name);

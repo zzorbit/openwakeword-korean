@@ -23,6 +23,18 @@
   let defaultRuntime = null;
   let thresholdEdited = false;
   let recommendedRuntimes = null;
+  let compactMetrics = null;
+  function fitMetrics() {
+    const detail = $("metrics-details");
+    if (!detail || !Number.isFinite(window.innerHeight)) return;
+    const compact = window.innerHeight < 520;
+    if (compact !== compactMetrics) { detail.open = !compact; compactMetrics = compact; }
+  }
+  fitMetrics(); window.addEventListener("resize", fitMetrics);
+  function showDeviceHint(text, attention = false) {
+    ui.deviceHint.textContent = text;
+    if (attention) { const notes = $("trial-notes"); if (notes) notes.open = true; }
+  }
 
   function displayThreshold(value) {
     const rounded = Number(value.toPrecision(6));
@@ -206,11 +218,11 @@
         ui.microphone.append(new Option(device.label || `마이크 ${++number} (권한 허용 후 이름 표시)`, device.deviceId));
       }
       if (Array.from(ui.microphone.options).some(option => option.value === selected)) ui.microphone.value = selected;
-      ui.deviceHint.textContent = devices.some(device => device.label) ? "입력 장치를 선택한 뒤 시험을 시작하세요." : "마이크 연결을 누르고 사용을 허용하면 장치 이름을 확인할 수 있습니다.";
+      showDeviceHint(devices.some(device => device.label) ? "입력 장치를 선택한 뒤 시험을 시작하세요." : "마이크 연결을 누르고 사용을 허용하면 장치 이름을 확인할 수 있습니다.");
       if (run?.activeDeviceId && !devices.some(device => device.deviceId === run.activeDeviceId)) {
         stop("선택한 마이크 연결이 끊겨 시험을 중지했습니다.", true);
       }
-    } catch (error) { if (!expectedProbe || probe === expectedProbe) ui.deviceHint.textContent = `마이크 목록을 읽지 못했습니다: ${error.message}`; }
+    } catch (error) { if (!expectedProbe || probe === expectedProbe) showDeviceHint(`마이크 목록을 읽지 못했습니다: ${error.message}`, true); }
     finally { refreshing = false; syncControls(); }
   }
 
@@ -218,21 +230,21 @@
     const target = probe;
     probe = null;
     for (const track of target?.stream?.getTracks() || []) track.stop();
-    if (target) ui.deviceHint.textContent = "마이크 연결을 취소했습니다. 다시 연결하려면 마이크 연결을 누르세요.";
+    if (target) showDeviceHint("마이크 연결을 취소했습니다. 다시 연결하려면 마이크 연결을 누르세요.", true);
   }
 
   async function connectMicrophone() {
     if (probe || run || refreshing || document.hidden || !window.isSecureContext || !navigator.mediaDevices?.getUserMedia) return;
     const target = {};
     probe = target;
-    ui.deviceHint.textContent = "브라우저의 마이크 사용 요청에서 허용을 선택하세요. 중지를 누르면 연결을 취소합니다.";
+    showDeviceHint("브라우저의 마이크 사용 요청에서 허용을 선택하세요. 중지를 누르면 연결을 취소합니다.", true);
     syncControls();
     try {
       target.stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
       if (probe !== target) return;
       await refreshDevices(target);
     } catch (error) {
-      if (probe === target) ui.deviceHint.textContent = microphoneError(error);
+      if (probe === target) showDeviceHint(microphoneError(error), true);
     } finally {
       for (const track of target.stream?.getTracks() || []) track.stop();
       if (probe === target) probe = null;

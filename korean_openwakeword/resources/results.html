@@ -18,14 +18,14 @@
 </nav>
 <div id="model-panel-recommendations" class="model-panel" role="tabpanel" tabindex="0" aria-labelledby="model-tab-recommendations">
 <section id="runtimeRecommendations" aria-labelledby="recommendation-title" hidden>
-<h2 id="recommendation-title" class="sr-only">모델별 추천 감지 설정</h2><p id="recommendationScope" class="section-hint"></p>
+<h2 id="recommendation-title" class="sr-only">모델별 추천 감지 설정</h2>
 <div class="scroll"><table id="recommendations"><thead><tr><th>모델</th><th>추천 여부</th><th>감지 기준</th><th>연속 감지</th><th>조용할 때</th><th>강소음·울림 평균</th><th>최약 조건</th><th>시간당 오작동</th><th>기존 평가 목표</th></tr></thead><tbody></tbody></table></div>
-<details class="recommendation-info"><summary>추천·평가 안내</summary><div class="disclosure-content"><p id="recommendationNote" class="table-note"></p><details id="recommendationFailures" hidden><summary>충족하지 못한 기준</summary><div id="recommendationReasons" class="table-note"></div></details></div></details>
+<details class="recommendation-info"><summary>추천·평가 안내</summary><div class="disclosure-content"><p id="recommendationScope" class="section-hint"></p><p id="recommendationNote" class="table-note"></p><details id="recommendationFailures" hidden><summary>충족하지 못한 기준</summary><div id="recommendationReasons" class="table-note"></div></details></div></details>
 </section></div>
 <div id="model-panel-evaluation" class="model-panel" role="tabpanel" tabindex="0" aria-labelledby="model-tab-evaluation" hidden>
-<h2 id="summary-title" class="sr-only">모델별 성능</h2><p id="baselineRuntime" class="table-note" hidden></p>
+<h2 id="summary-title" class="sr-only">모델별 성능</h2>
 <div class="scroll"><table id="summary"><thead><tr><th>순위</th><th>모델</th><th>종합 성공률</th><th>조용할 때</th><th>소음 평균</th><th>시간당 오작동</th><th title="호출이 끝난 뒤, 감지된 호출의 95%가 이 시간 안에 반응했습니다.">반응 시간</th><th>목표 충족</th></tr></thead><tbody></tbody></table></div>
-<p id="candidateStatus" class="selected-model"></p><p id="denominators" class="table-note"></p>
+<details class="evaluation-info"><summary>집계 기준</summary><div class="disclosure-content"><p id="baselineRuntime" class="table-note" hidden></p><p id="candidateStatus" class="selected-model"></p><p id="denominators" class="table-note"></p></div></details>
 </div>
 <div id="model-panel-targets" class="model-panel" role="tabpanel" tabindex="0" aria-labelledby="model-tab-targets" hidden>
 <div class="panel-heading"><h2>목표와 결과 비교</h2><div id="targetControls" class="controls"><label>모델 <select id="target-model"></select></label></div></div>
@@ -33,17 +33,17 @@
 <div class="scroll"><table id="targetComparison"><thead><tr><th>항목</th><th>목표</th><th>실제 결과</th><th>판정</th></tr></thead><tbody></tbody></table></div>
 </div></section>
 <section id="results-panel-conditions" class="workspace-panel conditions-panel" role="tabpanel" tabindex="0" aria-labelledby="results-tab-conditions" hidden>
-<div class="panel-heading"><h2 id="conditions-title">소음 크기별 성공률</h2><div class="controls"><label>모델 <select id="condition-model"></select></label><label>공간 울림 <select id="condition-reverb"></select></label></div></div>
-<p id="condition-clean" class="clean-result"></p>
+<div class="panel-heading"><h2 id="conditions-title">소음 크기별 성공률</h2><div class="controls"><label>모델 <select id="condition-model"></select></label><label>공간 울림 <select id="condition-reverb"></select></label></div><details class="conditions-help"><summary>표 안내</summary><div class="disclosure-content"><p id="condition-clean" class="clean-result"></p><p class="table-note">각 칸은 성공률과 감지 횟수 / 시험 횟수입니다. 소음 크기는 목소리를 기준으로 표시합니다.</p></div></details></div>
+
 <div class="scroll"><table id="conditions"><thead><tr><th>배경 소리</th><th>아주 작음<small>SNR 20 dB</small></th><th>작음<small>SNR 15 dB</small></th><th>중간<small>SNR 10 dB</small></th><th>큼<small>SNR 5 dB</small></th><th>목소리와 같은 크기<small>SNR 0 dB</small></th></tr></thead><tbody></tbody></table></div>
-<p class="table-note">각 칸은 성공률과 감지 횟수 / 시험 횟수입니다. 소음 크기는 목소리를 기준으로 표시합니다.</p>
+
 </section>
 <section id="results-panel-audio" class="workspace-panel audio-panel" role="tabpanel" tabindex="0" aria-labelledby="results-tab-audio" hidden>
 <div class="panel-heading"><h2 id="audio-title">시험 오디오 듣기</h2><details class="coverage-details"><summary>시험에 쓴 배경 소리</summary><div class="disclosure-content"><p id="noiseCoverage"></p></div></details></div>
-<div class="controls audio-filters"><label>소음 크기 <select id="snr"></select></label><label>배경 종류 <select id="category"><option value="all">모든 배경 순서대로</option><option value="environment">환경소음</option><option value="music">음악·전자음</option><option value="competing_speech">다른 사람 말소리</option></select></label><label>공간 울림 <select id="reverb"><option value="none">울림 추가 없음</option><option value="moderate">보통 울림</option><option value="strong">강한 울림</option></select></label></div>
-<div class="controls playback-controls"><button id="start" class="primary">처음부터 연속 듣기</button><button id="resume">여기부터 이어 듣기</button><button id="pause">일시정지</button><button id="prev">이전</button><button id="next">다음</button><p id="queue" class="queue"></p></div>
+<details id="audio-filter-details" class="audio-filter-details" open><summary>소음·울림 선택</summary><div class="controls audio-filters"><label>소음 크기 <select id="snr"></select></label><label>배경 종류 <select id="category"><option value="all">모든 배경 순서대로</option><option value="environment">환경소음</option><option value="music">음악·전자음</option><option value="competing_speech">다른 사람 말소리</option></select></label><label>공간 울림 <select id="reverb"><option value="none">울림 추가 없음</option><option value="moderate">보통 울림</option><option value="strong">강한 울림</option></select></label></div></details>
+<div class="controls playback-controls"><button id="start" class="primary" title="처음부터 연속 듣기">연속 듣기</button><button id="resume" title="현재 오디오부터 이어 듣기">이어 듣기</button><button id="pause">일시정지</button><button id="prev">이전</button><button id="next">다음</button></div>
 <div class="listening-grid">
-<div class="audio-player"><h3 id="clipTitle"></h3><p id="clipInfo"></p><audio id="audio" controls preload="metadata"></audio><p id="playState" role="status"></p><div class="controls clip-selection"><label>음성 번호 <select id="original"></select></label><label>오디오 <select id="item"></select></label></div></div>
+<div class="audio-player"><div class="clip-heading"><h3 id="clipTitle"></h3><p id="queue" class="queue"></p></div><p id="clipInfo"></p><audio id="audio" controls preload="metadata"></audio><p id="playState" role="status"></p><details id="clip-select-details" class="clip-select-details" open><summary>오디오 이동</summary><div class="controls clip-selection"><label>음성 번호 <select id="original"></select></label><label>오디오 <select id="item"></select></label></div></details></div>
 <div class="audio-reactions"><h3>모델 반응</h3><div class="scroll"><table id="responses"><thead><tr><th>모델</th><th>감지 결과</th><th>반응 시간</th></tr></thead><tbody></tbody></table></div></div>
 </div>
 <div class="audio-details"><details><summary>상세 점수와 파일 정보</summary><div class="disclosure-content"><div class="scroll"><table id="scores"><thead><tr><th>모델</th><th>최대 감지 점수</th><th>조용한 원본과의 점수 차이</th></tr></thead><tbody></tbody></table></div><p id="sample-id"></p><p><a id="download">이 오디오 내려받기</a></p><code id="hash"></code></div></details><details><summary>조용한 원본 · 호출어 없는 오디오</summary><div class="disclosure-content"><select id="extra" aria-label="조용한 원본과 호출어 없는 오디오"><option value="">오디오 선택</option></select></div></details></div>

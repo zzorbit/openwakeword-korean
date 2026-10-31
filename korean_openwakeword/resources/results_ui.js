@@ -8,6 +8,16 @@
   const categories = ["environment", "music", "competing_speech"];
   const levels = [20, 15, 10, 5, 0];
   let dashboardView = "models", modelView = "recommendations";
+  let compactAudio = null;
+  function fitAudioControls() {
+    if (typeof window === "undefined" || !Number.isFinite(window.innerHeight)) return;
+    const compact = window.innerHeight < 520;
+    if (compact === compactAudio) return;
+    compactAudio = compact;
+    for (const id of ["audio-filter-details", "clip-select-details"]) {
+      const detail = $(id); if (detail) detail.open = !compact;
+    }
+  }
   function activateTabs(prefix, names, chosen, focus = false) {
     names.forEach(name => {
       const tab = $(`${prefix}-tab-${name}`), panel = $(`${prefix}-panel-${name}`);
@@ -368,6 +378,8 @@
     return `${clip.original_order ? `음성 ${clip.original_order}` : "호출어 음성"} · ${noiseLabel(clip.category)}`;
   }
   initDashboard();
+  fitAudioControls();
+  if (typeof window !== "undefined") window.addEventListener?.("resize", fitAudioControls);
   if (typeof window !== "undefined") window.addEventListener?.("message", pauseFromParent);
   const api = {modelLabel, noiseLabel, snrLabel, reverbLabel, renderSummary, renderConditions, renderResponses, renderRecommendations, clipLabel,
     dashboard, modelDashboard, dashboardState: () => ({view: dashboardView, modelView})};
