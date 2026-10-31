@@ -225,7 +225,7 @@ def parser():
     a = sub.add_parser("tune", help="개발 점수 캐시로 임계값·연속 프레임 비교")
     a.add_argument("--project", type=Path, required=True); a.add_argument("--bundle", type=Path, required=True)
     a.add_argument("--evaluation", type=Path, required=True); a.add_argument("--output", type=Path, required=True)
-    a.add_argument("--thresholds", type=float, nargs="+", required=True); a.add_argument("--consecutive", type=int, nargs="+", default=[1])
+    a.add_argument("--thresholds", type=float, nargs="+", required=True); a.add_argument("--consecutive", type=int, nargs="+", help="생략하면 해당 모델에 저장된 연속 감지 수 유지")
     a.add_argument("--candidate", help="감지 기준을 비교할 모델 ID; 생략하면 실제 bundle 출력")
     a = sub.add_parser("recommend", help="공통 평가 점수로 모든 모델의 감지 설정 자동 추천")
     a.add_argument("--project", type=Path, required=True); a.add_argument("--bundle", type=Path, required=True)

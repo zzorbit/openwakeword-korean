@@ -103,7 +103,7 @@ def _source_bindings(project, bundle, evaluation):
 
 
 @project_storage
-def compare_cached(project, bundle, evaluation, output, thresholds, consecutive=(1,), candidate=None):
+def compare_cached(project, bundle, evaluation, output, thresholds, consecutive=None, candidate=None):
     """Compare explicit settings without selecting/deploying a model or runtime.
 
     Call this from a background job. Validation streams the original archive;
@@ -111,8 +111,11 @@ def compare_cached(project, bundle, evaluation, output, thresholds, consecutive=
     the requested candidate's exact cached score column.
     """
     from .selection import verified_evaluation
-    thresholds, consecutive = _parameters(thresholds, consecutive)
     root, config, package, report, clips, scores, offsets, candidates = verified_evaluation(project, bundle, evaluation)
+    # Omitting a comparison axis preserves this bundle's recorded value.
+    # New bundles start at one; historical bundles keep their original gate.
+    thresholds, consecutive = _parameters(thresholds,
+        [package["runtime"]["consecutive_frames"]] if consecutive is None else consecutive)
     if (root / "final_lock.json").exists():
         raise ValueError("Runtime is frozen; start a versioned experiment")
     candidate = deployment_candidate(package)["id"] if candidate is None else candidate
@@ -150,7 +153,7 @@ def compare_cached(project, bundle, evaluation, output, thresholds, consecutive=
             "network_rerun": False, "selection_applied": False}
 
 
-def tune(project, bundle, evaluation, output, thresholds, consecutive=(1,), candidate=None):
+def tune(project, bundle, evaluation, output, thresholds, consecutive=None, candidate=None):
     from .selection import verified_evaluation, copy_candidate_bundle, restrict_evaluation
     root, config, package, report, clips, scores, offsets, candidates = verified_evaluation(project, bundle, evaluation)
     if (root / "final_lock.json").exists():
@@ -160,7 +163,8 @@ def tune(project, bundle, evaluation, output, thresholds, consecutive=(1,), cand
     chosen = next((row for row in candidates if row["id"] == candidate), None)
     if chosen is None:
         raise ValueError(f"Unknown evaluated candidate: {candidate}")
-    thresholds, consecutive = _parameters(thresholds, consecutive)
+    thresholds, consecutive = _parameters(thresholds,
+        [package["runtime"]["consecutive_frames"]] if consecutive is None else consecutive)
     output = _output_path(output, bundle, evaluation)
     ids = [row["id"] for row in candidates]
     comparisons, best = [], None
