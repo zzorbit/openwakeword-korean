@@ -229,6 +229,16 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
     assert.equal(b.elements.get("models").children[1].children[5].textContent, "0.98625");
     b.click("stop"); await flush();
   });
+  await test("microphone recommendations disclose the new selection ceiling without changing historical goals", async () => {
+    const b = browser({recommendedRuntimes: recommendations, recommendations: {
+      search_policy: {threshold_step: .01}, recommendation_criteria: {fa_per_hour: 1}, adoption_criteria: {fa_per_hour: .1},
+      candidates: [{id: "head1", recommendation_available: true, passed: false, deployment_backend_verified: false}]
+    }}); await flush();
+    assert.match(b.elements.get("recommendationHint").textContent, /감지 기준 0.01 간격 · 시간당 오작동 1회 이하/);
+    assert.match(b.elements.get("recommendationHint").textContent, /기존 평가 목표 미달/);
+    assert.doesNotMatch(b.elements.get("recommendationHint").textContent, /추천 기준을 만족하는 조합이 없어/);
+    assert.equal(b.elements.get("trial-mode").value, "recommended");
+  });
   await test("near-one defaults stay valid on display, reset and explicit trial start", async () => {
     for (const threshold of [.9999999, .9999999999999999]) {
       const b = browser({ defaultRuntime: { threshold } }); await flush();

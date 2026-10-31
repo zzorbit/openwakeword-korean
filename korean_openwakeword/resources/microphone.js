@@ -56,7 +56,11 @@
       const missed = candidates.filter(row => row.passed === false || row.adoption?.passed === false);
       const unverified = candidates.some(row => row.deployment_backend_verified !== true);
       const names = unavailable.map(row => info.models.find(model => model.id === row.id)?.label || "모델").join(" · ");
-      ui.recommendationHint.textContent = `${unavailable.length ? `${names}: 추천 기준을 만족하는 조합이 없어 기존 설정을 유지합니다. ` : ""}${missed.length ? "전체 목표 미달 모델이 포함돼 있습니다. " : ""}${unverified ? "저장 점수 기준 추천입니다. 마이크 반응도 확인하세요." : "적용값은 아래 모델 반응 표에 표시합니다."}`;
+      const step = info.runtime_recommendations?.search_policy?.threshold_step;
+      const faLimit = info.runtime_recommendations?.recommendation_criteria?.fa_per_hour;
+      const declaredSearch = Number.isFinite(step) && step > 0 && step < 1 && Number.isFinite(faLimit) && faLimit >= 0
+        ? `추천 기준: 감지 기준 ${step} 간격 · 시간당 오작동 ${faLimit}회 이하. ` : "";
+      ui.recommendationHint.textContent = `${declaredSearch}${unavailable.length ? `${names}: 추천 기준을 만족하는 조합이 없어 기존 설정을 유지합니다. ` : ""}${missed.length ? "기존 평가 목표 미달 모델이 포함돼 있습니다. " : ""}${unverified ? "저장 점수 기준 추천입니다. 마이크 반응도 확인하세요." : "적용값은 아래 모델 반응 표에 표시합니다."}`;
     }
   }
 

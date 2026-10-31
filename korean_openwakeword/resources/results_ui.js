@@ -101,12 +101,19 @@
       }
     }
     const hardPolicy = measured.some(row => row.metrics.hard_conditions);
+    const step = source.search_policy?.threshold_step;
+    const faLimit = source.recommendation_criteria?.fa_per_hour;
+    const originalFaLimit = source.adoption_criteria?.fa_per_hour ?? report.adoption_criteria?.fa_per_hour;
+    const declaredSearch = finite(step) && step > 0 && step < 1 && finite(faLimit) && faLimit >= 0
+      ? ` 감지 기준 ${step} 간격 · 시간당 오작동 ${faLimit}회 이하.` : "";
     if ($("recommendationScope")) $("recommendationScope").textContent = hardPolicy
-      ? "조용할 때의 성공률·오작동·반응 시간 기준을 지키며 강한 소음과 울림의 조건별 평균 성공률이 높은 값을 고릅니다."
+      ? `조용할 때의 성공률·반응 시간 기준을 지키며 강한 소음과 울림의 조건별 평균 성공률이 높은 값을 고릅니다.${declaredSearch}`
       : "감지 기준과 연속 감지 수를 함께 비교한 이전 추천입니다.";
     const unavailable = measured.some(row => row.recommendation_available === false);
     const unverified = measured.some(row => row.deployment_backend_verified !== true);
-    if ($("recommendationNote")) $("recommendationNote").textContent = `${unavailable ? "추천 기준을 만족하는 조합이 없는 모델은 절충 후보를 표시합니다. 마이크에는 그 모델의 기존 설정을 유지합니다. " : ""}${unverified ? "저장 점수 기준 비교이며 마이크 실행 결과는 별도로 확인합니다." : "실행 연산 방식에서도 추천 설정을 확인했습니다."}`;
+    const previousGoal = finite(originalFaLimit) && finite(faLimit) && originalFaLimit !== faLimit
+      ? `기존 평가 목표의 오작동 한도는 시간당 ${originalFaLimit}회이며, 추천 기준과 별도로 표시합니다. ` : "";
+    if ($("recommendationNote")) $("recommendationNote").textContent = `${unavailable ? "추천 기준을 만족하는 조합이 없는 모델은 절충 후보를 표시합니다. 마이크에는 그 모델의 기존 설정을 유지합니다. " : ""}${previousGoal}${unverified ? "저장 점수 기준 비교이며 마이크 실행 결과는 별도로 확인합니다." : "실행 연산 방식에서도 추천 설정을 확인했습니다."}`;
     if (baseline) baseline.textContent = `아래 성능과 오디오 반응은 평가 당시 설정${report.runtime ? ` · 감지 기준 ${thresholdText(report.runtime.threshold)} · 연속 ${report.runtime.consecutive_frames}회` : ""}의 결과입니다. 추천 설정의 결과는 위 표에 따로 표시합니다.`;
   }
   function reasonText(reason) {

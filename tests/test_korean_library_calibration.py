@@ -161,14 +161,14 @@ def test_interrupted_search_resumes_and_source_change_rejected(experiment, tmp_p
         recommend(project, bundle, evaluation, directory)
 
 
-def test_resume_mid_refinement_reconstructs_the_same_search(experiment, tmp_path):
+def test_resume_partway_through_fixed_grid_reconstructs_the_same_search(experiment, tmp_path):
     project, bundle, evaluation, _ = experiment
     complete = tmp_path / "complete"
     expected = recommend(project, bundle, evaluation, complete)
-    resumed = tmp_path / "partly_refined"
+    resumed = tmp_path / "partly_searched"
     def interrupt(progress):
         if progress["completed"] == 10:
-            raise InterruptedError("pause after coarse search and some refinement probes")
+            raise InterruptedError("pause partway through the fixed grid")
     with pytest.raises(InterruptedError):
         recommend(project, bundle, evaluation, resumed, interrupt)
     actual = recommend(project, bundle, evaluation, resumed)
@@ -176,18 +176,74 @@ def test_resume_mid_refinement_reconstructs_the_same_search(experiment, tmp_path
     assert list(iter_rows(resumed / "comparisons.jsonl")) == list(iter_rows(complete / "comparisons.jsonl"))
 
 
-def test_refinement_follows_each_consecutive_counts_own_promising_interval(experiment, tmp_path):
+def test_all_counts_use_exactly_the_declared_fixed_grid_without_refinement(experiment, tmp_path):
     project, bundle, evaluation, ids = experiment
-    directory = tmp_path / "per_count"
-    recommend(project, bundle, evaluation, directory)
-    # Head 2 has a one-frame negative spike at .3. Its one-frame gate must
-    # refine above that spike; two-frame confirmation can search lower values.
-    entries = [row["entry"] for row in iter_rows(directory / "comparisons.jsonl") if row["candidate"] == ids[1]]
-    one = {row["runtime"]["threshold"] for row in entries if row["runtime"]["consecutive_frames"] == 1}
-    two = {row["runtime"]["threshold"] for row in entries if row["runtime"]["consecutive_frames"] == 2}
-    assert one != two
-    assert min(two) < min(one)
-    assert len(one | two) > 2  # both start from the same two coarse thresholds
+    directory, progress = tmp_path / "fixed_grid", []
+    selected = recommend(project, bundle, evaluation, directory, progress.append)["candidates"]
+    records = list(iter_rows(directory / "comparisons.jsonl"))
+    expected = {(threshold, count) for threshold in calibration.COARSE_THRESHOLDS
+                for count in calibration.CONSECUTIVE_COUNTS}
+    for candidate in ids:
+        measured = [(row["entry"]["runtime"]["threshold"], row["entry"]["runtime"]["consecutive_frames"])
+                    for row in records if row["candidate"] == candidate]
+        assert len(measured) == len(set(measured)) == len(expected)
+        assert set(measured) == expected
+    assert all(row["tested_combinations"] == len(expected) for row in selected)
+    assert progress[-1]["completed"] == progress[-1]["total"] == len(expected) * len(ids)
+    assert len(progress) == len(expected) * len(ids)  # baseline does not add a duplicate comparison
+
+
+def test_default_threshold_grid_has_only_one_hundredth_steps():
+    expected = tuple(i / 100 for i in range(1, 100))
+    assert calibration.COARSE_THRESHOLDS == expected
+    assert calibration.SEARCH_POLICY["coarse_thresholds"] == list(expected)
+    assert calibration.SEARCH_POLICY["threshold_step"] == .01
+    assert calibration.SEARCH_POLICY["refinement"] == "none"
+    assert calibration.SEARCH_POLICY["refinement_rounds"] == 0
+    assert len(expected) * len(calibration.CONSECUTIVE_COUNTS) == 594
+
+
+def test_recommendation_ceiling_is_distinct_from_original_adoption(experiment, tmp_path):
+    project, bundle, evaluation, _ = experiment
+    clips = read_json(evaluation / "clips.json")
+    with np.load(evaluation / "scores.npz", allow_pickle=False) as archive:
+        scores, offsets, ids = archive["scores"].copy(), archive["offsets"].copy(), archive["model_ids"].copy()
+    # A single spurious event in one eligible hour passes the selected 1/h
+    # ceiling, while still failing the unchanged historical .1/h target.
+    # One-frame hard calls make that gate outperform the two-frame alternative.
+    for index, row in enumerate(clips[:-1]):
+        if row["category"] == "clean" and row["reverb_condition"] == "none":
+            continue
+        scores[offsets[index]:offsets[index + 1], 0] = 0
+        scores[offsets[index] + 27, 0] = .65
+    warmup = verify_bundle(bundle)["runtime"]["warmup_s"]
+    negative_length = int(round((3600 + warmup) / .08))
+    negative = np.zeros((negative_length, len(ids)), np.float32)
+    negative[29, 0] = .7
+    scores = np.concatenate([scores[:offsets[-2]], negative])
+    offsets[-1] = len(scores)
+    clips[-1].update(duration_s=negative_length * .08, eligible_seconds=3600.)
+    np.savez_compressed(evaluation / "scores.npz", scores=scores, offsets=offsets, model_ids=ids)
+    write_json(evaluation / "clips.json", clips)
+    report = read_json(evaluation / "report.json")
+    report["score_cache_sha256"] = digest(evaluation / "scores.npz")
+    write_json(evaluation / "report.json", report)
+    receipt = read_json(evaluation / "receipt.json")
+    receipt.update(report_sha256=digest(evaluation / "report.json"), clips_sha256=digest(evaluation / "clips.json"))
+    write_json(evaluation / "receipt.json", receipt)
+    protected = {path: digest(path) for path in (Path(project), bundle / "manifest.json",
+                 evaluation / "report.json", evaluation / "clips.json", evaluation / "scores.npz")}
+    directory = tmp_path / "new_selection_ceiling"
+    result = recommend(project, bundle, evaluation, directory)
+    selected = result["candidates"][0]
+    saved = read_recommendation(project, bundle, evaluation, directory)
+    assert selected["runtime"]["consecutive_frames"] == 1
+    assert selected["metrics"]["negative"]["fa_per_hour"] == 1.
+    assert selected["recommendation_available"] and selected["recommendation_reasons"] == []
+    assert selected["passed"] is False and "FA/hour target failed or unmeasured" in selected["adoption"]["reasons"]
+    assert saved["recommendation_criteria"]["fa_per_hour"] == 1.
+    assert saved["adoption_criteria"]["fa_per_hour"] == .1
+    assert all(digest(path) == sha for path, sha in protected.items())
 
 
 def test_gpu_cache_is_not_mislabeled_cpu_verified(experiment, tmp_path):

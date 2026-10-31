@@ -237,6 +237,26 @@ test("a failed protection check is a tradeoff, never a recommendation or automat
   assert.equal(rows("recommendations")[0][5], "자료 부족");
   assert.match(elements.get("recommendationReasons").children[0].textContent, /강소음·울림 시험 자료 부족/);
 });
+
+test("new selection limits are shown separately from the preserved original evaluation goals", () => {
+  const {ui, rows, elements} = browser(), report = sample(), model = report.models[0];
+  report.runtime_recommendations = {schema_version: 1, method: "joint_cached_hard_conditions_v3",
+    search_policy: {threshold_step: .01}, recommendation_criteria: {fa_per_hour: 1},
+    adoption_criteria: {fa_per_hour: .1}, candidates: [{id: model.id,
+      runtime: {threshold: .99, consecutive_frames: 2}, recommendation_available: true,
+      metrics: {...model, negative: {...model.negative, fa_per_hour: .8}, hard_conditions: {complete: true, cell_mean: .84, worst_recall: .66}},
+      passed: false, adoption: {passed: false, reasons: ["FA/hour target failed or unmeasured"]}}]};
+  const before = JSON.stringify(report); ui.renderSummary(report);
+  assert.equal(rows("recommendations")[0][1], "추천");
+  assert.equal(rows("recommendations")[0][8], "미달");
+  assert.match(elements.get("recommendationScope").textContent, /감지 기준 0.01 간격 · 시간당 오작동 1회 이하/);
+  assert.match(elements.get("recommendationNote").textContent, /기존 평가 목표의 오작동 한도는 시간당 0.1회/);
+  assert.doesNotMatch(elements.get("recommendationNote").textContent, /추천 기준을 만족하는 조합이 없는/);
+  assert.equal(JSON.stringify(report), before);
+  report.runtime_recommendations.recommendation_criteria.fa_per_hour = 2;
+  ui.renderSummary(report);
+  assert.match(elements.get("recommendationScope").textContent, /시간당 오작동 2회 이하/);
+});
 test("recommended-setting failures describe that setting rather than the preserved baseline", () => {
   const {ui, elements, rows} = browser(), report = sample(), model = report.models[0];
   report.runtime_recommendations = {schema_version: 1, candidates: [{id: model.id,

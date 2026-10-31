@@ -18,8 +18,8 @@ from .project import load_project
 from .storage import project_storage
 
 
-METHOD = "joint_cached_hard_conditions_v2"
-COARSE_THRESHOLDS = tuple([i / 20 for i in range(1, 20)] + [.975, .99, .995, .999])
+METHOD = "joint_cached_hard_conditions_v3"
+COARSE_THRESHOLDS = tuple(i / 100 for i in range(1, 100))
 CONSECUTIVE_COUNTS = (1, 2, 3, 4, 5, 6)
 HARD_CONDITIONS = tuple(
     [(reverb, category, snr) for reverb in ("none", "moderate", "strong")
@@ -30,9 +30,11 @@ SEARCH_POLICY = {
     "starting_threshold": .5,
     "starting_consecutive_frames": 1,
     "coarse_thresholds": list(COARSE_THRESHOLDS),
+    "threshold_step": .01,
     "consecutive_frames": list(CONSECUTIVE_COUNTS),
-    "refinement": "Two rounds per consecutive count: three interior quartile probes between that count's immediate tested neighbours of its best threshold (open-range boundaries 0.000001/0.999999)",
-    "refinement_rounds": 2,
+    "refinement": "none",
+    "refinement_rounds": 0,
+    "max_false_activations_per_hour": 1.,
     "hard_conditions": [{"reverb_condition": reverb, "category": category, "snr_db": snr}
                         for reverb, category, snr in HARD_CONDITIONS],
     "objective": "Equal-weight mean of all 20 hard-condition recalls; dry Clean and SNR0 are excluded; missing conditions prevent a recommendation",
@@ -221,6 +223,15 @@ def _constraint_checks(metrics, targets):
             "hard_conditions": metrics["hard_conditions"]["complete"]}
 
 
+def recommendation_criteria(config):
+    """Selection protections are distinct from historical adoption targets.
+
+    The user-selected false-activation ceiling changes recommendation search,
+    never the source project, report or existing model adoption judgement.
+    """
+    return dict(adoption_criteria(config), fa_per_hour=SEARCH_POLICY["max_false_activations_per_hour"])
+
+
 def _recommendation_reasons(checks, targets):
     reasons = {"clean": "Clean recall below target or unmeasured",
                "false_activations": "FA/hour target failed or unmeasured",
@@ -305,7 +316,8 @@ def recommend(project, bundle, evaluation, output, progress_callback=None):
     protocol = report.get("execution", {}).get("scoring_protocol", "reference_cpu_session_v1")
     cpu = report.get("execution", {}).get("backend", "cpu") == "cpu" and protocol == "reference_cpu_session_v1"
     declaration = {"bindings": bindings, "search_policy": SEARCH_POLICY,
-                   "candidates": candidates, "adoption_criteria": adoption_criteria(config)}
+                   "candidates": candidates, "adoption_criteria": adoption_criteria(config),
+                   "recommendation_criteria": recommendation_criteria(config)}
     journal = output / "comparisons.jsonl"
     comparisons = defaultdict(dict)
     with writer_lock(output):
@@ -322,16 +334,15 @@ def recommend(project, bundle, evaluation, output, progress_callback=None):
                     or row.get("checksum") != identity({key: value for key, value in row.items() if key != "checksum"})):
                 raise ValueError("Resumable detection comparison record changed")
             entry = row["entry"]
-            comparisons[row["candidate"]][(entry["runtime"]["threshold"], entry["runtime"]["consecutive_frames"])] = entry
+            key = (entry["runtime"]["threshold"], entry["runtime"]["consecutive_frames"])
+            if key[0] not in COARSE_THRESHOLDS or key[1] not in CONSECUTIVE_COUNTS:
+                raise ValueError("Resumable detection comparison is outside the declared fixed grid")
+            comparisons[row["candidate"]][key] = entry
         selected = []
         total_coarse = len(candidates) * len(COARSE_THRESHOLDS) * len(CONSECUTIVE_COUNTS)
         completed = 0
         for column, candidate in enumerate(candidates):
             cache = comparisons[candidate["id"]]
-            # Replay the declared query sequence on resume. Loaded records may
-            # include a partly finished refinement; those future probes must
-            # not influence an earlier round when reconstructing its bounds.
-            visited = set()
             values = scores[:, column]
             rolling = {count: prepared.rolling_scores(values, count) for count in CONSECUTIVE_COUNTS}
             def compare(threshold, count):
@@ -341,43 +352,32 @@ def recommend(project, bundle, evaluation, output, progress_callback=None):
                     runtime = dict(package["runtime"], threshold=threshold, consecutive_frames=count)
                     metrics = prepared.summary(values, threshold, count, candidate, rolling=rolling[count])
                     entry = {"runtime": runtime, "metrics": metrics, "adoption": adoption([metrics], config, candidate["id"]),
-                             "constraint_checks": _constraint_checks(metrics, declaration["adoption_criteria"])}
+                             "constraint_checks": _constraint_checks(metrics, declaration["recommendation_criteria"])}
                     row = {"candidate": candidate["id"], "entry": entry}
                     append_row(journal, dict(row, checksum=identity(row)))
                     cache[key] = entry
-                visited.add(key)
                 completed += 1
                 if progress_callback:
                     progress_callback({"phase": "runtime_recommendation", "candidate": candidate["id"],
                                        "done": completed, "completed": completed,
-                                       "total": total_coarse + len(candidates) * (1 + SEARCH_POLICY["refinement_rounds"] * 3 * len(CONSECUTIVE_COUNTS)),
+                                       "total": total_coarse,
                                        "unit": "조합", "label": "모델별 감지 설정 비교",
                                        "threshold": threshold, "consecutive_frames": count})
                 return cache[key]
-            baseline = compare(.5, 1)
             for threshold in COARSE_THRESHOLDS:
                 for count in CONSECUTIVE_COUNTS:
                     compare(threshold, count)
-            for _ in range(SEARCH_POLICY["refinement_rounds"]):
-                for count in CONSECUTIVE_COUNTS:
-                    local = {threshold: cache[(threshold, frames)] for threshold, frames in visited if frames == count}
-                    best = max(local.values(), key=_rank)
-                    tested = sorted(local)
-                    index = tested.index(best["runtime"]["threshold"])
-                    low = tested[index - 1] if index > 0 else .000001
-                    high = tested[index + 1] if index + 1 < len(tested) else .999999
-                    for threshold in np.linspace(low, high, 5)[1:-1]:
-                        compare(float(threshold), count)
-            best = deepcopy(max((cache[key] for key in visited), key=_rank))
+            baseline = cache[(.5, 1)]
+            best = deepcopy(max(cache.values(), key=_rank))
             available = all(best["constraint_checks"].values())
             best.update(id=candidate["id"], kind=candidate["kind"],
                         passed=best["adoption"]["passed"],
                         status="recommended" if available else "no_feasible_candidate",
                         recommendation_available=available,
                         protection_passed=all(value for key, value in best["constraint_checks"].items() if key != "hard_conditions"),
-                        recommendation_reasons=_recommendation_reasons(best["constraint_checks"], declaration["adoption_criteria"]),
+                        recommendation_reasons=_recommendation_reasons(best["constraint_checks"], declaration["recommendation_criteria"]),
                         original_runtime=deepcopy(package["runtime"]),
-                        baseline=baseline, tested_combinations=len(visited),
+                        baseline=baseline, tested_combinations=len(cache),
                         source_scoring_protocol=protocol, deployment_backend_verified=cpu,
                         verification_scope="reference_cpu_scores" if cpu else "cached_score_protocol_only")
             selected.append(best)
@@ -387,7 +387,8 @@ def recommend(project, bundle, evaluation, output, progress_callback=None):
             raise ValueError("Automatic detection recommendation inputs changed during search")
         result = {"schema_version": 1, "method": METHOD, "stage": "development", "created_at": now(),
                   "bindings": bindings, "search_policy": SEARCH_POLICY,
-                  "adoption_criteria": adoption_criteria(config), "candidates": selected,
+                  "adoption_criteria": declaration["adoption_criteria"],
+                  "recommendation_criteria": declaration["recommendation_criteria"], "candidates": selected,
                   "selection_applied": False, "network_rerun": False, "Final_used_for_selection": False}
         write_json(output / "recommendation.json", result)
         write_json(output / "receipt.json", {"schema_version": 1, "bindings": bindings,

@@ -232,10 +232,10 @@ koww serve --directory models/bora/reports/dev_selected/site --port 8791
 
 [http://127.0.0.1:8791/](http://127.0.0.1:8791/)에서 단일 모델과 앙상블을 비교하고 Ctrl+C로 서버를 종료합니다. 새 설정의 시작값은 **임계값 0.5·연속 감지 1회**이며, 동봉 모델과 기존 학습의 값은 유지합니다.
 
-웹에서는 공통 평가 후 **모델마다 임계값과 연속 감지 1–6회**를 함께 비교해 추천합니다. 저장된 점수로 넓게 비교한 뒤 연속 감지 수마다 유망한 구간을 두 번 세분화합니다. Clean·오호출·반응속도 기준을 지키는 후보 중 **강한 소음·잔향 20조건의 평균 성공률**이 가장 높은 값을 고릅니다. SNR10·5 dB의 세 소음 유형과 세 잔향 조건, 소음 없이 중간·강한 잔향을 적용한 조건을 같은 비중으로 비교합니다. 필요한 조건이 없거나 보호 기준을 지키는 후보가 없으면 **추천 없음**으로 표시하고 절충값을 구분합니다. 정식 채택 목표의 충족 여부는 따로 표시합니다. 자세한 기준은 [학습 계획](../plan.md#모델별-감지-설정-자동-추천)에 있습니다. 직접 명령을 쓸 때는 다음으로 추천 기록을 별도 폴더에 만듭니다.
+웹에서는 공통 평가 후 **임계값 0.01–0.99의 99개 값과 연속 감지 1–6회**를 모두 비교합니다. 간격은 **0.01로 고정**하며 추가 세분화는 하지 않습니다. 모델마다 594조합을 저장된 점수로 비교하고, Clean·반응속도 기준을 지키며 **오호출이 시간당 1회 이하**인 후보 중 **강한 소음·잔향 20조건의 평균 성공률**이 가장 높은 값을 고릅니다. SNR10·5 dB의 세 소음 유형과 세 잔향 조건, 소음 없이 중간·강한 잔향을 적용한 조건을 같은 비중으로 비교합니다. 필요한 조건이 없거나 추천 기준을 지키는 후보가 없으면 **추천 없음**으로 표시하고 절충값을 구분합니다. 기존 정식 채택 오호출 목표인 시간당 0.1회는 변경하지 않으며, 추천 가능 여부와 정식 채택 목표의 충족 여부를 따로 표시합니다. 자세한 기준은 [학습 계획](../plan.md#모델별-감지-설정-자동-추천)에 있습니다. 직접 명령을 쓸 때는 다음으로 추천 기록을 별도 폴더에 만듭니다.
 
 ```powershell
-koww recommend --project models/bora/project.json --bundle models/bora/models/candidate_selected --evaluation models/bora/reports/dev_selected --output models/bora/reports/runtime_recommendations_v2
+koww recommend --project models/bora/project.json --bundle models/bora/models/candidate_selected --evaluation models/bora/reports/dev_selected --output models/bora/reports/runtime_recommendations_v3
 ```
 
 `recommendation.json`에 모델별 추천 설정과 성능, 비교 범위, 원본 평가의 해시를 기록합니다. 기존 모델·평가·검수 기록은 변경하지 않습니다. GPU 평가의 CPU 재확인은 원래 임계값 주변에 대한 것이므로, 새 임계값에서도 CPU 실행과 같은 판정이라는 뜻은 아닙니다. 별도 검증 전에는 저장 점수 기준 추천으로 구분합니다. 독립 최종 평가는 추천에 사용하지 않습니다.

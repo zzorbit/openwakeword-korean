@@ -222,7 +222,7 @@ def test_site_rejects_recommendations_for_other_evaluation_evidence(tmp_path, fi
 
 
 @pytest.mark.parametrize("automatic", [True, False])
-@pytest.mark.parametrize("policy", ["joint_cached_score_search_v1", "joint_cached_hard_conditions_v2"])
+@pytest.mark.parametrize("policy", ["joint_cached_score_search_v1", "joint_cached_hard_conditions_v2", "joint_cached_hard_conditions_v3"])
 def test_studio_recommends_after_scoring_only_for_the_versioned_policy(tmp_path, monkeypatch, automatic, policy):
     from korean_openwakeword import calibration, evaluate, studio_steps as steps
     settings = steps.preset_settings("check")
@@ -280,7 +280,7 @@ def test_new_policy_does_not_add_stages_or_enable_final_access():
     from korean_openwakeword import studio_steps as steps
     for name in ("check", "trial", "production"):
         settings = steps.preset_settings(name)
-        assert settings["runtime_recommendation_policy"] == "joint_cached_hard_conditions_v2"
+        assert settings["runtime_recommendation_policy"] == "joint_cached_hard_conditions_v3"
         plan = steps.workflow_plan(settings)
         assert len(plan) == 19
         assert not any("final" in row["id"].lower() for row in plan)
