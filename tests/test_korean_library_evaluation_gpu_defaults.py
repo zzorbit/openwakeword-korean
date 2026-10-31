@@ -190,6 +190,9 @@ def test_new_presets_select_gpu_auto_with_explicit_numerical_policy(name):
 def test_studio_new_settings_use_auto_but_saved_settings_without_backend_remain_cpu(monkeypatch, tmp_path, legacy):
     settings = studio_steps.preset_settings("check")
     settings.pop("evaluation_policy")
+    # This routing fixture publishes no acoustic score cache. Preserve the
+    # pre-recommendation workflow while testing GPU/CPU defaults independently.
+    settings.pop("runtime_recommendation_policy")
     if legacy:
         for name in ("evaluation_backend", "gpu_batch_size", "gpu_boundary_margin", "gpu_numerical_differences_approved"):
             settings.pop(name)
@@ -225,6 +228,9 @@ def test_studio_reuses_only_the_selected_backend_and_preserves_other_evaluation_
     from korean_openwakeword import selection
     settings = studio_steps.preset_settings("check")
     settings.pop("evaluation_policy")
+    # Checkpoint/backend reuse is tested with synthetic report-only records;
+    # actual automatic recommendation uses the end-to-end stage fixture.
+    settings.pop("runtime_recommendation_policy")
     settings["evaluation_backend"] = requested
     project = create_project(tmp_path / "word", "보라야", "reuse_cpu",
         positive_originals=settings["originals"], augmentation_rounds=settings["rounds"],

@@ -183,6 +183,9 @@ def test_studio_reuses_only_an_incomplete_evaluation_with_exact_input_binding(tm
     from korean_openwakeword import evaluate, studio_steps
     from korean_openwakeword.project import create_project
     settings = studio_steps.preset_settings("check")
+    # The mocked scorer below publishes no scores.npz. Keep its historical
+    # workflow policy so this test isolates checkpoint binding and reuse.
+    settings.pop("runtime_recommendation_policy")
     settings["evaluation_backend"] = "cpu"
     project = create_project(tmp_path / "word", "보라야", "resume_fixture",
         positive_originals=settings["originals"], augmentation_rounds=settings["rounds"],
@@ -218,6 +221,8 @@ def test_studio_reuses_verified_completed_evaluation_before_any_partial(tmp_path
     from korean_openwakeword.common import digest
     from korean_openwakeword.project import create_project
     settings = studio_steps.preset_settings("check")
+    # A report-only completed fixture exercises reuse without a gate search.
+    settings.pop("runtime_recommendation_policy")
     settings["evaluation_backend"] = "cpu"
     project = create_project(tmp_path / "word", "보라야", "completed_fixture",
         positive_originals=settings["originals"], augmentation_rounds=settings["rounds"],
