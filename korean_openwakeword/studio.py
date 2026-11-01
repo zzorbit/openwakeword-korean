@@ -29,6 +29,21 @@ from .project import create_project, load_project
 from .web_page import render_page_config
 
 
+_NAVIGATION_GROUPS = (
+    ("downloads", ("frontend", "data_download", "data_review", "data_connect")),
+    ("voices", ("references", "references_review")),
+    ("pronunciation", ("pilot", "pilot_review")),
+    ("positive-generation", ("positives",)),
+    ("phrases", ("hard_phrases",)),
+    ("hard-generation", ("hard_generation",)),
+    ("hard-review", ("hard_review", "hard_connect")),
+    ("features", ("features",)),
+    ("training", ("training", "package")),
+    ("evaluation", ("development", "evaluation")),
+    ("results", ("results",)),
+)
+
+
 def process_identity(pid):
     """Creation identity, not just PID existence (PIDs may be recycled)."""
     if type(pid) is not int or pid < 1:
@@ -549,6 +564,8 @@ class StudioManager:
         self._microphones = {}
         self._journals = {}
         self._rates = {}
+        self._history_metadata = {}
+        self._history_download_plans = {}
         self._closing = threading.Event()
         self._thread = None
         self.registry = read_json(self.registry_path) if self.registry_path.exists() else {"projects": {}, "active_project_id": None}
@@ -730,6 +747,12 @@ class StudioManager:
 
     def create(self, payload):
         with self._lock:
+            if isinstance(payload, dict):
+                for key in ("download_checkpoint", "navigation_checkpoints"):
+                    if key in payload and type(payload[key]) is not bool:
+                        raise ValueError("화면 진행 확인 설정은 참 또는 거짓으로 지정하세요.")
+                if payload.get("download_checkpoint") and payload.get("navigation_checkpoints"):
+                    raise ValueError("다운로드 전용 확인과 전체 단계 확인 중 하나만 선택하세요.")
             word, preset, settings, plan = self._model_request(payload)
             target, saved = self._model_location(word, preset, settings)
             if saved:
@@ -761,6 +784,15 @@ class StudioManager:
                      "created_at": now(), "status": "ready", "index": 0,
                      "plan": plan, "results": {}, "inputs": {}, "job": None,
                      "error": None, "next_action": "시작하면 자료 준비부터 자동으로 진행합니다."}
+            if payload.get("download_checkpoint") is True:
+                # Web navigation is orchestration only: preserve the canonical
+                # settings, computational plan and every worker request.
+                state["download_checkpoint"] = {"policy": "explicit_download_v1", "state": "awaiting_start"}
+                state["next_action"] = "자료 다운로드 시작을 누르세요."
+            if payload.get("navigation_checkpoints") is True:
+                self._navigation_bounds(state)
+                state["navigation_checkpoint"] = {"policy": "explicit_story_v1", "step": "downloads", "state": "awaiting_start"}
+                state["next_action"] = "자료 다운로드 시작을 누르세요."
             state["execution_contract"] = {**self._execution_contract,
                 "settings_sha256": identity(settings), "plan_sha256": identity(state["plan"])}
             selected_cache = os.environ.get("KOWW_CACHE_ROOT")
@@ -1099,6 +1131,88 @@ class StudioManager:
                     continue
                 raise ValueError("이전 단계의 결과 파일이 변경되었습니다: " + binding["path"])
 
+    def _checkpoint_prefix_complete(self, state, count):
+        stages = tuple(row["id"] for row in state["plan"][:count])
+        if (len(stages) != count or state["index"] < count
+                or any(state.get("results", {}).get(stage, {}).get("state") != "completed" for stage in stages)):
+            return False
+        connected = state["results"].get("data_connect", {})
+        if connected.get("result", connected).get("shortages"):
+            return False
+        # A display marker alone cannot stand in for actual completed
+        # worker receipts. Only read their small JSON, not downloaded archives.
+        completed = {}
+        for entry in state.get("history", []):
+            if entry.get("stage") not in stages:
+                continue
+            if digest(entry["result"]) != entry.get("sha256"):
+                raise ValueError("이전 단계 완료 기록이 변경되었습니다.")
+            receipt = read_json(entry["result"])
+            result = receipt.get("result", {})
+            if not receipt.get("error") and result.get("state") == "completed":
+                completed[entry["stage"]] = result
+        return all(completed.get(stage) == state["results"][stage] for stage in stages)
+
+    def _download_group_complete(self, state):
+        return ([row["id"] for row in state["plan"][:4]] == ["frontend", "data_download", "data_review", "data_connect"]
+                and self._checkpoint_prefix_complete(state, 4))
+
+    @staticmethod
+    def _navigation_bounds(state):
+        expected = [stage for _, stages in _NAVIGATION_GROUPS for stage in stages]
+        if [row["id"] for row in state["plan"]] != expected:
+            raise ValueError("화면 진행 확인과 실제 작업 순서가 다릅니다.")
+        bounds, start = {}, 0
+        for step, stages in _NAVIGATION_GROUPS:
+            bounds[step] = (start, start + len(stages))
+            start += len(stages)
+        return bounds
+
+    def _navigation_checkpoint_transition(self, state):
+        checkpoint = state.get("navigation_checkpoint")
+        if checkpoint is None:
+            return None
+        if (not isinstance(checkpoint, dict) or checkpoint.get("policy") != "explicit_story_v1"
+                or checkpoint.get("state") not in ("awaiting_start", "running", "awaiting_next", "completed")):
+            raise ValueError("화면 진행 확인 기록이 올바르지 않습니다.")
+        bounds = self._navigation_bounds(state)
+        if checkpoint.get("step") not in bounds:
+            raise ValueError("화면 진행 확인 단계가 올바르지 않습니다.")
+        phase, step, index = checkpoint["state"], checkpoint["step"], state["index"]
+        start, end = bounds[step]
+        if phase == "awaiting_start":
+            if step != "downloads" or index != 0 or state.get("history") or state.get("job"):
+                raise ValueError("작업 시작 대기 기록이 실제 진행 상태와 다릅니다.")
+            return step
+        if phase == "running":
+            if not start <= index < end:
+                raise ValueError("해당 화면의 작업 완료를 확인한 뒤 다음 단계로 진행하세요.")
+            return step
+        if (phase != "awaiting_next" or index != end or end >= len(state["plan"])
+                or not self._checkpoint_prefix_complete(state, end)):
+            raise ValueError("해당 화면의 작업과 필수 확인이 모두 완료되지 않았습니다.")
+        return next((name for name, (left, _) in bounds.items() if left == end), None)
+
+    def _download_checkpoint_transition(self, state):
+        checkpoint = state.get("download_checkpoint")
+        if checkpoint is None:
+            return None
+        if (not isinstance(checkpoint, dict) or checkpoint.get("policy") != "explicit_download_v1"
+                or checkpoint.get("state") not in ("awaiting_start", "running", "awaiting_next", "released")):
+            raise ValueError("다운로드 진행 확인 기록이 올바르지 않습니다.")
+        phase, index = checkpoint["state"], state["index"]
+        if phase == "awaiting_start":
+            if index != 0 or state.get("history") or state.get("job"):
+                raise ValueError("다운로드 시작 대기 기록이 실제 진행 상태와 다릅니다.")
+            return "running"
+        if phase == "running":
+            if index >= 4:
+                raise ValueError("다운로드 준비 완료를 확인한 뒤 다음 단계로 진행하세요.")
+            return "running"
+        if not self._download_group_complete(state) or phase == "awaiting_next" and index != 4:
+            raise ValueError("다운로드·검사·자료 연결이 모두 완료되지 않았습니다.")
+        return "released"
+
     def _launch(self, state):
         self._guard_config(state)
         stage = state["plan"][state["index"]]
@@ -1178,6 +1292,32 @@ class StudioManager:
                 state.update(status="error", error="지원하지 않는 단계 종료 상태: " + str(phase))
         state.setdefault("history", []).append({"stage": job["stage"], "started_at": job["started_at"],
                                                 "completed_at": now(), "result": str(path), "sha256": digest(path)})
+        checkpoint = state.get("download_checkpoint")
+        if (checkpoint and job["stage"] == "data_connect" and state["status"] == "ready"
+                and state["index"] == 4):
+            if (not isinstance(checkpoint, dict) or checkpoint.get("policy") != "explicit_download_v1"
+                    or checkpoint.get("state") != "running" or not self._download_group_complete(state)):
+                raise ValueError("다운로드 준비 완료 근거를 확인할 수 없습니다.")
+            checkpoint["state"] = "awaiting_next"
+            state.update(status="paused", auto_continue=False,
+                         next_action="자료 준비를 마쳤습니다. 다음을 누르세요.")
+        navigation = state.get("navigation_checkpoint")
+        if navigation and state["status"] in ("ready", "completed"):
+            if not isinstance(navigation, dict) or navigation.get("policy") != "explicit_story_v1":
+                raise ValueError("화면 진행 확인 기록이 올바르지 않습니다.")
+            bounds = self._navigation_bounds(state)
+            step = navigation.get("step")
+            if step not in bounds or navigation.get("state") != "running":
+                raise ValueError("화면 진행 확인 기록이 실제 작업과 다릅니다.")
+            if state["index"] == bounds[step][1]:
+                if not self._checkpoint_prefix_complete(state, state["index"]):
+                    raise ValueError("해당 화면의 작업 완료 근거를 확인할 수 없습니다.")
+                if state["status"] == "completed":
+                    navigation["state"] = "completed"
+                else:
+                    navigation["state"] = "awaiting_next"
+                    state.update(status="paused", auto_continue=False,
+                                 next_action="이 단계의 작업을 마쳤습니다. 다음을 누르세요.")
         self._save(state)
         return True
 
@@ -1187,6 +1327,8 @@ class StudioManager:
             if state["status"] == "completed":
                 return self.describe(state)
             self._guard_config(state)
+            checkpoint_state = self._download_checkpoint_transition(state)
+            navigation_step = self._navigation_checkpoint_transition(state)
             if state["status"] in ("running", "pausing") and self._job_alive(state.get("job") or {}):
                 state["auto_continue"] = True
                 self._save(state)
@@ -1206,8 +1348,14 @@ class StudioManager:
             self._verify_history(state)
             # Finish a worker that completed while the browser/server was closed.
             if state.get("job") and self._finish_job(state):
-                if state["status"] in ("waiting_review", "waiting_input", "completed", "error"):
+                if (state["status"] in ("waiting_review", "waiting_input", "completed", "error")
+                        or (state.get("download_checkpoint") or {}).get("state") == "awaiting_next"
+                        or (state.get("navigation_checkpoint") or {}).get("state") == "awaiting_next"):
                     return self.describe(state)
+            if checkpoint_state:
+                state["download_checkpoint"]["state"] = checkpoint_state
+            if navigation_step:
+                state["navigation_checkpoint"].update(step=navigation_step, state="running")
             self._recover_dead_locks(state)
             self._launch(state)
             return self.describe(state)
@@ -1474,10 +1622,274 @@ class StudioManager:
                     for split, key in (("train", "train_references"), ("validation", "validation_references"))},
                 "scope": "requested_conditions_not_measured_voices"}
 
+    def _history_read(self, state, path, *, sha256=None, rows=False):
+        """Read small historical metadata, never re-hash an audio/archive pool.
+
+        Completed views are presentation only. A stat-bound cache avoids opening
+        the same frozen queues and receipts on every status poll; a changed or
+        missing binding becomes unavailable rather than invented completion.
+        """
+        root = Path(state["project"]).parent.resolve()
+        path = resolved(root, path)
+        allowed = (root, self.workspace, Path(state.get("storage_workspace", self.workspace)).resolve())
+        if not any(path.is_relative_to(directory) for directory in allowed):
+            raise ValueError("저장된 내역의 경로가 작업 폴더 밖에 있습니다.")
+        info = path.stat()
+        if not path.is_file() or info.st_size > 2 * 1024**2:
+            raise ValueError("저장된 세부 내역의 형식이나 크기를 확인하세요.")
+        stamp = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns, sha256, rows)
+        cached = self._history_metadata.get(str(path))
+        if cached and cached[0] == stamp:
+            return cached[1]
+        if sha256 is not None and digest(path) != sha256:
+            raise ValueError("저장된 세부 내역이 변경되었습니다.")
+        value = read_rows(path) if rows else read_json(path)
+        self._history_metadata[str(path)] = (stamp, value)
+        return value
+
+    def _history_result(self, state, stage):
+        completed = {row["id"] for row in state["plan"][:state["index"]]}
+        entry = state.get("results", {}).get(stage)
+        if stage not in completed or not isinstance(entry, dict) or entry.get("state") != "completed":
+            return None
+        result = entry.get("result", entry)
+        return result if isinstance(result, dict) else None
+
+    def _history_download_files(self, state, result):
+        """Reconstruct verified download records from small completion receipts.
+
+        Byte counts describe the verified material, including cache reuse. They
+        are not a claim that these bytes crossed the network during this run.
+        The original large downloads are deliberately not opened or re-hashed.
+        """
+        from .studio_data import _official_assets, MIT_REV
+        settings = state["settings"]
+        policy = {key: settings.get(key) for key in ("evaluation_policy", "noise_material_policy",
+            "material_acquisition_policy", "fma_acquisition_policy", "material_review_policy",
+            "official_noise_acquisition_policy")}
+        key = identity([state["preset"], policy, result.get("recipe_version")])
+        if key not in self._history_download_plans:
+            # Only load static source pins. Calling preparation/planning helpers
+            # here can import numerical runtimes or perform acquisition checks.
+            assets = [a for a in _official_assets() if a["id"] not in ("dns_fan", "dns_door", "electronic_validation")]
+            if policy["noise_material_policy"] == "reuse_negative_waveforms":
+                assets = [a for a in assets if a["id"] not in ("audioset", "audioset_segments", "audioset_ontology", "fma", "fma_metadata")]
+            if policy["material_acquisition_policy"] in ("automatic_v1", "automatic_v2", "automatic_v3") and state["preset"] in ("trial", "production"):
+                assets = [a for a in assets if a["id"] != "zeroth" and not (state["preset"] == "production" and a["id"] == "generic")]
+            resources = files("korean_openwakeword") / "resources"
+            version = result.get("recipe_version", (policy["evaluation_policy"] or {}).get("evaluation_materials_recipe", 4))
+            recipe = {"assets": assets, "recipe_version": version, "additional_download": {"files": 270}}
+            if version in (5, 6):
+                recipe["common_evaluation_catalog"] = read_json(resources / "evaluation_materials_v1.json")
+                recipe["rir_archive"] = read_json(resources / "evaluation_rirs_v1.json")["archive"]
+            if version < 6:
+                recipe["evaluation_assets"] = read_json(resources / "evaluation_backgrounds_v4.json")["assets"]
+            self._history_download_plans[key] = recipe
+        recipe = self._history_download_plans[key]
+        shared = Path(state.get("storage_workspace", self.workspace)) / "shared"
+        directory, files_out, seen = shared / "downloads", [], set()
+
+        def item(identifier, label, group, group_label, done=None, total=None, *, unit="bytes", complete=False):
+            return {"id": identifier, "label": label, "group": group, "group_label": group_label,
+                "state": "complete" if complete else "unknown", "done": done, "total": total, "unit": unit,
+                "network_bytes": 0, "bytes_per_second": None, "eta_seconds": None}
+
+        def receipt_file(asset, identifier, group, label, target=None):
+            target = target or directory / asset["filename"]
+            if str(target) in seen:
+                return
+            seen.add(str(target))
+            size = asset.get("size_bytes")
+            verified = False
+            for candidate in (target.with_name(target.name + ".receipt.json"),
+                              directory / (target.name + ".reused.receipt.json")):
+                try:
+                    record = self._history_read(state, candidate)
+                    algorithm = asset.get("checksum_algorithm", "sha256")
+                    checksum = record.get("publisher_md5") if algorithm == "md5" else record.get(algorithm)
+                    verified = (record.get("completed_at") is not None and record.get("bytes") == size
+                        and checksum == asset.get(algorithm) and checksum is not None
+                        and record.get("source_url") == asset.get("source_url"))
+                    if verified:
+                        break
+                except (ValueError, KeyError, OSError):
+                    continue
+            files_out.append(item(identifier, label, group, label, size if verified else None, size, complete=verified))
+
+        names = {"generic": ("generic_negative", "일반 비호출 · openWakeWord"),
+                 "zeroth": ("zeroth", "한국어 낭독 · Zeroth"),
+                 "audioset": ("audioset", "소음 증강 · AudioSet"),
+                 "audioset_segments": ("audioset", "소음 증강 · AudioSet"),
+                 "audioset_ontology": ("audioset", "소음 증강 · AudioSet"),
+                 "fma": ("official_music", "소음 증강 음악 · FMA"),
+                 "fma_metadata": ("official_music", "소음 증강 음악 · FMA")}
+        for asset in recipe["assets"]:
+            if result.get("official_music_preparation") and asset["id"] in ("fma", "fma_metadata"):
+                continue
+            group, label = names.get(asset["id"], (asset["id"], asset["filename"]))
+            receipt_file(asset, "base:" + asset["id"], group, label)
+        for asset in recipe.get("evaluation_assets", []):
+            receipt_file(asset, "evaluation:" + asset["id"], "evaluation_legacy", "평가용 배경 음원")
+        for asset in recipe.get("common_evaluation_catalog", {}).get("archives", []):
+            group, label = (("fsd50k", "평가용 환경음·전자음 · FSD50K") if asset["id"].startswith("fsd_") else
+                ("musan", "평가용 말소리·음악 · MUSAN") if asset["id"] == "musan" else
+                ("seoul", "평가용 한국어 대화 · Seoul") if asset["id"] == "seoul" else
+                names.get(asset["id"], (asset["id"], asset["filename"])))
+            receipt_file(asset, "common:" + asset["id"], group, label)
+        if recipe.get("recipe_version") in (5, 6):
+            asset = recipe["rir_archive"]
+            receipt_file(asset, "common:rir_archive", "common_rir", "평가용 공간 울림 · OpenSLR RIR",
+                         directory / "common_rir" / asset["filename"])
+        music = result.get("official_music_preparation", {}).get("receipt")
+        if music:
+            size = None
+            try:
+                record = self._history_read(state, music["path"], sha256=music["sha256"])
+                members = record.get("files", [])
+                if (record.get("kind") == "selective_fma_small_v1" and record.get("completed_at")
+                        and members and all(type(row.get("compressed_bytes")) is int for row in members)):
+                    size = sum(row["compressed_bytes"] for row in members)
+            except (ValueError, KeyError, OSError):
+                pass
+            files_out.append(item("official_music", "소음 증강 음악 · FMA", "official_music",
+                "소음 증강 음악 · FMA", size, size, complete=size is not None))
+        # MIT WAVs have individual completion receipts, not a large ZIP receipt.
+        try:
+            inventory = self._history_read(state, shared / "mit_rir/provider_tree.json")
+            expected_url = f"https://huggingface.co/api/datasets/davidscripka/MIT_environmental_impulse_responses/tree/{MIT_REV}/16khz?limit=1000"
+            entries = [row for row in inventory.get("entries", []) if row.get("type") == "file" and row.get("path", "").endswith(".wav")]
+            if inventory.get("source_url") != expected_url or len(entries) != recipe["additional_download"]["files"]:
+                raise ValueError("저장된 공간 울림 자료 목록이 다릅니다.")
+            size, completed = 0, 0
+            for row in entries:
+                target = shared / "mit_rir" / row["path"]
+                try:
+                    record = self._history_read(state, target.with_name(target.name + ".receipt.json"))
+                    if (record.get("completed_at") and record.get("bytes") == row["size"]
+                            and record.get("sha256") == row.get("lfs", {}).get("oid")):
+                        completed += 1
+                        size += record["bytes"]
+                except (ValueError, KeyError, OSError):
+                    continue
+            total = sum(row["size"] for row in entries)
+            files_out.append(item("mit_rir", "학습용 공간 울림 · MIT RIR", "mit_rir", "학습용 공간 울림 · MIT RIR",
+                size if completed else None, total, complete=completed == len(entries)))
+        except (ValueError, KeyError, OSError):
+            files_out.append(item("mit_rir", "학습용 공간 울림 · MIT RIR", "mit_rir", "학습용 공간 울림 · MIT RIR"))
+        automatic = result.get("automatic_source_preparation", {})
+        targets = {row["id"]: row["target_hours"] for row in result.get("automatic_source_plan", {}).get("components", [])}
+        for component, actual in automatic.get("component_actual_hours", {}).items():
+            target = targets.get(component)
+            files_out.append(item("automatic:" + component, component, "automatic:" + component,
+                "학습용 비호출 · " + component, actual, target, unit="hours", complete=target is not None and actual >= target))
+        return files_out
+
+    def history_review_rows(self, project_id, step):
+        """Read the exact saved representative queue without reopening approval."""
+        state = self._load(project_id)
+        stage, queue_id = {"pronunciation": ("pilot_review", "pilot"), "hard-review": ("hard_review", "hard")}.get(step, (None, None))
+        if not stage or self._history_result(state, stage) is None:
+            raise ValueError("완료된 발음 확인 기록이 아닙니다.")
+        binding = state.get("inputs", {}).get("review_answers", {}).get(queue_id)
+        if not binding:
+            raise ValueError("저장된 발음 확인 기록이 없습니다.")
+        answer = self._history_read(state, binding["path"], sha256=binding["sha256"])
+        if answer.get("wakeword") != state["wakeword"]:
+            raise ValueError("저장된 발음 확인의 호출어가 다릅니다.")
+        if step == "hard-review" and answer.get("synthetic_review_policy") == "one_per_phrase_v1":
+            selection = self._history_read(state, ".studio/hard_representative_selection_v1.json",
+                sha256=answer["representative_selection_sha256"])
+            if (selection.get("policy") != answer["synthetic_review_policy"]
+                    or selection.get("source_manifest", {}).get("sha256") != answer.get("source_manifest_sha256")):
+                raise ValueError("저장된 유사어 대표 선정 기록이 다릅니다.")
+            queue = selection["representative_queue"]
+        else:
+            result = self._history_result(state, "pilot" if step == "pronunciation" else "hard_generation") or {}
+            descriptor = result.get("review", {})
+            queue = {"path": result.get("queue") or result.get("review_queue") or descriptor.get("queue"),
+                     "sha256": answer.get("queue_sha256")}
+        if not queue.get("path") or queue.get("sha256") != answer.get("queue_sha256"):
+            raise ValueError("저장된 발음 확인 목록이 다릅니다.")
+        rows = self._history_read(state, queue["path"], sha256=queue["sha256"], rows=True)
+        decisions = answer.get("decisions", {})
+        if (not rows or len(rows) > 1000 or len({row["sample_id"] for row in rows}) != len(rows)
+                or set(decisions) != {row["sample_id"] for row in rows}
+                or any(answer.get("queued_audio_sha256", {}).get(row["sample_id"]) != row.get("sha256") for row in rows)):
+            raise ValueError("저장된 발음 확인과 음원 목록이 일치하지 않습니다.")
+        return state, answer, rows
+
+    def _completed_stage_views(self, state):
+        """Saved final values stay separate from the active worker's progress."""
+        views = {}
+        def row(identifier, label, actual, target=None, unit="개"):
+            return {"id": identifier, "label": label, "done": actual, "total": target, "unit": unit}
+        def add(step, stage, rows, **extra):
+            if self._history_result(state, stage) is not None:
+                views[step] = {"completed": True, "state": "completed", "rows": rows, **extra}
+        settings = state["settings"]
+        downloaded = self._history_result(state, "data_download")
+        if downloaded is not None:
+            try:
+                records = self._history_download_files(state, downloaded)
+                known = records and all(r["state"] == "complete" and r["unit"] == "bytes" and r["done"] is not None for r in records)
+                size = sum(r["done"] for r in records) if known else None
+                add("downloads", "data_download", [], progress={"done": size, "total": size, "unit": "bytes",
+                    "label": "자료 다운로드", "files": records}, quantity_scope="verified_material_including_reuse_not_network_traffic")
+            except (ValueError, KeyError, OSError):
+                add("downloads", "data_download", [], progress=None)
+        references = self._history_result(state, "references") or {}
+        outputs = references.get("outputs", [])
+        add("voices", "references_review", [row("train", "학습용 목소리", outputs[0].get("generated") if outputs else None, settings.get("train_references")),
+            row("validation", "공통 평가용 목소리", outputs[1].get("generated") if len(outputs) > 1 else None, settings.get("validation_references"))])
+        positives = self._history_result(state, "positives") or {}
+        outputs = positives.get("outputs", [])
+        add("positive-generation", "positives", [row("train", "학습용 호출어 음성", outputs[0].get("technical_pass") if outputs else None, settings.get("originals")),
+            row("validation", "공통 평가용 호출어 음성", outputs[1].get("technical_pass") if len(outputs) > 1 else None, settings.get("validation_originals"))])
+        phrases = self._history_result(state, "hard_phrases") or {}
+        add("phrases", "hard_phrases", [], phrases=phrases.get("phrases", state.get("inputs", {}).get("hard_phrases", [])))
+        hard = self._history_result(state, "hard_generation") or {}
+        add("hard-generation", "hard_generation", [row("hard", "유사어 음성", hard.get("technical_pass"), hard.get("target_originals"))])
+        features = self._history_result(state, "features") or {}
+        labels = {"positive": "호출어 음성", "generic_negative": "일반 비호출", "korean_negative": "한국어 비호출", "hard_negative": "유사어 음성"}
+        add("features", "features", [row(key, labels.get(key, key), value.get("feature_rows"),
+            features.get("positive_expected_rows") if key == "positive" else value.get("feature_rows"), "개 특징")
+            for key, value in features.get("pools", {}).items()])
+        training = self._history_result(state, "training") or {}
+        add("training", "training", [row(str(i), f"모델 {i + 1}", member.get("updates"), settings.get("updates"), "회")
+            for i, member in enumerate(training.get("members", []))])
+        evaluation = self._history_result(state, "evaluation") or {}
+        development = self._history_result(state, "development") or {}
+        sessions = evaluation.get("report", {}).get("sessions")
+        target = development.get("audio_files")
+        if target is not None and development.get("negative_recordings") is not None:
+            target += development["negative_recordings"]
+        add("evaluation", "evaluation", [row("evaluation", "성능 평가 음원", sessions, target, "개")])
+        for step, stage in (("pronunciation", "pilot_review"), ("hard-review", "hard_review")):
+            if self._history_result(state, stage) is None:
+                continue
+            try:
+                _, answer, audio_rows = self.history_review_rows(state["id"], step)
+                decisions = answer["decisions"]
+                items = [{"id": audio["sample_id"], "text": audio.get("text", ""),
+                    "group": audio.get("review_group") or audio.get("voice_family_id"),
+                    "decision": decisions[audio["sample_id"]].get("decision"),
+                    "listened": decisions[audio["sample_id"]].get("listened") is True,
+                    "audio": f"/history-stage/audio/{i}?project={quote(state['id'])}&step={step}"}
+                    for i, audio in enumerate(audio_rows)]
+                add(step, stage, [row("review", "발음 확인", len(items), len(items))],
+                    review={"items": items, "saved": True, "saved_at": answer.get("saved_at")})
+            except (ValueError, KeyError, OSError):
+                add(step, stage, [], review={"items": [], "saved": False})
+        return views
+
     def describe(self, state):
         index, plan = state["index"], state["plan"]
         stage = plan[index] if index < len(plan) else {"id": "completed", "label": "완료"}
         view = {key: state.get(key) for key in ("id", "wakeword", "preset", "status", "error", "next_action", "created_at")}
+        if isinstance(state.get("download_checkpoint"), dict):
+            view["download_checkpoint"] = {key: state["download_checkpoint"].get(key) for key in ("policy", "state")}
+        if isinstance(state.get("navigation_checkpoint"), dict):
+            view["navigation_checkpoint"] = {key: state["navigation_checkpoint"].get(key) for key in ("policy", "step", "state")}
         timing = self._timing(state)
         view.update(directory=str(Path(state["project"]).parent), stage=stage, stage_id=stage["id"],
                     settings={key: state["settings"][key] for key in (
@@ -1671,6 +2083,7 @@ class StudioManager:
                                "scope": scope, "negative_hours": observed,
                                "common_evaluation_assessment": assessment,
                                "independent_Final_completed": False}
+        view["completed_stage_views"] = self._completed_stage_views(state)
         return view
 
     def _journal_counts(self, path):
@@ -1831,7 +2244,7 @@ def make_studio_server(manager, port=8793):
                     return self.respond(manager.snapshot())
                 if path == "/api/recipes":
                     return self.respond(manager.recipes())
-                if path in ("/", "/studio.js", "/studio.css", "/studio_story.js", "/studio_story.css",
+                if path in ("/", "/studio.js", "/studio.css", "/studio_story.js", "/studio_story.css", "/audio_listening.css", "/listening_player.js",
                             "/studio_background_grain.svg", "/studio_background_atmosphere.svg"):
                     name = "studio.html" if path == "/" else path[1:]
                     kind = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
@@ -1839,6 +2252,21 @@ def make_studio_server(manager, port=8793):
                     return self.respond((resources / name).read_bytes(), kind=kind)
                 if path.startswith("/api/projects/") and path.endswith("/log"):
                     return self.respond({"log": manager.log(path.split("/")[3])})
+                if path.startswith("/history-stage/audio/"):
+                    state, _, rows = manager.history_review_rows(query["project"][0], query["step"][0])
+                    index = int(path.rsplit("/", 1)[1])
+                    if not 0 <= index < len(rows):
+                        raise ValueError("잘못된 저장 음원 번호입니다.")
+                    root = Path(state["project"]).parent.resolve()
+                    audio = resolved(root, rows[index]["path"])
+                    if not audio.is_relative_to(root) or digest(audio) != rows[index]["sha256"]:
+                        raise ValueError("저장된 확인 음원이 없거나 변경되었습니다.")
+                    try:
+                        return self.send_file(audio)
+                    except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                        # Changing story pages cancels the browser's old audio
+                        # request. Its closed socket cannot receive an error.
+                        return
                 if path.startswith("/hard-preview/"):
                     project_id = query["project"][0]
                     state, rows = manager.hard_preview_rows(project_id)
@@ -1927,7 +2355,7 @@ def make_studio_server(manager, port=8793):
                     # View assets can improve without changing the archived
                     # evaluation or its original, immutable site export.
                     view_assets = {"index.html": "results_paged.html" if (site / "viewer-index.json").is_file() else "results.html",
-                        **{name: name for name in ("results_ui.js", "results_scope.js", "results_paged.js", "results.js", "results.css")}}
+                        **{name: name for name in ("results_ui.js", "results_scope.js", "results_paged.js", "results.js", "results.css", "audio_listening.css", "listening_player.js")}}
                     name = parts[3] or "index.html"
                     if name in view_assets:
                         kind = "text/html; charset=utf-8" if name.endswith("html") else "text/css; charset=utf-8" if name.endswith("css") else "text/javascript; charset=utf-8"

@@ -78,6 +78,9 @@ def test_standalone_review_config_audio_and_authenticated_origin_save(tmp_path, 
     try:
         status, body = request("GET", "/")
         assert status == 200 and config_in(body.decode()) == {}
+        assert '<style data-koww-listening>' in body.decode()
+        assert '.listen-player .listen-controls' in body.decode()
+        assert 'href="/audio_listening.css"' not in body.decode()
         status, body = request("GET", "/queue")
         assert status == 200 and json.loads(body)["items"][0]["audio"] == "/audio/0"
         assert request("GET", "/audio/0") == (200, audio.read_bytes())

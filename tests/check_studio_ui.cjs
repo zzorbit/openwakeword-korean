@@ -10,7 +10,7 @@ const locationSettled = async () => { await new Promise(resolve => setTimeout(re
 const tests = [];
 async function test(name, action) { await action(); tests.push(name); }
 
-function browser({ noBoot = false, initialState, recipeError = false, recipeOverrides = {}, recipeList, recipeDirectory = "F:\\test\\models", locationResponse, createdDirectory, logResponse = "ready", logError = false } = {}) {
+function browser({ noBoot = false, withStory = false, initialState, recipeError = false, recipeOverrides = {}, recipeList, recipeDirectory = "F:\\test\\models", locationResponse, createdDirectory, logResponse = "ready", logError = false } = {}) {
   const elements = new Map(), calls = [], intervals = [];
   class Element {
     constructor(tag = "div") { this.tagName = tag; this.value = ""; this.textContent = ""; this.children = []; this.handlers = {}; this.attributes = {}; this.hidden = false; this.disabled = false; this.open = false; this.srcWrites = 0; }
@@ -46,9 +46,11 @@ function browser({ noBoot = false, initialState, recipeError = false, recipeOver
     throw new Error("Unexpected route " + url);
   };
   const context = vm.createContext({ document: doc, fetch, URL, AbortController, console, setTimeout, clearTimeout, setInterval: callback => { intervals.push(callback); return intervals.length; }, clearInterval() {} });
+  let storyBridge;
+  if (withStory) context.KowwStory = { create(bridge) { storyBridge = bridge; return { render() {} }; } };
   context.window = context; context.location = new URL("http://127.0.0.1:8800/"); context.KOWW_STUDIO_TEST = noBoot; context.addEventListener = () => {};
   vm.runInContext(script, context);
-  return { elements, calls, state, intervals, helpers: context.KowwStudio, click: id => elements.get(id).handlers.click(), submit: id => elements.get(id).handlers.submit({ preventDefault() {} }), tick: async () => { for (const tick of intervals) await tick(); } };
+  return { elements, calls, state, intervals, helpers: context.KowwStudio, get storyBridge() { return storyBridge; }, click: id => elements.get(id).handlers.click(), submit: id => elements.get(id).handlers.submit({ preventDefault() {} }), tick: async () => { for (const tick of intervals) await tick(); } };
 }
 
 const descendants = node => [node, ...(node.children || []).flatMap(descendants)];
@@ -1017,6 +1019,27 @@ function pendingHardStorageRecipe() {
     assert.equal(b.elements.get("setup").hidden, true); assert.equal(b.elements.get("project").hidden, false);
     assert.equal(b.elements.get("connection").hidden, true);
     assert.equal(b.elements.get("project-error").hidden, true);
+  });
+  await test("story creation waits for an explicit download start without invalidating the location preview", async () => {
+    const b = browser({ withStory: true }); await flush();
+    b.elements.get("wakeword").value = "보라야";
+    b.elements.get("wakeword").handlers.input(); await locationSettled();
+    await b.storyBridge.create({ downloadCheckpoint: true });
+    const mutations = b.calls.filter(call => call.options.method === "POST" && call.url !== "/api/model-location");
+    assert.deepEqual(mutations.map(call => call.url), ["/api/projects"]);
+    assert.deepEqual(JSON.parse(mutations[0].options.body), { wakeword: "보라야", preset: "check", download_checkpoint: true });
+    await b.storyBridge.action("start");
+    assert.equal(b.calls.filter(call => call.url === "/api/projects/bora/start").length, 1);
+  });
+  await test("new story navigation is workflow-only and creation never starts work before the explicit start button", async () => {
+    const b = browser({ withStory: true }); await flush();
+    b.elements.get("wakeword").value = "보라야";
+    b.elements.get("wakeword").handlers.input(); await locationSettled();
+    await b.storyBridge.create({ navigationCheckpoints: true });
+    const mutations = b.calls.filter(call => call.options.method === "POST" && call.url !== "/api/model-location");
+    assert.deepEqual(mutations.map(call => call.url), ["/api/projects"]);
+    assert.deepEqual(JSON.parse(mutations[0].options.body), { wakeword: "보라야", preset: "check", navigation_checkpoints: true });
+    assert.equal(b.calls.some(call => /\/(start|resume)$/.test(call.url)), false);
   });
   await test("optional reference listening loads only on request and polling preserves playback without writing decisions", async () => {
     const project = { id: "bora", wakeword: "보라야", status: "running", stage: "pilot",

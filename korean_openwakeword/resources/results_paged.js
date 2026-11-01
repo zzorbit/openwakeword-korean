@@ -10,7 +10,33 @@
   const audio = $("audio");
   let metadata = [], queue = [], extras = [], extraPage = 0;
   let index = 0, continuous = false, token = 0, optionPage = -1, currentSource = "main";
+  let requestedIndex = null, loadedIndex = null, playing = false, loading = false, listPage = 0, listeningEnhanced = false;
   const option = (select, value, text) => { const node = document.createElement("option"); node.value = String(value); node.textContent = text; select.append(node); };
+  function renderList() {
+    const pages = Math.max(1, Math.ceil(queue.length / 5)); listPage = Math.min(listPage, pages - 1);
+    const rows = [];
+    for (let position = listPage * 5; position < Math.min(queue.length, (listPage + 1) * 5); position++) {
+      const clip = metadata[queue[position]], button = document.createElement("button"), title = document.createElement("span"), badge = document.createElement("span");
+      const label = ui.clipLabel({kind: clip[1], category: clip[2], original_order: clip[6]});
+      button.type = "button"; button.className = "voice-row"; button.setAttribute("data-number", String(position + 1));
+      button.setAttribute("aria-current", String(currentSource === "main" && position === index)); button.setAttribute("aria-label", `${position + 1}. ${label}`);
+      title.className = "listen-row-title"; title.textContent = label; badge.className = "listen-badge"; badge.textContent = String(position + 1);
+      button.append(title, badge); button.onclick = () => move(position); rows.push(button);
+    }
+    $("clip-list").replaceChildren(...rows); $("clip-list-position").textContent = `${listPage + 1} / ${pages}`;
+    $("clip-list-prev").disabled = listPage === 0; $("clip-list-next").disabled = listPage + 1 >= pages;
+  }
+  function transport() {
+    const active = playing || loading;
+    $("resume").textContent = active ? "일시정지" : "재생";
+    $("resume").setAttribute("aria-pressed", String(active));
+    $("resume").setAttribute("aria-busy", String(loading));
+    $("resume").disabled = loadedIndex === null && !queue.length;
+  }
+  function stop() {
+    continuous = false; token++; loading = false; playing = false; audio.pause(); transport();
+    $("playState").textContent = "일시정지";
+  }
   function summary() {
     $("title").textContent = `${report.wakeword} · 성능 시험 결과`;
     ui.renderSummary(report);
@@ -53,7 +79,7 @@
     ui.renderResponses(report, clip);
   }
   function progress() {
-    $("queue").textContent = queue.length ? `${(index + 1).toLocaleString("ko-KR")} / ${queue.length.toLocaleString("ko-KR")}개` : "목록 없음";
+    $("queue").textContent = queue.length ? `${(index + 1).toLocaleString("ko-KR")} / ${queue.length.toLocaleString("ko-KR")}` : "목록 없음";
     $("prev").disabled = index <= 0; $("next").disabled = index >= queue.length - 1;
     const page = Math.floor(index / OPTION_LIMIT);
     if (page !== optionPage) {
@@ -62,31 +88,47 @@
     }
     $("item").value = String(index);
     $("original").value = queue.length ? String(metadata[queue[index]][6] || "") : "";
+    listPage = Math.floor(index / 5); renderList();
   }
   async function activate(sourceIndex, autoplay = false, source = "main") {
-    const mine = ++token; audio.pause(); currentSource = source;
+    const mine = ++token; loading = true; playing = false; currentSource = source; requestedIndex = sourceIndex;
+    audio.pause(); transport();
     $("playState").textContent = "오디오 정보를 불러오는 중…";
     try {
       const clip = await detail(sourceIndex);
       if (mine !== token) return;
-      show(clip);
+      show(clip); loadedIndex = sourceIndex;
       $("playState").textContent = source === "extra" ? "추가 자료 · 재생 버튼을 눌러 들으세요." : "재생 버튼을 눌러 들으세요.";
-      if (autoplay) { await audio.play(); if (mine === token) $("playState").textContent = "재생 중 · 마지막 항목에서 종료합니다."; }
-    } catch (error) { if (mine === token) { continuous = false; $("playState").textContent = error.message + " 다시 선택하거나 이어 듣기를 눌러주세요."; } }
+      if (autoplay) {
+        await audio.play();
+        if (mine !== token) { if (!continuous) audio.pause(); return; }
+        $("playState").textContent = "재생 중";
+      }
+      loading = false; playing = audio.paused === false; transport();
+    } catch (error) { if (mine === token) { continuous = false; loading = false; playing = false; transport(); $("playState").textContent = error.message + " 다시 선택하거나 재생을 눌러주세요."; } }
+  }
+  async function playLoaded() {
+    const mine = ++token; loading = true; transport();
+    try {
+      // Resuming the current file must preserve its real playback position.
+      await audio.play();
+      if (mine !== token) { if (!continuous) audio.pause(); return; }
+      loading = false; playing = audio.paused === false; transport(); $("playState").textContent = "재생 중";
+    } catch (error) { if (mine === token) { continuous = false; loading = false; playing = false; transport(); $("playState").textContent = error.message + " 재생을 다시 눌러주세요."; } }
   }
   function move(position, autoplay = continuous) {
     if (!Number.isInteger(position) || position < 0 || position >= queue.length) return;
-    index = position; progress(); return activate(queue[index], autoplay);
+    index = position; continuous = autoplay; currentSource = "main"; progress(); return activate(queue[index], autoplay);
   }
   function rebuild() {
-    continuous = false; token++; audio.pause(); optionPage = -1;
+    stop(); requestedIndex = null; loadedIndex = null; currentSource = "main"; optionPage = -1;
     queue = [];
     for (let position = 0; position < metadata.length; position++) { const clip = metadata[position]; if (clip[1] === "positive" && clip[2] !== "clean" && Number(clip[3]) === Number($("snr").value) && ($("category").value === "all" || clip[2] === $("category").value) && (clip[4] || "none") === $("reverb").value) queue.push(position); }
     const categoryOrder = ["environment", "music", "competing_speech"];
     queue.sort((left, right) => { const a = metadata[left], b = metadata[right]; return (a[6] || 0) - (b[6] || 0) || String(a[5]).localeCompare(String(b[5])) || categoryOrder.indexOf(a[2]) - categoryOrder.indexOf(b[2]) || left - right; });
     index = 0; progress();
     if (queue.length) return activate(queue[0]);
-    audio.removeAttribute("src"); $("responses").tBodies[0].replaceChildren(); $("clipTitle").textContent = "선택한 조건으로 시험한 오디오가 없습니다."; $("playState").textContent = "";
+    audio.removeAttribute("src"); transport(); $("responses").tBodies[0].replaceChildren(); $("clipTitle").textContent = "선택한 조건으로 시험한 오디오가 없습니다."; $("playState").textContent = "";
   }
   function renderExtras() {
     const start = extraPage * EXTRA_LIMIT, end = Math.min(extras.length, start + EXTRA_LIMIT);
@@ -97,18 +139,36 @@
   }
   function bind() {
     $("start").onclick = () => { continuous = true; return move(0, true); };
-    $("resume").onclick = () => { continuous = true; return move(index, true); };
-    $("pause").onclick = () => { continuous = false; token++; audio.pause(); $("playState").textContent = "일시정지"; };
-    audio.onended = () => { if (!continuous || currentSource !== "main") return; if (index + 1 < queue.length) return move(index + 1, true); continuous = false; $("playState").textContent = "선택한 목록을 모두 들었습니다."; };
-    audio.onerror = () => { continuous = false; $("playState").textContent = "오디오를 불러올 수 없습니다. 파일 경로와 서버 상태를 확인하세요."; };
+    $("resume").onclick = () => {
+      if (playing || loading || audio.paused === false) return stop();
+      continuous = currentSource === "main";
+      if (loadedIndex !== null && loadedIndex === requestedIndex) return playLoaded();
+      if (requestedIndex !== null) return activate(requestedIndex, true, currentSource);
+      return move(index, true);
+    };
+    $("pause").onclick = stop;
+    audio.onplay = () => { playing = true; transport(); $("playState").textContent = "재생 중"; };
+    audio.onpause = () => { if (audio.ended) return; playing = false; if (!loading) { continuous = false; $("playState").textContent = "일시정지"; } transport(); };
+    audio.onended = () => {
+      playing = false; loading = false;
+      if (continuous && currentSource === "main" && index + 1 < queue.length) return move(index + 1, true);
+      const finished = continuous && currentSource === "main";
+      continuous = false; transport(); $("playState").textContent = finished ? "선택한 목록을 모두 들었습니다." : "재생 완료";
+    };
+    audio.onerror = () => { continuous = false; token++; loading = false; playing = false; transport(); $("playState").textContent = "오디오를 불러올 수 없습니다. 파일 경로와 서버 상태를 확인하세요."; };
     $("prev").onclick = () => move(index - 1); $("next").onclick = () => move(index + 1);
+    $("clip-list-prev").onclick = () => { if (listPage > 0) { listPage--; renderList(); } };
+    $("clip-list-next").onclick = () => { if ((listPage + 1) * 5 < queue.length) { listPage++; renderList(); } };
     $("item").onchange = () => move(Number($("item").value));
     const original = () => { const value = Number($("original").value), position = queue.findIndex(sourceIndex => metadata[sourceIndex][6] === value); if (position >= 0) return move(position); $("playState").textContent = "이 조건에 해당하는 음성 번호가 없습니다."; };
     $("original-go").onclick = original; $("original").onchange = original;
     for (const id of ["snr", "category", "reverb"]) $(id).onchange = rebuild;
     $("extra-prev").onclick = () => { if (extraPage > 0) { extraPage--; renderExtras(); } };
     $("extra-next").onclick = () => { if ((extraPage + 1) * EXTRA_LIMIT < extras.length) { extraPage++; renderExtras(); } };
-    $("extra").onchange = () => { if ($("extra").value === "") return; const position = Number($("extra").value); if (Number.isInteger(position) && extras[position] !== undefined) { continuous = false; return activate(extras[position], false, "extra"); } };
+    $("extra").onchange = () => { if ($("extra").value === "") return; const position = Number($("extra").value); if (Number.isInteger(position) && extras[position] !== undefined) { continuous = false; currentSource = "extra"; renderList(); return activate(extras[position], false, "extra"); } };
+    if (!listeningEnhanced && window.KowwListening) {
+      window.KowwListening.enhance(audio, $("resume").parentElement, {play: $("resume"), previous: $("prev"), next: $("next")}); listeningEnhanced = true;
+    }
   }
   async function boot() {
     summary(); bind();

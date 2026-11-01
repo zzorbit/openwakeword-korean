@@ -5,18 +5,19 @@
     ["entry", "호출어 입력", "호출어를 입력해 주세요."],
     ["scale", "학습 규모 선택", "학습 규모를 선택해 주세요."],
     ["materials", "준비할 자료", "준비할 자료를 확인해 주세요."],
-    ["downloads", "자료 다운로드", "자료 다운로드"],
-    ["voices", "합성 목소리 준비", "합성 목소리 준비"],
-    ["pronunciation", "호출어 발음 확인", "호출어 발음 확인"],
-    ["positive-generation", "호출어 음성 생성", "호출어 음성 생성"],
-    ["phrases", "유사어 입력", "유사어 문구 입력"],
-    ["hard-generation", "유사어 음성 생성", "유사어 음성 생성"],
-    ["hard-review", "유사어 발음 확인", "유사어 발음 확인"],
-    ["features", "증강·특징 추출", "소음·울림 증강과 특징 추출"],
-    ["training", "모델 학습", "모델 학습"],
-    ["evaluation", "성능 평가", "성능 평가"],
-    ["results", "학습 결과", "학습 결과"],
-    ["microphone", "마이크 시험", "마이크로 시험"],
+    ["downloads", "자료 다운로드", "자료를 다운로드합니다."],
+    ["voices", "합성 목소리 준비", "합성 목소리를 준비합니다."],
+    ["voice-listening", "합성 목소리 듣기", "합성 목소리를 들어보세요."],
+    ["pronunciation", "호출어 발음 확인", "호출어 발음을 확인하세요."],
+    ["positive-generation", "호출어 음성 생성", "호출어 음성을 생성합니다."],
+    ["phrases", "유사어 입력", "유사어 문구를 입력하세요."],
+    ["hard-generation", "유사어 음성 생성", "유사어 음성을 생성합니다."],
+    ["hard-review", "유사어 발음 확인", "유사어 발음을 확인하세요."],
+    ["features", "증강·특징 추출", "소음·울림을 적용하고 특징을 추출합니다."],
+    ["training", "모델 학습", "모델을 학습합니다."],
+    ["evaluation", "성능 평가", "모델의 성능을 평가합니다."],
+    ["results", "학습 결과", "학습 결과를 확인하세요."],
+    ["microphone", "마이크 시험", "마이크로 호출어를 시험하세요."],
   ];
   const mapping = {
     frontend: "downloads", data: "downloads", data_download: "downloads", data_review: "downloads", data_connect: "downloads",
@@ -30,16 +31,51 @@
   const done = value => ["done", "complete", "completed", "finished"].includes(value);
   const running = value => ["running", "starting", "queued", "pausing"].includes(value);
   const stageId = project => project?.stage_id || (typeof project?.stage === "object" ? project.stage.id : project?.stage);
-  const stageStep = project => done(project?.status) ? "results" : mapping[stageId(project)] || "downloads";
+  const downloadCheckpoint = project => project?.download_checkpoint?.policy === "explicit_download_v1" ? project.download_checkpoint : null;
+  const navigationCheckpoint = project => project?.navigation_checkpoint?.policy === "explicit_story_v1" ? project.navigation_checkpoint : null;
+  const navigationGroups = [
+    ["downloads", ["frontend", "data_download", "data_review", "data_connect"]],
+    ["voices", ["references", "references_review"]], ["pronunciation", ["pilot", "pilot_review"]],
+    ["positive-generation", ["positives"]], ["phrases", ["hard_phrases"]],
+    ["hard-generation", ["hard_generation"]], ["hard-review", ["hard_review", "hard_connect"]],
+    ["features", ["features"]], ["training", ["training", "package"]],
+    ["evaluation", ["development", "evaluation"]], ["results", ["results"]],
+  ];
+  const stageStep = project => done(project?.status) ? "results"
+    : navigationCheckpoint(project)?.state === "awaiting_next" && order.includes(navigationCheckpoint(project).step) ? navigationCheckpoint(project).step
+    : downloadCheckpoint(project)?.state === "awaiting_next" ? "downloads" : mapping[stageId(project)] || "downloads";
+  function completedStep(project, step) {
+    if (step === "voice-listening") step = "voices";
+    const records = Array.isArray(project?.stages) ? project.stages.filter(record => mapping[record.id] === step) : [];
+    return records.length > 0 && records.every(record => done(record.status));
+  }
+  function completedNavigationStep(project, step) {
+    if (step === "voice-listening") step = "voices";
+    if (!navigationCheckpoint(project)) return completedStep(project, step);
+    const position = navigationGroups.findIndex(([id]) => id === step);
+    return position >= 0 && navigationGroups.slice(0, position + 1).flatMap(([, stages]) => stages)
+      .every(id => project.stages?.some(record => record.id === id && done(record.status)));
+  }
   function frontier(project) {
     if (!project) return 2;
-    if (done(project.status)) return (project.results?.mic_url || project.mic_url) ? 14 : 13;
+    if (done(project.status)) return order.indexOf((project.results?.mic_url || project.mic_url) ? "microphone" : "results");
     // Only actual current/completed backend stages unlock later screens.
-    return Math.max(3, order.indexOf(stageStep(project)));
+    const current = stageStep(project), position = Math.max(3, order.indexOf(current));
+    const navigation = navigationCheckpoint(project);
+    return current === "voices" && completedNavigationStep(project, "voices")
+      && (!navigation || (navigation.state === "awaiting_next" && project.status === "paused")) ? order.indexOf("voice-listening") : position;
   }
   const titles = { check: "동작 확인용", trial: "시험 모델용", production: "상용 모델용" };
   const shortDescriptions = { check: "라이브러리 동작 확인", trial: "호출 성능 비교·시험", production: "많은 자료로 본격 학습" };
   const count = value => Number.isFinite(value) ? value.toLocaleString("ko-KR") : "—";
+  function pageCapacity(items, available, rowHeight, columns = 1, gap = 12, pagerSpace = 44) {
+    if (!items) return 1;
+    const rows = Math.ceil(items / columns);
+    if (rows * rowHeight + Math.max(0, rows - 1) * gap <= available) return items;
+    // Reserve the pager only when it is needed. Use a fixed count on all
+    // pages, including pages whose longer labels make their rows taller.
+    return Math.max(1, Math.floor((Math.max(0, available - pagerSpace) + gap) / (rowHeight + gap))) * columns;
+  }
   const $ = id => document.getElementById(id);
   const node = (tag, text, className) => {
     const result = document.createElement(tag);
@@ -75,7 +111,21 @@
     const context = node("p", undefined, "story-context");
     const content = node("div", undefined, "story-content");
     const entry = node("div", undefined, "story-entry"); entry.append($("wakeword"));
+    // A saved model is a read-only view; leave the new-model draft untouched.
+    const savedEntry = node("div", undefined, "story-entry");
+    const savedWord = node("input"); savedWord.id = "story-saved-wakeword";
+    savedWord.type = "text"; savedWord.readOnly = true;
+    savedWord.setAttribute("aria-label", "호출어"); savedEntry.append(savedWord);
     const scale = node("div", undefined, "story-scale"); scale.append($("presets"));
+    const savedScale = node("div", undefined, "story-scale story-saved-scale");
+    const savedPresets = node("div", undefined, "preset-grid"); savedPresets.id = "story-saved-presets";
+    savedPresets.setAttribute("role", "group"); savedPresets.setAttribute("aria-label", "저장된 학습 규모"); savedScale.append(savedPresets);
+    for (const [id, title] of Object.entries(titles)) {
+      const card = node("label", undefined, "preset"), radio = node("input");
+      radio.type = "radio"; radio.name = "saved-preset"; radio.value = id; radio.disabled = true;
+      const line = node("div"); line.append(radio, node("span", title, "preset-title"));
+      card.append(line, node("p", shortDescriptions[id], "preset-description")); savedPresets.append(card);
+    }
     const materials = node("div", undefined, "story-materials");
     const materialsTabs = node("div", undefined, "story-material-tabs"); materialsTabs.setAttribute("role", "tablist"); materialsTabs.setAttribute("aria-label", "자료 구분");
     const materialColumns = node("div", undefined, "story-material-columns");
@@ -89,6 +139,7 @@
     const statusCard = document.querySelector(".current-card");
     const liveSummary = node("div", undefined, "story-live-summary");
     const currentTitle = $("current-title");
+    const migrationNote = $("migration-note");
     liveSummary.append(statusCard, $("counts"));
     const downloads = $("downloads-section"), review = $("review-section"), input = $("input-section"), results = $("results-section");
     const downloadPages = node("div", undefined, "story-pagination");
@@ -96,29 +147,79 @@
     const downloadPageText = node("span");
     const downloadNext = button("›", "story-small", () => { downloadPage++; paginateDownloads(); }); downloadNext.setAttribute("aria-label", "뒤 다운로드 목록");
     downloadPages.append(downloadBack, downloadPageText, downloadNext);
+    const downloadActions = node("div", undefined, "story-download-actions"); downloadActions.hidden = true;
+    const downloadPrimary = button("다운로드 시작", "story-button story-download-primary", controlDownload); downloadPrimary.disabled = true;
+    downloadActions.append(downloadPrimary);
     const voiceCounts = node("div", undefined, "story-voice-counts");
+    const voiceListening = node("div", undefined, "story-voice-listening");
+    const voiceListeningNote = node("p", "필요한 목소리만 들어보거나 다음 단계로 넘어갈 수 있습니다.", "story-listening-note");
+    const referencePreview = $("reference-preview");
+    voiceListening.append(voiceListeningNote, referencePreview);
     const historic = node("div", undefined, "story-history");
-    const historicalTitle = node("p", undefined, "story-history-title"), historicalDetail = node("p", undefined, "story-history-detail");
-    historic.append(historicalTitle, historicalDetail);
+    const historyContent = node("div", undefined, "story-history-content");
+    const historyPages = node("div", undefined, "story-pagination");
+    const historyBack = button("‹", "story-small", () => { historyPage = Math.max(0, historyPage - 1); renderHistory(lastProject); }); historyBack.setAttribute("aria-label", "앞 완료 내역");
+    const historyPageText = node("span");
+    const historyNext = button("›", "story-small", () => { historyPage++; renderHistory(lastProject); }); historyNext.setAttribute("aria-label", "뒤 완료 내역");
+    historyPages.append(historyBack, historyPageText, historyNext);
+    const savedReview = node("div", undefined, "story-saved-review");
+    const savedReviewCompletion = node("p", "검수한 음원과 저장된 판정을 확인할 수 있습니다.", "listen-completion");
+    const savedReviewWorkspace = node("div", undefined, "listen-workspace");
+    const savedReviewSidebar = node("aside", undefined, "listen-sidebar"); savedReviewSidebar.setAttribute("aria-label", "검수한 음원 목록");
+    const savedReviewList = node("div", undefined, "listen-list");
+    const savedReviewListPager = node("div", undefined, "listen-list-pager");
+    const savedReviewListPrevious = button("‹", undefined, () => { historyReviewPage--; renderHistoryReviewList(true); }); savedReviewListPrevious.setAttribute("aria-label", "앞 음원 목록");
+    const savedReviewListPosition = node("span");
+    const savedReviewListNext = button("›", undefined, () => { historyReviewPage++; renderHistoryReviewList(true); }); savedReviewListNext.setAttribute("aria-label", "뒤 음원 목록");
+    savedReviewListPager.append(savedReviewListPrevious, savedReviewListPosition, savedReviewListNext);
+    savedReviewSidebar.append(savedReviewList, savedReviewListPager);
+    const savedReviewPlayer = node("div", undefined, "listen-player");
+    const savedReviewSelect = node("select", undefined, "listen-select"); savedReviewSelect.setAttribute("aria-label", "저장된 검수 음원");
+    const savedReviewHeading = node("div", undefined, "listen-heading");
+    const savedReviewText = node("strong", undefined, "listen-title"), savedReviewPosition = node("span", undefined, "listen-position"); savedReviewHeading.append(savedReviewText, savedReviewPosition);
+    const savedReviewAudio = node("audio", undefined, "listen-audio"); savedReviewAudio.controls = true; savedReviewAudio.preload = "none";
+    const savedReviewControls = node("div", undefined, "listen-controls");
+    const savedReviewPrevious = button("이전", undefined, () => selectHistoryReview(historyReviewIndex - 1)); savedReviewPrevious.setAttribute("aria-label", "이전 음원");
+    const savedReviewToggle = button("재생", undefined, () => historyPlaybackWanted || savedReviewAudio.paused === false ? stopHistoryPlayback() : playHistoryReview());
+    const savedReviewNext = button("다음", undefined, () => selectHistoryReview(historyReviewIndex + 1)); savedReviewNext.setAttribute("aria-label", "다음 음원");
+    savedReviewControls.append(savedReviewPrevious, savedReviewToggle, savedReviewNext);
+    const savedReviewDecisions = node("div", undefined, "story-saved-review-decisions listen-decisions"); savedReviewDecisions.setAttribute("role", "group"); savedReviewDecisions.setAttribute("aria-label", "저장된 검수 결과");
+    const savedReviewInputs = [];
+    for (const [value, label] of [["keep", "정상"], ["discard", "제외"], ["review", "다시 확인"]]) {
+      const choice = node("label"), radio = node("input"); radio.type = "radio"; radio.name = "saved-review-decision"; radio.value = value; radio.disabled = true;
+      choice.append(radio, node("span", label)); savedReviewDecisions.append(choice); savedReviewInputs.push(radio);
+    }
+    const savedReviewNote = node("p", undefined, "story-history-note listen-status");
+    savedReviewSelect.hidden = true;
+    savedReviewPlayer.append(savedReviewHeading, savedReviewAudio, savedReviewControls, savedReviewSelect, savedReviewDecisions, savedReviewNote);
+    savedReviewWorkspace.append(savedReviewSidebar, savedReviewPlayer);
+    savedReview.append(savedReviewCompletion, savedReviewWorkspace);
+    historic.append(historyContent, savedReview, historyPages);
     const listenActions = node("div", undefined, "story-listen-actions");
     const referenceButton = button("목소리 듣기", "story-secondary", () => openListening("reference"));
     const hardButton = button("유사어 전체 듣기", "story-secondary", () => openListening("hard"));
     listenActions.append(referenceButton, hardButton);
-    live.append(liveSummary, voiceCounts, downloads, downloadPages, review, input, results, historic, listenActions);
+    // A completed stage hides live progress, but its compatibility update must
+    // remain reachable through the existing explicit migration control.
+    live.append(migrationNote, liveSummary, voiceCounts, downloads, downloadPages, downloadActions, review, input, results, historic, listenActions);
     // Keep every legacy ID in the live document. Core rendering and event
     // bindings also visit hidden screens, so detaching inactive panels would
     // make document.getElementById return null.
-    content.append(entry, scale, materials, live);
+    content.append(entry, savedEntry, scale, savedScale, materials, live, voiceListening);
     const footer = node("div", undefined, "story-actions");
     const back = button("이전", "story-button", () => navigate(order.indexOf(current) - 1));
+    const operation = button("일시정지", "story-button story-operation", controlJob); operation.hidden = true;
     const next = button("다음", "story-button", advance);
-    footer.append(back, next); panel.append(heading, context, content, footer);
+    footer.append(back, operation, next); panel.append(heading, context, content, footer);
     const loader = node("div", undefined, "story-loader"); loader.hidden = true; loader.setAttribute("role", "status");
     const loaderDots = node("span", undefined, "story-loading-dots"); loaderDots.setAttribute("aria-hidden", "true");
     for (let i = 0; i < 3; i++) loaderDots.append(node("i"));
     const loaderText = node("span"); loader.append(loaderDots, loaderText);
     stage.append(panel, loader); shell.append(atmosphere, toolbar, notices, index, stage);
     document.body.append(shell);
+    window.KowwListening?.enhance(savedReviewAudio, savedReviewControls, {
+      play: savedReviewToggle, previous: savedReviewPrevious, next: savedReviewNext,
+    });
     const settingsDialog = makeDialog("세부 설정");
     const settingSummary = node("div", undefined, "story-setting-summary");
     const location = $("storage-directory").parentElement;
@@ -129,14 +230,17 @@
     const logDialog = makeDialog("작업 기록"); logDialog.content.append($("log-details"));
     const listenDialog = makeDialog("목소리 듣기");
     listenDialog.content.classList.add("story-listen-body");
-    listenDialog.content.append($("reference-preview"), $("hard-preview"));
+    listenDialog.content.append($("hard-preview"));
     listenDialog.dialog.addEventListener("close", () => {
       listening = null; bridge.pause($("reference-preview-frame")); bridge.pause($("hard-preview-frame"));
-      $("reference-preview").open = false; $("hard-preview").open = false;
+      $("hard-preview").open = false;
       render();
     });
     let current = "entry", projectKey = "", maximum = 2, following = true, transitioning = false, transitionTimer = null, creationPending = false;
     let materialTab = "training", materialPage = 0, materialKey = "", materialData = null, downloadPage = 0, listening = null;
+    let historyPage = 0, historyKey = "", historyReviewItems = [], historyReviewIndex = 0;
+    let historyReviewPage = 0, historyReviewListKey = "", historyReviewRows = [];
+    let historyPlaybackWanted = false, historyPlaybackVersion = 0;
     let lastFrontier = "", lastProject = null;
     const ticks = definitions.map(([id, label], position) => {
       const tick = button(undefined, "story-index-step", () => navigate(position));
@@ -172,6 +276,7 @@
     function openDialog(value) { if (!value.dialog.open) value.dialog.showModal(); }
     function pauseMedia() {
       for (const id of ["review-frame", "reference-preview-frame", "hard-preview-frame", "result-frame"]) bridge.pause($(id));
+      stopHistoryPlayback(true);
       if (listenDialog.dialog.open) listenDialog.dialog.close();
     }
     function emphasize(position) {
@@ -188,31 +293,70 @@
     }
     function navigate(position, automatic = false) {
       const state = bridge.state();
-      if (transitioning || position < 0 || position > maximum || position >= order.length || state.busy || position === order.indexOf(current)) return;
-      if (!state.project && position > 0 && !$("wakeword").value.trim()) { bridge.message("호출어를 입력해 주세요.", true); $("wakeword").focus(); return; }
+      if (transitioning || position < 0 || position > maximum || position >= order.length || state.busy || position === order.indexOf(current)) return false;
+      if (!state.project && position > 0 && !$("wakeword").value.trim()) { bridge.message("호출어를 입력해 주세요.", true); $("wakeword").focus(); return false; }
       const backwards = position < order.indexOf(current);
       pauseMedia(); transitioning = true; panel.inert = true; panel.setAttribute("aria-busy", "true");
       panel.classList.add("is-leaving"); loaderText.textContent = backwards ? "전 단계로 이동 중" : "다음 단계로 이동 중"; loader.hidden = false;
       following = automatic || (state.project && position === frontier(state.project));
       transitionTimer = setTimeout(() => {
-        current = order[position]; stopTransition(); render(); heading.focus({ preventScroll: true });
-      }, 1500);
+        current = order[position]; historyPage = 0; historyKey = ""; stopTransition(); render(); heading.focus({ preventScroll: true });
+      }, 1200);
+      return true;
+    }
+    async function controlDownload() {
+      const state = bridge.state(), project = state.project;
+      if (transitioning || state.busy || !canStartDownloads(project)) return;
+      await bridge.action("start");
+    }
+    function humanGate(project) { return Boolean(project?.review || project?.input || project?.migration); }
+    function canStartDownloads(project) {
+      const navigation = navigationCheckpoint(project), download = downloadCheckpoint(project);
+      return Boolean(project && current === "downloads" && stageStep(project) === "downloads"
+        && !humanGate(project) && !completedStep(project, "downloads")
+        && (!navigation || navigation.state === "awaiting_start") && (!download || download.state === "awaiting_start")
+        && ["ready", "idle", "pending", "created"].includes(project.status));
+    }
+    function releaseStep(project) {
+      if (!project || humanGate(project) || project.status !== "paused") return "";
+      const checkpoint = navigationCheckpoint(project);
+      if (checkpoint?.state === "awaiting_next") {
+        const step = current === "voice-listening" ? "voices" : current;
+        if (step === checkpoint.step && completedNavigationStep(project, step)) return step;
+      }
+      if (current === "downloads" && downloadCheckpoint(project)?.state === "awaiting_next"
+        && completedStep(project, "downloads")) return "downloads";
+      return "";
+    }
+    function operationAction(project) {
+      if (!project || humanGate(project) || current !== stageStep(project) || done(project.status)
+        || navigationCheckpoint(project)?.state === "awaiting_next" || downloadCheckpoint(project)?.state === "awaiting_next"
+        || ["entry", "scale", "materials", "voice-listening", "microphone"].includes(current)) return "";
+      if (running(project.status)) return "pause";
+      if (["paused", "failed", "error", "interrupted"].includes(project.status)) return "resume";
+      if (current !== "downloads" && ["ready", "idle", "pending", "created"].includes(project.status)) return "start";
+      return "";
+    }
+    async function controlJob() {
+      const state = bridge.state(), action = operationAction(state.project);
+      if (!action || transitioning || state.busy || state.project.status === "pausing") return;
+      await bridge.action(action);
     }
     async function advance() {
       const state = bridge.state(), project = state.project, position = order.indexOf(current);
       if (transitioning || state.busy) return;
       if (!project) {
         if (current === "materials") {
-          // Start real preparation immediately. The presentation waits for
-          // both its result and the same minimum used by local transitions.
+          // Create the model without starting transfers. The presentation waits
+          // for its result and the same minimum used by local transitions.
           // Polls may receive the created model meanwhile, but must not reveal
           // it early or allow another creation request.
           pauseMedia(); creationPending = true; transitioning = true;
           panel.inert = true; panel.setAttribute("aria-busy", "true"); panel.classList.add("is-leaving");
           loaderText.textContent = "다음 단계로 이동 중"; loader.hidden = false;
-          const minimum = new Promise(resolve => { transitionTimer = setTimeout(resolve, 1500); });
+          const minimum = new Promise(resolve => { transitionTimer = setTimeout(resolve, 1200); });
           try {
-            const result = await Promise.allSettled([minimum, (async () => bridge.create())()]);
+            const result = await Promise.allSettled([minimum, (async () => bridge.create({ navigationCheckpoints: true }))()]);
             if (result[1].status === "rejected") bridge.message(result[1].reason?.message || "모델 준비를 시작하지 못했습니다. 다시 확인해 주세요.", true);
           } finally {
             creationPending = false; stopTransition(); render(); heading.focus({ preventScroll: true });
@@ -221,15 +365,13 @@
         }
         navigate(position + 1); return;
       }
+      if (current === stageStep(project) && humanGate(project)) return;
       if (position < maximum) { navigate(position + 1); return; }
-      if (running(project.status)) { await bridge.action("pause"); return; }
-      if (project.review || project.input) return;
-      if (project.migration) { if (project.migration.state === "available") await bridge.action("migrate"); return; }
-      if (["paused", "failed", "error", "interrupted"].includes(project.status)) await bridge.action("resume");
-      else if (!done(project.status)) await bridge.action("start");
+      if (releaseStep(project)) await bridge.action("resume");
     }
     function openListening(kind) {
       if (!lastProject || transitioning) return;
+      if (kind === "reference") { navigate(order.indexOf("voice-listening")); return; }
       listening = kind; listenDialog.title.textContent = kind === "hard" ? "유사어 전체 듣기" : "목소리 듣기";
       bridge.preview(kind);
       $("reference-preview").hidden = kind !== "reference";
@@ -264,11 +406,23 @@
       materialPageText.textContent = `${materialPage + 1} / ${pages}`;
     }
     function paginateDownloads() {
-      const groups = [...$("downloads-list").children], small = innerHeight < 720 || innerWidth < 760;
-      const size = innerHeight < 500 ? 1 : innerHeight < 600 ? 2 : 4, pages = Math.max(1, Math.ceil(groups.length / size));
+      const list = $("downloads-list"), groups = [...list.children];
+      downloadPages.hidden = true;
+      if (downloads.hidden || !groups.length) return;
+      // Measure with the pager removed and every row present. The download
+      // panel has a definite remaining height, independent of the list size.
+      groups.forEach(group => { group.hidden = false; });
+      const style = window.getComputedStyle?.(list), liveStyle = window.getComputedStyle?.(live);
+      const columns = style?.gridTemplateColumns?.trim().split(/\s+/).length || (innerWidth > 760 && innerHeight > 700 ? 2 : 1);
+      const gap = parseFloat(style?.rowGap) || 0, liveGap = parseFloat(liveStyle?.rowGap) || 0;
+      const sectionBounds = downloads.getBoundingClientRect?.(), listBounds = list.getBoundingClientRect?.();
+      const available = sectionBounds && listBounds ? Math.max(0, sectionBounds.bottom - listBounds.top) : Math.max(80, innerHeight - 340);
+      const rowHeight = Math.max(0, ...groups.map(group => group.getBoundingClientRect?.().height || 0)) || 80;
+      const size = pageCapacity(groups.length, available, rowHeight, columns, gap, 32 + liveGap);
+      const pages = Math.max(1, Math.ceil(groups.length / size));
       downloadPage = Math.min(downloadPage, pages - 1);
-      groups.forEach((group, i) => { group.hidden = small && Math.floor(i / size) !== downloadPage; });
-      downloadPages.hidden = !small || pages <= 1 || downloads.hidden;
+      groups.forEach((group, i) => { group.hidden = Math.floor(i / size) !== downloadPage; });
+      downloadPages.hidden = pages <= 1;
       downloadBack.disabled = downloadPage === 0; downloadNext.disabled = downloadPage >= pages - 1;
       downloadPageText.textContent = `${downloadPage + 1} / ${pages}`;
     }
@@ -282,24 +436,221 @@
       });
       voiceCounts.replaceChildren(...values);
     }
-    function renderHistory(project, position) {
-      const isComplete = done(project.status) || position < maximum;
-      historicalTitle.textContent = isComplete ? "이 단계를 마쳤습니다." : "진행 상태를 확인하고 있습니다.";
-      const settings = project.settings || {}, text = {
-        entry: `호출어 · ${project.wakeword || ""}`,
-        scale: titles[project.preset] || project.preset_label || "저장된 학습 규모",
-        downloads: "다운로드·검사·자료 연결 완료",
-        voices: "자동 검사한 목소리를 호출어 음성 생성에 사용합니다.",
-        pronunciation: "호출어 발음 검수 결과가 저장되어 있습니다.",
-        "positive-generation": [Number.isFinite(settings.originals) ? `학습용 ${count(settings.originals)}개` : "", Number.isFinite(settings.validation_originals) ? `공통 평가용 ${count(settings.validation_originals)}개` : ""].filter(Boolean).join(" · "),
-        phrases: "저장한 유사어 문구로 음성을 생성했습니다.",
-        "hard-generation": Number.isFinite(settings.hard_samples_per_phrase) ? `유사어 문구당 ${count(settings.hard_samples_per_phrase)}개` : "유사어 음성 생성 완료",
-        "hard-review": "유사어 발음 검수 결과가 저장되어 있습니다.",
-        features: "소음·울림 증강과 학습 특징 준비 완료",
-        training: Number.isFinite(settings.updates) ? `모델 3개 · 모델당 ${count(settings.updates)}회 학습` : "독립 모델 3개 학습 완료",
-        evaluation: "저장된 채점과 모델별 감지 설정을 결과 화면에서 확인하세요.",
-      };
-      historicalDetail.textContent = text[current] || "기존 작업과 기록은 그대로 보존됩니다.";
+    function quantity(value, unit = "개") {
+      if (!Number.isFinite(value) || value < 0) return "—";
+      if (unit === "bytes") {
+        if (value < 1024) return `${count(value)} B`;
+        const index = Math.min(4, Math.floor(Math.log(value) / Math.log(1024)));
+        return `${(value / 1024 ** index).toLocaleString("ko-KR", { maximumFractionDigits: 1 })} ${["B", "KiB", "MiB", "GiB", "TiB"][index]}`;
+      }
+      const label = { files: "개", items: "개", samples: "개", updates: "회", rows: "행", hours: "시간", audio_hours: "시간" }[unit] || unit;
+      return `${count(value)}${label}`;
+    }
+    function historyRow(row) {
+      const item = node("div", undefined, "story-history-row");
+      const line = node("div", undefined, "story-history-line");
+      const totalKnown = Number.isFinite(row.total) && row.total > 0, doneKnown = Number.isFinite(row.done) && row.done >= 0;
+      const amount = totalKnown ? `${doneKnown ? row.unit === "bytes" ? quantity(row.done, row.unit) : count(row.done) : "—"} / ${quantity(row.total, row.unit)}` : doneKnown ? quantity(row.done, row.unit) : "수량 기록 없음";
+      line.append(node("strong", row.label || "자료"), node("span", amount)); item.append(line);
+      if (totalKnown && doneKnown) {
+        const bar = node("progress"); bar.max = row.total; bar.value = Math.min(row.total, row.done);
+        bar.setAttribute("aria-label", (row.label || "자료") + " 저장된 진행률"); item.append(bar);
+        line.append(node("span", `${Math.min(100, row.done / row.total * 100).toLocaleString("ko-KR", { maximumFractionDigits: 1 })}%`, "story-history-percent"));
+      }
+      return item;
+    }
+    function historyPlayerActive() {
+      return !savedReview.hidden && !historic.hidden && !live.hidden && !transitioning
+        && ["pronunciation", "hard-review"].includes(current) && !document.hidden;
+    }
+    function historyControls() {
+      savedReviewPrevious.disabled = historyReviewIndex <= 0;
+      savedReviewNext.disabled = historyReviewIndex >= historyReviewItems.length - 1;
+      const item = historyReviewItems[historyReviewIndex];
+      savedReviewToggle.disabled = !bridge.mediaUrl?.(item?.audio_url || item?.audio);
+      const playing = historyPlaybackWanted || savedReviewAudio.paused === false;
+      savedReviewToggle.textContent = playing ? "일시정지" : "재생";
+      savedReviewToggle.setAttribute("aria-pressed", String(playing));
+    }
+    function stopHistoryPlayback(release = false) {
+      historyPlaybackWanted = false; historyPlaybackVersion++; savedReviewAudio.pause?.();
+      if (release) { savedReviewAudio.removeAttribute("src"); savedReviewAudio.load?.(); }
+      historyControls();
+    }
+    async function playHistoryReview() {
+      if (!historyPlayerActive()) return;
+      if (!savedReviewAudio.getAttribute("src")) updateHistoryReview();
+      if (!savedReviewAudio.getAttribute("src")) return;
+      const version = ++historyPlaybackVersion;
+      historyPlaybackWanted = true; historyControls();
+      try {
+        await savedReviewAudio.play();
+        if (version !== historyPlaybackVersion || !historyPlayerActive() || !historyPlaybackWanted) {
+          if (!historyPlayerActive() || !historyPlaybackWanted) savedReviewAudio.pause?.();
+          return;
+        }
+        historyControls();
+      } catch {
+        if (version === historyPlaybackVersion) {
+          historyPlaybackWanted = false; historyControls(); savedReviewNote.textContent = "음원을 재생하지 못했습니다.";
+        }
+      }
+    }
+    function selectHistoryReview(position, continuePlayback = historyPlaybackWanted || savedReviewAudio.paused === false) {
+      if (!Number.isInteger(position) || position < 0 || position >= historyReviewItems.length) return;
+      historyReviewIndex = position; return updateHistoryReview(continuePlayback);
+    }
+    function renderHistoryReviewList(keepPage = false) {
+      const key = JSON.stringify([lastProject?.id, current, historyReviewItems.map(item => [item.id, item.text, item.label, item.decision])]);
+      if (key !== historyReviewListKey) {
+        historyReviewListKey = key;
+        const labels = { keep: "정상", discard: "제외", review: "다시 확인" };
+        historyReviewRows = historyReviewItems.map((item, i) => {
+          const row = button(undefined, "voice-row", () => selectHistoryReview(i));
+          const label = current === "pronunciation" ? `목소리 ${i + 1}` : item.text || item.label || `음원 ${i + 1}`;
+          row.dataset.number = String(i + 1);
+          row.append(node("span", label, "listen-row-title"), node("span", labels[item.decision] || "기록 없음", "listen-badge"));
+          const accessibleLabel = current === "pronunciation" ? label : `음원 ${i + 1} · ${label}`;
+          row.setAttribute("aria-label", `${accessibleLabel} · ${labels[item.decision] || "판정 기록 없음"}`);
+          return row;
+        });
+        savedReviewList.replaceChildren(...historyReviewRows);
+      }
+      const pages = Math.max(1, Math.ceil(historyReviewItems.length / 5));
+      historyReviewPage = keepPage ? Math.max(0, Math.min(pages - 1, historyReviewPage)) : Math.floor(historyReviewIndex / 5);
+      historyReviewRows.forEach((row, i) => {
+        row.hidden = Math.floor(i / 5) !== historyReviewPage;
+        row.setAttribute("aria-current", String(i === historyReviewIndex)); row.setAttribute("aria-pressed", String(i === historyReviewIndex));
+      });
+      savedReviewListPrevious.disabled = historyReviewPage === 0; savedReviewListNext.disabled = historyReviewPage >= pages - 1;
+      savedReviewListPosition.textContent = `${historyReviewPage + 1} / ${pages}`; savedReviewListPager.hidden = pages <= 1;
+    }
+    function updateHistoryReview(continuePlayback = false) {
+      const item = historyReviewItems[historyReviewIndex];
+      if (!item) return;
+      stopHistoryPlayback();
+      const label = current === "pronunciation" ? `목소리 ${historyReviewIndex + 1}` : item.text || item.label || `음원 ${historyReviewIndex + 1}`;
+      savedReviewText.textContent = label;
+      savedReviewPosition.textContent = `${historyReviewIndex + 1} / ${historyReviewItems.length}`;
+      savedReviewSelect.value = String(historyReviewIndex);
+      const source = bridge.mediaUrl?.(item.audio_url || item.audio) || "";
+      if (source) savedReviewAudio.setAttribute("src", source); else savedReviewAudio.removeAttribute("src");
+      savedReviewAudio.hidden = !source; savedReviewAudio.load?.();
+      for (const radio of savedReviewInputs) { radio.checked = radio.value === item.decision; radio.parentElement.setAttribute("data-checked", String(radio.checked)); }
+      savedReviewNote.textContent = !source ? "저장된 음원을 찾을 수 없습니다." : !["keep", "discard", "review"].includes(item.decision) ? "판정 기록이 없습니다." : "";
+      renderHistoryReviewList();
+      historyControls();
+      if (continuePlayback && source) return playHistoryReview();
+    }
+    savedReviewSelect.addEventListener("change", () => {
+      const position = Number(savedReviewSelect.value);
+      return selectHistoryReview(position);
+    });
+    savedReviewAudio.addEventListener("play", () => {
+      if (!historyPlayerActive() || !savedReviewAudio.getAttribute("src")) { stopHistoryPlayback(); return; }
+      historyPlaybackWanted = true; historyControls();
+    });
+    savedReviewAudio.addEventListener("pause", () => {
+      if (savedReviewAudio.paused && !savedReviewAudio.ended) { historyPlaybackWanted = false; historyPlaybackVersion++; historyControls(); }
+    });
+    savedReviewAudio.addEventListener("ended", () => {
+      if (savedReviewAudio.ended && historyPlaybackWanted && historyPlayerActive() && historyReviewItems.length) return selectHistoryReview((historyReviewIndex + 1) % historyReviewItems.length, true);
+    });
+    savedReviewAudio.addEventListener("error", () => {
+      if (savedReviewAudio.getAttribute("src")) { stopHistoryPlayback(); savedReviewNote.textContent = "음원을 재생하지 못했습니다."; }
+    });
+    document.addEventListener?.("visibilitychange", () => { if (document.hidden) stopHistoryPlayback(true); });
+    function historyHeight() {
+      if (!stage.getBoundingClientRect || typeof getComputedStyle !== "function") return Math.max(80, innerHeight - 210);
+      const rect = stage.getBoundingClientRect(), style = getComputedStyle(stage);
+      const gap = parseFloat(getComputedStyle(panel).rowGap) || 0;
+      const contextHeight = context.getBoundingClientRect().height;
+      let available = rect.height - (parseFloat(style.paddingTop) || 0) - (parseFloat(style.paddingBottom) || 0)
+        - heading.getBoundingClientRect().height - contextHeight - footer.getBoundingClientRect().height
+        - gap * (contextHeight > 0 ? 3 : 2);
+      if (!listenActions.hidden) available -= listenActions.getBoundingClientRect().height + (parseFloat(getComputedStyle(live).rowGap) || 0);
+      if (!migrationNote.hidden) available -= migrationNote.getBoundingClientRect().height + (parseFloat(getComputedStyle(live).rowGap) || 0);
+      return Math.max(80, available);
+    }
+    function renderHistory(project) {
+      const view = project?.completed_stage_views?.[current];
+      historic.dataset.kind = current;
+      const valid = completedStep(project, current) && view?.completed === true;
+      const fingerprint = JSON.stringify([project?.id, current, valid, view, project?.migration, historyPage, innerWidth, innerHeight]);
+      if (fingerprint === historyKey) return;
+      historyKey = fingerprint; savedReview.hidden = true; historyPages.hidden = true;
+      const unknown = () => historyContent.replaceChildren(node("p", "저장된 세부 내역이 없습니다.", "story-history-note"));
+      if (!valid) { stopHistoryPlayback(true); unknown(); return; }
+      const reviewItems = Array.isArray(view.review?.items) ? view.review.items : [];
+      if (["pronunciation", "hard-review"].includes(current) && reviewItems.length) {
+        const sameQueue = JSON.stringify(historyReviewItems) === JSON.stringify(reviewItems);
+        historyReviewItems = reviewItems;
+        if (!sameQueue) historyReviewIndex = 0;
+        savedReview.hidden = false; historyContent.replaceChildren();
+        if (!sameQueue || savedReviewSelect.children.length !== reviewItems.length) {
+          savedReviewSelect.replaceChildren(...reviewItems.map((item, i) => { const option = node("option", `${i + 1}. ${item.text || item.label || "음원"}`); option.value = String(i); return option; }));
+          updateHistoryReview();
+        } else if (!savedReviewAudio.getAttribute("src")) updateHistoryReview();
+        return;
+      }
+      stopHistoryPlayback(true);
+      if (current === "phrases") {
+        const phrases = Array.isArray(view.phrases) ? view.phrases.filter(value => typeof value === "string") : [];
+        if (!phrases.length) { unknown(); return; }
+        const size = pageCapacity(phrases.length, historyHeight(), 44, innerWidth > 600 ? 2 : 1, 10), pages = Math.ceil(phrases.length / size);
+        historyPage = Math.min(historyPage, pages - 1);
+        const grid = node("div", undefined, "story-saved-phrases");
+        phrases.slice(historyPage * size, (historyPage + 1) * size).forEach((text, i) => {
+          const field = node("input"); field.type = "text"; field.readOnly = true; field.value = text;
+          field.setAttribute("aria-label", `저장된 유사어 ${historyPage * size + i + 1}`); grid.append(field);
+        });
+        historyContent.replaceChildren(grid); renderHistoryPages(pages); return;
+      }
+      const files = Array.isArray(view.progress?.files) ? view.progress.files : Array.isArray(view.files) ? view.files : [];
+      let rows = Array.isArray(view.rows) ? view.rows : [];
+      if (current === "downloads" && files.length) {
+        const grouped = new Map();
+        for (const file of files) {
+          const key = file.group || file.id; if (!grouped.has(key)) grouped.set(key, []); grouped.get(key).push(file);
+        }
+        rows = [...grouped.values()].flatMap(group => {
+          if (!group.every(file => (file.unit || "bytes") === "bytes")) {
+            // Automatically selected corpora report admitted hours (or other
+            // real quantities), not a byte archive. Preserve each original
+            // quantity and its unknown values instead of calling it one file.
+            return group.map(file => ({ label: file.label || file.group_label || "자료", done: file.done, total: file.total, unit: file.unit || "bytes" }));
+          }
+          const complete = group.filter(file => ["complete", "reused"].includes(file.state)).length;
+          const knownBytes = group.length > 0 && group.every(file => Number.isFinite(file.done));
+          const bytes = knownBytes ? group.reduce((sum, file) => sum + file.done, 0) : null;
+          const totalBytes = group.every(file => Number.isFinite(file.total)) ? group.reduce((sum, file) => sum + file.total, 0) : null;
+          return [{ label: group[0].group_label || group[0].label || "자료", done: complete, total: group.length, unit: "files", bytes, totalBytes, files: group }];
+        });
+      }
+      if (!rows.length && view.progress) rows = [view.progress];
+      if (!rows.length) { unknown(); return; }
+      // Measure real row heights at the rendered width before choosing a
+      // page size. A tall narrow viewport still has a single-column list.
+      const list = node("div", undefined, "story-history-rows");
+      const allItems = rows.map(row => {
+        const item = historyRow(row);
+        if (Number.isFinite(row.bytes) || Number.isFinite(row.totalBytes)) item.append(node("p", Number.isFinite(row.totalBytes) ? `${quantity(row.bytes, "bytes")} / ${quantity(row.totalBytes, "bytes")}` : quantity(row.bytes, "bytes"), "story-history-note"));
+        return item;
+      });
+      list.append(...allItems); historyContent.replaceChildren(list);
+      const columns = current === "downloads" && innerWidth > 600 ? 2 : 1;
+      const style = typeof getComputedStyle === "function" ? getComputedStyle(list) : null;
+      const gap = style ? parseFloat(style.rowGap) || 0 : 18;
+      const rowHeight = Math.max(...allItems.map(item => item.getBoundingClientRect?.().height || 70));
+      const size = pageCapacity(rows.length, historyHeight(), rowHeight, columns, gap), pages = Math.ceil(rows.length / size);
+      historyPage = Math.min(historyPage, pages - 1);
+      allItems.forEach((item, i) => { item.hidden = Math.floor(i / size) !== historyPage; });
+      renderHistoryPages(pages);
+    }
+    function renderHistoryPages(pages) {
+      historyPages.hidden = pages <= 1;
+      historyBack.disabled = historyPage === 0; historyNext.disabled = historyPage >= pages - 1;
+      historyPageText.textContent = `${historyPage + 1} / ${pages}`;
     }
     function render() {
       if (creationPending) return;
@@ -308,18 +659,25 @@
       if (key !== projectKey) {
         pauseMedia(); stopTransition(); projectKey = key; following = true; materialPage = 0; materialKey = "";
         maximum = frontier(project); current = project ? stageStep(project) : "entry"; lastFrontier = project ? stageStep(project) : "entry";
+        historyPage = 0; historyKey = "";
       }
       lastProject = project; maximum = frontier(project);
       bridge.voiceDesign?.(project ? project.reference_design : state.recipes.find(recipe => recipe.id === state.selectedPreset)?.reference_design);
       const actual = project ? stageStep(project) : current;
       if (project && actual !== lastFrontier) {
-        lastFrontier = actual;
-        if (following && !transitioning && current !== actual) navigate(order.indexOf(actual), true);
+        if (!following || current === actual) lastFrontier = actual;
+        else if (!transitioning && !state.busy && navigate(order.indexOf(actual), true)) lastFrontier = actual;
       }
       if (order.indexOf(current) > maximum) current = actual;
-      const position = order.indexOf(current), historical = Boolean(project && (position < maximum || done(project.status)));
+      const checkpoint = downloadCheckpoint(project), navigation = navigationCheckpoint(project);
+      const position = order.indexOf(current), historical = Boolean(project && (position < maximum || done(project.status)
+        || (current === "downloads" && checkpoint?.state === "awaiting_next" && completedStep(project, "downloads"))
+        || (navigation?.state === "awaiting_next" && current === navigation.step && completedNavigationStep(project, current))));
       shell.dataset.step = current; shell.dataset.model = project ? "existing" : "new";
-      heading.textContent = definitions[position]?.[2] || "학습 상태";
+      shell.dataset.history = String(historical);
+      shell.dataset.downloadList = "false";
+      const preparingResults = Boolean(project && current === "results" && !done(project.status) && stageStep(project) === "results");
+      heading.textContent = preparingResults ? "학습 결과를 준비합니다." : definitions[position]?.[2] || "학습 상태";
       document.title = definitions[position]?.[1] || "한국어 호출어 학습";
       context.textContent = project && position >= 3 ? `‘${project.wakeword || ""}’ · ${titles[project.preset] || "호출어 학습"}` : "";
       context.hidden = !context.textContent;
@@ -335,17 +693,27 @@
         next.disabled = state.busy;
         next.textContent = "다음"; next.title = "";
         if (!project) next.disabled = state.busy || !state.recipeReady || (current === "materials" && $("create").disabled);
-        else if (position >= maximum && !done(project.status)) {
-          if (running(project.status)) { next.textContent = "일시정지"; next.title = "현재 단계가 끝난 뒤 멈춥니다."; next.disabled = state.busy || project.status === "pausing"; }
-          else if (project.review || project.input) { next.textContent = "다음"; next.disabled = true; }
-          else if (project.migration) { next.textContent = "업데이트 적용"; next.disabled = state.busy || project.migration.state !== "available"; }
-          else next.textContent = ["paused", "failed", "error", "interrupted"].includes(project.status) ? "이어서 진행" : "시작";
-        }
+        else next.disabled = state.busy || (current === stageStep(project) && humanGate(project)) || (position >= maximum && !releaseStep(project));
       }
+      const action = operationAction(project);
+      operation.hidden = !action;
+      operation.disabled = !action || state.busy || transitioning || project?.status === "pausing";
+      operation.textContent = project?.status === "pausing" ? "정지 중" : action === "pause" ? "일시정지" : action === "resume" ? "재개" : "시작";
+      operation.title = action === "pause" ? "현재 단계가 끝난 뒤 멈춥니다." : "";
+      footer.classList.toggle("has-operation", !operation.hidden);
+      downloadActions.hidden = !canStartDownloads(project);
+      downloadPrimary.disabled = state.busy || transitioning || !canStartDownloads(project);
+      migrationNote.hidden = !project?.migration;
       // Hidden panels stay connected; polling never rebuilds their inputs or
       // embedded documents, and never resets a review's listening position.
-      const wanted = !project && current === "entry" ? entry : !project && current === "scale" ? scale : current === "materials" ? materials : live;
-      for (const unit of [entry, scale, materials, live]) unit.hidden = unit !== wanted;
+      const wanted = current === "entry" ? (project ? savedEntry : entry) : current === "scale" ? (project ? savedScale : scale)
+        : current === "materials" ? materials : current === "voice-listening" ? voiceListening : live;
+      for (const unit of [entry, savedEntry, scale, savedScale, materials, live, voiceListening]) unit.hidden = unit !== wanted;
+      if (project && savedWord.value !== (project.wakeword || "")) savedWord.value = project.wakeword || "";
+      if (project) for (const card of savedPresets.children) {
+        const radio = card.querySelector("input"); radio.checked = radio.value === project.preset;
+        card.setAttribute("data-selected", String(radio.checked));
+      }
       if (!project) {
         for (const preset of $("presets").children) {
           const radio = preset.querySelector('input[name="preset"]');
@@ -357,23 +725,29 @@
         // Existing model settings are displayed, never overwritten by a newly
         // selected preset or by the setup form's advanced-value overrides.
         $("advanced").hidden = true;
-        if (current === "results" || current === "microphone") setView(current === "microphone" ? "mic" : "results");
+        referencePreview.open = current === "voice-listening" && Boolean(project.reference_preview?.url);
+        if (preparingResults) setView("overview");
+        else if (current === "voice-listening") setView("review", "reference");
+        else if (current === "results" || current === "microphone") setView(current === "microphone" ? "mic" : "results");
         else if (!historical && (project.review || project.input)) setView("review", "required");
         else setView("overview");
-        const frameStep = ["results", "microphone"].includes(current);
+        const frameStep = !preparingResults && ["results", "microphone"].includes(current) && Boolean(project.results?.url || project.results_url);
         results.hidden = !frameStep || !(project.results?.url || project.results_url);
         review.hidden = historical || frameStep || !project.review || running(project.status);
         input.hidden = historical || frameStep || !project.input || running(project.status);
         liveSummary.hidden = historical || frameStep;
         currentTitle.hidden = true;
         downloads.hidden = current !== "downloads" || historical || !project.progress?.files?.length;
+        shell.dataset.downloadList = String(!downloads.hidden);
         voiceCounts.hidden = current !== "voices";
-        historic.hidden = !historical || frameStep || current === "voices";
-        if (!historic.hidden) renderHistory(project, position);
-        if (!voiceCounts.hidden) renderVoiceCounts(project);
-        referenceButton.hidden = !project.reference_preview?.url || !["voices", "pronunciation"].includes(current);
+        historic.hidden = !historical || frameStep || ["voices", "entry", "scale", "materials"].includes(current);
+        referenceButton.hidden = !project.reference_preview?.url || current !== "pronunciation";
         hardButton.hidden = !project.hard_preview?.url || !["hard-generation", "hard-review", "phrases"].includes(current);
         listenActions.hidden = referenceButton.hidden && hardButton.hidden;
+        if (!historic.hidden) renderHistory(project);
+        if (!voiceCounts.hidden) renderVoiceCounts(project);
+        voiceListeningNote.textContent = project.reference_preview?.url
+          ? "필요한 목소리만 들어보거나 다음 단계로 넘어갈 수 있습니다." : "저장된 목소리 듣기 자료가 없습니다.";
         paginateDownloads();
       }
       if (current === "materials") {
@@ -412,9 +786,12 @@
     $("wakeword").addEventListener("keydown", event => {
       if (event.key === "Enter" && !event.isComposing && current === "entry") { event.preventDefault(); advance(); }
     });
-    window.addEventListener("resize", () => { if (current === "materials") renderMaterials(); if (current === "downloads") paginateDownloads(); });
+    downloads.addEventListener("toggle", event => {
+      if (event.target?.tagName === "DETAILS") Promise.resolve().then(paginateDownloads);
+    }, true);
+    window.addEventListener("resize", () => { if (current === "materials") renderMaterials(); if (current === "downloads") paginateDownloads(); if (lastProject && !historic.hidden) renderHistory(lastProject); });
     window.addEventListener("pagehide", () => { clearTimeout(transitionTimer); pauseMedia(); });
     return { render };
   }
-  window.KowwStory = Object.freeze({ create, definitions, stageStep, frontier });
+  window.KowwStory = Object.freeze({ create, definitions, stageStep, frontier, completedStep, pageCapacity, downloadCheckpoint, navigationCheckpoint });
 })();

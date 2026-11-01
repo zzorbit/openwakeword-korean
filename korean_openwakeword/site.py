@@ -90,7 +90,7 @@ def export_site(evaluation, output, runtime_recommendations=None):
         viewer = write_paged_viewer(report, display_rows(), output)
         resources = files("korean_openwakeword") / "resources"
         for source, destination in (("results_paged.html", "index.html"), ("results_paged.js", "results_paged.js"), ("results_ui.js", "results_ui.js"),
-                                    ("results_scope.js", "results_scope.js"), ("results.css", "results.css")):
+                                    ("results_scope.js", "results_scope.js"), ("results.css", "results.css"), ("audio_listening.css", "audio_listening.css"), ("listening_player.js", "listening_player.js")):
             (output / destination).write_bytes((resources / source).read_bytes())
         write_json(output / "provenance.json", {"evaluation_receipt_sha256": digest(evaluation / "receipt.json"),
             "audio": audio, "models": report["models"], "stage": report["stage"],
@@ -105,7 +105,7 @@ def export_site(evaluation, output, runtime_recommendations=None):
         _copy_verified_audio(source, dest, row["sha256"], verified_sources, verified_destinations)
         row["path"] = "audio/" + name
     root = files("korean_openwakeword") / "resources"
-    for name in ("results.html", "results_scope.js", "results_ui.js", "results.js", "results.css"):
+    for name in ("results.html", "results_scope.js", "results_ui.js", "results.js", "results.css", "audio_listening.css", "listening_player.js"):
         (output / ("index.html" if name == "results.html" else name)).write_bytes((root / name).read_bytes())
     # Avoid an additional full JSON string for large evaluation manifests.
     with (output / "results-data.js").open("w", encoding="utf-8") as stream:

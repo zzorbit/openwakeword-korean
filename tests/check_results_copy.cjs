@@ -4,6 +4,24 @@ const fs = require("node:fs"), path = require("node:path"), vm = require("node:v
 const source = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources/results_ui.js"), "utf8");
 const cases = [];
 function test(name, run) { run(); cases.push(name); }
+test("both frozen result layouts use the shared listening structure and three visible transport actions", () => {
+  for (const name of ["results.html", "results_paged.html"]) {
+    const html = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources", name), "utf8");
+    assert.match(html, /results\.css[\s\S]*audio_listening\.css/);
+    for (const className of ["listen-player", "listen-heading", "listen-title", "listen-position", "listen-audio", "listen-controls", "listen-select"]) assert.ok(html.includes(className), name + " " + className);
+    assert.match(html, /id="start"[^>]*hidden/); assert.match(html, /id="pause"[^>]*hidden/);
+    const controls = html.match(/<div class="playback-controls listen-controls">([\s\S]*?)<\/div>/)[1];
+    assert.deepEqual([...controls.matchAll(/id="([^"]+)"/g)].map(match => match[1]), ["prev", "resume", "next"]);
+    assert.match(html, /id="item" hidden class="listen-select" aria-label=/);
+    for (const id of ["clip-list", "clip-list-prev", "clip-list-next", "clip-list-position"]) assert.ok(html.includes(`id="${id}"`));
+    assert.match(html, /class="listen-workspace results-listening-workspace"/);
+    assert.match(html, /src="listening_player\.js"[\s\S]*src="results(?:_paged)?\.js"/);
+    assert.doesNotMatch(html, /data-value="(?:keep|discard|review)"/);
+  }
+  const css = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources/results.css"), "utf8");
+  assert.match(css, /data-audio-view="reactions"\] \.audio-player\.listen-player\{display:contents/);
+  assert.match(css, /data-audio-view="settings"\] \.playback-controls\{display:none/);
+});
 function browser({dashboard = false, story = false} = {}) {
   class Element {
     constructor(tag = "div") { this.tagName = tag; this.children = []; this.value = ""; this.textContent = ""; this.disabled = false; this.attributes = {}; }

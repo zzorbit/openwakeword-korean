@@ -8,15 +8,17 @@ const html = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resour
 const flush = async () => { for (let count = 0; count < 8; count++) await new Promise(resolve => setImmediate(resolve)); };
 const tests = [];
 async function test(name, run) { await run(); tests.push(name); }
-function browser(tuples, {deferPages = false, pageFailure = false, staticViewer = false, viewportHeight, indexPath = "viewer-index.json", report = {wakeword: "보라야", models: []}} = {}) {
+function browser(tuples, {deferPages = false, pageFailure = false, staticViewer = false, viewportHeight, playback, enhance, indexPath = "viewer-index.json", report = {wakeword: "보라야", models: []}} = {}) {
   const elements = new Map(), calls = [], deferred = new Map(), listeners = {}, parentWindow = {};
   class Element {
-    constructor(tag = "div") { this.tagName = tag; this.children = []; this.value = ""; this.textContent = ""; this.disabled = false; this.src = ""; this.plays = 0; this.pauses = 0; this.attributes = {}; }
+    constructor(tag = "div") { this.tagName = tag; this.children = []; this.value = ""; this.textContent = ""; this.disabled = false; this.src = ""; this.plays = 0; this.pauses = 0; this.attributes = {}; this.paused = true; this.ended = false; this.volume = 1; this.playbackRate = 1; }
     append(...nodes) { this.children.push(...nodes); }
     replaceChildren(...nodes) { this.children = nodes; }
     get options() { return this.children; }
-    pause() { this.pauses++; }
-    async play() { this.plays++; }
+    get src() { return this._src; }
+    set src(value) { this._src = value; this.currentTime = 0; this.ended = false; this.paused = true; }
+    pause() { this.pauses++; this.paused = true; this.onpause?.(); }
+    play() { this.plays++; this.paused = false; this.ended = false; this.onplay?.(); return playback ? playback(this.plays) : Promise.resolve(); }
     removeAttribute(name) { this[name] = ""; }
     setAttribute(name, value) { this.attributes[name] = value; }
   }
@@ -35,6 +37,7 @@ function browser(tuples, {deferPages = false, pageFailure = false, staticViewer 
     return {ok: true, json: async () => page(number)};
   }});
   context.window = context; context.location = new URL("http://127.0.0.1/results/bora/"); context.URL = URL; context.KOWW_RESULTS_TEST = true;
+  if (enhance) context.KowwListening = {enhance};
   context.innerHeight = viewportHeight;
   context.parent = parentWindow; context.addEventListener = (name, listener) => { listeners[name] = listener; };
   context.KOWW_RESULTS = {report, clips: staticViewer ? tuples.map(row) : undefined, viewer: {schema_version: 1, index_path: indexPath, page_size: 128}};
@@ -208,6 +211,76 @@ const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "posi
     b.elements.get("condition-reverb").value = "strong"; b.elements.get("condition-reverb").onchange();
     assert.equal(b.elements.get("conditions").tBodies[0].children[1].children[4].textContent, "87.50%\n7 / 8회");
     assert.equal(JSON.stringify(report), frozen);
+  });
+  for (const staticViewer of [false, true]) {
+    const mode = staticViewer ? "static" : "paged";
+    await test(`${mode} C-style list stays at five global rows and browsing pages never fetches or changes playback`, async () => {
+      let mounted = 0;
+      const b = browser(Array.from({length: 320}, (_, i) => tuple(i)), {staticViewer, enhance: () => { mounted++; }});
+      if (b.helper) await b.helper.boot();
+      assert.equal(mounted, 1);
+      const list = b.elements.get("clip-list"), audio = b.elements.get("audio"); audio.currentTime = 2.25;
+      assert.equal(list.children.length, 5); assert.equal(list.children[0].attributes["data-number"], "1");
+      assert.equal(list.children[0].attributes["aria-current"], "true");
+      assert.ok(list.children[0].attributes["aria-label"].includes("음성"));
+      const source = audio.src, calls = b.calls.length;
+      b.elements.get("clip-list-next").onclick();
+      assert.equal(list.children.length, 5); assert.equal(list.children[0].attributes["data-number"], "6");
+      assert.equal(b.elements.get("clip-list-position").textContent, "2 / 64");
+      assert.equal(audio.src, source); assert.equal(audio.currentTime, 2.25); assert.equal(audio.plays, 0); assert.equal(b.calls.length, calls);
+      await list.children[0].onclick();
+      assert.equal(audio.src, "audio/5.wav"); assert.equal(list.children[0].attributes["aria-current"], "true");
+      b.elements.get("item").value = "299"; await b.elements.get("item").onchange();
+      assert.equal(audio.src, "audio/299.wav"); assert.equal(list.children.length, 5);
+      assert.equal(list.children[0].attributes["data-number"], "296"); assert.equal(list.children[4].attributes["data-number"], "300");
+      assert.equal(list.children[4].attributes["aria-current"], "true"); assert.equal(mounted, 1);
+      if (b.helper) assert.ok(b.elements.get("item").children.length <= 100);
+    });
+    await test(`${mode} transport toggles actual playback and resumes the current position without new source or gain`, async () => {
+      const b = browser([tuple(0), tuple(1)], {staticViewer}); if (b.helper) await b.helper.boot();
+      const audio = b.elements.get("audio"), toggle = b.elements.get("resume");
+      audio.currentTime = 2.5; audio.volume = .37;
+      const source = audio.src, calls = b.calls.length;
+      assert.equal(toggle.textContent, "재생");
+      await toggle.onclick();
+      assert.equal(toggle.textContent, "일시정지"); assert.equal(toggle.attributes["aria-pressed"], "true");
+      assert.equal(audio.currentTime, 2.5); assert.equal(audio.src, source); assert.equal(b.calls.length, calls);
+      await toggle.onclick(); assert.equal(audio.paused, true); assert.equal(toggle.textContent, "재생");
+      await toggle.onclick(); assert.equal(audio.currentTime, 2.5); assert.equal(audio.src, source);
+      assert.equal(audio.volume, .37); assert.equal(audio.playbackRate, 1);
+      b.message(); await toggle.onclick(); assert.equal(audio.currentTime, 2.5);
+      audio.pause(); assert.equal(toggle.textContent, "재생");
+      await audio.play(); assert.equal(toggle.textContent, "일시정지");
+      audio.onerror(); assert.equal(toggle.textContent, "재생"); assert.equal(toggle.attributes["aria-pressed"], "false");
+    });
+    await test(`${mode} transport plays the selected extra without jumping back to the main queue`, async () => {
+      const b = browser([tuple(0), tuple(1, {1: "negative"})], {staticViewer}); if (b.helper) await b.helper.boot();
+      b.elements.get("extra").value = staticViewer ? "clip_1" : "0";
+      await b.elements.get("extra").onchange();
+      const audio = b.elements.get("audio"), source = audio.src;
+      audio.currentTime = 1.25;
+      await b.elements.get("resume").onclick();
+      assert.equal(audio.src, source); assert.equal(source, "audio/1.wav"); assert.equal(audio.currentTime, 1.25);
+      await audio.onended(); assert.equal(audio.src, source); assert.equal(b.elements.get("resume").textContent, "재생");
+    });
+    await test(`${mode} cancelled pending autoplay cannot restart audio or override the stopped transport`, async () => {
+      let finishPlay;
+      const b = browser([tuple(0), tuple(1)], {staticViewer, playback: () => new Promise(resolve => { finishPlay = resolve; })});
+      if (b.helper) await b.helper.boot();
+      const pendingPlay = b.elements.get("resume").onclick();
+      b.message(); finishPlay(); await pendingPlay;
+      assert.equal(b.elements.get("audio").paused, true); assert.equal(b.elements.get("resume").textContent, "재생");
+      const source = b.elements.get("audio").src;
+      await b.elements.get("audio").onended(); assert.equal(b.elements.get("audio").src, source);
+    });
+  }
+  await test("cancelled pending detail is not allowed to autoplay after the parent closes the player", async () => {
+    const b = browser(Array.from({length: 300}, (_, i) => tuple(i)), {deferPages: true});
+    const boot = b.helper.boot(); await flush(); b.deferred.get(0)(); await boot;
+    const old = b.helper.move(128, true); await flush();
+    const plays = b.elements.get("audio").plays;
+    b.message(); b.deferred.get(1)(); await old;
+    assert.equal(b.elements.get("audio").plays, plays); assert.equal(b.elements.get("resume").textContent, "재생");
   });
   console.log(`${tests.length} paged result UI tests passed`);
 })().catch(error => { console.error(error); process.exitCode = 1; });

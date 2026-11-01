@@ -6,7 +6,7 @@
 <style>
 :root{color-scheme:dark;font-family:system-ui,"Malgun Gothic",sans-serif;background:#171a1f;color:#e3e7ec}
 *{box-sizing:border-box}html,body{width:100%;height:100%;margin:0;overflow:hidden}body{padding:16px;font-size:16px;line-height:24px}
-main{width:min(640px,100%);height:100%;margin:auto;display:flex;flex-direction:column;justify-content:center;gap:16px}
+main{width:min(640px,100%);height:100%;margin:auto;display:flex;flex-direction:column;justify-content:center}
 select,button{font:inherit;color:#e9edf2;background:#292d33;border:0;border-radius:8px;transition:background .2s,color .2s}
 select{width:100%;min-width:0;height:44px;padding:8px 12px;overflow:hidden;text-overflow:ellipsis}
 button{height:44px;width:96px;padding:8px 12px;cursor:pointer;font-weight:500}
@@ -14,32 +14,57 @@ button:hover:not(:disabled),select:hover{background:#363d47;color:#f0f2f6}button
 button:focus-visible,select:focus-visible,audio:focus-visible{outline:2px solid #a8afb7;outline-offset:3px}
 .controls{display:flex;align-items:center;justify-content:center;gap:8px}
 audio{width:100%;height:44px;flex:none}p{margin:0;color:#c3cbd6;overflow-wrap:anywhere}p:empty{display:none}
-#sentence{font-size:18px;line-height:28px;text-align:center;color:#eaedf1}#position{text-align:center;font-size:14px;line-height:20px}#error{color:#f2a5a0;font-size:14px;line-height:20px}
-@media(max-width:400px),(max-height:320px){body{padding:12px}main{gap:10px}#sentence{font-size:16px;line-height:24px}button{width:80px;padding:8px}.controls{gap:8px}}
+#error{color:#f2a5a0}
+@media(max-width:400px),(max-height:320px){body{padding:12px}button{width:80px;padding:8px}.controls{gap:8px}}
 @media(max-height:320px){main{justify-content:flex-start;overflow:auto}select,.controls{flex:none}}
 @media(prefers-reduced-motion:reduce){select,button{transition:none}}
 </style>
-<main>
-  <select id="voice" aria-label="들을 목소리" disabled></select>
-  <p id="sentence"></p>
-  <audio id="audio" controls preload="none"></audio>
-  <p id="position" aria-live="polite"></p>
-  <div class="controls">
+<link rel="stylesheet" href="/audio_listening.css">
+<main class="listen-preview">
+  <p id="preview-instruction" class="listen-instruction">듣기는 선택 사항이며 따로 승인할 필요가 없습니다.</p>
+  <div class="listen-workspace">
+  <aside class="listen-sidebar" aria-label="들을 음원 목록">
+    <div id="listening-list" class="listen-list"></div>
+    <div class="listen-list-pager"><button id="list-prev" type="button" aria-label="이전 음원 목록" disabled>‹</button><span id="list-position"></span><button id="list-next" type="button" aria-label="다음 음원 목록" disabled>›</button></div>
+  </aside>
+  <div class="listen-player">
+  <div class="listen-heading"><p id="sentence" class="listen-title"></p><p id="position" class="listen-position" aria-live="polite"></p></div>
+  <audio id="audio" class="listen-audio" controls preload="none"></audio>
+  <div class="controls listen-controls">
     <button id="previous" type="button" disabled>이전</button>
     <button id="continuous" type="button" aria-pressed="false" disabled>재생</button>
     <button id="next" type="button" disabled>다음</button>
   </div>
-  <p id="error" role="alert"></p>
+  <select id="voice" class="listen-select" aria-label="들을 목소리" disabled hidden></select>
+  <p id="error" class="listen-status" role="alert"></p>
+  </div>
+  </div>
 </main>
+<script src="/listening_player.js"></script>
 <script>
 'use strict';
+if(window.parent!==window)document.documentElement?.classList?.add('listening-embedded');
 const voice=document.getElementById('voice'), audio=document.getElementById('audio');
 const previous=document.getElementById('previous'), next=document.getElementById('next');
 const continuous=document.getElementById('continuous'), sentence=document.getElementById('sentence');
 const position=document.getElementById('position'), errorMessage=document.getElementById('error');
 const hard=location.pathname.startsWith('/hard-preview/');
 if(hard){document.title='유사어 전체 듣기';voice.setAttribute('aria-label','들을 유사어 음원');}
-let items=[], playingContinuously=false, playbackVersion=0, playbackAllowed=true;
+let items=[], playingContinuously=false, playbackVersion=0, playbackAllowed=true,listPage=0;
+const playedItems=new Set(),pageSize=5;
+function renderList(){
+  const list=document.getElementById('listening-list'),pages=Math.max(1,Math.ceil(items.length/pageSize));
+  listPage=Math.min(Math.max(0,listPage),pages-1);list.replaceChildren();
+  items.slice(listPage*pageSize,(listPage+1)*pageSize).forEach((item,offset)=>{
+    const index=listPage*pageSize+offset,row=document.createElement('button'),title=document.createElement('span'),badge=document.createElement('span');
+    row.type='button';row.className='voice-row';row.setAttribute('aria-current',String(index===Number(voice.value)));
+    title.className='listen-row-title';title.textContent=item.label||item.text;badge.className='listen-badge';badge.textContent=playedItems.has(item.id)?'들음':'미청취';
+    row.setAttribute('data-number',String(index+1));row.setAttribute('aria-label',`${title.textContent} · ${badge.textContent}`);
+    row.append(title,badge);row.addEventListener('click',()=>select(index,playingContinuously));list.append(row);
+  });
+  document.getElementById('list-prev').disabled=listPage===0;document.getElementById('list-next').disabled=listPage>=pages-1;
+  document.getElementById('list-position').textContent=`${listPage+1} / ${pages}`;
+}
 function setPlaying(value){playingContinuously=value;continuous.textContent=value?'일시정지':'재생';continuous.setAttribute('aria-pressed',String(value));}
 function stop(release=false){
   playbackVersion++;setPlaying(false);audio.pause();
@@ -74,6 +99,7 @@ function select(index,play=false){
   voice.value=String(index);audio.src=items[index].audio;sentence.textContent=items[index].text;
   errorMessage.textContent='';position.textContent=`${index+1} / ${items.length}`;
   previous.disabled=index===0;next.disabled=index===items.length-1;
+  listPage=Math.floor(index/pageSize);renderList();
   if(play)playCurrent();
 }
 voice.addEventListener('change',()=>select(Number(voice.value),playingContinuously));
@@ -82,10 +108,15 @@ next.addEventListener('click',()=>select(Number(voice.value)+1,playingContinuous
 continuous.addEventListener('click',()=>{if(playingContinuously){stop();return;}playCurrent();});
 audio.addEventListener('play',()=>{if(document.hidden||!playbackAllowed){stop(true);return;}setPlaying(true);});
 audio.addEventListener('pause',()=>{if(!audio.ended&&audio.paused)setPlaying(false);});
+audio.addEventListener('error',()=>{stop();errorMessage.textContent='음원을 재생하지 못했습니다. 재생을 다시 눌러주세요.';});
 audio.addEventListener('ended',()=>{
   if(!audio.ended||!playingContinuously||!items.length||document.hidden)return;
+  playedItems.add(items[Number(voice.value)].id);
   select((Number(voice.value)+1)%items.length,true);
 });
+document.getElementById('list-prev').addEventListener('click',()=>{listPage--;renderList();});
+document.getElementById('list-next').addEventListener('click',()=>{listPage++;renderList();});
+window.KowwListening?.enhance(audio,document.querySelector?.('.listen-controls'),{play:continuous,previous,next});
 (async()=>{
   try{
     const project=new URL(location.href).searchParams.get('project');
@@ -100,7 +131,7 @@ audio.addEventListener('ended',()=>{
     items.forEach((item,index)=>{
       const option=document.createElement('option'),group=hard?item.text:item.group||'목소리';
       const count=(groupCounts.get(group)||0)+1;groupCounts.set(group,count);
-      option.value=String(index);option.textContent=hard?`${item.text} · 목소리 ${count}`:`${group} · 목소리 ${count}`;voice.append(option);
+      option.value=String(index);option.textContent=hard?`${item.text} · 목소리 ${count}`:`${group} · 목소리 ${count}`;item.label=option.textContent;voice.append(option);
     });
     if(!items.length)throw Error(hard?'준비된 유사어 음원이 없습니다.':'준비된 기준 목소리가 없습니다.');
     voice.disabled=false;continuous.disabled=false;select(0);

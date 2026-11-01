@@ -1175,19 +1175,21 @@
     catch (error) { message(error.message, true); await refresh(); }
     finally { busy = false; render(); }
   }
-  async function create(event) {
+  async function create(event, { downloadCheckpoint = false, navigationCheckpoints = false } = {}) {
     event.preventDefault(); if (busy) return;
     let body;
     try { body = creationBody(); }
     catch (error) { message(error.message, true); return; }
     if (!recipeReady || !locationReady(body)) { previewLocation(); return; }
+    if (navigationCheckpoints === true) body.navigation_checkpoints = true;
+    else if (downloadCheckpoint === true) body.download_checkpoint = true;
     busy = true; message("모델 학습 폴더를 만들고 있습니다."); render();
     try {
       const result = await api("/api/projects", "POST", body), project = result.project || result;
       if (!project.id) throw new Error("모델 생성 결과에 식별자가 없습니다. 중복 생성 전에 목록을 확인하세요.");
       selectedId = project.id; newProject = false;
       await refresh();
-      if (!activeStatuses.has(project.status)) await api(`/api/projects/${encodeURIComponent(selectedId)}/start`, "POST", {});
+      if (!downloadCheckpoint && !navigationCheckpoints && !activeStatuses.has(project.status)) await api(`/api/projects/${encodeURIComponent(selectedId)}/start`, "POST", {});
       message(""); await refresh();
     } catch (error) { message(error.message, true); await refresh(); }
     finally { busy = false; render(); }
@@ -1228,8 +1230,9 @@
     if (window.KowwStory) story = window.KowwStory.create({
       state: () => ({ project: newProject ? null : selectedProject(), recipes, selectedPreset, busy, recipeReady }),
       materials: materialGroups,
+      mediaUrl: localUrl,
       voiceDesign: design => renderVoiceDesign("setup-voices", design),
-      create: () => create({ preventDefault() {} }),
+      create: options => create({ preventDefault() {} }, options),
       action: runAction,
       input: () => submitInput({ preventDefault() {} }),
       view: (view, mode = "required") => {
