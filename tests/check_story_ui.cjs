@@ -90,9 +90,10 @@ function page(initialProject = null, options = {}) {
   });
   const shell = get("story-shell"), actions = shell.querySelector(".story-actions");
   const next = actions.children[2], operation = actions.children[1], back = actions.children[0];
-  function settle() { const timer = timers.find(timer => !timer.canceled && !timer.ran); if (!timer) return false; timer.ran = true; timer.callback(); return true; }
+  function advanceTimer() { const timer = timers.find(timer => !timer.canceled && !timer.ran); if (!timer) return false; timer.ran = true; timer.callback(); return true; }
+  async function settle() { let advanced = false; while (advanceTimer()) { advanced = true; await new Promise(resolve => setImmediate(resolve)); } return advanced; }
   ui.render();
-  return { api: context.KowwStory, ui, shell, get, state, calls, timers, creationOptions, viewModes, next, operation, back, settle, element: tag => new Element(tag), visibility: async hidden => { document.hidden = hidden; await Promise.all((documentHandlers.visibilitychange || []).map(fn => fn())); }, ticks: shell.querySelectorAll(".story-index-step") };
+  return { api: context.KowwStory, ui, shell, get, state, calls, timers, creationOptions, viewModes, next, operation, back, settle, advanceTimer, element: tag => new Element(tag), visibility: async hidden => { document.hidden = hidden; await Promise.all((documentHandlers.visibilitychange || []).map(fn => fn())); }, ticks: shell.querySelectorAll(".story-index-step") };
 }
 
 async function main() {
@@ -132,38 +133,38 @@ async function main() {
     assert.equal(p.ticks[0].parentElement.hidden, true);
     await p.next.fire("click");
     assert.equal(p.calls.includes("create"), false);
-    assert.equal(p.timers[0].delay, 1200);
+    assert.equal(p.timers[0].delay, 960);
     await p.next.fire("click");
     assert.equal(p.timers.length, 1, "transition blocks a second click");
-    p.settle(); assert.equal(p.shell.dataset.step, "scale");
-    await p.next.fire("click"); p.settle(); assert.equal(p.shell.dataset.step, "materials");
+    await p.settle(); assert.equal(p.shell.dataset.step, "scale");
+    await p.next.fire("click"); await p.settle(); assert.equal(p.shell.dataset.step, "materials");
     const creation = p.next.fire("click"); await p.next.fire("click");
     assert.equal(p.calls.filter(call => call === "create").length, 1);
     assert.deepEqual(p.creationOptions, [{ navigationCheckpoints: true }]);
     assert.equal(p.calls.includes("start"), false, "model creation does not start downloads");
-    assert.equal(p.timers[2].delay, 1200); p.settle(); await creation;
+    assert.equal(p.timers[4].delay, 960); await p.settle(); await creation;
   });
   await test("fast creation starts immediately while successful screen reveal waits at least 1200 ms", async () => {
     const p = page(null, { create: state => {
       state.project = { id: "new-model", wakeword: "보라야", status: "running", stage_id: "data_download", progress: {} };
       state.busy = false;
     } });
-    await p.next.fire("click"); p.settle(); await p.next.fire("click"); p.settle();
+    await p.next.fire("click"); await p.settle(); await p.next.fire("click"); await p.settle();
     const creation = p.next.fire("click");
     assert.equal(p.calls.filter(call => call === "create").length, 1);
     p.ui.render(); assert.equal(p.shell.dataset.step, "materials", "poll cannot reveal a fast response early");
     assert.equal(p.shell.querySelector(".story-loader").hidden, false);
     await p.next.fire("click"); assert.equal(p.calls.filter(call => call === "create").length, 1);
-    assert.equal(p.timers[2].delay, 1200); p.settle(); await creation;
+    assert.equal(p.timers[4].delay, 960); await p.settle(); await creation;
     assert.equal(p.shell.dataset.step, "downloads");
     assert.equal(p.shell.querySelector(".story-loader").hidden, true);
   });
   await test("creation failure restores the material screen and controls after the minimum without retrying", async () => {
     const p = page(null, { create: state => { state.busy = false; return Promise.reject(new Error("creation unavailable")); } });
-    await p.next.fire("click"); p.settle(); await p.next.fire("click"); p.settle();
+    await p.next.fire("click"); await p.settle(); await p.next.fire("click"); await p.settle();
     const creation = p.next.fire("click");
     p.ui.render(); assert.equal(p.shell.querySelector(".story-loader").hidden, false);
-    p.settle(); await creation;
+    await p.settle(); await creation;
     assert.equal(p.shell.dataset.step, "materials");
     assert.equal(p.shell.querySelector(".story-loader").hidden, true);
     assert.equal(p.get("story-panel").inert, false); assert.equal(p.next.disabled, false);
@@ -174,8 +175,24 @@ async function main() {
     const p = page(); p.get("wakeword").value = "";
     await p.next.fire("click"); assert.equal(p.timers.length, 0); assert.ok(p.calls.some(call => call.startsWith("message:")));
     p.get("wakeword").value = "보라야";
-    await p.next.fire("click"); p.settle(); await p.back.fire("click");
-    assert.equal(p.timers[1].delay, 1200); p.settle(); assert.equal(p.shell.dataset.step, "entry");
+    await p.next.fire("click"); await p.settle(); await p.back.fire("click");
+    assert.equal(p.timers[2].delay, 960); await p.settle(); assert.equal(p.shell.dataset.step, "entry");
+  });
+  await test("loader fades out before the next panel is revealed and backward navigation repeats the sequence", async () => {
+    const p = page(), loader = p.shell.querySelector(".story-loader"), panel = p.get("story-panel");
+    for (const [control, before, after] of [[p.next, "entry", "scale"], [p.back, "scale", "entry"]]) {
+      await control.fire("click");
+      assert.equal(loader.hidden, false); assert.equal(loader.className.includes("is-finishing"), false);
+      assert.equal(panel.inert, true); assert.equal(panel.className.includes("is-leaving"), true);
+      assert.equal(p.advanceTimer(), true);
+      assert.equal(loader.className.includes("is-finishing"), true);
+      assert.equal(p.shell.dataset.step, before, "the old panel remains hidden during the loader fade-out");
+      assert.equal(p.timers.at(-1).delay, 240); assert.equal(panel.inert, true);
+      await control.fire("click");
+      assert.equal(p.advanceTimer(), true);
+      assert.equal(p.shell.dataset.step, after); assert.equal(loader.hidden, true);
+      assert.equal(loader.className.includes("is-finishing"), false); assert.equal(panel.inert, false);
+    }
   });
   await test("running downloads never become complete from a display-only percent or timer", async () => {
     const project = { id: "model", wakeword: "보라야", status: "running", stage_id: "data_download", progress: { done: 100, total: 100, files: [] } };
@@ -191,8 +208,8 @@ async function main() {
     const project = { id: "model", wakeword: "보라야", status: "running", stage_id: "data_download", progress: {} };
     const p = page(project);
     project.stage_id = "references"; p.ui.render(); assert.equal(p.timers.length, 1);
-    p.ui.render(); assert.equal(p.timers.length, 1); p.settle(); assert.equal(p.shell.dataset.step, "voices");
-    await p.back.fire("click"); p.settle(); assert.equal(p.shell.dataset.step, "downloads");
+    p.ui.render(); assert.equal(p.timers.length, 1); await p.settle(); assert.equal(p.shell.dataset.step, "voices");
+    await p.back.fire("click"); await p.settle(); assert.equal(p.shell.dataset.step, "downloads");
     project.stage_id = "pilot"; p.ui.render(); assert.equal(p.shell.dataset.step, "downloads");
     assert.equal(p.next.textContent, "다음");
     assert.equal(p.calls.some(call => ["create", "start", "resume", "input"].includes(call)), false);
@@ -232,7 +249,7 @@ async function main() {
       assert.equal(p.operation.hidden, true); p.ui.render(); assert.equal(p.calls.includes("resume"), false);
       await p.next.fire("click"); await p.next.fire("click");
       assert.equal(p.calls.filter(call => call === "resume").length, 1); assert.equal(p.timers.length, 1);
-      assert.equal(p.timers[0].delay, 1200); p.settle(); assert.equal(p.shell.dataset.step, target);
+      assert.equal(p.timers[0].delay, 960); await p.settle(); assert.equal(p.shell.dataset.step, target);
       assert.equal(p.next.textContent, "다음"); assert.equal(p.next.disabled, true);
     }
   });
@@ -246,16 +263,16 @@ async function main() {
     assert.ok(voiceCounts.children[0].children[1].textContent.includes("20 / 20"));
     assert.ok(voiceCounts.children[1].children[1].textContent.includes("30 / 30"));
     assert.equal(p.next.disabled, false); await p.next.fire("click");
-    assert.equal(p.calls.includes("resume"), false); p.settle();
+    assert.equal(p.calls.includes("resume"), false); await p.settle();
     assert.equal(p.shell.dataset.step, "voice-listening"); assert.equal(preview.parentElement.hidden, false); assert.equal(preview.open, true);
     assert.ok(p.viewModes.some(({ view, mode }) => view === "review" && mode === "reference"));
     assert.equal(p.operation.hidden, true); assert.equal(p.next.disabled, false);
     p.ui.render(); assert.equal(preview.open, true, "polling keeps the optional listening document open");
-    await p.back.fire("click"); p.settle(); assert.equal(preview.open, false);
+    await p.back.fire("click"); await p.settle(); assert.equal(preview.open, false);
     assert.ok(p.calls.includes("pause:reference-preview-frame")); assert.equal(p.calls.includes("resume"), false);
-    await p.next.fire("click"); p.settle(); await p.next.fire("click");
+    await p.next.fire("click"); await p.settle(); await p.next.fire("click");
     assert.equal(p.calls.filter(call => call === "resume").length, 1, "no audio must be played or approved to continue");
-    assert.equal(p.calls.includes("input"), false); p.settle(); assert.equal(p.shell.dataset.step, "pronunciation");
+    assert.equal(p.calls.includes("input"), false); await p.settle(); assert.equal(p.shell.dataset.step, "pronunciation");
   });
   await test("story next never becomes a task control and pending work pauses and resumes only through the central button", async () => {
     const project = navigationProject("downloads");
@@ -366,8 +383,8 @@ async function main() {
     assert.equal(p.calls.includes("resume"), false);
     await p.next.fire("click");
     assert.equal(p.calls.filter(call => call === "resume").length, 1); assert.equal(p.timers.length, 1);
-    assert.equal(p.timers[0].delay, 1200); p.ui.render(); assert.equal(p.timers.length, 1);
-    p.settle(); assert.equal(p.shell.dataset.step, "voices");
+    assert.equal(p.timers[0].delay, 960); p.ui.render(); assert.equal(p.timers.length, 1);
+    await p.settle(); assert.equal(p.shell.dataset.step, "voices");
   });
   await test("explicit download controls never bypass pending human input, review, migration or an unproven completed phase", async () => {
     for (const key of ["input", "review", "migration"]) {
@@ -404,9 +421,9 @@ async function main() {
   await test("completed result and microphone navigation pause child media without changing training", async () => {
     const p = page({ id: "model", wakeword: "보라야", status: "completed", results: { url: "/results/", mic_url: "/microphone/" } });
     assert.equal(p.shell.dataset.step, "results");
-    await p.next.fire("click"); p.settle(); assert.equal(p.shell.dataset.step, "microphone");
+    await p.next.fire("click"); await p.settle(); assert.equal(p.shell.dataset.step, "microphone");
     assert.ok(p.calls.includes("view:mic")); assert.equal(p.next.hidden, true);
-    await p.back.fire("click"); p.settle(); assert.equal(p.shell.dataset.step, "results");
+    await p.back.fire("click"); await p.settle(); assert.equal(p.shell.dataset.step, "results");
     assert.ok(p.calls.includes("pause:result-frame"));
     assert.equal(p.calls.some(call => ["create", "start", "resume", "input"].includes(call)), false);
   });
@@ -414,7 +431,7 @@ async function main() {
     const model = { id: "model", wakeword: "언년아", status: "completed", results: { url: "/results/" } };
     const p = page(model);
     p.get("wakeword").value = "새호출어";
-    await p.ticks[0].fire("click"); p.settle();
+    await p.ticks[0].fire("click"); await p.settle();
     const saved = p.get("story-saved-wakeword");
     assert.equal(p.shell.dataset.step, "entry");
     assert.equal(saved.parentElement.hidden, false);
@@ -425,7 +442,7 @@ async function main() {
     p.ui.render(); assert.equal(saved.value, "언년아");
     assert.equal(p.get("wakeword").value, "새호출어");
     p.state.project = { ...model, id: "other", wakeword: "다른이름" }; p.ui.render();
-    await p.ticks[0].fire("click"); p.settle(); assert.equal(saved.value, "다른이름");
+    await p.ticks[0].fire("click"); await p.settle(); assert.equal(saved.value, "다른이름");
     p.state.project = null; p.ui.render();
     assert.equal(p.get("wakeword").parentElement.hidden, false);
     assert.equal(p.get("wakeword").value, "새호출어");
@@ -436,7 +453,7 @@ async function main() {
   const savedStages = () => ["frontend", "data_download", "data_review", "data_connect", "references", "references_review", "pilot", "pilot_review", "positives", "hard_phrases", "hard_generation", "hard_review", "hard_connect", "features", "training", "package", "development", "evaluation", "results"].map(id => ({ id, status: "completed" }));
   const historyModel = views => ({ id: "history", wakeword: "언년아", preset: "production", status: "completed", stages: savedStages(), completed_stage_views: views, results: { url: "/results/" } });
   const textOf = item => [item.textContent, ...item.children.map(textOf)].join(" ");
-  async function visit(p, step) { const position = p.api.definitions.findIndex(([id]) => id === step); await p.ticks[position].fire("click"); p.settle(); }
+  async function visit(p, step) { const position = p.api.definitions.findIndex(([id]) => id === step); await p.ticks[position].fire("click"); await p.settle(); }
   await test("saved scale uses separate disabled cards and never overwrites the next model's chosen preset", async () => {
     const p = page(historyModel({})); p.state.selectedPreset = "trial";
     await visit(p, "scale");
@@ -446,7 +463,7 @@ async function main() {
     assert.equal(radios.find(radio => radio.checked).value, "production");
     assert.ok(radios.every(radio => radio.disabled)); assert.equal(p.state.selectedPreset, "trial");
     p.ui.render(); assert.equal(p.state.selectedPreset, "trial");
-    p.state.project = null; p.ui.render(); await p.next.fire("click"); p.settle();
+    p.state.project = null; p.ui.render(); await p.next.fire("click"); await p.settle();
     assert.equal(p.shell.dataset.step, "scale"); assert.equal(group.parentElement.hidden, true);
     assert.equal(p.state.selectedPreset, "trial");
   });
@@ -562,7 +579,7 @@ async function main() {
       await visit(p, "hard-review");
       const player = p.shell.querySelector(".listen-player"), audio = player.querySelector(".listen-audio"), toggle = player.querySelector(".listen-controls").children[1];
       const starting = toggle.fire("click");
-      if (change === "navigation") { await p.back.fire("click"); p.settle(); }
+      if (change === "navigation") { await p.back.fire("click"); await p.settle(); }
       else { p.state.project = { ...historyModel(savedListeningView()), id: "other-model" }; p.ui.render(); }
       assert.equal(audio.getAttribute("src"), null); assert.equal(audio.paused, true);
       await finishPlay(); await starting;

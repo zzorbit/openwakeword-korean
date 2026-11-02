@@ -289,7 +289,12 @@
     }
     function stopTransition() {
       clearTimeout(transitionTimer); transitionTimer = null; transitioning = false; loader.hidden = true;
+      loader.classList.remove("is-finishing");
       panel.classList.remove("is-leaving"); panel.inert = false; panel.removeAttribute("aria-busy");
+    }
+    function finishTransition(callback) {
+      loader.classList.add("is-finishing");
+      transitionTimer = setTimeout(callback, 240);
     }
     function navigate(position, automatic = false) {
       const state = bridge.state();
@@ -300,8 +305,10 @@
       panel.classList.add("is-leaving"); loaderText.textContent = backwards ? "전 단계로 이동 중" : "다음 단계로 이동 중"; loader.hidden = false;
       following = automatic || (state.project && position === frontier(state.project));
       transitionTimer = setTimeout(() => {
-        current = order[position]; historyPage = 0; historyKey = ""; stopTransition(); render(); heading.focus({ preventScroll: true });
-      }, 1200);
+        finishTransition(() => {
+          current = order[position]; historyPage = 0; historyKey = ""; stopTransition(); render(); heading.focus({ preventScroll: true });
+        });
+      }, 960);
       return true;
     }
     async function controlDownload() {
@@ -354,10 +361,11 @@
           pauseMedia(); creationPending = true; transitioning = true;
           panel.inert = true; panel.setAttribute("aria-busy", "true"); panel.classList.add("is-leaving");
           loaderText.textContent = "다음 단계로 이동 중"; loader.hidden = false;
-          const minimum = new Promise(resolve => { transitionTimer = setTimeout(resolve, 1200); });
+          const minimum = new Promise(resolve => { transitionTimer = setTimeout(resolve, 960); });
           try {
             const result = await Promise.allSettled([minimum, (async () => bridge.create({ navigationCheckpoints: true }))()]);
             if (result[1].status === "rejected") bridge.message(result[1].reason?.message || "모델 준비를 시작하지 못했습니다. 다시 확인해 주세요.", true);
+            await new Promise(resolve => finishTransition(resolve));
           } finally {
             creationPending = false; stopTransition(); render(); heading.focus({ preventScroll: true });
           }

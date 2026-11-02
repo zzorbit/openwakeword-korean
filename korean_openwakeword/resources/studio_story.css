@@ -189,6 +189,8 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 /* Let the 200 ms page fade finish before revealing the navigation message. */
 .story-loader:not([hidden]){animation:story-loader-reveal .24s ease-out .26s both}
 @keyframes story-loader-reveal{from{opacity:0}to{opacity:1}}
+.story-loader.is-finishing{animation:story-loader-conceal .24s ease-in both}
+@keyframes story-loader-conceal{from{opacity:1}to{opacity:0}}
 .story-loading-dots{display:flex;gap:4px}
 .story-loading-dots i{width:5px;height:5px;border-radius:50%;background:#aeb9c9;animation:story-dot-rise 1s ease-in-out infinite}
 .story-loading-dots i:nth-child(2){animation-delay:.15s}.story-loading-dots i:nth-child(3){animation-delay:.3s}
