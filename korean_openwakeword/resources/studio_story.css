@@ -186,6 +186,9 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-live #evaluation-coverage{flex:none;font-size:14px;line-height:20px;max-height:90px;overflow:auto;margin:0 0 8px;padding:0;border:0}
 .story-shell[data-step="microphone"] .story-actions{height:36px}
 .story-loader{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:12px;color:#dce3ed;font:400 18px/26px system-ui,"Malgun Gothic",sans-serif;pointer-events:none}
+/* Let the 200 ms page fade finish before revealing the navigation message. */
+.story-loader:not([hidden]){animation:story-loader-reveal .24s ease-out .26s both}
+@keyframes story-loader-reveal{from{opacity:0}to{opacity:1}}
 .story-loading-dots{display:flex;gap:4px}
 .story-loading-dots i{width:5px;height:5px;border-radius:50%;background:#aeb9c9;animation:story-dot-rise 1s ease-in-out infinite}
 .story-loading-dots i:nth-child(2){animation-delay:.15s}.story-loading-dots i:nth-child(3){animation-delay:.3s}
@@ -301,4 +304,4 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 @media(max-width:600px) and (max-height:560px){.story-scale .preset{min-height:60px;padding:6px 10px;gap:2px}.story-scale #presets,.story-scale #story-saved-presets{margin:0}.story-history-rows{gap:10px}.story-history-row{padding:8px 0}}
 @media(pointer:coarse){.story-shell .story-index-step{height:44px;min-height:44px}}
 @media(pointer:coarse) and (max-height:760px){.story-shell .story-index-step{height:24px;min-height:24px}}
-@media(prefers-reduced-motion:reduce){.story-panel,.story-index-tick,.story-index-label,.story-scale .preset,.story-shell .story-button{transition:none}.story-loading-dots i{animation:none;opacity:.7}}
+@media(prefers-reduced-motion:reduce){.story-panel,.story-index-tick,.story-index-label,.story-scale .preset,.story-shell .story-button{transition:none}.story-loader:not([hidden]){animation-duration:0s}.story-loading-dots i{animation:none;opacity:.7}}
