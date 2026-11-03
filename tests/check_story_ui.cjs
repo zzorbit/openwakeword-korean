@@ -137,7 +137,7 @@ async function main() {
     assert.equal(p.ticks[0].parentElement.hidden, true);
     await p.next.fire("click");
     assert.equal(p.calls.includes("create"), false);
-    assert.equal(p.timers[0].delay, 1200);
+    assert.equal(p.timers[0].delay, 1000);
     await p.next.fire("click");
     assert.equal(p.timers.length, 1, "transition blocks a second click");
     await p.settle(); assert.equal(p.shell.dataset.step, "scale");
@@ -146,9 +146,9 @@ async function main() {
     assert.equal(p.calls.filter(call => call === "create").length, 1);
     assert.deepEqual(p.creationOptions, [{ navigationCheckpoints: true }]);
     assert.equal(p.calls.includes("start"), false, "model creation does not start downloads");
-    assert.equal(p.timers[2].delay, 1200); await p.settle(); await creation;
+    assert.equal(p.timers[2].delay, 1000); await p.settle(); await creation;
   });
-  await test("fast creation starts immediately while the visible notice keeps its full 1200 ms hold", async () => {
+  await test("fast creation starts immediately while the visible notice keeps its full 1000 ms hold", async () => {
     const p = page(null, { create: state => {
       state.project = { id: "new-model", wakeword: "보라야", status: "running", stage_id: "data_download", progress: {} };
       state.busy = false;
@@ -160,7 +160,7 @@ async function main() {
     p.ui.render(); assert.equal(p.shell.dataset.step, "materials", "poll cannot reveal a fast response early");
     assert.equal(p.shell.querySelector(".story-loader").hidden, false);
     await p.next.fire("click"); assert.equal(p.calls.filter(call => call === "create").length, 1);
-    assert.equal(p.timers[2].delay, 1200); await p.settle(); await creation;
+    assert.equal(p.timers[2].delay, 1000); await p.settle(); await creation;
     assert.equal(p.shell.dataset.step, "downloads");
     assert.equal(p.shell.querySelector(".story-loader").hidden, true);
   });
@@ -182,7 +182,7 @@ async function main() {
     await p.next.fire("click"); assert.equal(p.timers.length, 0); assert.ok(p.calls.some(call => call.startsWith("message:")));
     p.get("wakeword").value = "보라야";
     await p.next.fire("click"); await p.settle(); await p.back.fire("click");
-    assert.equal(p.timers[1].delay, 1200); await p.settle(); assert.equal(p.shell.dataset.step, "entry");
+    assert.equal(p.timers[1].delay, 1000); await p.settle(); assert.equal(p.shell.dataset.step, "entry");
   });
   function motion(element, duration) {
     let resolve, reject;
@@ -192,7 +192,7 @@ async function main() {
       cancel() { this.playState = "idle"; reject(new Error("Animation canceled")); } };
     return animation;
   }
-  await test("both directions hold the fully visible notice for 1200 ms after real reveal completion", async () => {
+  await test("both directions hold the fully visible notice for 1000 ms after real reveal completion", async () => {
     const phases = [];
     const p = page(null, { getComputedStyle: () => ({ animationDuration: "240ms" }), animations: element => {
       const animation = motion(element, element.id === "story-panel" ? 200 : 240); phases.push(animation);
@@ -209,12 +209,12 @@ async function main() {
       p.elapse(240); phases.at(-1).finish(); await p.flush();
       assert.equal(loader.className.includes("is-finishing"), false);
       const hold = p.timers.filter(timer => !timer.canceled && !timer.ran).at(-1);
-      assert.equal(hold.delay, 1200, "the full hold starts only after the reveal finishes");
-      assert.equal(hold.at - start, 1640);
-      p.elapse(1199); await p.flush();
+      assert.equal(hold.delay, 1000, "the full hold starts only after the reveal finishes");
+      assert.equal(hold.at - start, 1440);
+      p.elapse(999); await p.flush();
       assert.equal(loader.className.includes("is-finishing"), false, "the notice remains fully visible for the whole hold");
       p.advanceTimer(); await p.flush();
-      assert.equal(p.now() - start, 1640);
+      assert.equal(p.now() - start, 1440);
       assert.equal(loader.className.includes("is-finishing"), true);
       assert.equal(p.shell.dataset.step, before, "the old panel remains hidden during the loader fade-out");
       assert.equal(panel.inert, true);
@@ -222,7 +222,7 @@ async function main() {
       p.elapse(240); phases.at(-1).finish(); await p.flush();
       assert.equal(p.shell.dataset.step, after); assert.equal(loader.hidden, true);
       assert.equal(loader.className.includes("is-finishing"), false); assert.equal(panel.inert, false);
-      assert.equal(p.now() - start, 1880);
+      assert.equal(p.now() - start, 1680);
     }
   });
   await test("slow animation completion is never replaced by the nominal CSS duration", async () => {
@@ -235,17 +235,17 @@ async function main() {
     phases[0].finish(); await p.flush(); p.elapse(700);
     assert.equal(p.shell.dataset.step, "entry");
     phases[1].finish(); await p.flush();
-    assert.equal(p.timers.filter(timer => !timer.canceled && !timer.ran).at(-1).delay, 1200);
+    assert.equal(p.timers.filter(timer => !timer.canceled && !timer.ran).at(-1).delay, 1000);
     p.advanceTimer(); await p.flush(); p.elapse(700);
     assert.equal(p.shell.dataset.step, "entry", "the destination waits for the exit completion too");
     phases[2].finish(); await p.flush();
-    assert.equal(p.shell.dataset.step, "scale"); assert.equal(p.now(), 3300);
+    assert.equal(p.shell.dataset.step, "scale"); assert.equal(p.now(), 3100);
   });
   await test("no-motion and reduced-motion paths keep the full notice hold without a completion event", async () => {
     const p = page(null, { getComputedStyle: () => ({ animationDuration: "0s", transitionDuration: "0s" }) });
     await p.next.fire("click"); assert.equal(p.shell.dataset.step, "entry");
-    assert.equal(p.timers.at(-1).delay, 1200);
-    await p.settle(); assert.equal(p.now(), 1200); assert.equal(p.shell.dataset.step, "scale");
+    assert.equal(p.timers.at(-1).delay, 1000);
+    await p.settle(); assert.equal(p.now(), 1000); assert.equal(p.shell.dataset.step, "scale");
   });
   await test("a missing finite completion signal is recovered by finishing that motion before advancing", async () => {
     const phases = [];
@@ -354,7 +354,7 @@ async function main() {
       assert.equal(p.operation.hidden, true); p.ui.render(); assert.equal(p.calls.includes("resume"), false);
       await p.next.fire("click"); await p.next.fire("click");
       assert.equal(p.calls.filter(call => call === "resume").length, 1); assert.equal(p.timers.length, 1);
-      assert.equal(p.timers[0].delay, 1200); await p.settle(); assert.equal(p.shell.dataset.step, target);
+      assert.equal(p.timers[0].delay, 1000); await p.settle(); assert.equal(p.shell.dataset.step, target);
       assert.equal(p.next.textContent, "다음"); assert.equal(p.next.disabled, true);
     }
   });
@@ -488,7 +488,7 @@ async function main() {
     assert.equal(p.calls.includes("resume"), false);
     await p.next.fire("click");
     assert.equal(p.calls.filter(call => call === "resume").length, 1); assert.equal(p.timers.length, 1);
-    assert.equal(p.timers[0].delay, 1200); p.ui.render(); assert.equal(p.timers.length, 1);
+    assert.equal(p.timers[0].delay, 1000); p.ui.render(); assert.equal(p.timers.length, 1);
     await p.settle(); assert.equal(p.shell.dataset.step, "voices");
   });
   await test("explicit download controls never bypass pending human input, review, migration or an unproven completed phase", async () => {

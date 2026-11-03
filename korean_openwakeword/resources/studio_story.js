@@ -362,10 +362,10 @@
         if (!await waitForMotion(panel, session)) return;
         loader.hidden = false;
         if (!await waitForMotion(loader, session)) return;
-        // Hold the fully visible notice for at least 1.2 seconds. Server
+        // Hold the fully visible notice for at least 1 second. Server
         // preparation runs concurrently and can keep it visible for longer.
         const [result, held] = await Promise.all([
-          Promise.race([prepared, session.aborted]), waitForDuration(session, 1200),
+          Promise.race([prepared, session.aborted]), waitForDuration(session, 1000),
         ]);
         if (!held || !activeTransition(session)) return;
         if (!result.ok) bridge.message(result.error?.message || "모델 준비를 시작하지 못했습니다. 다시 확인해 주세요.", true);
