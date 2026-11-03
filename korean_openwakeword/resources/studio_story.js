@@ -294,11 +294,10 @@
       loader.classList.remove("is-finishing");
       panel.classList.remove("is-leaving"); panel.inert = false; panel.removeAttribute("aria-busy");
     }
-    const transitionNow = () => typeof performance !== "undefined" ? performance.now() : Date.now();
     function activeTransition(session) { return transitionSession === session; }
     function beginTransition(backwards) {
       pauseMedia();
-      const session = { started: transitionNow(), timers: new Set() };
+      const session = { timers: new Set() };
       session.aborted = new Promise(resolve => { session.cancel = () => resolve(false); });
       transitionSession = session; transitioning = true;
       panel.inert = true; panel.setAttribute("aria-busy", "true"); panel.classList.add("is-leaving");
@@ -310,14 +309,13 @@
         const number = parseFloat(part); return Number.isFinite(number) ? number * (part.trim().endsWith("ms") ? 1 : 1000) : 0;
       });
     }
-    function cssMotionTime(element, prefix, includeDelay = true) {
+    function cssMotionTime(element, prefix) {
       const style = typeof getComputedStyle === "function" ? getComputedStyle(element) : {};
       const durations = cssMilliseconds(style[`${prefix}Duration`]), delays = cssMilliseconds(style[`${prefix}Delay`]);
-      return Math.max(0, ...durations.map((duration, index) => duration + (includeDelay ? delays[index % delays.length] : 0)));
+      return Math.max(0, ...durations.map((duration, index) => duration + delays[index % delays.length]));
     }
-    async function waitForTransitionTime(session, elapsed) {
+    async function waitForDuration(session, delay) {
       if (!activeTransition(session)) return false;
-      const delay = elapsed - (transitionNow() - session.started);
       if (delay <= 0) return true;
       let timer;
       const ready = new Promise(resolve => { timer = setTimeout(() => resolve(true), delay); session.timers.add(timer); });
@@ -331,7 +329,7 @@
       // are children and must never hold up navigation.
       if (typeof element.getAnimations !== "function") {
         const duration = Math.max(cssMotionTime(element, "transition"), cssMotionTime(element, "animation"));
-        return waitForTransitionTime(session, transitionNow() - session.started + duration);
+        return waitForDuration(session, duration);
       }
       const animations = element.getAnimations().filter(animation => {
         const end = animation.effect?.getComputedTiming?.().endTime;
@@ -364,14 +362,15 @@
         if (!await waitForMotion(panel, session)) return;
         loader.hidden = false;
         if (!await waitForMotion(loader, session)) return;
-        const result = await Promise.race([prepared, session.aborted]);
-        if (!activeTransition(session)) return;
+        // Hold the fully visible notice for at least 1.2 seconds. Server
+        // preparation runs concurrently and can keep it visible for longer.
+        const [result, held] = await Promise.all([
+          Promise.race([prepared, session.aborted]), waitForDuration(session, 1200),
+        ]);
+        if (!held || !activeTransition(session)) return;
         if (!result.ok) bridge.message(result.error?.message || "모델 준비를 시작하지 못했습니다. 다시 확인해 주세요.", true);
-        const exitDuration = cssMotionTime(loader, "animation", false);
-        if (!await waitForTransitionTime(session, 1200 - exitDuration)) return;
         loader.classList.add("is-finishing");
         if (!await waitForMotion(loader, session)) return;
-        if (!await waitForTransitionTime(session, 1200)) return;
         commit?.();
       } catch (error) {
         if (activeTransition(session)) bridge.message("화면을 전환하지 못했습니다. 다시 시도해 주세요.", true);

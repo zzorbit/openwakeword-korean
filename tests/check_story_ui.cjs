@@ -76,7 +76,7 @@ function page(initialProject = null, options = {}) {
   const document = { body, hidden: false, createElement: tag => new Element(tag), getElementById: get, querySelector: selector => body.querySelector(selector), title: "", addEventListener: (name, fn) => { (documentHandlers[name] ||= []).push(fn); } };
   const state = { project: initialProject, recipes: [], selectedPreset: "check", recipeReady: true, busy: false };
   const windowHandlers = {};
-  const context = vm.createContext({ document, console, performance: { now: () => clock }, innerWidth: options.width || 1200, innerHeight: options.height || 900, matchMedia: () => ({ matches: false }),
+  const context = vm.createContext({ document, console, innerWidth: options.width || 1200, innerHeight: options.height || 900, matchMedia: () => ({ matches: false }),
     setTimeout: (callback, delay) => { const timer = { callback, delay, at: clock + delay }; timers.push(timer); return timer; },
     clearTimeout: timer => { if (timer) timer.canceled = true; } });
   context.window = context; context.addEventListener = (name, fn) => { (windowHandlers[name] ||= []).push(fn); };
@@ -148,7 +148,7 @@ async function main() {
     assert.equal(p.calls.includes("start"), false, "model creation does not start downloads");
     assert.equal(p.timers[2].delay, 1200); await p.settle(); await creation;
   });
-  await test("fast creation starts immediately while successful screen reveal waits at least 1200 ms", async () => {
+  await test("fast creation starts immediately while the visible notice keeps its full 1200 ms hold", async () => {
     const p = page(null, { create: state => {
       state.project = { id: "new-model", wakeword: "보라야", status: "running", stage_id: "data_download", progress: {} };
       state.busy = false;
@@ -164,7 +164,7 @@ async function main() {
     assert.equal(p.shell.dataset.step, "downloads");
     assert.equal(p.shell.querySelector(".story-loader").hidden, true);
   });
-  await test("creation failure restores the material screen and controls after the minimum without retrying", async () => {
+  await test("creation failure restores the material screen and controls after the notice hold without retrying", async () => {
     const p = page(null, { create: state => { state.busy = false; return Promise.reject(new Error("creation unavailable")); } });
     await p.next.fire("click"); await p.settle(); await p.next.fire("click"); await p.settle();
     const creation = p.next.fire("click");
@@ -192,7 +192,7 @@ async function main() {
       cancel() { this.playState = "idle"; reject(new Error("Animation canceled")); } };
     return animation;
   }
-  await test("real completion signals sequence both directions and preserve the 1200 ms floor", async () => {
+  await test("both directions hold the fully visible notice for 1200 ms after real reveal completion", async () => {
     const phases = [];
     const p = page(null, { getComputedStyle: () => ({ animationDuration: "240ms" }), animations: element => {
       const animation = motion(element, element.id === "story-panel" ? 200 : 240); phases.push(animation);
@@ -208,8 +208,13 @@ async function main() {
       assert.equal(loader.hidden, false); assert.equal(phases.length % 3, 2);
       p.elapse(240); phases.at(-1).finish(); await p.flush();
       assert.equal(loader.className.includes("is-finishing"), false);
+      const hold = p.timers.filter(timer => !timer.canceled && !timer.ran).at(-1);
+      assert.equal(hold.delay, 1200, "the full hold starts only after the reveal finishes");
+      assert.equal(hold.at - start, 1640);
+      p.elapse(1199); await p.flush();
+      assert.equal(loader.className.includes("is-finishing"), false, "the notice remains fully visible for the whole hold");
       p.advanceTimer(); await p.flush();
-      assert.equal(p.now() - start, 960, "the measured 240 ms exit is reserved before the overall deadline");
+      assert.equal(p.now() - start, 1640);
       assert.equal(loader.className.includes("is-finishing"), true);
       assert.equal(p.shell.dataset.step, before, "the old panel remains hidden during the loader fade-out");
       assert.equal(panel.inert, true);
@@ -217,7 +222,7 @@ async function main() {
       p.elapse(240); phases.at(-1).finish(); await p.flush();
       assert.equal(p.shell.dataset.step, after); assert.equal(loader.hidden, true);
       assert.equal(loader.className.includes("is-finishing"), false); assert.equal(panel.inert, false);
-      assert.equal(p.now() - start, 1200);
+      assert.equal(p.now() - start, 1880);
     }
   });
   await test("slow animation completion is never replaced by the nominal CSS duration", async () => {
@@ -229,12 +234,14 @@ async function main() {
     assert.equal(p.shell.querySelector(".story-loader").hidden, true);
     phases[0].finish(); await p.flush(); p.elapse(700);
     assert.equal(p.shell.dataset.step, "entry");
-    phases[1].finish(); await p.flush(); p.elapse(700);
+    phases[1].finish(); await p.flush();
+    assert.equal(p.timers.filter(timer => !timer.canceled && !timer.ran).at(-1).delay, 1200);
+    p.advanceTimer(); await p.flush(); p.elapse(700);
     assert.equal(p.shell.dataset.step, "entry", "the destination waits for the exit completion too");
     phases[2].finish(); await p.flush();
-    assert.equal(p.shell.dataset.step, "scale"); assert.ok(p.now() > 1200);
+    assert.equal(p.shell.dataset.step, "scale"); assert.equal(p.now(), 3300);
   });
-  await test("no-motion and reduced-motion paths keep the explicit minimum without a completion event", async () => {
+  await test("no-motion and reduced-motion paths keep the full notice hold without a completion event", async () => {
     const p = page(null, { getComputedStyle: () => ({ animationDuration: "0s", transitionDuration: "0s" }) });
     await p.next.fire("click"); assert.equal(p.shell.dataset.step, "entry");
     assert.equal(p.timers.at(-1).delay, 1200);
@@ -256,7 +263,7 @@ async function main() {
       state.project = { id: "created", status: "ready", stage_id: "data_download" }; state.busy = false; resolve();
     }; }) });
     await p.next.fire("click"); await p.settle(); await p.next.fire("click"); await p.settle();
-    const creation = p.next.fire("click"); await p.flush(); p.elapse(3000);
+    const creation = p.next.fire("click"); await p.flush(); p.advanceTimer(); await p.flush(); p.elapse(3000);
     assert.equal(p.shell.dataset.step, "materials"); assert.equal(p.shell.querySelector(".story-loader").hidden, false);
     await p.next.fire("click"); assert.equal(p.calls.filter(value => value === "create").length, 1);
     resolveCreate(); await creation;
