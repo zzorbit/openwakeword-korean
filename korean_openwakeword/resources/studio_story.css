@@ -2,7 +2,7 @@
 html:has(body.story-mode),body.story-mode{margin:0!important;padding:0!important;width:100%;height:100%;overflow:hidden;background:#171a1f;color:#e3e7ec;color-scheme:dark}
 body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#363d47;--fg:#e3e7ec;--muted:#c3cbd6;--border:#424a56;--line:#343c47;--blue:#a7b8d0;--focus:#bac5d6;--primary:#292d33;--primary-hover:#363d47;--on-solid:#e9edf2;font:400 16px/24px system-ui,"Malgun Gothic",sans-serif}
 .story-source{display:none!important}
-.story-shell{position:relative;isolation:isolate;display:block;width:100%;max-width:none;height:100dvh;min-height:420px;margin:0;padding:0;background:#171a1f;overflow:hidden}
+.story-shell{--story-fade-duration:300ms;position:relative;isolation:isolate;display:block;width:100%;max-width:none;height:100dvh;min-height:420px;margin:0;padding:0;background:#171a1f;overflow:hidden}
 .story-shell *{box-sizing:border-box}
 .story-shell [hidden]{display:none!important}
 .story-atmosphere{position:absolute;inset:0;z-index:-1;pointer-events:none;isolation:isolate}
@@ -21,7 +21,7 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-notices .notice{margin:0;padding:9px 14px;background:#242c37f5;color:#e0e5ec;border:1px solid #52627a;font-size:14px;line-height:22px;box-shadow:0 4px 18px #0004}
 .story-notices .notice.error{background:#352329f5;color:#edb9be;border-color:#81565e}
 .story-stage{height:100%;width:100%;padding:68px 72px 28px;display:flex;align-items:center;justify-content:center}
-.story-panel{display:flex;flex-direction:column;align-items:center;gap:24px;width:min(960px,100%);max-height:100%;min-height:0;transition:opacity .2s ease,transform .2s ease}
+.story-panel{display:flex;flex-direction:column;align-items:center;gap:24px;width:min(960px,100%);max-height:100%;min-height:0;transition:opacity var(--story-fade-duration) ease,transform var(--story-fade-duration) ease}
 .story-panel.is-leaving{opacity:0;transform:translateY(-6px);pointer-events:none}
 .story-panel h1{flex:none;text-align:center;font:500 26px/36px system-ui,"Malgun Gothic",sans-serif;letter-spacing:-.035em;margin:0;color:#eaedf1;word-break:keep-all}
 .story-panel h1:focus{outline:none}
@@ -185,11 +185,11 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-shell .story-live .work-section iframe#result-frame{width:100%;height:0;min-height:0;max-height:100%;border:0;border-radius:0;margin:0;flex:1 1 0;background:transparent}
 .story-live #evaluation-coverage{flex:none;font-size:14px;line-height:20px;max-height:90px;overflow:auto;margin:0 0 8px;padding:0;border:0}
 .story-shell[data-step="microphone"] .story-actions{height:36px}
-.story-loader{--story-loader-duration:240ms;position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:12px;color:#dce3ed;font:400 18px/26px system-ui,"Malgun Gothic",sans-serif;pointer-events:none}
+.story-loader{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:12px;color:#dce3ed;font:400 18px/26px system-ui,"Malgun Gothic",sans-serif;pointer-events:none}
 /* The controller reveals this only after the outgoing panel has finished. */
-.story-loader:not([hidden]){animation:story-loader-reveal var(--story-loader-duration) ease-out both}
+.story-loader:not([hidden]){animation:story-loader-reveal var(--story-fade-duration) ease-out both}
 @keyframes story-loader-reveal{from{opacity:0}to{opacity:1}}
-.story-loader.is-finishing{animation:story-loader-conceal var(--story-loader-duration) ease-in both}
+.story-loader.is-finishing{animation:story-loader-conceal var(--story-fade-duration) ease-in both}
 @keyframes story-loader-conceal{from{opacity:1}to{opacity:0}}
 .story-loading-dots{display:flex;gap:4px}
 .story-loading-dots i{width:5px;height:5px;border-radius:50%;background:#aeb9c9;animation:story-dot-rise 1s ease-in-out infinite}
