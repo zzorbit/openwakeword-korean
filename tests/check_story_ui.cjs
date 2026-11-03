@@ -111,6 +111,52 @@ async function main() {
     assert.equal(p.api.frontier({ status: "completed", results: { url: "/results/" } }), 14);
     assert.equal(p.api.frontier({ status: "completed", results: { url: "/results/", mic_url: "/microphone/" } }), 15);
   });
+  await test("setup index keeps reached screens when returning to the first screen", async () => {
+    const p = page(), visible = () => p.ticks.filter(tick => !tick.hidden).length;
+    assert.equal(p.ticks[0].parentElement.hidden, true);
+    await p.next.fire("click"); await p.settle();
+    assert.equal(visible(), 2); assert.equal(p.ticks[2].hidden, true);
+    await p.ticks[0].fire("click"); await p.settle();
+    assert.equal(p.shell.dataset.step, "entry"); assert.equal(p.ticks[0].parentElement.hidden, false);
+    assert.equal(visible(), 2); assert.equal(p.ticks[0].getAttribute("aria-current"), "step");
+    await p.next.fire("click"); await p.settle();
+    await p.next.fire("click"); await p.settle();
+    assert.equal(visible(), 3);
+    await p.ticks[0].fire("click"); await p.settle();
+    assert.equal(p.shell.dataset.step, "entry"); assert.equal(visible(), 3);
+    assert.equal(p.calls.some(call => ["create", "start", "resume", "input"].includes(call)), false);
+  });
+  await test("saved progress stays indexed while reviewing earlier screens and grows with actual backend progress", async () => {
+    const project = { id: "model", wakeword: "보라야", status: "waiting_review", stage_id: "pilot_review", progress: {} };
+    const p = page(project), visible = () => p.ticks.filter(tick => !tick.hidden).length;
+    assert.equal(p.shell.dataset.step, "pronunciation"); assert.equal(visible(), 7);
+    assert.equal(p.next.disabled, true); assert.equal(p.ticks[7].hidden, true); assert.equal(p.ticks[7].disabled, true);
+    await p.ticks[7].fire("click"); assert.equal(p.timers.length, 0);
+    await p.ticks[0].fire("click"); await p.settle();
+    assert.equal(p.shell.dataset.step, "entry"); assert.equal(p.ticks[0].parentElement.hidden, false);
+    assert.equal(visible(), 7); assert.equal(p.ticks[0].getAttribute("aria-current"), "step");
+    assert.equal(p.ticks[6].getAttribute("aria-current"), "false");
+    project.stage_id = "hard_review"; p.ui.render();
+    assert.equal(p.shell.dataset.step, "entry"); assert.equal(visible(), 11);
+    assert.equal(p.ticks[10].hidden, false); assert.equal(p.ticks[11].hidden, true);
+    const timerCount = p.timers.length;
+    await p.ticks[11].fire("click"); assert.equal(p.timers.length, timerCount);
+    assert.equal(p.shell.dataset.step, "entry");
+    assert.equal(p.calls.some(call => ["create", "start", "resume", "input"].includes(call)), false);
+  });
+  await test("index extent resets to the selected model and a fresh setup without leaking later progress", async () => {
+    const p = page({ id: "finished", wakeword: "보라야", status: "completed", results: { url: "/results/" } });
+    assert.equal(p.ticks.filter(tick => !tick.hidden).length, 15);
+    p.state.project = { id: "earlier", wakeword: "다른이름", status: "running", stage_id: "references", progress: {} };
+    p.ui.render();
+    assert.equal(p.shell.dataset.step, "voices"); assert.equal(p.ticks.filter(tick => !tick.hidden).length, 5);
+    assert.equal(p.ticks[5].hidden, true);
+    p.state.project = null; p.ui.render();
+    assert.equal(p.shell.dataset.step, "entry"); assert.equal(p.ticks[0].parentElement.hidden, true);
+    await p.next.fire("click"); await p.settle();
+    assert.equal(p.ticks.filter(tick => !tick.hidden).length, 2); assert.equal(p.ticks[2].hidden, true);
+    assert.equal(p.calls.some(call => ["create", "start", "resume", "input"].includes(call)), false);
+  });
   await test("sixteen single-role pages keep action titles punctuated and voice listening separate from preparation", () => {
     const definitions = page().api.definitions;
     assert.equal(definitions.length, 16); assert.ok(definitions.every(([, , title]) => title.endsWith(".")));

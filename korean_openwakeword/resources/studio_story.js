@@ -236,7 +236,7 @@
       $("hard-preview").open = false;
       render();
     });
-    let current = "entry", projectKey = "", maximum = 2, following = true, transitioning = false, transitionSession = null, creationPending = false;
+    let current = "entry", projectKey = "", maximum = 2, setupReached = 0, following = true, transitioning = false, transitionSession = null, creationPending = false;
     let materialTab = "training", materialPage = 0, materialKey = "", materialData = null, downloadPage = 0, listening = null;
     let historyPage = 0, historyKey = "", historyReviewItems = [], historyReviewIndex = 0;
     let historyReviewPage = 0, historyReviewListKey = "", historyReviewRows = [];
@@ -735,7 +735,7 @@
       if (key !== projectKey) {
         pauseMedia(); stopTransition(); projectKey = key; following = true; materialPage = 0; materialKey = "";
         maximum = frontier(project); current = project ? stageStep(project) : "entry"; lastFrontier = project ? stageStep(project) : "entry";
-        historyPage = 0; historyKey = "";
+        historyPage = 0; historyKey = ""; setupReached = 0;
       }
       lastProject = project; maximum = frontier(project);
       bridge.voiceDesign?.(project ? project.reference_design : state.recipes.find(recipe => recipe.id === state.selectedPreset)?.reference_design);
@@ -758,9 +758,11 @@
       context.textContent = project && position >= 3 ? `‘${project.wakeword || ""}’ · ${titles[project.preset] || "호출어 학습"}` : "";
       context.hidden = !context.textContent;
       logButton.hidden = !project;
-      index.hidden = position === 0;
+      if (!project) setupReached = Math.max(setupReached, position);
+      const visibleThrough = project ? maximum : setupReached;
+      index.hidden = visibleThrough === 0;
       ticks.forEach((tick, i) => {
-        tick.hidden = i > position; tick.disabled = transitioning || state.busy || i > maximum;
+        tick.hidden = i > visibleThrough; tick.disabled = transitioning || state.busy || i > maximum;
         tick.setAttribute("aria-current", i === position ? "step" : "false");
       });
       if (!transitioning) {
