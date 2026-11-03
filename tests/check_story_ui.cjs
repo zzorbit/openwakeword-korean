@@ -9,6 +9,8 @@ const source = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/reso
 // network, an installed browser, or changes to a stored workflow.
 function page(initialProject = null, options = {}) {
   const registry = new Map(), timers = [], calls = [], creationOptions = [], viewModes = [];
+  let clock = 0;
+  const flush = () => new Promise(resolve => setImmediate(resolve));
   function matches(element, selector) {
     if (selector.startsWith("#")) return element.id === selector.slice(1);
     const [tag, className] = selector.split(".");
@@ -41,6 +43,7 @@ function page(initialProject = null, options = {}) {
     querySelectorAll(selector) { return this.children.flatMap(child => [...(matches(child, selector) ? [child] : []), ...child.querySelectorAll(selector)]); }
     querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
     addEventListener(name, fn) { (this.handlers[name] ||= []).push(fn); }
+    getAnimations() { return options.animations?.(this) || []; }
     setAttribute(name, value) { this.attributes[name] = String(value); }
     removeAttribute(name) { delete this.attributes[name]; }
     getAttribute(name) { return this.attributes[name] ?? null; }
@@ -54,7 +57,7 @@ function page(initialProject = null, options = {}) {
       const perform = () => { this.paused = false; this.ended = false; return this.fire("play"); };
       return options.playMedia ? options.playMedia(this, perform) : perform();
     }
-    fire(name, event = {}) { return Promise.all((this.handlers[name] || []).map(fn => fn(event))); }
+    async fire(name, event = {}) { await Promise.all((this.handlers[name] || []).map(fn => fn(event))); await flush(); }
   }
   const body = new Element("body"), legacy = new Element("main"); legacy.className = "dashboard-shell"; body.append(legacy);
   const html = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources/studio.html"), "utf8");
@@ -72,11 +75,12 @@ function page(initialProject = null, options = {}) {
   const documentHandlers = {};
   const document = { body, hidden: false, createElement: tag => new Element(tag), getElementById: get, querySelector: selector => body.querySelector(selector), title: "", addEventListener: (name, fn) => { (documentHandlers[name] ||= []).push(fn); } };
   const state = { project: initialProject, recipes: [], selectedPreset: "check", recipeReady: true, busy: false };
-  const context = vm.createContext({ document, console, innerWidth: options.width || 1200, innerHeight: options.height || 900, matchMedia: () => ({ matches: false }),
-    setTimeout: (callback, delay) => { const timer = { callback, delay }; timers.push(timer); return timer; },
+  const windowHandlers = {};
+  const context = vm.createContext({ document, console, performance: { now: () => clock }, innerWidth: options.width || 1200, innerHeight: options.height || 900, matchMedia: () => ({ matches: false }),
+    setTimeout: (callback, delay) => { const timer = { callback, delay, at: clock + delay }; timers.push(timer); return timer; },
     clearTimeout: timer => { if (timer) timer.canceled = true; } });
-  context.window = context; context.addEventListener = () => {};
-  if (options.getComputedStyle) context.getComputedStyle = options.getComputedStyle;
+  context.window = context; context.addEventListener = (name, fn) => { (windowHandlers[name] ||= []).push(fn); };
+  context.getComputedStyle = element => ({ animationDuration: "0s", animationDelay: "0s", transitionDuration: "0s", transitionDelay: "0s", ...options.getComputedStyle?.(element) });
   vm.runInContext(source, context);
   const ui = context.KowwStory.create({
     state: () => state,
@@ -90,10 +94,10 @@ function page(initialProject = null, options = {}) {
   });
   const shell = get("story-shell"), actions = shell.querySelector(".story-actions");
   const next = actions.children[2], operation = actions.children[1], back = actions.children[0];
-  function advanceTimer() { const timer = timers.find(timer => !timer.canceled && !timer.ran); if (!timer) return false; timer.ran = true; timer.callback(); return true; }
-  async function settle() { let advanced = false; while (advanceTimer()) { advanced = true; await new Promise(resolve => setImmediate(resolve)); } return advanced; }
+  function advanceTimer() { const timer = timers.filter(timer => !timer.canceled && !timer.ran).sort((a, b) => a.at - b.at)[0]; if (!timer) return false; clock = Math.max(clock, timer.at); timer.ran = true; timer.callback(); return true; }
+  async function settle() { let advanced = false; await flush(); while (advanceTimer()) { advanced = true; await flush(); } return advanced; }
   ui.render();
-  return { api: context.KowwStory, ui, shell, get, state, calls, timers, creationOptions, viewModes, next, operation, back, settle, advanceTimer, element: tag => new Element(tag), visibility: async hidden => { document.hidden = hidden; await Promise.all((documentHandlers.visibilitychange || []).map(fn => fn())); }, ticks: shell.querySelectorAll(".story-index-step") };
+  return { api: context.KowwStory, ui, shell, get, state, calls, timers, creationOptions, viewModes, next, operation, back, settle, advanceTimer, flush, now: () => clock, elapse: value => { clock += value; }, windowEvent: async name => { for (const fn of windowHandlers[name] || []) fn(); await flush(); }, element: tag => new Element(tag), visibility: async hidden => { document.hidden = hidden; await Promise.all((documentHandlers.visibilitychange || []).map(fn => fn())); }, ticks: shell.querySelectorAll(".story-index-step") };
 }
 
 async function main() {
@@ -133,7 +137,7 @@ async function main() {
     assert.equal(p.ticks[0].parentElement.hidden, true);
     await p.next.fire("click");
     assert.equal(p.calls.includes("create"), false);
-    assert.equal(p.timers[0].delay, 960);
+    assert.equal(p.timers[0].delay, 1200);
     await p.next.fire("click");
     assert.equal(p.timers.length, 1, "transition blocks a second click");
     await p.settle(); assert.equal(p.shell.dataset.step, "scale");
@@ -142,7 +146,7 @@ async function main() {
     assert.equal(p.calls.filter(call => call === "create").length, 1);
     assert.deepEqual(p.creationOptions, [{ navigationCheckpoints: true }]);
     assert.equal(p.calls.includes("start"), false, "model creation does not start downloads");
-    assert.equal(p.timers[4].delay, 960); await p.settle(); await creation;
+    assert.equal(p.timers[2].delay, 1200); await p.settle(); await creation;
   });
   await test("fast creation starts immediately while successful screen reveal waits at least 1200 ms", async () => {
     const p = page(null, { create: state => {
@@ -152,10 +156,11 @@ async function main() {
     await p.next.fire("click"); await p.settle(); await p.next.fire("click"); await p.settle();
     const creation = p.next.fire("click");
     assert.equal(p.calls.filter(call => call === "create").length, 1);
+    await p.flush();
     p.ui.render(); assert.equal(p.shell.dataset.step, "materials", "poll cannot reveal a fast response early");
     assert.equal(p.shell.querySelector(".story-loader").hidden, false);
     await p.next.fire("click"); assert.equal(p.calls.filter(call => call === "create").length, 1);
-    assert.equal(p.timers[4].delay, 960); await p.settle(); await creation;
+    assert.equal(p.timers[2].delay, 1200); await p.settle(); await creation;
     assert.equal(p.shell.dataset.step, "downloads");
     assert.equal(p.shell.querySelector(".story-loader").hidden, true);
   });
@@ -163,6 +168,7 @@ async function main() {
     const p = page(null, { create: state => { state.busy = false; return Promise.reject(new Error("creation unavailable")); } });
     await p.next.fire("click"); await p.settle(); await p.next.fire("click"); await p.settle();
     const creation = p.next.fire("click");
+    await p.flush();
     p.ui.render(); assert.equal(p.shell.querySelector(".story-loader").hidden, false);
     await p.settle(); await creation;
     assert.equal(p.shell.dataset.step, "materials");
@@ -176,23 +182,115 @@ async function main() {
     await p.next.fire("click"); assert.equal(p.timers.length, 0); assert.ok(p.calls.some(call => call.startsWith("message:")));
     p.get("wakeword").value = "보라야";
     await p.next.fire("click"); await p.settle(); await p.back.fire("click");
-    assert.equal(p.timers[2].delay, 960); await p.settle(); assert.equal(p.shell.dataset.step, "entry");
+    assert.equal(p.timers[1].delay, 1200); await p.settle(); assert.equal(p.shell.dataset.step, "entry");
   });
-  await test("loader fades out before the next panel is revealed and backward navigation repeats the sequence", async () => {
-    const p = page(), loader = p.shell.querySelector(".story-loader"), panel = p.get("story-panel");
+  function motion(element, duration) {
+    let resolve, reject;
+    const animation = { effect: { target: element, getComputedTiming: () => ({ endTime: duration }) },
+      currentTime: 0, playbackRate: 1, playState: "running", finished: new Promise((yes, no) => { resolve = yes; reject = no; }),
+      finish() { this.playState = "finished"; this.currentTime = duration; resolve(); },
+      cancel() { this.playState = "idle"; reject(new Error("Animation canceled")); } };
+    return animation;
+  }
+  await test("real completion signals sequence both directions and preserve the 1200 ms floor", async () => {
+    const phases = [];
+    const p = page(null, { getComputedStyle: () => ({ animationDuration: "240ms" }), animations: element => {
+      const animation = motion(element, element.id === "story-panel" ? 200 : 240); phases.push(animation);
+      return [animation, motion({}, Infinity)]; // An infinite child effect cannot hold the parent transition.
+    } });
+    const loader = p.shell.querySelector(".story-loader"), panel = p.get("story-panel");
     for (const [control, before, after] of [[p.next, "entry", "scale"], [p.back, "scale", "entry"]]) {
+      const start = p.now();
       await control.fire("click");
-      assert.equal(loader.hidden, false); assert.equal(loader.className.includes("is-finishing"), false);
+      assert.equal(loader.hidden, true, "the loader is not shown before the panel actually finishes");
       assert.equal(panel.inert, true); assert.equal(panel.className.includes("is-leaving"), true);
-      assert.equal(p.advanceTimer(), true);
+      p.elapse(200); phases.at(-1).finish(); await p.flush();
+      assert.equal(loader.hidden, false); assert.equal(phases.length % 3, 2);
+      p.elapse(240); phases.at(-1).finish(); await p.flush();
+      assert.equal(loader.className.includes("is-finishing"), false);
+      p.advanceTimer(); await p.flush();
+      assert.equal(p.now() - start, 960, "the measured 240 ms exit is reserved before the overall deadline");
       assert.equal(loader.className.includes("is-finishing"), true);
       assert.equal(p.shell.dataset.step, before, "the old panel remains hidden during the loader fade-out");
-      assert.equal(p.timers.at(-1).delay, 240); assert.equal(panel.inert, true);
+      assert.equal(panel.inert, true);
       await control.fire("click");
-      assert.equal(p.advanceTimer(), true);
+      p.elapse(240); phases.at(-1).finish(); await p.flush();
       assert.equal(p.shell.dataset.step, after); assert.equal(loader.hidden, true);
       assert.equal(loader.className.includes("is-finishing"), false); assert.equal(panel.inert, false);
+      assert.equal(p.now() - start, 1200);
     }
+  });
+  await test("slow animation completion is never replaced by the nominal CSS duration", async () => {
+    const phases = [];
+    const p = page(null, { getComputedStyle: () => ({ animationDuration: "240ms" }), animations: element => {
+      const animation = motion(element, 800); phases.push(animation); return [animation];
+    } });
+    await p.next.fire("click"); p.elapse(700);
+    assert.equal(p.shell.querySelector(".story-loader").hidden, true);
+    phases[0].finish(); await p.flush(); p.elapse(700);
+    assert.equal(p.shell.dataset.step, "entry");
+    phases[1].finish(); await p.flush(); p.elapse(700);
+    assert.equal(p.shell.dataset.step, "entry", "the destination waits for the exit completion too");
+    phases[2].finish(); await p.flush();
+    assert.equal(p.shell.dataset.step, "scale"); assert.ok(p.now() > 1200);
+  });
+  await test("no-motion and reduced-motion paths keep the explicit minimum without a completion event", async () => {
+    const p = page(null, { getComputedStyle: () => ({ animationDuration: "0s", transitionDuration: "0s" }) });
+    await p.next.fire("click"); assert.equal(p.shell.dataset.step, "entry");
+    assert.equal(p.timers.at(-1).delay, 1200);
+    await p.settle(); assert.equal(p.now(), 1200); assert.equal(p.shell.dataset.step, "scale");
+  });
+  await test("a missing finite completion signal is recovered by finishing that motion before advancing", async () => {
+    const phases = [];
+    const p = page(null, { animations: element => { const animation = motion(element, 200); phases.push(animation); return [animation]; } });
+    await p.next.fire("click");
+    assert.equal(p.shell.querySelector(".story-loader").hidden, true);
+    p.advanceTimer(); await p.flush();
+    assert.equal(phases[0].playState, "finished", "watchdog recovery reaches the actual final animation state first");
+    assert.equal(p.shell.querySelector(".story-loader").hidden, false);
+    await p.windowEvent("pagehide");
+  });
+  await test("a slow model response holds the loader and never repeats model creation", async () => {
+    let resolveCreate;
+    const p = page(null, { create: state => new Promise(resolve => { resolveCreate = () => {
+      state.project = { id: "created", status: "ready", stage_id: "data_download" }; state.busy = false; resolve();
+    }; }) });
+    await p.next.fire("click"); await p.settle(); await p.next.fire("click"); await p.settle();
+    const creation = p.next.fire("click"); await p.flush(); p.elapse(3000);
+    assert.equal(p.shell.dataset.step, "materials"); assert.equal(p.shell.querySelector(".story-loader").hidden, false);
+    await p.next.fire("click"); assert.equal(p.calls.filter(value => value === "create").length, 1);
+    resolveCreate(); await creation;
+    assert.equal(p.shell.dataset.step, "downloads"); assert.equal(p.calls.includes("start"), false);
+  });
+  await test("model changes and page hiding cancel stale animations and queued watchdogs", async () => {
+    for (const cancel of ["model", "pagehide"]) {
+      const phases = [];
+      const p = page(null, { animations: element => { const animation = motion(element, 200); phases.push(animation); return [animation]; } });
+      await p.next.fire("click"); const staleWatchdog = p.timers[0].callback;
+      if (cancel === "model") { p.state.project = { id: "different-model", status: "running", stage_id: "features" }; p.ui.render(); }
+      else await p.windowEvent("pagehide");
+      const expected = p.shell.dataset.step;
+      staleWatchdog(); await p.flush();
+      assert.equal(phases[0].playState, "running", "an already-queued old watchdog cannot force an old animation to finish");
+      phases[0].finish(); await p.flush(); await p.settle();
+      assert.equal(p.shell.dataset.step, expected); assert.equal(p.get("story-panel").inert, false);
+      assert.equal(p.shell.querySelector(".story-loader").hidden, true);
+    }
+  });
+  await test("a canceled motion restores controls without an unhandled finished rejection", async () => {
+    const phases = [];
+    const p = page(null, { animations: element => { const animation = motion(element, 200); phases.push(animation); return [animation]; } });
+    await p.next.fire("click"); phases[0].cancel(); await p.flush();
+    assert.equal(p.shell.dataset.step, "entry"); assert.equal(p.get("story-panel").inert, false);
+    assert.equal(p.shell.querySelector(".story-loader").hidden, true);
+  });
+  await test("page hiding releases a pending model-creation transition without waiting for its network response", async () => {
+    const p = page(null, { create: () => new Promise(() => {}) });
+    await p.next.fire("click"); await p.settle(); await p.next.fire("click"); await p.settle();
+    const creation = p.next.fire("click"); await p.flush();
+    await p.windowEvent("pagehide"); await creation;
+    assert.equal(p.get("story-panel").inert, false); assert.equal(p.shell.querySelector(".story-loader").hidden, true);
+    assert.equal(p.calls.filter(value => value === "create").length, 1);
   });
   await test("running downloads never become complete from a display-only percent or timer", async () => {
     const project = { id: "model", wakeword: "보라야", status: "running", stage_id: "data_download", progress: { done: 100, total: 100, files: [] } };
@@ -207,7 +305,7 @@ async function main() {
   await test("real backend advance follows once while polling preserves an explicit historical view", async () => {
     const project = { id: "model", wakeword: "보라야", status: "running", stage_id: "data_download", progress: {} };
     const p = page(project);
-    project.stage_id = "references"; p.ui.render(); assert.equal(p.timers.length, 1);
+    project.stage_id = "references"; p.ui.render(); await p.flush(); assert.equal(p.timers.length, 1);
     p.ui.render(); assert.equal(p.timers.length, 1); await p.settle(); assert.equal(p.shell.dataset.step, "voices");
     await p.back.fire("click"); await p.settle(); assert.equal(p.shell.dataset.step, "downloads");
     project.stage_id = "pilot"; p.ui.render(); assert.equal(p.shell.dataset.step, "downloads");
@@ -249,7 +347,7 @@ async function main() {
       assert.equal(p.operation.hidden, true); p.ui.render(); assert.equal(p.calls.includes("resume"), false);
       await p.next.fire("click"); await p.next.fire("click");
       assert.equal(p.calls.filter(call => call === "resume").length, 1); assert.equal(p.timers.length, 1);
-      assert.equal(p.timers[0].delay, 960); await p.settle(); assert.equal(p.shell.dataset.step, target);
+      assert.equal(p.timers[0].delay, 1200); await p.settle(); assert.equal(p.shell.dataset.step, target);
       assert.equal(p.next.textContent, "다음"); assert.equal(p.next.disabled, true);
     }
   });
@@ -383,7 +481,7 @@ async function main() {
     assert.equal(p.calls.includes("resume"), false);
     await p.next.fire("click");
     assert.equal(p.calls.filter(call => call === "resume").length, 1); assert.equal(p.timers.length, 1);
-    assert.equal(p.timers[0].delay, 960); p.ui.render(); assert.equal(p.timers.length, 1);
+    assert.equal(p.timers[0].delay, 1200); p.ui.render(); assert.equal(p.timers.length, 1);
     await p.settle(); assert.equal(p.shell.dataset.step, "voices");
   });
   await test("explicit download controls never bypass pending human input, review, migration or an unproven completed phase", async () => {

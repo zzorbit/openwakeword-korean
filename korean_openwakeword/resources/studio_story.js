@@ -236,7 +236,7 @@
       $("hard-preview").open = false;
       render();
     });
-    let current = "entry", projectKey = "", maximum = 2, following = true, transitioning = false, transitionTimer = null, creationPending = false;
+    let current = "entry", projectKey = "", maximum = 2, following = true, transitioning = false, transitionSession = null, creationPending = false;
     let materialTab = "training", materialPage = 0, materialKey = "", materialData = null, downloadPage = 0, listening = null;
     let historyPage = 0, historyKey = "", historyReviewItems = [], historyReviewIndex = 0;
     let historyReviewPage = 0, historyReviewListKey = "", historyReviewRows = [];
@@ -288,27 +288,105 @@
       });
     }
     function stopTransition() {
-      clearTimeout(transitionTimer); transitionTimer = null; transitioning = false; loader.hidden = true;
+      const session = transitionSession; transitionSession = null;
+      if (session) { session.cancel(); for (const timer of session.timers) clearTimeout(timer); }
+      transitioning = false; creationPending = false; loader.hidden = true;
       loader.classList.remove("is-finishing");
       panel.classList.remove("is-leaving"); panel.inert = false; panel.removeAttribute("aria-busy");
     }
-    function finishTransition(callback) {
-      loader.classList.add("is-finishing");
-      transitionTimer = setTimeout(callback, 240);
+    const transitionNow = () => typeof performance !== "undefined" ? performance.now() : Date.now();
+    function activeTransition(session) { return transitionSession === session; }
+    function beginTransition(backwards) {
+      pauseMedia();
+      const session = { started: transitionNow(), timers: new Set() };
+      session.aborted = new Promise(resolve => { session.cancel = () => resolve(false); });
+      transitionSession = session; transitioning = true;
+      panel.inert = true; panel.setAttribute("aria-busy", "true"); panel.classList.add("is-leaving");
+      loaderText.textContent = backwards ? "전 단계로 이동 중" : "다음 단계로 이동 중";
+      return session;
+    }
+    function cssMilliseconds(value) {
+      return String(value || "0s").split(",").map(part => {
+        const number = parseFloat(part); return Number.isFinite(number) ? number * (part.trim().endsWith("ms") ? 1 : 1000) : 0;
+      });
+    }
+    function cssMotionTime(element, prefix, includeDelay = true) {
+      const style = typeof getComputedStyle === "function" ? getComputedStyle(element) : {};
+      const durations = cssMilliseconds(style[`${prefix}Duration`]), delays = cssMilliseconds(style[`${prefix}Delay`]);
+      return Math.max(0, ...durations.map((duration, index) => duration + (includeDelay ? delays[index % delays.length] : 0)));
+    }
+    async function waitForTransitionTime(session, elapsed) {
+      if (!activeTransition(session)) return false;
+      const delay = elapsed - (transitionNow() - session.started);
+      if (delay <= 0) return true;
+      let timer;
+      const ready = new Promise(resolve => { timer = setTimeout(() => resolve(true), delay); session.timers.add(timer); });
+      const result = await Promise.race([ready, session.aborted]);
+      clearTimeout(timer); session.timers.delete(timer);
+      return result && activeTransition(session);
+    }
+    async function waitForMotion(element, session) {
+      if (!activeTransition(session)) return false;
+      // getAnimations() includes only this element; the loader's infinite dots
+      // are children and must never hold up navigation.
+      if (typeof element.getAnimations !== "function") {
+        const duration = Math.max(cssMotionTime(element, "transition"), cssMotionTime(element, "animation"));
+        return waitForTransitionTime(session, transitionNow() - session.started + duration);
+      }
+      const animations = element.getAnimations().filter(animation => {
+        const end = animation.effect?.getComputedTiming?.().endTime;
+        return (!animation.effect?.target || animation.effect.target === element)
+          && animation.playState !== "finished" && animation.playState !== "idle" && Number.isFinite(end);
+      });
+      if (!animations.length) return true;
+      const remaining = Math.max(...animations.map(animation => Math.max(0,
+        (animation.effect.getComputedTiming().endTime - Number(animation.currentTime || 0)) / Math.abs(animation.playbackRate || 1))));
+      let timer;
+      const watchdog = new Promise(resolve => {
+        timer = setTimeout(() => {
+          if (!activeTransition(session)) { resolve(false); return; }
+          // Exceptional recovery only: reach the final visual state before
+          // proceeding if a browser never delivers its completion promise.
+          try { for (const animation of animations) animation.finish(); resolve(true); }
+          catch { resolve(false); }
+        }, Math.max(1000, remaining + 500));
+        session.timers.add(timer);
+      });
+      const finished = Promise.allSettled(animations.map(animation => animation.finished))
+        .then(results => results.every(result => result.status === "fulfilled"));
+      const result = await Promise.race([finished, watchdog, session.aborted]);
+      clearTimeout(timer); session.timers.delete(timer);
+      return result && activeTransition(session);
+    }
+    async function runTransition(session, preparation, commit) {
+      const prepared = Promise.resolve(preparation).then(value => ({ ok: true, value }), error => ({ ok: false, error }));
+      try {
+        if (!await waitForMotion(panel, session)) return;
+        loader.hidden = false;
+        if (!await waitForMotion(loader, session)) return;
+        const result = await Promise.race([prepared, session.aborted]);
+        if (!activeTransition(session)) return;
+        if (!result.ok) bridge.message(result.error?.message || "모델 준비를 시작하지 못했습니다. 다시 확인해 주세요.", true);
+        const exitDuration = cssMotionTime(loader, "animation", false);
+        if (!await waitForTransitionTime(session, 1200 - exitDuration)) return;
+        loader.classList.add("is-finishing");
+        if (!await waitForMotion(loader, session)) return;
+        if (!await waitForTransitionTime(session, 1200)) return;
+        commit?.();
+      } catch (error) {
+        if (activeTransition(session)) bridge.message("화면을 전환하지 못했습니다. 다시 시도해 주세요.", true);
+      } finally {
+        if (activeTransition(session)) { stopTransition(); render(); heading.focus({ preventScroll: true }); }
+      }
     }
     function navigate(position, automatic = false) {
       const state = bridge.state();
       if (transitioning || position < 0 || position > maximum || position >= order.length || state.busy || position === order.indexOf(current)) return false;
       if (!state.project && position > 0 && !$("wakeword").value.trim()) { bridge.message("호출어를 입력해 주세요.", true); $("wakeword").focus(); return false; }
       const backwards = position < order.indexOf(current);
-      pauseMedia(); transitioning = true; panel.inert = true; panel.setAttribute("aria-busy", "true");
-      panel.classList.add("is-leaving"); loaderText.textContent = backwards ? "전 단계로 이동 중" : "다음 단계로 이동 중"; loader.hidden = false;
+      const session = beginTransition(backwards);
       following = automatic || (state.project && position === frontier(state.project));
-      transitionTimer = setTimeout(() => {
-        finishTransition(() => {
-          current = order[position]; historyPage = 0; historyKey = ""; stopTransition(); render(); heading.focus({ preventScroll: true });
-        });
-      }, 960);
+      void runTransition(session, undefined, () => { current = order[position]; historyPage = 0; historyKey = ""; });
       return true;
     }
     async function controlDownload() {
@@ -358,17 +436,8 @@
           // for its result and the same minimum used by local transitions.
           // Polls may receive the created model meanwhile, but must not reveal
           // it early or allow another creation request.
-          pauseMedia(); creationPending = true; transitioning = true;
-          panel.inert = true; panel.setAttribute("aria-busy", "true"); panel.classList.add("is-leaving");
-          loaderText.textContent = "다음 단계로 이동 중"; loader.hidden = false;
-          const minimum = new Promise(resolve => { transitionTimer = setTimeout(resolve, 960); });
-          try {
-            const result = await Promise.allSettled([minimum, (async () => bridge.create({ navigationCheckpoints: true }))()]);
-            if (result[1].status === "rejected") bridge.message(result[1].reason?.message || "모델 준비를 시작하지 못했습니다. 다시 확인해 주세요.", true);
-            await new Promise(resolve => finishTransition(resolve));
-          } finally {
-            creationPending = false; stopTransition(); render(); heading.focus({ preventScroll: true });
-          }
+          const session = beginTransition(false); creationPending = true;
+          await runTransition(session, (async () => bridge.create({ navigationCheckpoints: true }))());
           return;
         }
         navigate(position + 1); return;
@@ -798,7 +867,7 @@
       if (event.target?.tagName === "DETAILS") Promise.resolve().then(paginateDownloads);
     }, true);
     window.addEventListener("resize", () => { if (current === "materials") renderMaterials(); if (current === "downloads") paginateDownloads(); if (lastProject && !historic.hidden) renderHistory(lastProject); });
-    window.addEventListener("pagehide", () => { clearTimeout(transitionTimer); pauseMedia(); });
+    window.addEventListener("pagehide", () => { stopTransition(); pauseMedia(); });
     return { render };
   }
   window.KowwStory = Object.freeze({ create, definitions, stageStep, frontier, completedStep, pageCapacity, downloadCheckpoint, navigationCheckpoint });
