@@ -5,20 +5,22 @@ const path = require("node:path");
 const vm = require("node:vm");
 const html = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources/reference_preview.html"), "utf8");
 const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
+const playerScript = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources/listening_player.js"), "utf8");
 
-async function screen(mode, items, { error, ok = true, playback, height = 144, width = 560, buttonRect = {top:22,bottom:62,left:8,width:460},autoReady=true,standalone=false,queue } = {}) {
+async function screen(mode, items, { error, ok = true, playback, height = 144, width = 560, buttonRect = {top:22,bottom:62,left:8,width:460},autoReady=true,standalone=false,queue,actualPlayer=false } = {}) {
   const nodes = new Map();
   class Element {
-    constructor() { this.value = ""; this.textContent = ""; this.children = []; this.handlers = {}; this.attributes = {}; this.style = {}; this.scrollTop = 0; this.clientHeight = 68; this.offsetTop = 0; this.offsetHeight = 36; this.currentTime = 0; this.controls = true; this.played = 0; this.pauses = 0; this.paused = true; this.ended = false; }
-    append(...nodes) { nodes.forEach((node,index)=>{node.parentElement=this;node.offsetTop=(this.children.length+index)*36+4;});this.children.push(...nodes); }
-    replaceChildren(...nodes) { this.children=[];this.append(...nodes); }
+    constructor() { this.value = ""; this.textContent = ""; this.children = []; this.handlers = {}; this.attributes = {}; this.style = {}; this.scrollTop = 0; this.scrollHeight = 156; this.clientHeight = 68; this.offsetTop = 0; this.offsetHeight = 36; this.currentTime = 0; this.controls = true; this.played = 0; this.pauses = 0; this.paused = true; this.ended = false; this.duration = NaN; this.muted = false; this.className = ""; this.classList = { add: (...names) => { this.className = [...new Set([...this.className.split(/\s+/).filter(Boolean), ...names])].join(" "); } }; }
+    append(...nodes) { for(const node of nodes){if(node.parentElement){const siblings=node.parentElement.children;siblings.splice(siblings.indexOf(node),1);}node.parentElement=this;node.offsetTop=this.children.length*36+4;this.children.push(node);} }
+    replaceChildren(...nodes) { for(const child of this.children)child.parentElement=null;this.children=[];this.append(...nodes); }
+    insertBefore(node, anchor) { assert.ok(this.children.includes(anchor),'shared transport inserts beside the existing next button');if(node===anchor)return;if(node.parentElement){const siblings=node.parentElement.children;siblings.splice(siblings.indexOf(node),1);}node.parentElement=this;this.children.splice(this.children.indexOf(anchor),0,node); }
     addEventListener(event, callback) { this.handlers[event] = callback; }
     setAttribute(key, value) { this.attributes[key] = value; }
     getAttribute(key) { return this.attributes[key] ?? null; }
     removeAttribute(key) { delete this.attributes[key]; }
     contains(node) { return node===this || this.children.some(child=>child.contains(node)); }
     focus() { document.activeElement=this; }
-    getBoundingClientRect() { return {...buttonRect}; }
+    getBoundingClientRect() { return {height:buttonRect.bottom-buttonRect.top,...buttonRect}; }
     get src() { return this.attributes.src; }
     set src(value) { this.attributes.src=value; this.ended=false;this.currentTime=0; }
     load() { this.ended=false; }
@@ -29,13 +31,18 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
   for (const match of html.matchAll(/id="([^"]+)"/g)) nodes.set(match[1], new Element());
   nodes.get('voice-picker').append(nodes.get('voice-picker-button'),nodes.get('voice-picker-list'));
   const playbackControls=new Element(),calls = [], enhancements = [], parentMessages = [], messages = {}, documentEvents = {}, document = { title: "기준 목소리 듣기", hidden:false, addEventListener:(name,callback)=>{documentEvents[name]=callback;}, getElementById: id => nodes.get(id), createElement: () => new Element(),querySelector:selector=>selector==='.listen-controls'?playbackControls:null };
+  playbackControls.append(nodes.get('previous'),nodes.get('continuous'),nodes.get('next'));
+  nodes.get('reference-playback-actions').append(nodes.get('play-single'),nodes.get('play-auto'));
+  if(nodes.has('reference-more-panel'))nodes.get('reference-more-panel').append(nodes.get('reference-more-transport'),nodes.get('reference-playback-actions'));
   const context = vm.createContext({ document, URL, innerHeight:height,innerWidth:width,location: new URL(`http://127.0.0.1:8793/${mode}/?project=bora`),
     fetch: async (url, options) => { calls.push({ url, options });if(queue)await queue;return { ok, json: async () => ({ items, error }) }; } });
   context.window = context; context.parent = standalone?context:{postMessage:(message,origin)=>{
     parentMessages.push({message:JSON.parse(JSON.stringify(message)),origin});
     if(autoReady&&message.type==='koww:voice-picker'&&message.open)messages.message({origin,source:context.parent,data:{type:'koww:voice-picker-ready',request:message.request}});
   }};
-  context.KowwListening={enhance:(audio,controls,options)=>{enhancements.push({audio,controls,options});audio.controls=false;}};
+  if(actualPlayer)vm.runInContext(playerScript,context);
+  const enhance=actualPlayer?context.KowwListening.enhance:null;
+  context.KowwListening={enhance:(audio,controls,options)=>{const handle=enhance?enhance(audio,controls,options):{seek:new Element(),mute:new Element()};enhancements.push({audio,controls,options,handle});if(!enhance)audio.controls=false;return handle;}};
   context.addEventListener = (name, callback) => { messages[name] = callback; };
   vm.runInContext(script, context);
   for (let index = 0; index < 8; index++) await new Promise(resolve => setImmediate(resolve));
@@ -147,6 +154,63 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
   modes.messages.message({origin:'http://127.0.0.1:8793',source:modes.parent,data:{type:'koww:pause'}});
   assert.equal(modeAudio.paused,true);assert.equal(automatic.textContent,'자동 재생');assert.equal(single.attributes['aria-pressed'],'false');assert.equal(automatic.attributes['aria-pressed'],'false');
   assert.equal(modes.calls.length,1,'mode selection and lifecycle controls are read-only');
+  // Mount the shipped shared player once: layout changes must keep its real
+  // seek/mute controls wired to the same reference transport and picker.
+  const compact=await screen('reference-preview',Array.from({length:3},(_,i)=>({id:`compact-${i}`,group:'학습용',text:'오늘은',audio:`/reference-preview/audio/${i}?project=bora`})),{actualPlayer:true});
+  const compactAudio=compact.nodes.get('audio'),transport=compact.enhancements[0].handle;
+  assert.ok(transport);assert.equal(compactAudio.controls,false);assert.equal(compact.enhancements.length,1);
+  assert.ok(compact.playbackControls.children.includes(transport.seek));
+  const compactMore=compact.nodes.get('reference-more-button'),compactPanel=compact.nodes.get('reference-more-panel');
+  assert.equal(transport.mute.parentElement,compact.nodes.get('reference-more-transport'));
+  assert.equal(compact.nodes.get('previous').parentElement,transport.mute.parentElement);assert.equal(compact.nodes.get('next').parentElement,transport.mute.parentElement);
+  compactAudio.duration=4;compactAudio.currentTime=1;compactAudio.handlers.loadedmetadata();
+  transport.seek.value='750';transport.seek.handlers.input();
+  assert.equal(compactAudio.currentTime,3);assert.equal(transport.seek.attributes['aria-valuetext'],'0:03 / 0:04');
+  assert.equal(compactAudio.played,0,'seeking a paused voice never starts playback');
+  compactMore.handlers.click();assert.equal(compactPanel.hidden,false);assert.equal(compact.document.activeElement,compactPanel);
+  transport.mute.handlers.click();assert.equal(compactAudio.muted,true);assert.equal(transport.mute.attributes['aria-pressed'],'true');
+  compact.nodes.get('play-single').handlers.click();assert.equal(compactAudio.played,1);assert.equal(compactPanel.hidden,true);
+  compactMore.handlers.click();
+  compact.nodes.get('next').handlers.click();assert.equal(compact.nodes.get('voice').value,'1');assert.equal(compactAudio.played,2);
+  compact.nodes.get('previous').handlers.click();assert.equal(compact.nodes.get('voice').value,'0');assert.equal(compactAudio.played,3);
+  assert.equal(compactAudio.muted,true,'transport selection preserves mute state');
+  compact.nodes.get('play-auto').handlers.click();assert.equal(compactAudio.played,3,'mode switching preserves the active play request');assert.equal(compactPanel.hidden,true);
+  compactAudio.finish();assert.equal(compact.nodes.get('voice').value,'1');assert.equal(compactAudio.played,4);
+  compact.nodes.get('continuous').handlers.click();assert.equal(compactAudio.paused,true);
+  const compactButton=compact.nodes.get('voice-picker-button'),compactList=compact.nodes.get('voice-picker-list');
+  const compactKey=(element,key)=>element.handlers.keydown({key,preventDefault(){}});
+  compactKey(compactButton,'ArrowDown');assert.equal(compactList.hidden,false);
+  compactKey(compactList,'End');compactKey(compactList,'Enter');
+  assert.equal(compact.nodes.get('voice').value,'2');assert.equal(compactList.hidden,true);assert.equal(compact.document.activeElement,compactButton);
+  assert.equal(compactAudio.played,4,'keyboard selection after pause remains paused');
+  transport.mute.handlers.click();assert.equal(compactAudio.muted,false);
+  assert.equal(compact.calls.length,1,'the shared compact player never writes listening decisions or reloads the queue');
+  const moreAwaiting=await screen('reference-preview',[{id:'more-0',group:'학습용',text:'오늘은',audio:'/reference-preview/audio/0?project=bora'}],{autoReady:false});
+  const moreButton=moreAwaiting.nodes.get('reference-more-button'),morePanel=moreAwaiting.nodes.get('reference-more-panel');
+  const morePicker=moreAwaiting.nodes.get('voice-picker-button'),moreList=moreAwaiting.nodes.get('voice-picker-list');
+  moreButton.handlers.click();assert.equal(morePanel.hidden,true);assert.equal(moreButton.attributes['aria-expanded'],'true');
+  const moreRequest=()=>moreAwaiting.parentMessages.filter(item=>item.message.open).at(-1).message.request;
+  const firstMore=moreRequest();moreAwaiting.ready(firstMore);assert.equal(morePanel.hidden,false);
+  morePicker.handlers.click();assert.equal(morePanel.hidden,true);assert.equal(moreList.hidden,true);
+  const pickerRequest=moreRequest();assert.ok(pickerRequest>firstMore);
+  moreAwaiting.ready(firstMore);assert.equal(morePanel.hidden,true);assert.equal(moreList.hidden,true);
+  moreAwaiting.ready(pickerRequest);assert.equal(moreList.hidden,false);
+  moreButton.handlers.click();assert.equal(moreList.hidden,true);assert.equal(morePanel.hidden,true);
+  const lastMore=moreRequest();moreAwaiting.ready(pickerRequest);assert.equal(morePanel.hidden,true);
+  moreAwaiting.ready(lastMore);assert.equal(morePanel.hidden,false);
+  compactKey(morePanel,'Escape');assert.equal(morePanel.hidden,true);assert.equal(moreAwaiting.document.activeElement,moreButton);
+  moreAwaiting.ready(lastMore);assert.equal(morePanel.hidden,true,'late ready cannot reopen a closed more panel');
+  moreButton.handlers.click();moreAwaiting.ready(moreRequest());
+  moreAwaiting.documentEvents.pointerdown({target:moreAwaiting.nodes.get('audio')});assert.equal(morePanel.hidden,true);
+  moreButton.handlers.click();moreAwaiting.ready(moreRequest());
+  moreAwaiting.messages.message({origin:'http://127.0.0.1:8793',source:moreAwaiting.parent,data:{type:'koww:pause'}});
+  assert.equal(morePanel.hidden,true);assert.equal(moreButton.attributes['aria-expanded'],'false');
+  moreButton.handlers.click();const tabRequest=moreRequest();compactKey(moreButton,'Tab');moreAwaiting.ready(tabRequest);
+  assert.equal(morePanel.hidden,true,'Tab cancels a pending more request before a late ready can take focus');
+  assert.equal(moreButton.attributes['aria-expanded'],'false');
+  moreButton.handlers.click();moreAwaiting.ready(moreRequest());
+  morePanel.handlers.focusout({relatedTarget:null});assert.equal(morePanel.hidden,true,'leaving the iframe releases the expanded more panel');
+  assert.equal(moreAwaiting.calls.length,1,'both overlays share layout messages without a data request');
   const choiceItems=Array.from({length:50},(_,i)=>({id:`choice-${i}`,group:i<20?'학습용':'공통 평가용',text:'오늘은',audio:`/reference-preview/audio/${i}?project=bora`}));
   const choices=await screen('reference-preview',choiceItems);
   const pickerButton=choices.nodes.get('voice-picker-button'),pickerList=choices.nodes.get('voice-picker-list');
