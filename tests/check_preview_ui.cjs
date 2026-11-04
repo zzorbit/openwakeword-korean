@@ -9,7 +9,7 @@ const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 async function screen(mode, items, { error, ok = true, playback, height = 144, width = 560, buttonRect = {top:22,bottom:62,left:8,width:460} } = {}) {
   const nodes = new Map();
   class Element {
-    constructor() { this.value = ""; this.textContent = ""; this.children = []; this.handlers = {}; this.attributes = {}; this.style = {}; this.scrollTop = 0; this.clientHeight = 68; this.offsetTop = 0; this.offsetHeight = 36; this.currentTime = 0; this.played = 0; this.pauses = 0; this.paused = true; this.ended = false; }
+    constructor() { this.value = ""; this.textContent = ""; this.children = []; this.handlers = {}; this.attributes = {}; this.style = {}; this.scrollTop = 0; this.clientHeight = 68; this.offsetTop = 0; this.offsetHeight = 36; this.currentTime = 0; this.controls = true; this.played = 0; this.pauses = 0; this.paused = true; this.ended = false; }
     append(...nodes) { nodes.forEach((node,index)=>{node.parentElement=this;node.offsetTop=(this.children.length+index)*36+4;});this.children.push(...nodes); }
     replaceChildren(...nodes) { this.children=[];this.append(...nodes); }
     addEventListener(event, callback) { this.handlers[event] = callback; }
@@ -28,14 +28,15 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
   }
   for (const match of html.matchAll(/id="([^"]+)"/g)) nodes.set(match[1], new Element());
   nodes.get('voice-picker').append(nodes.get('voice-picker-button'),nodes.get('voice-picker-list'));
-  const calls = [], parentMessages = [], messages = {}, documentEvents = {}, document = { title: "기준 목소리 듣기", hidden:false, addEventListener:(name,callback)=>{documentEvents[name]=callback;}, getElementById: id => nodes.get(id), createElement: () => new Element() };
+  const calls = [], enhancements = [], parentMessages = [], messages = {}, documentEvents = {}, document = { title: "기준 목소리 듣기", hidden:false, addEventListener:(name,callback)=>{documentEvents[name]=callback;}, getElementById: id => nodes.get(id), createElement: () => new Element() };
   const context = vm.createContext({ document, URL, innerHeight:height,innerWidth:width,location: new URL(`http://127.0.0.1:8793/${mode}/?project=bora`),
     fetch: async (url, options) => { calls.push({ url, options }); return { ok, json: async () => ({ items, error }) }; } });
   context.window = context; context.parent = {postMessage:(message,origin)=>parentMessages.push({message:JSON.parse(JSON.stringify(message)),origin})};
+  context.KowwListening={enhance:(audio,controls,options)=>{enhancements.push({audio,controls,options});audio.controls=false;}};
   context.addEventListener = (name, callback) => { messages[name] = callback; };
   vm.runInContext(script, context);
   for (let index = 0; index < 8; index++) await new Promise(resolve => setImmediate(resolve));
-  return { nodes, calls, document, documentEvents, messages, parentMessages, parent: context.parent, resize:(nextHeight,nextRect)=>{context.innerHeight=nextHeight;if(nextRect)Object.assign(buttonRect,nextRect);messages.resize();} };
+  return { nodes, calls, enhancements, document, documentEvents, messages, parentMessages, parent: context.parent, resize:(nextHeight,nextRect)=>{context.innerHeight=nextHeight;if(nextRect)Object.assign(buttonRect,nextRect);messages.resize();} };
 }
 
 (async () => {
@@ -60,6 +61,9 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
   assert.equal(hard.nodes.get("voice").hidden, true);
   assert.equal(hard.nodes.get("sentence").hidden, false);
   assert.equal(hard.nodes.get("voice").children[0].textContent, "돌아와 · 목소리 1");
+  assert.equal(hard.enhancements.length,1);assert.equal(hard.enhancements[0].audio,hard.nodes.get('audio'));assert.equal(hard.enhancements[0].controls,hard.nodes.get('playback-controls'));
+  assert.equal(hard.nodes.get('playback-controls').hidden,false);assert.equal(hard.nodes.get('audio').controls,false);
+  assert.equal(hard.nodes.get('reference-previous').hidden,true);assert.equal(hard.nodes.get('reference-next').hidden,true);
   assert.equal(hard.nodes.get("audio").src, items[0].audio);
   assert.equal(hard.nodes.get("previous").disabled, true);
   assert.equal(hard.nodes.get("listening-list").children.length,2);
@@ -67,7 +71,7 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
   assert.equal(hard.nodes.get("listening-list").children[0].attributes['data-number'],'1');
   assert.equal(hard.nodes.get("listening-list").children[0].attributes['aria-label'],'돌아와 · 목소리 1 · 미청취');
   assert.equal(hard.nodes.get("listening-list").children[0].children[1].textContent,'미청취');
-  // Native audio play has the same continuous behavior as the visible play button.
+  // Audio play events keep the same continuous behavior as the hard-example play button.
   await hard.nodes.get("audio").play();
   assert.equal(hard.nodes.get("audio").played, 1);
   hard.nodes.get("audio").finish();
@@ -95,15 +99,25 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
   assert.equal(reference.nodes.get("sentence").hidden, true);
   assert.equal(reference.nodes.get("listening-list").children.length, 0);
   assert.equal(reference.nodes.get("reference-playback-actions").hidden, false);
+  assert.equal(reference.enhancements.length,0,'reference playback keeps the browser controls instead of adding another play row');
+  assert.equal(reference.nodes.get('audio').controls,true);assert.equal(reference.nodes.get('playback-controls').hidden,true);
+  assert.equal(reference.nodes.get('reference-previous').hidden,false);assert.equal(reference.nodes.get('reference-next').hidden,false);
+  assert.equal(reference.nodes.get('reference-previous').disabled,true);assert.equal(reference.nodes.get('reference-next').disabled,true);
   assert.equal(reference.nodes.get("audio").played, 0); // Opening is never autoplay.
   assert.deepEqual(reference.calls, [{ url: "/reference-preview/queue?project=bora", options: undefined }]);
+  await reference.nodes.get('audio').play();reference.nodes.get('audio').finish();
+  assert.equal(reference.nodes.get('voice').value,'0');assert.equal(reference.nodes.get('audio').played,1,'native audio play events use single-current reference mode');
+  assert.equal(reference.nodes.get('play-single').textContent,'재생');assert.equal(reference.nodes.get('play-auto').textContent,'자동 재생');
   const many=await screen('reference-preview',Array.from({length:7},(_,i)=>({id:`voice-${i}`,group:'학습용',text:'오늘은',audio:`/reference-preview/audio/${i}?project=bora`})));
   assert.equal(many.nodes.get('voice').children.length,7);
   many.nodes.get('voice').value='6';many.nodes.get('voice').handlers.change();
   assert.equal(many.nodes.get('voice').value,'6');
   assert.equal(many.nodes.get('audio').played,0,'selecting a paused recording stays paused');
   assert.equal(many.nodes.get('position').textContent,'7 / 7');
-  many.nodes.get('continuous').handlers.click();many.nodes.get('audio').finish();
+  assert.equal(many.nodes.get('reference-next').disabled,true);
+  many.nodes.get('reference-previous').handlers.click();assert.equal(many.nodes.get('voice').value,'5');
+  many.nodes.get('reference-next').handlers.click();assert.equal(many.nodes.get('voice').value,'6');assert.equal(many.nodes.get('audio').played,0);
+  many.nodes.get('play-single').handlers.click();many.nodes.get('audio').finish();
   assert.equal(many.nodes.get('voice').value,'6','reference bar play defaults to the current voice only');
   assert.equal(many.nodes.get('audio').played,1);assert.equal(many.nodes.get('continuous').textContent,'재생');
   many.nodes.get('play-auto').handlers.click();many.nodes.get('audio').finish();
@@ -117,10 +131,10 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
   assert.equal(modeAudio.played,1,'switching the active playback mode does not restart audio');assert.equal(modeAudio.currentTime,0.75);
   assert.equal(automatic.textContent,'일시정지');assert.equal(single.textContent,'재생');
   automatic.handlers.click();assert.equal(modeAudio.paused,true);assert.equal(modeBar.textContent,'재생');
-  modeBar.handlers.click();assert.equal(modeAudio.played,2);assert.equal(modeAudio.currentTime,0.75);assert.equal(automatic.textContent,'일시정지','bar resumes the selected automatic mode');
+  automatic.handlers.click();assert.equal(modeAudio.played,2);assert.equal(modeAudio.currentTime,0.75);assert.equal(automatic.textContent,'일시정지','automatic playback resumes from its paused position');
   single.handlers.click();assert.equal(modeAudio.played,2);assert.equal(modeAudio.currentTime,0.75);
   modeAudio.finish();assert.equal(modes.nodes.get('voice').value,'0');assert.equal(modeAudio.played,2);assert.equal(single.textContent,'재생');
-  single.handlers.click();modes.nodes.get('next').handlers.click();
+  single.handlers.click();modes.nodes.get('reference-next').handlers.click();
   assert.equal(modes.nodes.get('voice').value,'1');assert.equal(modeAudio.played,4);
   modeAudio.finish();assert.equal(modes.nodes.get('voice').value,'1','a new selection retains single-current mode');assert.equal(modeAudio.played,4);
   modes.nodes.get('voice-picker-button').handlers.click();modes.nodes.get('voice-picker-list').children[2].handlers.click();
@@ -174,7 +188,7 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
   choices.document.hidden=false;pickerButton.handlers.click();choices.messages.pagehide();assert.equal(pickerList.hidden,true);
   assert.equal(choices.calls.length,1,'picker interactions do not request approvals or reload the queue');
   const parentClose=await screen('reference-preview',choiceItems);
-  parentClose.nodes.get('continuous').handlers.click();parentClose.nodes.get('voice-picker-button').handlers.click();
+  parentClose.nodes.get('play-single').handlers.click();parentClose.nodes.get('voice-picker-button').handlers.click();
   parentClose.messages.message({origin:'https://other.example',source:parentClose.parent,data:{type:'koww:voice-picker-close'}});
   parentClose.messages.message({origin:'http://127.0.0.1:8793',source:{},data:{type:'koww:voice-picker-close'}});
   assert.equal(parentClose.nodes.get('voice-picker-list').hidden,false,'foreign messages cannot close the reference picker');
