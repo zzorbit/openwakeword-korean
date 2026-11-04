@@ -9,7 +9,7 @@ const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 async function screen(mode, items, { error, ok = true, playback, height = 144, width = 560, buttonRect = {top:22,bottom:62,left:8,width:460} } = {}) {
   const nodes = new Map();
   class Element {
-    constructor() { this.value = ""; this.textContent = ""; this.children = []; this.handlers = {}; this.attributes = {}; this.style = {}; this.scrollTop = 0; this.clientHeight = 68; this.offsetTop = 0; this.offsetHeight = 36; this.played = 0; this.pauses = 0; this.paused = true; this.ended = false; }
+    constructor() { this.value = ""; this.textContent = ""; this.children = []; this.handlers = {}; this.attributes = {}; this.style = {}; this.scrollTop = 0; this.clientHeight = 68; this.offsetTop = 0; this.offsetHeight = 36; this.currentTime = 0; this.played = 0; this.pauses = 0; this.paused = true; this.ended = false; }
     append(...nodes) { nodes.forEach((node,index)=>{node.parentElement=this;node.offsetTop=(this.children.length+index)*36+4;});this.children.push(...nodes); }
     replaceChildren(...nodes) { this.children=[];this.append(...nodes); }
     addEventListener(event, callback) { this.handlers[event] = callback; }
@@ -20,9 +20,9 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
     focus() { document.activeElement=this; }
     getBoundingClientRect() { return {...buttonRect}; }
     get src() { return this.attributes.src; }
-    set src(value) { this.attributes.src=value; this.ended=false; }
+    set src(value) { this.attributes.src=value; this.ended=false;this.currentTime=0; }
     load() { this.ended=false; }
-    play() { this.played++; this.paused=false; this.handlers.play?.(); return playback ? playback(this.played) : Promise.resolve(); }
+    play() { this.played++; if(this.ended)this.currentTime=0;this.ended=false;this.paused=false; this.handlers.play?.(); return playback ? playback(this.played) : Promise.resolve(); }
     pause() { this.pauses++; this.paused=true; this.handlers.pause?.(); }
     finish() { this.ended=true; this.paused=true; this.handlers.pause?.(); this.handlers.ended?.(); }
   }
@@ -94,6 +94,7 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
   assert.equal(reference.nodes.get("voice-picker-list").hidden, true);
   assert.equal(reference.nodes.get("sentence").hidden, true);
   assert.equal(reference.nodes.get("listening-list").children.length, 0);
+  assert.equal(reference.nodes.get("reference-playback-actions").hidden, false);
   assert.equal(reference.nodes.get("audio").played, 0); // Opening is never autoplay.
   assert.deepEqual(reference.calls, [{ url: "/reference-preview/queue?project=bora", options: undefined }]);
   const many=await screen('reference-preview',Array.from({length:7},(_,i)=>({id:`voice-${i}`,group:'학습용',text:'오늘은',audio:`/reference-preview/audio/${i}?project=bora`})));
@@ -103,9 +104,37 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
   assert.equal(many.nodes.get('audio').played,0,'selecting a paused recording stays paused');
   assert.equal(many.nodes.get('position').textContent,'7 / 7');
   many.nodes.get('continuous').handlers.click();many.nodes.get('audio').finish();
-  assert.equal(many.nodes.get('voice').value,'0','reference listening loops after the last selected voice');
-  assert.equal(many.nodes.get('audio').played,2);
+  assert.equal(many.nodes.get('voice').value,'6','reference bar play defaults to the current voice only');
+  assert.equal(many.nodes.get('audio').played,1);assert.equal(many.nodes.get('continuous').textContent,'재생');
+  many.nodes.get('play-auto').handlers.click();many.nodes.get('audio').finish();
+  assert.equal(many.nodes.get('voice').value,'0','automatic listening loops after the last selected voice');
+  assert.equal(many.nodes.get('audio').played,3);assert.equal(many.nodes.get('play-auto').textContent,'일시정지');
   assert.equal(many.calls.length,1,'voice selection and playback make no approval or extra data request');
+  const modes=await screen('reference-preview',Array.from({length:3},(_,i)=>({id:`mode-${i}`,group:'학습용',text:'오늘은',audio:`/reference-preview/audio/${i}?project=bora`})));
+  const modeAudio=modes.nodes.get('audio'),single=modes.nodes.get('play-single'),automatic=modes.nodes.get('play-auto'),modeBar=modes.nodes.get('continuous');
+  single.handlers.click();assert.equal(modeAudio.played,1);assert.equal(single.textContent,'일시정지');assert.equal(automatic.textContent,'자동 재생');
+  modeAudio.currentTime=0.75;automatic.handlers.click();
+  assert.equal(modeAudio.played,1,'switching the active playback mode does not restart audio');assert.equal(modeAudio.currentTime,0.75);
+  assert.equal(automatic.textContent,'일시정지');assert.equal(single.textContent,'재생');
+  automatic.handlers.click();assert.equal(modeAudio.paused,true);assert.equal(modeBar.textContent,'재생');
+  modeBar.handlers.click();assert.equal(modeAudio.played,2);assert.equal(modeAudio.currentTime,0.75);assert.equal(automatic.textContent,'일시정지','bar resumes the selected automatic mode');
+  single.handlers.click();assert.equal(modeAudio.played,2);assert.equal(modeAudio.currentTime,0.75);
+  modeAudio.finish();assert.equal(modes.nodes.get('voice').value,'0');assert.equal(modeAudio.played,2);assert.equal(single.textContent,'재생');
+  single.handlers.click();modes.nodes.get('next').handlers.click();
+  assert.equal(modes.nodes.get('voice').value,'1');assert.equal(modeAudio.played,4);
+  modeAudio.finish();assert.equal(modes.nodes.get('voice').value,'1','a new selection retains single-current mode');assert.equal(modeAudio.played,4);
+  modes.nodes.get('voice-picker-button').handlers.click();modes.nodes.get('voice-picker-list').children[2].handlers.click();
+  assert.equal(modes.nodes.get('voice').value,'2');assert.equal(modeAudio.played,4,'selecting while paused never starts playback');
+  automatic.handlers.click();modes.nodes.get('voice-picker-button').handlers.click();modes.nodes.get('voice-picker-list').children[0].handlers.click();
+  assert.equal(modeAudio.played,6);assert.equal(automatic.textContent,'일시정지');
+  modeAudio.finish();assert.equal(modes.nodes.get('voice').value,'1');assert.equal(modeAudio.played,7,'selection during automatic playback keeps continuous advancement');
+  modes.document.hidden=true;modes.documentEvents.visibilitychange();assert.equal(modeAudio.paused,true);assert.equal(modeAudio.src,undefined);
+  assert.equal(single.textContent,'재생');assert.equal(automatic.textContent,'자동 재생');
+  modeAudio.handlers.ended();assert.equal(modeAudio.played,7);
+  modes.document.hidden=false;automatic.handlers.click();
+  modes.messages.message({origin:'http://127.0.0.1:8793',source:modes.parent,data:{type:'koww:pause'}});
+  assert.equal(modeAudio.paused,true);assert.equal(automatic.textContent,'자동 재생');assert.equal(single.attributes['aria-pressed'],'false');assert.equal(automatic.attributes['aria-pressed'],'false');
+  assert.equal(modes.calls.length,1,'mode selection and lifecycle controls are read-only');
   const choiceItems=Array.from({length:50},(_,i)=>({id:`choice-${i}`,group:'학습용',text:'오늘은',audio:`/reference-preview/audio/${i}?project=bora`}));
   const choices=await screen('reference-preview',choiceItems);
   const pickerButton=choices.nodes.get('voice-picker-button'),pickerList=choices.nodes.get('voice-picker-list');
@@ -154,6 +183,7 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
   assert.equal(parentClose.nodes.get('audio').paused,false,'clicking the parent outside the picker does not interrupt playback');
   assert.equal(parentClose.nodes.get('audio').played,1);
   assert.equal(hard.nodes.get('voice-picker').hidden,true);
+  assert.equal(hard.nodes.get('reference-playback-actions').hidden,true);
   assert.deepEqual(hard.parentMessages,[],'hard-example playback never requests reference-picker expansion');
   const hardPages=await screen('hard-preview',Array.from({length:7},(_,i)=>({id:`hard-${i}`,text:'돌아와',audio:`/hard-preview/audio/${i}?project=bora`})));
   assert.equal(hardPages.nodes.get('listening-list').children.length,5);
