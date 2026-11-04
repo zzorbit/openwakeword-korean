@@ -25,8 +25,8 @@ html.reference-listening main.listen-preview{justify-content:center;overflow:vis
 html.reference-listening .listen-workspace{display:block;width:min(560px,100%);margin:0 auto}
 html.reference-listening .listen-sidebar{display:none}
 html.reference-listening .listen-player{width:100%;gap:12px}
-html.reference-listening .listen-heading{align-items:center;width:100%;gap:10px}
-html.reference-listening .listen-position{flex:none;width:56px;font-size:13px;line-height:20px;text-align:right;font-variant-numeric:tabular-nums}
+html.reference-listening .listen-heading{align-items:center;width:100%;gap:8px}
+html.reference-listening .listen-position{flex:none;width:auto;min-width:40px;font-size:13px;line-height:20px;text-align:right;font-variant-numeric:tabular-nums}
 html.reference-listening .listen-status{position:static;max-height:40px;overflow:auto;font-size:14px;line-height:20px}
 html.reference-listening main:has(#error:not(:empty)) .listen-player{gap:6px}
 .voice-picker{flex:1;min-width:0}
@@ -55,7 +55,7 @@ html.reference-listening main:has(#error:not(:empty)) .listen-player{gap:6px}
 html.reference-listening .listen-playback{gap:0;border-radius:22px;background:#232a34}
 html.reference-listening .listen-controls.is-compact{height:44px;min-height:44px;padding:7px 8px;gap:8px;border:0;border-radius:22px;background:#232a34}
 html.reference-listening .listen-controls.is-compact #continuous{display:flex;flex:none;width:30px;height:30px;min-height:30px}
-html.reference-listening .listen-controls.is-compact .listen-seek{appearance:none;-webkit-appearance:none;min-width:24px;height:20px;border:0;box-shadow:none;background:transparent;--listen-track:#20262f;--listen-played:#a7bdd9}
+html.reference-listening .listen-controls.is-compact .listen-seek{appearance:none;-webkit-appearance:none;min-width:24px;height:20px;border:0;box-shadow:none;background:transparent;--listen-track:#35404e;--listen-played:#a7bdd9}
 html.reference-listening .listen-seek::-webkit-slider-runnable-track{height:4px;border:0;border-radius:999px;box-shadow:none;background:linear-gradient(to right,var(--listen-played) 0 var(--listen-progress,0%),var(--listen-track) var(--listen-progress,0%) 100%)}
 html.reference-listening .listen-seek::-webkit-slider-thumb{appearance:none;-webkit-appearance:none;width:12px;height:12px;margin-top:-4px;border:0;border-radius:50%;box-shadow:none;background:#e5ebf3}
 html.reference-listening .listen-seek::-moz-range-track{height:4px;border:0;border-radius:999px;background:var(--listen-track)}
@@ -65,7 +65,7 @@ html.reference-listening .listen-seek:focus-visible{outline:2px solid #a8afb7;ou
 html.reference-listening .listen-controls.is-compact .listen-time{font-size:12px;line-height:18px}
 html.reference-listening .listen-controls.is-compact .reference-more-button{display:flex;align-items:center;justify-content:center;flex:none;width:30px;height:30px;min-height:30px;padding:0;border-radius:50%;font-size:0;background:#2b3441}
 html.reference-listening .listen-controls.is-compact .reference-more-button:hover:not(:disabled),html.reference-listening .listen-controls.is-compact .reference-more-button[aria-expanded="true"]{background:#394555}
-.reference-more-button::before{content:"···";font:700 20px/20px system-ui,sans-serif;letter-spacing:1px}
+.reference-more-button::before{content:"";display:block;flex:none;width:4px;height:4px;border-radius:50%;background:currentColor;box-shadow:-5px 0 currentColor,5px 0 currentColor}
 .reference-more-button[aria-expanded="true"]{background:#394555}
 .reference-more-panel{position:fixed;z-index:10;max-height:240px;padding:8px;border:1px solid #47515e;border-radius:10px;background:#232a34;box-shadow:0 8px 22px #0005;overflow:auto;overscroll-behavior:contain;outline:none}
 .reference-more-panel:not([hidden]){animation:voice-picker-reveal .13s ease-out both}
