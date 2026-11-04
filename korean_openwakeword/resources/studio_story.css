@@ -66,6 +66,8 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-material-row dd{display:grid;gap:3px;min-width:0;margin:0;text-align:right}
 .story-material-row dd strong{font-size:16px;line-height:24px;font-weight:600;color:#eaedf1;word-break:keep-all}
 .story-material-row dd span{font-size:14px;line-height:20px;color:#bdc5d1;word-break:keep-all;overflow-wrap:break-word}
+.story-material-row dd .story-material-capacity{color:#d4dce7}
+.story-material-note{font:400 14px/20px system-ui,"Malgun Gothic",sans-serif;color:#bdc5d1;margin:12px 0 0;text-align:center;text-wrap:pretty}
 .story-material-tabs{display:none}
 .story-pagination{display:flex;align-items:center;justify-content:center;gap:16px;height:32px;color:#bdc5d1;font-size:14px;line-height:20px;flex:none}
 .story-materials>.story-pagination{margin-top:12px}
@@ -293,6 +295,7 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 @media(max-height:560px){
   .story-stage{padding-top:54px;padding-bottom:12px}
   .story-panel{gap:12px}
+  .story-material-note{display:none}
   .story-shell[data-step="entry"] .story-panel{gap:24px}
   .story-live{gap:8px}
   .story-live .current-eta{font-size:13px;line-height:20px}

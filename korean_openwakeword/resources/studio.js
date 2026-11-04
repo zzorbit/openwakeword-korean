@@ -423,10 +423,11 @@
     const asset = id => sources.find(item => item.id === id) || assets.find(item => item.id === id);
     const size = item => item?.selected_download_bytes ?? item?.bytes ?? item?.size_bytes ?? item?.total_bytes ?? item?.totalbytes;
     const bundleSize = ids => {
-      const values = ids.map(id => size(asset(id))).filter(Number.isFinite);
-      return values.length ? values.reduce((sum, value) => sum + value, 0) : undefined;
+      const values = ids.map(asset).filter(Boolean).map(size);
+      return values.length && values.every(Number.isFinite) ? values.reduce((sum, value) => sum + value, 0) : null;
     };
-    const source = (name, content, amount, rank, record, fileBytes = size(record)) => ({ name, content, amount, rank, bytes: fileBytes, bytesLabel: record?.download_mode === "selected_members" ? "다운로드" : "원본", url: record?.url || record?.source_url });
+    const source = (name, content, amount, rank, record, fileBytes = size(record)) => ({ name, content, amount, rank, bytes: fileBytes, downloadBytes: fileBytes, downloadEstimated: false, bytesLabel: record?.download_mode === "selected_members" ? "다운로드" : "원본", url: record?.url || record?.source_url });
+    const reused = (item, reason = "위 비호출 자료 재사용") => ({ ...item, downloadBytes: 0, downloadReuse: reason });
     const fallback = record => {
       const time = record.target_hours ?? record.hours;
       return source(record.display_name || record.name || record.id || record.dataset_id || "공개 자료",
@@ -437,8 +438,12 @@
     const suppliedGeneric = recipe.automatic_target_hours?.generic_nominal ?? asset("generic")?.hours ?? 0;
     const suppliedKorean = recipe.automatic_target_hours?.korean_train ?? asset("zeroth")?.hours ?? 0;
     const negativePlan = recipe.training_negative_plan;
-    const automaticPlan = recipe.material_acquisition_policy === "automatic_v3" && recipe.automatic_source_plan?.version === 3
+    const automaticPlan = recipe.material_acquisition_policy === "automatic_v3" && [1, 3].includes(recipe.automatic_source_plan?.version)
       && recipe.automatic_source_plan.enabled === true && Array.isArray(recipe.automatic_source_plan.components) ? recipe.automatic_source_plan : null;
+    const forecast = (item, provider, amount) => {
+      const rate = recipe.automatic_space_plan?.download_forecast_bytes_per_hour?.[provider];
+      return { ...item, downloadBytes: Number.isFinite(rate) && rate > 0 && Number.isFinite(amount) && amount >= 0 ? Math.ceil(rate * amount) : undefined, downloadEstimated: true };
+    };
     const hasNegativePlan = ((negativePlan?.id === "commercial_negative_v1" && negativePlan.version === 1)
       || (negativePlan?.id === "commercial_negative_v2" && negativePlan.version === 2)
       || (negativePlan?.id === "commercial_negative_v3" && negativePlan.version === 3)) && Array.isArray(negativePlan.components);
@@ -452,7 +457,8 @@
         const selectiveMusic = negativePlan.version === 3 && records.some(record => record.id === "fma_full" && record.download_mode === "selective");
         const content = selectiveMusic ? "필요한 원곡만 선택 다운로드 · 원본 MP3 보존"
           : [...new Set([item.name, item.description].filter(Boolean))].join(" · ");
-        return source(name, content, `준비 목표 ${hours(amount)}`, amount * 3600, records.length === 1 ? records[0] : undefined);
+        const entry = source(name, content, `준비 목표 ${hours(amount)}`, amount * 3600, records.length === 1 ? records[0] : undefined);
+        return records.length === 1 ? forecast(entry, records[0].id, amount) : entry;
       });
     };
     const automaticSources = (pool, target) => {
@@ -462,7 +468,7 @@
       return components.map(item => {
         const provider = providers[item.provider] || [item.name || item.provider, "목표량 자동 선정", undefined];
         const amount = item.target_hours * target / total;
-        return source(provider[0], provider[1], `준비 목표 ${hours(amount)}`, amount * 3600, { source_url: item.source_url || provider[2] });
+        return forecast(source(provider[0], provider[1], `준비 목표 ${hours(amount)}`, amount * 3600, { source_url: item.source_url || provider[2] }), item.provider, amount);
       });
     };
     const automaticGeneric = automaticSources("generic_negative", genericHours), automaticKorean = automaticSources("korean_negative", koreanHours);
@@ -477,13 +483,13 @@
     }
     const reuseNegativeWaveforms = recipe.noise_material_policy === "reuse_negative_waveforms";
     const noise = reuseNegativeWaveforms ? [
-      source("일반 비호출 자료", "학습용 원본 음원 재사용", "원본 재사용", null),
-      source("한국어 비호출 자료", "학습용 한국어 원본 음원 재사용", "원본 재사용", null)
+      reused(source("일반 비호출 자료", "학습용 원본 음원 재사용", "원본 재사용", null)),
+      reused(source("한국어 비호출 자료", "학습용 한국어 원본 음원 재사용", "원본 재사용", null))
     ] : [];
     if (!reuseNegativeWaveforms) {
       if (asset("fma")) noise.push(source("FMA", "음악 120곡 · 곡당 30초", "약 1시간", 3600, asset("fma"), bundleSize(["fma", "fma_metadata"])));
-      if (automaticKorean.length) noise.push(...automaticKorean.map(item => ({ ...item, content: "학습용 한국어 원본 음원 재사용", amount: "원본 재사용", bytes: undefined })));
-      else if (asset("zeroth")) noise.push(source("Zeroth Korean", "학습용 한국어 낭독 재사용", hours(suppliedKorean), suppliedKorean * 3600, asset("zeroth")));
+      if (automaticKorean.length) noise.push(...automaticKorean.map(item => reused({ ...item, content: "학습용 한국어 원본 음원 재사용", amount: "원본 재사용", bytes: undefined })));
+      else if (asset("zeroth")) noise.push(reused(source("Zeroth Korean", "학습용 한국어 낭독 재사용", hours(suppliedKorean), suppliedKorean * 3600, asset("zeroth"))));
       if (asset("audioset")) noise.push(source("AudioSet", "여러 종류의 일반 오디오", "1묶음", null, asset("audioset"), bundleSize(["audioset", "audioset_segments", "audioset_ontology"])));
     }
     const mit = asset("mit_rir") || recipe.additional_download;
@@ -514,9 +520,17 @@
     const content = keys => keys.filter(key => bucketHours(key) > 0).map(key => `${bucketLabels[key]} ${hours(bucketHours(key))}`).join(" · ");
     const groupSource = (name, keys, description = content(keys)) => {
       const records = keys.map(bucketRecord).filter(Boolean), total = keys.reduce((sum, key) => sum + bucketHours(key), 0);
-      // Bucket records can point to the same archive; its size is never additive.
+      // Several buckets share archives, including all volumes and metadata of FSD50K.
+      const catalog = recipe.common_evaluation_catalog;
+      const ids = [...new Set(keys.filter(key => bucketHours(key) > 0).flatMap(key => catalog?.buckets?.[key]?.archives || []))];
+      const archives = ids.map(id => catalog?.archives?.find(item => item.id === id));
       const knownSizes = records.map(size).filter(Number.isFinite);
-      return source(name, description, hours(total), total * 3600, records[0], knownSizes.length ? Math.max(...knownSizes) : undefined);
+      const fileBytes = ids.length ? archives.every(item => Number.isFinite(item?.size_bytes))
+        ? archives.reduce((sum, item) => sum + item.size_bytes, 0) : null : knownSizes.length ? Math.max(...knownSizes) : undefined;
+      const entry = source(name, description, hours(total), total * 3600, records[0], fileBytes);
+      const shared = ids.length && archives.every(archive => archive?.sha256 && Number.isFinite(archive.size_bytes) && assets.some(item => !isEvaluation(item)
+        && item.sha256 === archive.sha256 && size(item) === archive.size_bytes));
+      return shared ? reused(entry, "학습용 자료와 공유") : entry;
     };
     const generalKeys = ["other_speech", "music", "environment", "electronic"], koreanKeys = ["korean_conversation", "korean_interview", "korean_read"];
     const evaluation = [];
@@ -530,7 +544,7 @@
       evaluation.push(
         { id: "generic", name: "일반 비호출 자료", description: content(generalKeys), amount: hours(generalKeys.reduce((sum, key) => sum + bucketHours(key), 0)), sources: general },
         { id: "korean", name: "한국어 비호출 자료", description: content(koreanKeys), amount: hours(koreanKeys.reduce((sum, key) => sum + bucketHours(key), 0)), sources: speech },
-        { id: "noise", name: "소음 증강 음원", description: "위 평가용 비호출 음원을 호출어에 섞어 사용", amount: hours(totalHours), sources: [...general, ...speech] }
+        { id: "noise", name: "소음 증강 음원", description: "위 평가용 비호출 음원을 호출어에 섞어 사용", amount: hours(totalHours), sources: [...general, ...speech].map(item => reused(item)) }
       );
     }
     // Older policies retain their supplemental sources; v4/v5 filter them above.
@@ -542,7 +556,17 @@
       const description = `가상 공간 ${number(rir.simulated_room_count ?? rir.room_count ?? policy.rir_rooms)}개 · 중간/강한 울림`;
       evaluation.push({ id: "rir", name: "잔향 자료", description, amount: count(rir.file_count), sources: [source("RIRS_NOISES", description, count(rir.file_count), rir.file_count, rir)] });
     }
-    return { training, evaluation, policy };
+    const capacity = item => {
+      if (["positive", "hard"].includes(item.id)) return { ...item, downloadBytes: undefined, downloadEstimated: false, downloadLabel: "생성 예정 · 용량 미산정" };
+      const records = item.sources || [], unknown = !records.length || records.some(record => !Number.isFinite(record.downloadBytes));
+      const downloadBytes = records.reduce((sum, record) => sum + (Number.isFinite(record.downloadBytes) ? record.downloadBytes : 0), 0);
+      const downloadEstimated = records.some(record => record.downloadBytes > 0 && record.downloadEstimated);
+      const downloadLabel = records.length && records.every(record => record.downloadReuse) ? "재사용 · 별도 다운로드 없음"
+        : unknown ? downloadBytes > 0 ? `다운로드 ${downloadEstimated ? "약 " : ""}${bytes(downloadBytes)} + 미확정` : "다운로드 용량 미확정"
+        : `다운로드 ${downloadEstimated ? "약 " : ""}${bytes(downloadBytes)}`;
+      return { ...item, downloadBytes: unknown ? undefined : downloadBytes, downloadEstimated, downloadLabel };
+    };
+    return { training: training.map(capacity), evaluation: evaluation.map(capacity), policy };
   }
   let activeMaterial = null;
   function renderRecipe() {
@@ -1230,6 +1254,7 @@
     if (window.KowwStory) story = window.KowwStory.create({
       state: () => ({ project: newProject ? null : selectedProject(), recipes, selectedPreset, busy, recipeReady }),
       materials: materialGroups,
+      formatBytes: bytes,
       mediaUrl: localUrl,
       voiceDesign: design => renderVoiceDesign("setup-voices", design),
       create: options => create({ preventDefault() {} }, options),

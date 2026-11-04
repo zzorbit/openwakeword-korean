@@ -715,6 +715,137 @@ function pendingHardStorageRecipe() {
     assert.equal(textOf(training).includes("Zeroth"), false);
     assert.equal(b.elements.get("source-plan-note").hidden, false);
   });
+  await test("material transfer sizes prefer selected FMA and metadata bytes to full archives and extracted originals", async () => {
+    const recipe = commonRecipe();
+    recipe.assets = recipe.assets.filter(item => ["fma", "fma_metadata"].includes(item.id));
+    Object.assign(recipe.assets.find(item => item.id === "fma"), {
+      download_mode: "selected_members", selected_download_bytes: 12345678, selected_original_bytes: 98765432
+    });
+    Object.assign(recipe.assets.find(item => item.id === "fma_metadata"), {
+      download_mode: "selected_members", selected_download_bytes: 234567, selected_original_bytes: 7654321
+    });
+    const before = JSON.stringify(recipe), b = browser({ withStory: true, recipeList: [recipe] }); await flush();
+    const noise = b.storyBridge.materials(recipe).training.find(item => item.id === "noise");
+    assert.equal(noise.downloadBytes, 12580245, "selected music and metadata transfers are both included exactly once");
+    assert.equal(noise.downloadEstimated, false);
+    assert.match(noise.downloadLabel, /다운로드/);
+    assert.equal(JSON.stringify(recipe), before);
+    assert.equal(b.calls.some(call => /download|prepare/.test(call.url)), false);
+  });
+  await test("evaluation category transfers count each MUSAN Seoul and split FSD catalog archive once", async () => {
+    const recipe = commonRecipe(), b = browser({ withStory: true, recipeList: [recipe] }); await flush();
+    const catalog = recipe.common_evaluation_catalog;
+    const archive = id => catalog.archives.find(item => item.id === id).size_bytes;
+    const fsd = archive("fsd_eval") + archive("fsd_eval_zip") + archive("fsd_metadata") + archive("fsd_ground_truth");
+    const rows = b.storyBridge.materials(recipe).evaluation;
+    const generic = rows.find(item => item.id === "generic"), korean = rows.find(item => item.id === "korean");
+    assert.equal(generic.downloadBytes, archive("musan") + fsd,
+      "MUSAN speech/music and FSD environment/electronic buckets share their archives");
+    assert.equal(korean.downloadBytes, archive("seoul") + archive("zeroth"),
+      "Seoul conversation/interview share one archive; Zeroth is one additional archive");
+    assert.equal(generic.downloadEstimated, false); assert.equal(korean.downloadEstimated, false);
+    assert.match(generic.downloadLabel, /다운로드/); assert.match(korean.downloadLabel, /다운로드/);
+  });
+  await test("evaluation Zeroth shares the training archive only with matching pinned bytes and SHA", async () => {
+    const recipe = commonRecipe(), catalog = recipe.common_evaluation_catalog;
+    const evaluationArchive = catalog.archives.find(item => item.id === "zeroth");
+    const trainingArchive = recipe.assets.find(item => item.id === "zeroth");
+    const seoulBytes = catalog.archives.find(item => item.id === "seoul").size_bytes;
+    trainingArchive.sha256 = evaluationArchive.sha256;
+    const b = browser({ withStory: true, recipeList: [recipe] }); await flush();
+    const korean = () => b.storyBridge.materials(recipe).evaluation.find(item => item.id === "korean");
+    assert.equal(korean().downloadBytes, seoulBytes, "the exact Zeroth archive is already in the training transfer");
+    const shared = korean().sources.find(item => item.name === "Zeroth Korean");
+    assert.equal(shared.downloadBytes, 0); assert.match(shared.downloadReuse, /학습용.*공유/);
+    trainingArchive.sha256 = "0".repeat(64);
+    assert.equal(korean().downloadBytes, seoulBytes + evaluationArchive.size_bytes,
+      "equal byte lengths without the matching source hash do not establish reuse");
+    trainingArchive.sha256 = evaluationArchive.sha256; trainingArchive.size_bytes++;
+    assert.equal(korean().downloadBytes, seoulBytes + evaluationArchive.size_bytes,
+      "a hash string with mismatched bytes cannot establish the shared transfer");
+  });
+  await test("generated speech and reused noise explain acquisition without claiming zero stored bytes", async () => {
+    const recipe = commercialRecipeV3(), b = browser({ withStory: true, recipeList: [recipe] }); await flush();
+    const groups = b.storyBridge.materials(recipe);
+    for (const row of [...groups.training, ...groups.evaluation]) {
+      assert.equal(typeof row.downloadLabel, "string"); assert.ok(row.downloadLabel.trim(), row.name);
+    }
+    for (const row of [groups.training.find(item => item.id === "positive"),
+      groups.training.find(item => item.id === "hard"), groups.evaluation.find(item => item.id === "positive")]) {
+      assert.ok(row.downloadBytes == null, "generated audio has no pre-download file size");
+      assert.match(row.downloadLabel, /생성/);
+      assert.doesNotMatch(row.downloadLabel, /(?:^|\s)0\s*(?:B|[KMGT]i?B)(?:\s|$)/i);
+    }
+    for (const row of [groups.training.find(item => item.id === "noise"), groups.evaluation.find(item => item.id === "noise")]) {
+      assert.equal(row.downloadBytes, 0, "reused audio requires no separate source transfer");
+      assert.equal(row.downloadEstimated, false);
+      assert.match(row.downloadLabel, /재사용|별도.*다운로드.*없/);
+      assert.doesNotMatch(row.downloadLabel, /(?:^|\s)0\s*(?:B|[KMGT]i?B)(?:\s|$)/i);
+      assert.doesNotMatch(row.downloadLabel, /(?:저장|보관|필요\s*공간).*0/);
+    }
+  });
+  await test("version-one trial source plans forecast selected YODAS transfers and leave FLAC storage unknown", async () => {
+    const recipe = commonRecipe({ id: "trial", korean_hours: 2000 / 3, material_acquisition_policy: "automatic_v3",
+      automatic_source_plan: { version: 1, enabled: true, components: [
+        { id: "yodas2", provider: "yodas2", pool: "korean_negative", target_hours: 2000 / 3 }
+      ] },
+      automatic_space_plan: { download_forecast_bytes_per_hour: { yodas2: 140000000 },
+        source_forecast_bytes_per_hour: { yodas2: 180000000 },
+        estimated_download_bytes: 1, estimated_canonical_audio_bytes: 987654321000,
+        canonical_flac_estimated_bytes: null } });
+    recipe.assets = recipe.assets.filter(item => item.id !== "zeroth");
+    const before = JSON.stringify(recipe), b = browser({ withStory: true, recipeList: [recipe] }); await flush();
+    const rows = () => b.storyBridge.materials(recipe).training;
+    const korean = rows().find(item => item.id === "korean");
+    assert.match(korean.sources.map(item => item.name).join(" "), /YODAS2/);
+    assert.equal(korean.downloadBytes, Math.ceil(2000 / 3 * 140000000));
+    assert.equal(korean.downloadEstimated, true); assert.match(korean.downloadLabel, /추정|예상|약\s/);
+    assert.doesNotMatch(korean.downloadLabel, /FLAC|필요\s*(?:공간|용량)|최소/);
+    assert.equal(rows().find(item => item.id === "generic").downloadBytes, 17280000128,
+      "the published feature-only file keeps its fixed bytes instead of a waveform-hour estimate");
+    b.elements.get("adv-korean").value = "100"; b.elements.get("adv-korean").handlers.input();
+    assert.equal(rows().find(item => item.id === "korean").downloadBytes, 14000000000);
+    assert.equal(b.storyBridge.materials(recipe, true).training.find(item => item.id === "korean").downloadBytes,
+      Math.ceil(2000 / 3 * 140000000), "saved recipes do not inherit the new-model hour override");
+    assert.equal(JSON.stringify(recipe), before);
+    assert.equal(recipe.automatic_space_plan.canonical_flac_estimated_bytes, null);
+    assert.equal(b.calls.some(call => /download|prepare/.test(call.url)), false);
+  });
+  await test("production material forecasts use each provider transfer rate and scale pool overrides independently", async () => {
+    const recipe = commercialRecipeV3();
+    const providers = { mixed: "audioset_unbalanced", multilingual: "mls", music: "fma_full", korean_web: "yodas2" };
+    for (const item of recipe.training_negative_plan.components) item.sources[0].id = providers[item.id];
+    Object.assign(recipe, { material_acquisition_policy: "automatic_v3",
+      automatic_source_plan: { version: 1, enabled: true, components: recipe.training_negative_plan.components.map(item => ({
+        id: providers[item.id], provider: providers[item.id], pool: item.pool, target_hours: item.target_hours
+      })) },
+      automatic_space_plan: {
+        download_forecast_bytes_per_hour: { audioset_unbalanced: 500000000, mls: 140000000, fma_full: 125000000, yodas2: 140000000 },
+        source_forecast_bytes_per_hour: { audioset_unbalanced: 900000000, mls: 280000000, fma_full: 250000000, yodas2: 180000000 },
+        estimated_canonical_audio_bytes: 9999999999999, canonical_flac_estimated_bytes: null
+      } });
+    recipe.assets = [];
+    const b = browser({ withStory: true, recipeList: [recipe] }); await flush();
+    const row = id => b.storyBridge.materials(recipe).training.find(item => item.id === id);
+    const genericBytes = 3000 * 500000000 + 3000 * 140000000 + 1000 * 125000000;
+    assert.equal(row("generic").downloadBytes, genericBytes);
+    assert.equal(row("korean").downloadBytes, 3000 * 140000000);
+    for (const id of ["generic", "korean"]) {
+      assert.equal(row(id).downloadEstimated, true); assert.match(row(id).downloadLabel, /추정|예상|약\s/);
+      assert.doesNotMatch(row(id).downloadLabel, /FLAC|필요\s*(?:공간|용량)|최소/);
+    }
+    b.elements.get("adv-generic").value = "3500"; b.elements.get("adv-generic").handlers.input();
+    assert.equal(row("generic").downloadBytes, genericBytes / 2);
+    assert.equal(row("korean").downloadBytes, 3000 * 140000000);
+    b.elements.get("adv-korean").value = "1500"; b.elements.get("adv-korean").handlers.input();
+    assert.equal(row("korean").downloadBytes, 1500 * 140000000);
+    delete recipe.automatic_space_plan.download_forecast_bytes_per_hour.mls;
+    const partial = row("generic");
+    assert.ok(partial.downloadBytes == null, "an unresolved provider cannot become a complete category total");
+    assert.ok(partial.downloadLabel.includes(b.helpers.bytes((3000 * 500000000 + 1000 * 125000000) / 2)));
+    assert.match(partial.downloadLabel, /미확정|미산정|미정/);
+    assert.doesNotMatch(partial.downloadLabel, /FLAC|필요\s*(?:공간|용량)|최소/);
+  });
   await test("new setup does not calculate or display obsolete v1/v2 storage forecasts", async () => {
     for (const policy of ["automatic_v1", "automatic_v2"]) {
       const recipe = commonRecipe({ material_acquisition_policy: policy,

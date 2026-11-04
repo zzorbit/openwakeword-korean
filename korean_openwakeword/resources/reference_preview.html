@@ -29,13 +29,14 @@ html.reference-listening .listen-heading{align-items:center;gap:12px}
 html.reference-listening .listen-status{position:static}
 html.reference-listening #continuous{display:none}
 .voice-picker{flex:1;min-width:0}
-.voice-picker-button{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;height:40px;min-height:40px;padding:6px 8px;border:1px solid transparent;background:transparent;font-weight:500;text-align:left;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
-.voice-picker .voice-picker-button[aria-expanded="true"]{border-color:#47515e;background:#252c35}
+.voice-picker-button{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;height:40px;min-height:40px;padding:6px 8px;border:1px solid transparent;background:#232a34;font-weight:500;text-align:left;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.voice-picker .voice-picker-button[aria-expanded="true"]{border-color:#47515e;background:#232a34}
+.voice-picker .voice-picker-button:hover:not(:disabled),.voice-picker .voice-picker-button:focus-visible{background:#303a48}
 .voice-picker[data-side="down"] .voice-picker-button[aria-expanded="true"]{border-bottom-color:transparent;border-radius:8px 8px 0 0}
 .voice-picker[data-side="up"] .voice-picker-button[aria-expanded="true"]{border-top-color:transparent;border-radius:0 0 8px 8px}
 .voice-picker-button::after{content:"";flex:none;width:7px;height:7px;margin:0 4px 4px;border:solid currentColor;border-width:0 1px 1px 0;transform:rotate(45deg)}
 .voice-picker-button[aria-expanded="true"]::after{transform:rotate(225deg);margin-top:4px;margin-bottom:0}
-.voice-picker-list{position:fixed;z-index:10;max-height:240px;padding:4px;border:1px solid #47515e;border-radius:9px;background:#252c35;box-shadow:0 8px 22px #0005;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;outline:none}
+.voice-picker-list{position:fixed;z-index:10;max-height:240px;padding:4px;border:1px solid #47515e;border-radius:9px;background:#232a34;box-shadow:0 8px 22px #0005;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;outline:none}
 .voice-picker-list[data-side="down"]{border-top-color:transparent;border-radius:0 0 8px 8px}
 .voice-picker-list[data-side="up"]{border-bottom-color:transparent;border-radius:8px 8px 0 0}
 .voice-picker-list:not([hidden]){animation:voice-picker-reveal .13s ease-out both}

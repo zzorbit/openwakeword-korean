@@ -129,11 +129,13 @@
     const materialsTabs = node("div", undefined, "story-material-tabs"); materialsTabs.setAttribute("role", "tablist"); materialsTabs.setAttribute("aria-label", "자료 구분");
     const materialColumns = node("div", undefined, "story-material-columns");
     const materialPages = node("div", undefined, "story-pagination");
+    const materialNote = node("p", "다운로드 용량 · ‘약’은 추정 · 변환·생성 파일과 모델·도구 공간은 별도", "story-material-note");
+    materialNote.title = "학습·평가에서 공유하는 파일은 한 번만 받습니다. 다운로드 용량은 최종 저장 용량이나 필요한 전체 여유 공간과 다릅니다.";
     const materialBack = button("‹", "story-small", () => { materialPage = Math.max(0, materialPage - 1); renderMaterials(); }); materialBack.setAttribute("aria-label", "앞 자료");
     const materialPageText = node("span");
     const materialNext = button("›", "story-small", () => { materialPage++; renderMaterials(); }); materialNext.setAttribute("aria-label", "뒤 자료");
     materialPages.append(materialBack, materialPageText, materialNext);
-    materials.append(materialsTabs, materialColumns, materialPages);
+    materials.append(materialsTabs, materialColumns, materialPages, materialNote);
     const live = node("div", undefined, "story-live");
     const statusCard = document.querySelector(".current-card");
     const liveSummary = node("div", undefined, "story-live-summary");
@@ -459,8 +461,9 @@
     function renderMaterials() {
       if (!materialData) return;
       const small = matchMedia("(max-width:760px), (max-height:700px)").matches;
-      const size = innerHeight < 560 ? 2 : innerHeight < 720 ? 4 : 6;
-      const activeRows = materialData[materialTab] || [], pages = Math.max(1, Math.ceil(activeRows.length / size));
+      const size = Math.max(1, Math.min(6, Math.floor((innerHeight - 340) / (innerWidth < 420 ? 125 : 94))));
+      const rowCount = small ? (materialData[materialTab] || []).length : Math.max(materialData.training.length, materialData.evaluation.length);
+      const pages = Math.max(1, Math.ceil(rowCount / size));
       materialPage = Math.min(materialPage, pages - 1);
       const sections = [];
       for (const [key, label] of [["training", "학습용 자료"], ["evaluation", "성능 평가용 자료"]]) {
@@ -468,17 +471,20 @@
         const head = node("div", undefined, "story-material-heading");
         head.append(node("h2", label), node("span", key === "training" ? materialData.label : "공통 평가"));
         const list = node("dl", undefined, "story-material-list"), rows = materialData[key] || [];
-        const shown = small ? rows.slice(materialPage * size, (materialPage + 1) * size) : rows;
+        const shown = rows.slice(materialPage * size, (materialPage + 1) * size);
         for (const item of shown) {
           const row = node("div", undefined, "story-material-row"), amount = node("dd");
-          const names = [...new Set((item.sources || []).map(source => source.name === "RIRS_NOISES" ? "OpenSLR RIR" : source.name))];
-          row.append(node("dt", item.name)); amount.append(node("strong", item.amount), node("span", names.join(" · ") || item.description)); row.append(amount); list.append(row);
+          const names = [...new Set((item.sources || []).map(source => (source.name === "RIRS_NOISES" ? "OpenSLR RIR" : source.name) + (source.downloadReuse === "학습용 자료와 공유" ? "(공유)" : "")))];
+          row.append(node("dt", item.name));
+          const capacity = node("span", item.downloadLabel || "다운로드 용량 미확정", "story-material-capacity");
+          capacity.title = (item.sources || []).map(source => `${source.name}: ${source.downloadReuse || (Number.isFinite(source.downloadBytes) ? `${source.downloadEstimated ? "약 " : ""}${bridge.formatBytes(source.downloadBytes)}` : "용량 미확정")}`).join("\n");
+          amount.append(node("strong", item.amount), node("span", names.join(" · ") || item.description), capacity); row.append(amount); list.append(row);
         }
         section.append(head, list); sections.push(section);
       }
       materialColumns.replaceChildren(...sections);
       for (const tab of materialsTabs.children) { tab.setAttribute("aria-selected", String(tab.dataset.group === materialTab)); tab.tabIndex = tab.dataset.group === materialTab ? 0 : -1; }
-      materialPages.hidden = !small || pages <= 1; materialBack.disabled = materialPage === 0; materialNext.disabled = materialPage >= pages - 1;
+      materialPages.hidden = pages <= 1; materialBack.disabled = materialPage === 0; materialNext.disabled = materialPage >= pages - 1;
       materialPageText.textContent = `${materialPage + 1} / ${pages}`;
     }
     function paginateDownloads() {

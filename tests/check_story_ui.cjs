@@ -85,7 +85,8 @@ function page(initialProject = null, options = {}) {
   vm.runInContext(source, context);
   const ui = context.KowwStory.create({
     state: () => state,
-    materials: () => ({ training: [], evaluation: [] }),
+    materials: recipe => options.materials?.(recipe) || ({ training: [], evaluation: [] }),
+    formatBytes: value => `${value}B`,
     mediaUrl: value => typeof value === "string" && value.startsWith("/") && !value.startsWith("//") ? value : "",
     create: input => { state.busy = true; calls.push("create"); creationOptions.push(JSON.parse(JSON.stringify(input || {}))); return options.create?.(state); },
     action: action => { state.busy = true; calls.push(action); return options.action?.(action, state); },
@@ -177,6 +178,44 @@ async function main() {
     assert.equal(fits(9, 600, 80, 2, 4), 9, "1280×800 desktop keeps the complete two-column list");
     assert.equal(fits(20, 330, 44, 1, 10), 5, "phrase fields reserve pager space");
     assert.equal(fits(6, 734, 44, 1, 10), 6, "tall narrow phrase fields all fit when appropriate");
+  });
+  await test("material download labels and pagination are read-only until confirmation and never start downloads", async () => {
+    const materials = {
+      training: [
+        { name: "호출어 음성", amount: "1,000개", downloadLabel: "생성 예정", sources: [{ name: "Qwen TTS", downloadReuse: "생성 예정" }] },
+        { name: "일반 비호출 자료", amount: "2,000시간", downloadLabel: "다운로드 1KiB", sources: [{ name: "고정 자료", downloadBytes: 1024 }] },
+        { name: "한국어 비호출 자료", amount: "1시간", downloadLabel: "다운로드 약 2KiB", sources: [{ name: "자동 선정", downloadBytes: 2048, downloadEstimated: true }] },
+        { name: "소음 증강 음원", amount: "원본 재사용", downloadLabel: "비호출 자료 재사용", sources: [{ name: "학습 음원", downloadReuse: "비호출 자료 재사용" }] },
+        { name: "추가 자료", amount: "확인 후 결정", sources: [{ name: "추가 원본" }] },
+        { name: "잔향 자료", amount: "270개", downloadLabel: "다운로드 3KiB", sources: [{ name: "MIT RIR", downloadBytes: 3072 }] },
+      ],
+      evaluation: [{ name: "평가 호출어", amount: "2,000개", downloadLabel: "생성 예정", sources: [{ name: "Qwen TTS", downloadReuse: "생성 예정" }] }],
+    };
+    const p = page(null, { materials: () => materials, create: state => {
+      state.project = { id: "capacity-model", wakeword: "보라야", preset: "check", status: "ready", stage_id: "frontend", progress: {},
+        download_checkpoint: { policy: "explicit_download_v1", state: "awaiting_start" } };
+      state.busy = false;
+    } });
+    p.state.recipes = [{ id: "check" }];
+    await p.next.fire("click"); await p.settle(); await p.next.fire("click"); await p.settle();
+    assert.equal(p.shell.dataset.step, "materials");
+    const columns = p.shell.querySelector(".story-material-columns"), training = () => columns.children[0];
+    const capacities = () => training().querySelectorAll(".story-material-capacity");
+    assert.deepEqual(capacities().map(node => node.textContent), ["생성 예정", "다운로드 1KiB", "다운로드 약 2KiB", "비호출 자료 재사용", "다운로드 용량 미확정"]);
+    assert.equal(capacities()[0].title, "Qwen TTS: 생성 예정"); assert.equal(capacities()[1].title, "고정 자료: 1024B");
+    assert.equal(capacities()[2].title, "자동 선정: 약 2048B"); assert.equal(capacities()[3].title, "학습 음원: 비호출 자료 재사용");
+    assert.equal(capacities()[4].title, "추가 원본: 용량 미확정");
+    assert.equal(columns.children[1].querySelector(".story-material-capacity").textContent, "생성 예정");
+    const findButton = label => p.shell.querySelectorAll("button").find(button => button.getAttribute("aria-label") === label);
+    await findButton("뒤 자료").fire("click"); assert.deepEqual(capacities().map(node => node.textContent), ["다운로드 3KiB"]);
+    await findButton("앞 자료").fire("click"); p.ui.render();
+    assert.equal(p.calls.some(call => ["create", "start", "resume", "pause", "input"].includes(call)), false);
+    const creation = p.next.fire("click"); await p.settle(); await creation;
+    assert.equal(p.calls.filter(call => call === "create").length, 1); assert.deepEqual(p.creationOptions, [{ navigationCheckpoints: true }]);
+    assert.equal(p.shell.dataset.step, "downloads"); assert.equal(p.next.disabled, true);
+    const downloadStart = p.shell.querySelector(".story-download-primary");
+    assert.equal(downloadStart.textContent, "다운로드 시작"); assert.equal(downloadStart.parentElement.hidden, false); assert.equal(downloadStart.disabled, false);
+    assert.equal(p.calls.some(call => ["start", "resume", "input"].includes(call)), false);
   });
   await test("new setup advances locally and creates only once after material confirmation", async () => {
     const p = page();
