@@ -20,22 +20,30 @@ audio{width:100%;height:44px;flex:none}p{margin:0;color:#c3cbd6;overflow-wrap:an
 @media(prefers-reduced-motion:reduce){select,button{transition:none}}
 </style>
 <link rel="stylesheet" href="/audio_listening.css">
+<style>
+html.reference-listening main.listen-preview{justify-content:center}
+html.reference-listening .listen-workspace{display:block;width:min(560px,100%);margin:0 auto}
+html.reference-listening .listen-sidebar{display:none}
+html.reference-listening .listen-player{position:relative;width:100%;gap:0}
+html.reference-listening .listen-heading{position:absolute;left:0;right:0;bottom:calc(100% + 12px);align-items:center;gap:12px}
+html.reference-listening .listen-select{flex:1;width:auto;height:40px;min-height:40px;padding:6px 8px;border-color:transparent;background:transparent;font-weight:500}
+html.reference-listening .listen-select:hover{background:#292f38}
+html.reference-listening .listen-status{position:absolute;left:0;right:0;top:calc(100% + 12px)}
+</style>
 <main class="listen-preview">
-  <p id="preview-instruction" class="listen-instruction">듣기는 선택 사항이며 따로 승인할 필요가 없습니다.</p>
   <div class="listen-workspace">
-  <aside class="listen-sidebar" aria-label="들을 음원 목록">
+  <aside id="listening-sidebar" class="listen-sidebar" aria-label="들을 음원 목록">
     <div id="listening-list" class="listen-list"></div>
     <div class="listen-list-pager"><button id="list-prev" type="button" aria-label="이전 음원 목록" disabled>‹</button><span id="list-position"></span><button id="list-next" type="button" aria-label="다음 음원 목록" disabled>›</button></div>
   </aside>
   <div class="listen-player">
-  <div class="listen-heading"><p id="sentence" class="listen-title"></p><p id="position" class="listen-position" aria-live="polite"></p></div>
+  <div class="listen-heading"><select id="voice" class="listen-select" aria-label="들을 목소리" disabled hidden></select><p id="sentence" class="listen-title"></p><p id="position" class="listen-position" aria-live="polite"></p></div>
   <audio id="audio" class="listen-audio" controls preload="none"></audio>
   <div class="controls listen-controls">
     <button id="previous" type="button" disabled>이전</button>
     <button id="continuous" type="button" aria-pressed="false" disabled>재생</button>
     <button id="next" type="button" disabled>다음</button>
   </div>
-  <select id="voice" class="listen-select" aria-label="들을 목소리" disabled hidden></select>
   <p id="error" class="listen-status" role="alert"></p>
   </div>
   </div>
@@ -50,9 +58,13 @@ const continuous=document.getElementById('continuous'), sentence=document.getEle
 const position=document.getElementById('position'), errorMessage=document.getElementById('error');
 const hard=location.pathname.startsWith('/hard-preview/');
 if(hard){document.title='유사어 전체 듣기';voice.setAttribute('aria-label','들을 유사어 음원');}
+else document.documentElement?.classList?.add('reference-listening');
+document.getElementById('listening-sidebar').hidden=!hard;
+voice.hidden=hard;sentence.hidden=!hard;
 let items=[], playingContinuously=false, playbackVersion=0, playbackAllowed=true,listPage=0;
 const playedItems=new Set(),pageSize=5;
 function renderList(){
+  if(!hard)return;
   const list=document.getElementById('listening-list'),pages=Math.max(1,Math.ceil(items.length/pageSize));
   listPage=Math.min(Math.max(0,listPage),pages-1);list.replaceChildren();
   items.slice(listPage*pageSize,(listPage+1)*pageSize).forEach((item,offset)=>{

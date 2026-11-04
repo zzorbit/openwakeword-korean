@@ -416,6 +416,10 @@ async function main() {
     assert.equal(p.next.disabled, false); await p.next.fire("click");
     assert.equal(p.calls.includes("resume"), false); await p.settle();
     assert.equal(p.shell.dataset.step, "voice-listening"); assert.equal(preview.parentElement.hidden, false); assert.equal(preview.open, true);
+    assert.equal(voiceCounts.hidden, true);
+    assert.equal(p.shell.querySelector(".story-listening-status").hidden, true);
+    assert.equal(p.shell.querySelector(".story-listening-status").textContent, "");
+    assert.equal(p.shell.querySelector(".story-listening-note"), null);
     assert.ok(p.viewModes.some(({ view, mode }) => view === "review" && mode === "reference"));
     assert.equal(p.operation.hidden, true); assert.equal(p.next.disabled, false);
     p.ui.render(); assert.equal(preview.open, true, "polling keeps the optional listening document open");

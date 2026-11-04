@@ -36,14 +36,14 @@ async function screen(mode, items, { error, ok = true, playback } = {}) {
 
 (async () => {
   assert.match(html, /href="\/audio_listening\.css"/);
-  assert.ok(html.indexOf('</style>') < html.indexOf('href="/audio_listening.css"'));
+  assert.ok(html.indexOf('href="/audio_listening.css"') < html.indexOf('html.reference-listening .listen-workspace'));
   assert.match(html, /class="listen-workspace"/);
-  assert.match(html, /class="listen-sidebar"/);
+  assert.match(html, /id="listening-sidebar" class="listen-sidebar"/);
   assert.match(html, /class="listen-player"/);
-  assert.match(html, /듣기는 선택 사항이며 따로 승인할 필요가 없습니다/);
+  assert.doesNotMatch(html, /듣기는 선택 사항이며 따로 승인할 필요가 없습니다/);
   assert.ok(html.indexOf('class="listen-heading"') < html.indexOf('id="audio"'));
   assert.ok(html.indexOf('id="audio"') < html.indexOf('class="controls listen-controls"'));
-  assert.ok(html.indexOf('class="controls listen-controls"') < html.indexOf('id="voice"'));
+  assert.ok(html.indexOf('id="voice"') < html.indexOf('id="audio"'));
   assert.doesNotMatch(html, /<form|localStorage|listened|decision|whole_pool_policy_approved/);
   const items = [
     { id: "hard1", text: "돌아와", voice_family_id: "train_01", audio: "/hard-preview/audio/0?project=bora" },
@@ -52,6 +52,9 @@ async function screen(mode, items, { error, ok = true, playback } = {}) {
   const hard = await screen("hard-preview", items);
   assert.equal(hard.document.title, "유사어 전체 듣기");
   assert.equal(hard.nodes.get("voice").attributes["aria-label"], "들을 유사어 음원");
+  assert.equal(hard.nodes.get("listening-sidebar").hidden, false);
+  assert.equal(hard.nodes.get("voice").hidden, true);
+  assert.equal(hard.nodes.get("sentence").hidden, false);
   assert.equal(hard.nodes.get("voice").children[0].textContent, "돌아와 · 목소리 1");
   assert.equal(hard.nodes.get("audio").src, items[0].audio);
   assert.equal(hard.nodes.get("previous").disabled, true);
@@ -80,17 +83,31 @@ async function screen(mode, items, { error, ok = true, playback } = {}) {
   const reference = await screen("reference-preview", [{ id: "train1", group: "학습용", text: "오늘은", audio: "/reference-preview/audio/0?project=bora" }]);
   assert.equal(reference.document.title, "기준 목소리 듣기");
   assert.equal(reference.nodes.get("voice").children[0].textContent, "학습용 · 목소리 1");
+  assert.equal(reference.nodes.get("listening-sidebar").hidden, true);
+  assert.equal(reference.nodes.get("voice").hidden, false);
+  assert.equal(reference.nodes.get("sentence").hidden, true);
+  assert.equal(reference.nodes.get("listening-list").children.length, 0);
   assert.equal(reference.nodes.get("audio").played, 0); // Opening is never autoplay.
   assert.deepEqual(reference.calls, [{ url: "/reference-preview/queue?project=bora", options: undefined }]);
   const many=await screen('reference-preview',Array.from({length:7},(_,i)=>({id:`voice-${i}`,group:'학습용',text:'오늘은',audio:`/reference-preview/audio/${i}?project=bora`})));
-  assert.equal(many.nodes.get('listening-list').children.length,5);
-  many.nodes.get('list-next').handlers.click();
-  assert.equal(many.nodes.get('listening-list').children.length,2);
-  assert.equal(many.nodes.get('voice').value,'0','browsing a list page never selects or plays an audio');
-  many.nodes.get('listening-list').children[1].handlers.click();
+  assert.equal(many.nodes.get('voice').children.length,7);
+  many.nodes.get('voice').value='6';many.nodes.get('voice').handlers.change();
   assert.equal(many.nodes.get('voice').value,'6');
   assert.equal(many.nodes.get('audio').played,0,'selecting a paused recording stays paused');
-  assert.equal(many.calls.length,1,'list pagination makes no approval or extra data request');
+  assert.equal(many.nodes.get('position').textContent,'7 / 7');
+  many.nodes.get('continuous').handlers.click();many.nodes.get('audio').finish();
+  assert.equal(many.nodes.get('voice').value,'0','reference listening loops after the last selected voice');
+  assert.equal(many.nodes.get('audio').played,2);
+  assert.equal(many.calls.length,1,'voice selection and playback make no approval or extra data request');
+  const hardPages=await screen('hard-preview',Array.from({length:7},(_,i)=>({id:`hard-${i}`,text:'돌아와',audio:`/hard-preview/audio/${i}?project=bora`})));
+  assert.equal(hardPages.nodes.get('listening-list').children.length,5);
+  hardPages.nodes.get('list-next').handlers.click();
+  assert.equal(hardPages.nodes.get('listening-list').children.length,2);
+  assert.equal(hardPages.nodes.get('voice').value,'0','browsing a hard-example list page never selects or plays an audio');
+  hardPages.nodes.get('listening-list').children[1].handlers.click();
+  assert.equal(hardPages.nodes.get('voice').value,'6');
+  assert.equal(hardPages.nodes.get('audio').played,0);
+  assert.equal(hardPages.calls.length,1);
   const paused = await screen("hard-preview", items);
   paused.nodes.get("next").handlers.click();
   paused.nodes.get("continuous").handlers.click();

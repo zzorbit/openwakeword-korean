@@ -152,9 +152,9 @@
     downloadActions.append(downloadPrimary);
     const voiceCounts = node("div", undefined, "story-voice-counts");
     const voiceListening = node("div", undefined, "story-voice-listening");
-    const voiceListeningNote = node("p", "필요한 목소리만 들어보거나 다음 단계로 넘어갈 수 있습니다.", "story-listening-note");
+    const voiceListeningStatus = node("p", undefined, "story-listening-status"); voiceListeningStatus.hidden = true;
     const referencePreview = $("reference-preview");
-    voiceListening.append(voiceListeningNote, referencePreview);
+    voiceListening.append(referencePreview, voiceListeningStatus);
     const historic = node("div", undefined, "story-history");
     const historyContent = node("div", undefined, "story-history-content");
     const historyPages = node("div", undefined, "story-pagination");
@@ -824,8 +824,8 @@
         listenActions.hidden = referenceButton.hidden && hardButton.hidden;
         if (!historic.hidden) renderHistory(project);
         if (!voiceCounts.hidden) renderVoiceCounts(project);
-        voiceListeningNote.textContent = project.reference_preview?.url
-          ? "필요한 목소리만 들어보거나 다음 단계로 넘어갈 수 있습니다." : "저장된 목소리 듣기 자료가 없습니다.";
+        voiceListeningStatus.hidden = Boolean(project.reference_preview?.url);
+        voiceListeningStatus.textContent = voiceListeningStatus.hidden ? "" : "저장된 목소리 듣기 자료가 없습니다.";
         paginateDownloads();
       }
       if (current === "materials") {
