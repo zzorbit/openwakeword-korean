@@ -10,11 +10,11 @@ const playerScript = fs.readFileSync(path.join(__dirname, "../korean_openwakewor
 async function screen(mode, items, { error, ok = true, playback, height = 144, width = 560, buttonRect = {top:22,bottom:62,left:8,width:460},autoReady=true,standalone=false,queue,actualPlayer=false } = {}) {
   const nodes = new Map();
   class Element {
-    constructor() { this.value = ""; this.textContent = ""; this.children = []; this.handlers = {}; this.attributes = {}; this.style = {setProperty(name,value){this[name]=String(value);},getPropertyValue(name){return this[name]??"";}}; this.scrollTop = 0; this.scrollHeight = 156; this.clientHeight = 68; this.offsetTop = 0; this.offsetHeight = 36; this.currentTime = 0; this.controls = true; this.played = 0; this.pauses = 0; this.paused = true; this.ended = false; this.duration = NaN; this.muted = false; this.className = ""; this.classList = { add: (...names) => { this.className = [...new Set([...this.className.split(/\s+/).filter(Boolean), ...names])].join(" "); } }; }
+    constructor() { this.value = ""; this.textContent = ""; this.children = []; this.handlers = {}; this.attributes = {}; this.style = {setProperty(name,value){this[name]=String(value);},getPropertyValue(name){return this[name]??"";}}; this.scrollTop = 0; this.scrollHeight = 156; this.clientHeight = 68; this.offsetTop = 0; this.offsetHeight = 36; this.currentTime = 0; this.controls = true; this.played = 0; this.pauses = 0; this.paused = true; this.ended = false; this.duration = NaN; this.volume = 1; this.playbackRate = 1; this.muted = false; this.className = ""; this.classList = { add: (...names) => { this.className = [...new Set([...this.className.split(/\s+/).filter(Boolean), ...names])].join(" "); } }; }
     append(...nodes) { for(const node of nodes){if(node.parentElement){const siblings=node.parentElement.children;siblings.splice(siblings.indexOf(node),1);}node.parentElement=this;node.offsetTop=this.children.length*36+4;this.children.push(node);} }
     replaceChildren(...nodes) { for(const child of this.children)child.parentElement=null;this.children=[];this.append(...nodes); }
     insertBefore(node, anchor) { assert.ok(this.children.includes(anchor),'shared transport inserts beside the existing next button');if(node===anchor)return;if(node.parentElement){const siblings=node.parentElement.children;siblings.splice(siblings.indexOf(node),1);}node.parentElement=this;this.children.splice(this.children.indexOf(anchor),0,node); }
-    addEventListener(event, callback) { this.handlers[event] = callback; }
+    addEventListener(event, callback) { const previous=this.handlers[event];this.handlers[event]=previous?(...args)=>{previous(...args);callback(...args);}:callback; }
     setAttribute(key, value) { this.attributes[key] = value; }
     getAttribute(key) { return this.attributes[key] ?? null; }
     removeAttribute(key) { delete this.attributes[key]; }
@@ -187,6 +187,36 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
   assert.equal(compactAudio.played,4,'keyboard selection after pause remains paused');
   transport.mute.handlers.click();assert.equal(compactAudio.muted,false);
   assert.equal(compact.calls.length,1,'the shared compact player never writes listening decisions or reloads the queue');
+  const volumeScreen=await screen('reference-preview',[{id:'volume-0',group:'학습용',text:'오늘은',audio:'/reference-preview/audio/0?project=bora'}],{actualPlayer:true});
+  const volumeAudio=volumeScreen.nodes.get('audio'),volumeControl=volumeScreen.nodes.get('reference-volume'),volumeValue=volumeScreen.nodes.get('reference-volume-value');
+  const volumeButton=volumeScreen.nodes.get('reference-more-button'),volumeMute=volumeScreen.enhancements[0].handle.mute;
+  const volumeTag=html.match(/<input\b[^>]*\bid="reference-volume"[^>]*>/)[0];
+  for(const attribute of ['min="0"','max="100"','step="1"'])assert.ok(volumeTag.includes(attribute));
+  assert.match(html.match(/<button\b[^>]*\bid="reference-more-button"[^>]*>/)[0],/aria-label="음량\s*조절"/);
+  assert.equal(volumeControl.value,'100');assert.equal(volumeValue.textContent,'100%');
+  volumeAudio.currentTime=1.25;volumeButton.handlers.click();
+  const mediaState=()=>({src:volumeAudio.src,currentTime:volumeAudio.currentTime,played:volumeAudio.played,pauses:volumeAudio.pauses,paused:volumeAudio.paused,ended:volumeAudio.ended,rate:volumeAudio.playbackRate});
+  for(const playing of [false,true]){
+    if(playing)volumeScreen.nodes.get('continuous').handlers.click();
+    for(const value of [35,0,100]){
+      const before=mediaState();volumeControl.value=String(value);volumeControl.handlers.input();volumeAudio.handlers.volumechange();
+      assert.equal(volumeAudio.volume,value/100);assert.equal(volumeControl.value,String(value));assert.equal(volumeValue.textContent,`${value}%`);
+      assert.deepEqual(mediaState(),before,'volume input changes neither paused nor active playback');
+    }
+  }
+  const beforeVolumeChange=mediaState();volumeAudio.volume=0.37;volumeAudio.handlers.volumechange();
+  assert.equal(volumeControl.value,'37');assert.equal(volumeValue.textContent,'37%');assert.match(volumeButton.getAttribute('title'),/37%/);
+  volumeMute.handlers.click();volumeAudio.handlers.volumechange();
+  assert.equal(volumeAudio.muted,true);assert.equal(volumeAudio.volume,0.37);assert.equal(volumeMute.attributes['aria-pressed'],'true');
+  assert.match(volumeButton.getAttribute('title'),/음소거/);assert.equal(volumeButton.getAttribute('data-muted'),'true');
+  volumeMute.handlers.click();volumeAudio.handlers.volumechange();
+  assert.equal(volumeAudio.muted,false);assert.equal(volumeAudio.volume,0.37);assert.equal(volumeMute.attributes['aria-pressed'],'false');
+  assert.equal(volumeControl.value,'37');assert.equal(volumeValue.textContent,'37%');assert.match(volumeButton.getAttribute('title'),/37%/);assert.equal(volumeButton.getAttribute('data-muted'),'false');
+  volumeAudio.muted=true;volumeAudio.handlers.volumechange();assert.equal(volumeMute.attributes['aria-pressed'],'true');
+  assert.match(volumeButton.getAttribute('title'),/음소거/);
+  volumeAudio.muted=false;volumeAudio.handlers.volumechange();assert.equal(volumeMute.attributes['aria-pressed'],'false');
+  assert.deepEqual(mediaState(),beforeVolumeChange,'external volume changes and mute restoration preserve the active audio');
+  assert.equal(volumeScreen.calls.length,1,'volume controls do not autoplay, reload the queue, or save listening decisions');
   const moreAwaiting=await screen('reference-preview',[{id:'more-0',group:'학습용',text:'오늘은',audio:'/reference-preview/audio/0?project=bora'}],{autoReady:false});
   const moreButton=moreAwaiting.nodes.get('reference-more-button'),morePanel=moreAwaiting.nodes.get('reference-more-panel');
   const morePicker=moreAwaiting.nodes.get('voice-picker-button'),moreList=moreAwaiting.nodes.get('voice-picker-list');

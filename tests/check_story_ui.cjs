@@ -77,7 +77,7 @@ function page(initialProject = null, options = {}) {
   const document = { body, hidden: false, createElement: tag => new Element(tag), getElementById: get, querySelector: selector => body.querySelector(selector), title: "", addEventListener: (name, fn) => { (documentHandlers[name] ||= []).push(fn); } };
   const state = { project: initialProject, recipes: [], selectedPreset: "check", recipeReady: true, busy: false };
   const windowHandlers = {};
-  const context = vm.createContext({ document, console, location: { origin: "http://studio.local" }, innerWidth: options.width || 1200, innerHeight: options.height || 900, matchMedia: () => ({ matches: false }),
+  const context = vm.createContext({ document, console, location: { origin: "http://studio.local" }, innerWidth: options.width || 1200, innerHeight: options.height || 900, matchMedia: query => ({ matches: options.matchMedia?.(query) ?? false }),
     setTimeout: (callback, delay) => { const timer = { callback, delay, at: clock + delay }; timers.push(timer); return timer; },
     clearTimeout: timer => { if (timer) timer.canceled = true; } });
   context.window = context; context.addEventListener = (name, fn) => { (windowHandlers[name] ||= []).push(fn); };
@@ -179,7 +179,7 @@ async function main() {
     assert.equal(fits(20, 330, 44, 1, 10), 5, "phrase fields reserve pager space");
     assert.equal(fits(6, 734, 44, 1, 10), 6, "tall narrow phrase fields all fit when appropriate");
   });
-  await test("material download labels and pagination are read-only until confirmation and never start downloads", async () => {
+  await test("the complete material list keeps capacity labels and remains read-only until confirmation", async () => {
     const materials = {
       training: [
         { name: "호출어 음성", amount: "1,000개", downloadLabel: "생성 예정", sources: [{ name: "Qwen TTS", downloadReuse: "생성 예정" }] },
@@ -189,7 +189,7 @@ async function main() {
         { name: "추가 자료", amount: "확인 후 결정", sources: [{ name: "추가 원본" }] },
         { name: "잔향 자료", amount: "270개", downloadLabel: "다운로드 3KiB", sources: [{ name: "MIT RIR", downloadBytes: 3072 }] },
       ],
-      evaluation: [{ name: "평가 호출어", amount: "2,000개", downloadLabel: "생성 예정", sources: [{ name: "Qwen TTS", downloadReuse: "생성 예정" }] }],
+      evaluation: Array.from({ length: 5 }, (_, index) => ({ name: `평가 자료 ${index + 1}`, amount: "2,000개", downloadLabel: "생성 예정", sources: [{ name: "Qwen TTS", downloadReuse: "생성 예정" }] })),
     };
     const p = page(null, { materials: () => materials, create: state => {
       state.project = { id: "capacity-model", wakeword: "보라야", preset: "check", status: "ready", stage_id: "frontend", progress: {},
@@ -201,14 +201,15 @@ async function main() {
     assert.equal(p.shell.dataset.step, "materials");
     const columns = p.shell.querySelector(".story-material-columns"), training = () => columns.children[0];
     const capacities = () => training().querySelectorAll(".story-material-capacity");
-    assert.deepEqual(capacities().map(node => node.textContent), ["생성 예정", "다운로드 1KiB", "다운로드 약 2KiB", "비호출 자료 재사용", "다운로드 용량 미확정"]);
+    assert.deepEqual(capacities().map(node => node.textContent), ["생성 예정", "다운로드 1KiB", "다운로드 약 2KiB", "비호출 자료 재사용", "다운로드 용량 미확정", "다운로드 3KiB"]);
     assert.equal(capacities()[0].title, "Qwen TTS: 생성 예정"); assert.equal(capacities()[1].title, "고정 자료: 1024B");
     assert.equal(capacities()[2].title, "자동 선정: 약 2048B"); assert.equal(capacities()[3].title, "학습 음원: 비호출 자료 재사용");
     assert.equal(capacities()[4].title, "추가 원본: 용량 미확정");
     assert.equal(columns.children[1].querySelector(".story-material-capacity").textContent, "생성 예정");
-    const findButton = label => p.shell.querySelectorAll("button").find(button => button.getAttribute("aria-label") === label);
-    await findButton("뒤 자료").fire("click"); assert.deepEqual(capacities().map(node => node.textContent), ["다운로드 3KiB"]);
-    await findButton("앞 자료").fire("click"); p.ui.render();
+    assert.equal(columns.children[0].hidden, false); assert.equal(columns.children[1].hidden, false);
+    assert.equal(columns.children[1].querySelectorAll(".story-material-row").length, 5);
+    assert.equal(p.shell.querySelectorAll("button").some(button => ["앞 자료", "뒤 자료"].includes(button.getAttribute("aria-label"))), false, "material rows have no pagination controls");
+    p.ui.render(); await p.windowEvent("resize"); assert.equal(capacities().length, 6, "render and resize keep every row");
     assert.equal(p.calls.some(call => ["create", "start", "resume", "pause", "input"].includes(call)), false);
     const creation = p.next.fire("click"); await p.settle(); await creation;
     assert.equal(p.calls.filter(call => call === "create").length, 1); assert.deepEqual(p.creationOptions, [{ navigationCheckpoints: true }]);
@@ -216,6 +217,22 @@ async function main() {
     const downloadStart = p.shell.querySelector(".story-download-primary");
     assert.equal(downloadStart.textContent, "다운로드 시작"); assert.equal(downloadStart.parentElement.hidden, false); assert.equal(downloadStart.disabled, false);
     assert.equal(p.calls.some(call => ["start", "resume", "input"].includes(call)), false);
+  });
+  await test("small material screens switch groups without slicing rows or starting work", async () => {
+    const rows = (prefix, length) => Array.from({ length }, (_, index) => ({ name: `${prefix} ${index + 1}`, amount: "1시간", downloadLabel: index ? "다운로드 약 1GiB" : "다운로드 용량 미확정", sources: [{ name: "선정 자료" }] }));
+    const p = page(null, { width: 319, height: 420, matchMedia: query => query.includes("max-width:760px"), materials: () => ({ training: rows("학습", 6), evaluation: rows("평가", 5) }) });
+    p.state.recipes = [{ id: "check" }];
+    await p.next.fire("click"); await p.settle(); await p.next.fire("click"); await p.settle();
+    const columns = p.shell.querySelector(".story-material-columns"), tabs = p.shell.querySelectorAll(".story-material-tab");
+    assert.equal(columns.children[0].hidden, false); assert.equal(columns.children[1].hidden, true);
+    assert.equal(columns.children[0].querySelectorAll(".story-material-row").length, 6);
+    await tabs[1].fire("click");
+    assert.equal(columns.children[0].hidden, true); assert.equal(columns.children[1].hidden, false);
+    assert.equal(columns.children[1].querySelectorAll(".story-material-row").length, 5);
+    assert.equal(tabs[1].getAttribute("aria-selected"), "true");
+    await tabs[1].fire("keydown", { key: "Home", preventDefault() {} }); await p.windowEvent("resize");
+    assert.equal(columns.children[0].hidden, false); assert.equal(columns.children[0].querySelectorAll(".story-material-row").length, 6);
+    assert.equal(p.calls.some(call => ["create", "start", "resume", "pause", "input"].includes(call)), false);
   });
   await test("new setup advances locally and creates only once after material confirmation", async () => {
     const p = page();

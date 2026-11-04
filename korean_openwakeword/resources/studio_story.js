@@ -127,15 +127,10 @@
     }
     const materials = node("div", undefined, "story-materials");
     const materialsTabs = node("div", undefined, "story-material-tabs"); materialsTabs.setAttribute("role", "tablist"); materialsTabs.setAttribute("aria-label", "자료 구분");
-    const materialColumns = node("div", undefined, "story-material-columns");
-    const materialPages = node("div", undefined, "story-pagination");
+    const materialColumns = node("div", undefined, "story-material-columns"); materialColumns.tabIndex = 0; materialColumns.setAttribute("aria-label", "준비할 자료 목록");
     const materialNote = node("p", "다운로드 용량 · ‘약’은 추정 · 변환·생성 파일과 모델·도구 공간은 별도", "story-material-note");
     materialNote.title = "학습·평가에서 공유하는 파일은 한 번만 받습니다. 다운로드 용량은 최종 저장 용량이나 필요한 전체 여유 공간과 다릅니다.";
-    const materialBack = button("‹", "story-small", () => { materialPage = Math.max(0, materialPage - 1); renderMaterials(); }); materialBack.setAttribute("aria-label", "앞 자료");
-    const materialPageText = node("span");
-    const materialNext = button("›", "story-small", () => { materialPage++; renderMaterials(); }); materialNext.setAttribute("aria-label", "뒤 자료");
-    materialPages.append(materialBack, materialPageText, materialNext);
-    materials.append(materialsTabs, materialColumns, materialPages, materialNote);
+    materials.append(materialsTabs, materialColumns, materialNote);
     const live = node("div", undefined, "story-live");
     const statusCard = document.querySelector(".current-card");
     const liveSummary = node("div", undefined, "story-live-summary");
@@ -238,7 +233,7 @@
       render();
     });
     let current = "entry", projectKey = "", maximum = 2, setupReached = 0, following = true, transitioning = false, transitionSession = null, creationPending = false;
-    let materialTab = "training", materialPage = 0, materialKey = "", materialData = null, downloadPage = 0, listening = null;
+    let materialTab = "training", materialKey = "", materialData = null, downloadPage = 0, listening = null;
     let historyPage = 0, historyKey = "", historyReviewItems = [], historyReviewIndex = 0;
     let historyReviewPage = 0, historyReviewListKey = "", historyReviewRows = [];
     let historyPlaybackWanted = false, historyPlaybackVersion = 0;
@@ -254,12 +249,12 @@
       index.append(tick); return tick;
     });
     for (const [id, label] of [["training", "학습용"], ["evaluation", "공통 평가용"]]) {
-      const tab = button(label, "story-material-tab", () => { materialTab = id; materialPage = 0; renderMaterials(); });
+      const tab = button(label, "story-material-tab", () => { materialTab = id; renderMaterials(); });
       tab.addEventListener("keydown", event => {
         if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
         event.preventDefault();
         materialTab = event.key === "Home" ? "training" : event.key === "End" ? "evaluation" : materialTab === "training" ? "evaluation" : "training";
-        materialPage = 0; renderMaterials();
+        renderMaterials();
         [...materialsTabs.children].find(button => button.dataset.group === materialTab)?.focus();
       });
       tab.dataset.group = id; tab.setAttribute("role", "tab"); materialsTabs.append(tab);
@@ -461,18 +456,13 @@
     function renderMaterials() {
       if (!materialData) return;
       const small = matchMedia("(max-width:760px), (max-height:700px)").matches;
-      const size = Math.max(1, Math.min(6, Math.floor((innerHeight - 340) / (innerWidth < 420 ? 125 : 94))));
-      const rowCount = small ? (materialData[materialTab] || []).length : Math.max(materialData.training.length, materialData.evaluation.length);
-      const pages = Math.max(1, Math.ceil(rowCount / size));
-      materialPage = Math.min(materialPage, pages - 1);
       const sections = [];
       for (const [key, label] of [["training", "학습용 자료"], ["evaluation", "성능 평가용 자료"]]) {
         const section = node("section", undefined, "story-material-section"); section.hidden = small && key !== materialTab;
         const head = node("div", undefined, "story-material-heading");
         head.append(node("h2", label), node("span", key === "training" ? materialData.label : "공통 평가"));
         const list = node("dl", undefined, "story-material-list"), rows = materialData[key] || [];
-        const shown = rows.slice(materialPage * size, (materialPage + 1) * size);
-        for (const item of shown) {
+        for (const item of rows) {
           const row = node("div", undefined, "story-material-row"), amount = node("dd");
           const names = [...new Set((item.sources || []).map(source => (source.name === "RIRS_NOISES" ? "OpenSLR RIR" : source.name) + (source.downloadReuse === "학습용 자료와 공유" ? "(공유)" : "")))];
           row.append(node("dt", item.name));
@@ -484,8 +474,6 @@
       }
       materialColumns.replaceChildren(...sections);
       for (const tab of materialsTabs.children) { tab.setAttribute("aria-selected", String(tab.dataset.group === materialTab)); tab.tabIndex = tab.dataset.group === materialTab ? 0 : -1; }
-      materialPages.hidden = pages <= 1; materialBack.disabled = materialPage === 0; materialNext.disabled = materialPage >= pages - 1;
-      materialPageText.textContent = `${materialPage + 1} / ${pages}`;
     }
     function paginateDownloads() {
       const list = $("downloads-list"), groups = [...list.children];
@@ -737,7 +725,7 @@
       const state = bridge.state(), project = state.project;
       const key = project?.id || "setup";
       if (key !== projectKey) {
-        pauseMedia(); stopTransition(); projectKey = key; following = true; materialPage = 0; materialKey = "";
+        pauseMedia(); stopTransition(); projectKey = key; following = true; materialKey = "";
         maximum = frontier(project); current = project ? stageStep(project) : "entry"; lastFrontier = project ? stageStep(project) : "entry";
         historyPage = 0; historyKey = ""; setupReached = 0;
       }
