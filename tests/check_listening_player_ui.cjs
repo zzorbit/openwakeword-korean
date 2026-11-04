@@ -11,6 +11,7 @@ function screen() {
     constructor(tag) {
       this.tagName = tag; this.children = []; this.attributes = {}; this.handlers = {};
       this.className = ""; this.textContent = ""; this.value = "";
+      this.style = { setProperty(name, value) { this[name] = String(value); }, getPropertyValue(name) { return this[name] ?? ""; } };
       this.classList = { add: (...names) => { this.className = [...new Set([...this.className.split(/\s+/).filter(Boolean), ...names])].join(" "); } };
     }
     append(...nodes) { this.children.push(...nodes); }
@@ -73,9 +74,11 @@ test("seeking changes only currentTime and updates the public position without a
   const p = screen(), before = { src: p.audio.src, volume: p.audio.volume, rate: p.audio.playbackRate, muted: p.audio.muted };
   const { seek } = p.enhance(p.audio, p.controls, p);
   assert.equal(seek.disabled, false); assert.equal(seek.value, "250");
+  assert.equal(seek.style.getPropertyValue("--listen-progress"), "25%");
   seek.value = "750"; seek.fire("input");
   assert.equal(p.audio.currentTime, 90);
   assert.equal(seek.getAttribute("aria-valuetext"), "1:30 / 2:00");
+  assert.equal(seek.style.getPropertyValue("--listen-progress"), "75%");
   assert.deepEqual({ src: p.audio.src, volume: p.audio.volume, rate: p.audio.playbackRate, muted: p.audio.muted }, before);
 });
 
@@ -87,6 +90,22 @@ test("missing or invalid duration disables seeking and cannot create a playback 
     seek.value = "900"; seek.fire("input");
     assert.equal(p.audio.currentTime, 0); assert.equal(seek.value, "0");
     assert.equal(seek.getAttribute("aria-valuetext"), "0:00 / 0:00");
+  }
+});
+
+test("painted progress stays within the track for invalid times without changing the audio input", () => {
+  const p = screen(), { seek, sync } = p.enhance(p.audio, p.controls, p);
+  for (const [duration, currentTime, expected] of [
+    [120, -30, "0%"], [120, 0, "0%"], [120, 240, "100%"],
+    [120, NaN, "0%"], [120, Infinity, "0%"], [120, -Infinity, "0%"],
+    [0, 30, "0%"], [-1, 30, "0%"], [NaN, 30, "0%"], [Infinity, 30, "0%"]
+  ]) {
+    Object.assign(p.audio, { duration, currentTime });
+    const before = { duration, currentTime, src: p.audio.src, volume: p.audio.volume, rate: p.audio.playbackRate, muted: p.audio.muted };
+    sync();
+    assert.equal(seek.style.getPropertyValue("--listen-progress"), expected);
+    assert.deepEqual({ duration: p.audio.duration, currentTime: p.audio.currentTime, src: p.audio.src,
+      volume: p.audio.volume, rate: p.audio.playbackRate, muted: p.audio.muted }, before);
   }
 });
 
@@ -107,9 +126,12 @@ test("metadata, time, duration, and emptied events keep elapsed time and the see
   p.audio.duration = 183; p.audio.currentTime = 61.9; p.audio.fire("loadedmetadata");
   assert.equal(time.textContent, "1:01 / 3:03");
   p.audio.currentTime = 183; p.audio.fire("timeupdate"); assert.equal(seek.value, "1000");
+  assert.equal(seek.style.getPropertyValue("--listen-progress"), "100%");
   p.audio.duration = 366; p.audio.fire("durationchange"); assert.equal(seek.value, "500");
+  assert.equal(seek.style.getPropertyValue("--listen-progress"), "50%");
   p.audio.duration = NaN; p.audio.currentTime = 0; p.audio.fire("emptied");
   assert.equal(time.textContent, "0:00 / 0:00"); assert.equal(seek.disabled, true);
+  assert.equal(seek.style.getPropertyValue("--listen-progress"), "0%");
 });
 
 console.log(`Listening player UI: ${passed} tests passed`);

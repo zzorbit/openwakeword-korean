@@ -21,6 +21,8 @@
     function sync() {
       const known = Number.isFinite(audio.duration) && audio.duration > 0;
       seek.disabled = !known; seek.value = known ? String(Math.round(Math.min(1, audio.currentTime / audio.duration) * 1000)) : "0";
+      const progress = known && Number.isFinite(audio.currentTime) ? Math.max(0, Math.min(1, audio.currentTime / audio.duration)) * 100 : 0;
+      seek.style.setProperty("--listen-progress", `${progress}%`);
       seek.setAttribute("aria-valuetext", `${clock(audio.currentTime)} / ${clock(audio.duration)}`);
       time.textContent = `${clock(audio.currentTime)} / ${clock(audio.duration)}`;
     }

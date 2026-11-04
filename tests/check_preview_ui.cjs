@@ -10,7 +10,7 @@ const playerScript = fs.readFileSync(path.join(__dirname, "../korean_openwakewor
 async function screen(mode, items, { error, ok = true, playback, height = 144, width = 560, buttonRect = {top:22,bottom:62,left:8,width:460},autoReady=true,standalone=false,queue,actualPlayer=false } = {}) {
   const nodes = new Map();
   class Element {
-    constructor() { this.value = ""; this.textContent = ""; this.children = []; this.handlers = {}; this.attributes = {}; this.style = {}; this.scrollTop = 0; this.scrollHeight = 156; this.clientHeight = 68; this.offsetTop = 0; this.offsetHeight = 36; this.currentTime = 0; this.controls = true; this.played = 0; this.pauses = 0; this.paused = true; this.ended = false; this.duration = NaN; this.muted = false; this.className = ""; this.classList = { add: (...names) => { this.className = [...new Set([...this.className.split(/\s+/).filter(Boolean), ...names])].join(" "); } }; }
+    constructor() { this.value = ""; this.textContent = ""; this.children = []; this.handlers = {}; this.attributes = {}; this.style = {setProperty(name,value){this[name]=String(value);},getPropertyValue(name){return this[name]??"";}}; this.scrollTop = 0; this.scrollHeight = 156; this.clientHeight = 68; this.offsetTop = 0; this.offsetHeight = 36; this.currentTime = 0; this.controls = true; this.played = 0; this.pauses = 0; this.paused = true; this.ended = false; this.duration = NaN; this.muted = false; this.className = ""; this.classList = { add: (...names) => { this.className = [...new Set([...this.className.split(/\s+/).filter(Boolean), ...names])].join(" "); } }; }
     append(...nodes) { for(const node of nodes){if(node.parentElement){const siblings=node.parentElement.children;siblings.splice(siblings.indexOf(node),1);}node.parentElement=this;node.offsetTop=this.children.length*36+4;this.children.push(node);} }
     replaceChildren(...nodes) { for(const child of this.children)child.parentElement=null;this.children=[];this.append(...nodes); }
     insertBefore(node, anchor) { assert.ok(this.children.includes(anchor),'shared transport inserts beside the existing next button');if(node===anchor)return;if(node.parentElement){const siblings=node.parentElement.children;siblings.splice(siblings.indexOf(node),1);}node.parentElement=this;this.children.splice(this.children.indexOf(anchor),0,node); }
@@ -30,6 +30,7 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
   }
   for (const match of html.matchAll(/id="([^"]+)"/g)) nodes.set(match[1], new Element());
   nodes.get('voice-picker').append(nodes.get('voice-picker-button'),nodes.get('voice-picker-list'));
+  nodes.get('voice-picker-button').append(nodes.get('voice-picker-label'));
   const playbackControls=new Element(),calls = [], enhancements = [], parentMessages = [], messages = {}, documentEvents = {}, document = { title: "기준 목소리 듣기", hidden:false, addEventListener:(name,callback)=>{documentEvents[name]=callback;}, getElementById: id => nodes.get(id), createElement: () => new Element(),querySelector:selector=>selector==='.listen-controls'?playbackControls:null };
   playbackControls.append(nodes.get('previous'),nodes.get('continuous'),nodes.get('next'));
   nodes.get('reference-playback-actions').append(nodes.get('play-single'),nodes.get('play-auto'));
@@ -103,7 +104,7 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
   assert.equal(reference.nodes.get("listening-sidebar").hidden, true);
   assert.equal(reference.nodes.get("voice").hidden, true);
   assert.equal(reference.nodes.get("voice-picker").hidden, false);
-  assert.equal(reference.nodes.get("voice-picker-button").textContent, "학습용 · 1");
+  assert.equal(reference.nodes.get("voice-picker-label").textContent, "학습용 · 1");
   assert.equal(reference.nodes.get("voice-picker-button").attributes['aria-label'], "들을 목소리: 학습용 · 목소리 1");
   assert.equal(reference.nodes.get("voice-picker-list").hidden, true);
   assert.equal(reference.nodes.get("sentence").hidden, true);
@@ -166,6 +167,7 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
   compactAudio.duration=4;compactAudio.currentTime=1;compactAudio.handlers.loadedmetadata();
   transport.seek.value='750';transport.seek.handlers.input();
   assert.equal(compactAudio.currentTime,3);assert.equal(transport.seek.attributes['aria-valuetext'],'0:03 / 0:04');
+  assert.equal(transport.seek.style.getPropertyValue('--listen-progress'),'75%');
   assert.equal(compactAudio.played,0,'seeking a paused voice never starts playback');
   compactMore.handlers.click();assert.equal(compactPanel.hidden,false);assert.equal(compact.document.activeElement,compactPanel);
   transport.mute.handlers.click();assert.equal(compactAudio.muted,true);assert.equal(transport.mute.attributes['aria-pressed'],'true');
@@ -238,7 +240,7 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
   assert.equal(key(pickerList,'End'),true);assert.equal(pickerList.attributes['aria-activedescendant'],'voice-option-49');
   key(pickerList,'Home');key(pickerList,'ArrowDown');key(pickerList,'Enter');
   assert.equal(choices.nodes.get('voice').value,'1');assert.equal(choices.nodes.get('position').textContent,'2 / 50');
-  assert.equal(pickerButton.textContent,'학습용 · 2');assert.equal(pickerList.hidden,true);
+  assert.equal(choices.nodes.get('voice-picker-label').textContent,'학습용 · 2');assert.equal(pickerList.hidden,true);
   assert.equal(choices.document.activeElement,pickerButton);assert.equal(choices.nodes.get('audio').played,0,'choosing a voice does not autoplay');
   assert.deepEqual(choices.parentMessages.at(-1),{message:{type:'koww:voice-picker',open:false,request:1},origin:'http://127.0.0.1:8793'});
   key(pickerButton,' ');key(pickerList,'ArrowUp');key(pickerList,' ');
@@ -256,7 +258,7 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
   assert.equal(choices.calls.length,1,'picker interactions do not request approvals or reload the queue');
   pickerButton.handlers.click();pickerList.children[49].handlers.click();
   assert.equal(choices.nodes.get('voice').value,'49');assert.equal(choices.nodes.get('position').textContent,'50 / 50');
-  assert.equal(pickerButton.textContent,'공통 평가용 · 30');assert.equal(pickerList.children[49].attributes['aria-selected'],'true');
+  assert.equal(choices.nodes.get('voice-picker-label').textContent,'공통 평가용 · 30');assert.equal(pickerList.children[49].attributes['aria-selected'],'true');
   assert.equal(pickerList.children[49].children[1].textContent,'30','the selected voice number stays separate from a possibly truncated group name');
   const awaiting=await screen('reference-preview',choiceItems,{autoReady:false});
   const awaitingButton=awaiting.nodes.get('voice-picker-button'),awaitingList=awaiting.nodes.get('voice-picker-list');

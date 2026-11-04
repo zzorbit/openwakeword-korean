@@ -25,12 +25,14 @@ html.reference-listening main.listen-preview{justify-content:center;overflow:vis
 html.reference-listening .listen-workspace{display:block;width:min(560px,100%);margin:0 auto}
 html.reference-listening .listen-sidebar{display:none}
 html.reference-listening .listen-player{width:100%;gap:12px}
-html.reference-listening .listen-heading{align-items:center;align-self:center;width:min(326px,100%);gap:10px}
+html.reference-listening .listen-heading{align-items:center;width:100%;gap:10px}
 html.reference-listening .listen-position{flex:none;width:56px;font-size:13px;line-height:20px;text-align:right;font-variant-numeric:tabular-nums}
 html.reference-listening .listen-status{position:static;max-height:40px;overflow:auto;font-size:14px;line-height:20px}
 html.reference-listening main:has(#error:not(:empty)) .listen-player{gap:6px}
 .voice-picker{flex:1;min-width:0}
-.voice-picker-button{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;height:34px;min-height:34px;padding:5px 10px;border:1px solid #3f4957;background:#232a34;font:500 15px/22px system-ui,"Malgun Gothic",sans-serif;text-align:left;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.voice-picker-button{display:flex;align-items:center;gap:8px;width:100%;height:34px;min-height:34px;padding:5px 10px;border:1px solid #3f4957;background:#232a34;font:500 15px/22px system-ui,"Malgun Gothic",sans-serif;text-align:left;overflow:hidden;white-space:nowrap}
+.voice-picker-button::before{content:"";display:block;flex:none;width:16px;height:16px;background:currentColor;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='m12 2 10 6-10 6L2 8Zm-8.3 9.1L12 16l8.3-4.9L22 12l-10 6-10-6Zm0 4L12 20l8.3-4.9L22 16l-10 6-10-6Z'/%3E%3C/svg%3E") center/contain no-repeat}
+#voice-picker-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .voice-picker .voice-picker-button[aria-expanded="true"]{border-color:#47515e;background:#232a34}
 .voice-picker .voice-picker-button:hover:not(:disabled),.voice-picker .voice-picker-button:focus-visible{background:#303a48}
 .voice-picker[data-side="down"] .voice-picker-button[aria-expanded="true"]{border-bottom-color:transparent;border-radius:8px 8px 0 0}
@@ -51,11 +53,18 @@ html.reference-listening main:has(#error:not(:empty)) .listen-player{gap:6px}
 @media(prefers-reduced-motion:reduce){.voice-picker-list:not([hidden]){animation:none}}
 .listen-playback{display:flex;flex-direction:column;gap:14px}
 html.reference-listening .listen-playback{gap:0;border-radius:22px;background:#232a34}
-html.reference-listening .listen-controls.is-compact{height:44px;min-height:44px;padding:6px 8px;gap:8px;border:1px solid #37414f;border-radius:22px;background:#232a34}
+html.reference-listening .listen-controls.is-compact{height:44px;min-height:44px;padding:7px 8px;gap:8px;border:0;border-radius:22px;background:#232a34}
 html.reference-listening .listen-controls.is-compact #continuous{display:flex;flex:none;width:30px;height:30px;min-height:30px}
-html.reference-listening .listen-controls.is-compact .listen-seek{min-width:24px}
+html.reference-listening .listen-controls.is-compact .listen-seek{appearance:none;-webkit-appearance:none;min-width:24px;height:20px;border:0;box-shadow:none;background:transparent;--listen-track:#20262f;--listen-played:#a7bdd9}
+html.reference-listening .listen-seek::-webkit-slider-runnable-track{height:4px;border:0;border-radius:999px;box-shadow:none;background:linear-gradient(to right,var(--listen-played) 0 var(--listen-progress,0%),var(--listen-track) var(--listen-progress,0%) 100%)}
+html.reference-listening .listen-seek::-webkit-slider-thumb{appearance:none;-webkit-appearance:none;width:12px;height:12px;margin-top:-4px;border:0;border-radius:50%;box-shadow:none;background:#e5ebf3}
+html.reference-listening .listen-seek::-moz-range-track{height:4px;border:0;border-radius:999px;background:var(--listen-track)}
+html.reference-listening .listen-seek::-moz-range-progress{height:4px;border:0;border-radius:999px;background:var(--listen-played)}
+html.reference-listening .listen-seek::-moz-range-thumb{width:12px;height:12px;border:0;border-radius:50%;box-shadow:none;background:#e5ebf3}
+html.reference-listening .listen-seek:focus-visible{outline:2px solid #a8afb7;outline-offset:3px;border-radius:5px}
 html.reference-listening .listen-controls.is-compact .listen-time{font-size:12px;line-height:18px}
-html.reference-listening .listen-controls.is-compact .reference-more-button{display:flex;align-items:center;justify-content:center;flex:none;width:26px;height:30px;min-height:30px;padding:0;font-size:0;background:transparent}
+html.reference-listening .listen-controls.is-compact .reference-more-button{display:flex;align-items:center;justify-content:center;flex:none;width:30px;height:30px;min-height:30px;padding:0;border-radius:50%;font-size:0;background:#2b3441}
+html.reference-listening .listen-controls.is-compact .reference-more-button:hover:not(:disabled),html.reference-listening .listen-controls.is-compact .reference-more-button[aria-expanded="true"]{background:#394555}
 .reference-more-button::before{content:"···";font:700 20px/20px system-ui,sans-serif;letter-spacing:1px}
 .reference-more-button[aria-expanded="true"]{background:#394555}
 .reference-more-panel{position:fixed;z-index:10;max-height:240px;padding:8px;border:1px solid #47515e;border-radius:10px;background:#232a34;box-shadow:0 8px 22px #0005;overflow:auto;overscroll-behavior:contain;outline:none}
@@ -79,7 +88,7 @@ html.reference-listening .listen-controls.is-compact .reference-more-button{disp
     <div class="listen-list-pager"><button id="list-prev" type="button" aria-label="이전 음원 목록" disabled>‹</button><span id="list-position"></span><button id="list-next" type="button" aria-label="다음 음원 목록" disabled>›</button></div>
   </aside>
   <div class="listen-player">
-  <div class="listen-heading"><select id="voice" class="listen-select" aria-label="들을 목소리" disabled hidden></select><div id="voice-picker" class="voice-picker" hidden><button id="voice-picker-button" class="voice-picker-button" type="button" aria-label="들을 목소리" aria-haspopup="listbox" aria-expanded="false" aria-controls="voice-picker-list" disabled></button><div id="voice-picker-list" class="voice-picker-list" role="listbox" aria-label="들을 목소리" tabindex="-1" hidden></div></div><p id="sentence" class="listen-title"></p><p id="position" class="listen-position" aria-live="polite"></p></div>
+  <div class="listen-heading"><select id="voice" class="listen-select" aria-label="들을 목소리" disabled hidden></select><div id="voice-picker" class="voice-picker" hidden><button id="voice-picker-button" class="voice-picker-button" type="button" aria-label="들을 목소리" aria-haspopup="listbox" aria-expanded="false" aria-controls="voice-picker-list" disabled><span id="voice-picker-label"></span></button><div id="voice-picker-list" class="voice-picker-list" role="listbox" aria-label="들을 목소리" tabindex="-1" hidden></div></div><p id="sentence" class="listen-title"></p><p id="position" class="listen-position" aria-live="polite"></p></div>
   <div class="listen-playback">
   <audio id="audio" class="listen-audio" controls preload="none"></audio>
   <div class="controls listen-controls">
@@ -104,6 +113,7 @@ const previous=document.getElementById('previous'), next=document.getElementById
 const continuous=document.getElementById('continuous'), sentence=document.getElementById('sentence');
 const position=document.getElementById('position'), errorMessage=document.getElementById('error');
 const picker=document.getElementById('voice-picker'), pickerButton=document.getElementById('voice-picker-button'), pickerList=document.getElementById('voice-picker-list');
+const pickerLabel=document.getElementById('voice-picker-label');
 const singlePlay=document.getElementById('play-single'),autoPlay=document.getElementById('play-auto');
 const moreButton=document.getElementById('reference-more-button'),morePanel=document.getElementById('reference-more-panel'),moreTransport=document.getElementById('reference-more-transport');
 const hard=location.pathname.startsWith('/hard-preview/');
@@ -271,7 +281,7 @@ function select(index,play=false){
   stop();
   voice.value=String(index);audio.src=items[index].audio;sentence.textContent=items[index].text;
   errorMessage.textContent='';position.textContent=`${index+1} / ${items.length}`;
-  if(!hard){pickerButton.textContent=items[index].label;pickerButton.setAttribute('aria-label',`들을 목소리: ${items[index].fullLabel||items[index].label}`);pickerRows.forEach((row,i)=>row.setAttribute('aria-selected',String(i===index)));}
+  if(!hard){pickerLabel.textContent=items[index].label;pickerButton.setAttribute('aria-label',`들을 목소리: ${items[index].fullLabel||items[index].label}`);pickerRows.forEach((row,i)=>row.setAttribute('aria-selected',String(i===index)));}
   previous.disabled=index===0;next.disabled=index===items.length-1;
   listPage=Math.floor(index/pageSize);renderList();
   if(play)playCurrent();
