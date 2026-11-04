@@ -21,6 +21,7 @@ audio{width:100%;height:44px;flex:none}p{margin:0;color:#c3cbd6;overflow-wrap:an
 </style>
 <link rel="stylesheet" href="/audio_listening.css">
 <style>
+html.reference-listening{--reference-radius:26px;--reference-picker-radius:20px}
 html.reference-listening main.listen-preview{width:min(680px,100%);justify-content:center;overflow:visible}
 html.reference-listening .listen-workspace{display:block;width:min(680px,100%);margin:0 auto}
 html.reference-listening .listen-sidebar{display:none}
@@ -30,18 +31,18 @@ html.reference-listening .listen-position{flex:none;width:auto;min-width:48px;fo
 html.reference-listening .listen-status{position:static;max-height:40px;overflow:auto;font-size:14px;line-height:20px}
 html.reference-listening main:has(#error:not(:empty)) .listen-player{gap:6px}
 .voice-picker{flex:1;min-width:0}
-.voice-picker-button{display:flex;align-items:center;gap:8px;width:100%;height:40px;min-height:40px;padding:7px 12px;border:1px solid #3f4957;background:#232a34;font:500 16px/24px system-ui,"Malgun Gothic",sans-serif;text-align:left;overflow:hidden;white-space:nowrap}
+.voice-picker-button{display:flex;align-items:center;gap:8px;width:100%;height:40px;min-height:40px;padding:7px 12px;border:1px solid #3f4957;border-radius:var(--reference-picker-radius,20px);background:#232a34;font:500 16px/24px system-ui,"Malgun Gothic",sans-serif;text-align:left;overflow:hidden;white-space:nowrap}
 .voice-picker-button::before{content:"";display:block;flex:none;width:16px;height:16px;background:currentColor;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='m12 2 10 6-10 6L2 8Zm-8.3 9.1L12 16l8.3-4.9L22 12l-10 6-10-6Zm0 4L12 20l8.3-4.9L22 16l-10 6-10-6Z'/%3E%3C/svg%3E") center/contain no-repeat}
 #voice-picker-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .voice-picker .voice-picker-button[aria-expanded="true"]{border-color:#47515e;background:#232a34}
 .voice-picker .voice-picker-button:hover:not(:disabled),.voice-picker .voice-picker-button:focus-visible{background:#303a48}
-.voice-picker[data-side="down"] .voice-picker-button[aria-expanded="true"]{border-bottom-color:transparent;border-radius:8px 8px 0 0}
-.voice-picker[data-side="up"] .voice-picker-button[aria-expanded="true"]{border-top-color:transparent;border-radius:0 0 8px 8px}
+.voice-picker[data-side="down"] .voice-picker-button[aria-expanded="true"]{border-bottom-color:transparent;border-radius:var(--reference-picker-radius,20px) var(--reference-picker-radius,20px) 0 0}
+.voice-picker[data-side="up"] .voice-picker-button[aria-expanded="true"]{border-top-color:transparent;border-radius:0 0 var(--reference-picker-radius,20px) var(--reference-picker-radius,20px)}
 .voice-picker-button::after{content:"";flex:none;width:7px;height:7px;margin:0 4px 4px;border:solid currentColor;border-width:0 1px 1px 0;transform:rotate(45deg)}
 .voice-picker-button[aria-expanded="true"]::after{transform:rotate(225deg);margin-top:4px;margin-bottom:0}
-.voice-picker-list{position:fixed;z-index:10;max-height:240px;padding:4px;border:1px solid #47515e;border-radius:9px;background:#232a34;box-shadow:0 8px 22px #0005;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;outline:none}
-.voice-picker-list[data-side="down"]{border-top-color:transparent;border-radius:0 0 8px 8px}
-.voice-picker-list[data-side="up"]{border-bottom-color:transparent;border-radius:8px 8px 0 0}
+.voice-picker-list{position:fixed;z-index:10;max-height:240px;padding:4px;border:1px solid #47515e;border-radius:var(--reference-picker-radius,20px);background:#232a34;box-shadow:0 8px 22px #0005;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;outline:none}
+.voice-picker-list[data-side="down"]{border-top-color:transparent;border-radius:0 0 var(--reference-picker-radius,20px) var(--reference-picker-radius,20px)}
+.voice-picker-list[data-side="up"]{border-bottom-color:transparent;border-radius:var(--reference-picker-radius,20px) var(--reference-picker-radius,20px) 0 0}
 .voice-picker-list:not([hidden]){animation:voice-picker-reveal .13s ease-out both}
 .voice-picker-option{position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:6px;height:36px;padding:8px 24px 8px 8px;border-radius:5px;color:#dce3ec;font:400 14px/20px system-ui,"Malgun Gothic",sans-serif;cursor:pointer}
 .voice-picker-group{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -52,24 +53,23 @@ html.reference-listening main:has(#error:not(:empty)) .listen-player{gap:6px}
 @keyframes voice-picker-reveal{from{opacity:0}to{opacity:1}}
 @media(prefers-reduced-motion:reduce){.voice-picker-list:not([hidden]){animation:none}}
 .listen-playback{display:flex;flex-direction:column;gap:14px}
-html.reference-listening .listen-playback{gap:0;border-radius:26px;background:#232a34}
-html.reference-listening .listen-controls.is-compact{height:52px;min-height:52px;padding:8px;gap:10px;flex-wrap:nowrap;border:0;border-radius:26px;background:#232a34}
+html.reference-listening .listen-playback{gap:0;border-radius:var(--reference-radius);background:#232a34}
+html.reference-listening .listen-controls.is-compact{height:52px;min-height:52px;padding:8px;gap:10px;flex-wrap:nowrap;border:0;border-radius:var(--reference-radius);background:#232a34}
 html.reference-listening .listen-controls.is-compact #continuous{display:flex;flex:none;width:36px;height:36px;min-height:36px}
-html.reference-listening .listen-controls.is-compact .listen-seek{appearance:none;-webkit-appearance:none;min-width:24px;height:20px;border:0;box-shadow:none;background:transparent;--listen-track:#35404e;--listen-played:#a7bdd9}
-html.reference-listening .listen-seek::-webkit-slider-runnable-track{height:4px;border:0;border-radius:999px;box-shadow:none;background:linear-gradient(to right,var(--listen-played) 0 var(--listen-progress,0%),var(--listen-track) var(--listen-progress,0%) 100%)}
-html.reference-listening .listen-seek::-webkit-slider-thumb{appearance:none;-webkit-appearance:none;width:12px;height:12px;margin-top:-4px;border:0;border-radius:50%;box-shadow:none;background:#e5ebf3}
-html.reference-listening .listen-seek::-moz-range-track{height:4px;border:0;border-radius:999px;background:var(--listen-track)}
-html.reference-listening .listen-seek::-moz-range-progress{height:4px;border:0;border-radius:999px;background:var(--listen-played)}
-html.reference-listening .listen-seek::-moz-range-thumb{width:12px;height:12px;border:0;border-radius:50%;box-shadow:none;background:#e5ebf3}
-html.reference-listening .listen-seek:focus-visible{outline:2px solid #a8afb7;outline-offset:3px;border-radius:5px}
+html.reference-listening .listen-controls.is-compact :is(.listen-seek,#reference-volume){appearance:none;-webkit-appearance:none;min-width:24px;height:20px;min-height:0;margin:0;padding:0;border:0;box-shadow:none;background:transparent;--listen-track:#35404e;--listen-played:#a7bdd9;cursor:pointer}
+html.reference-listening :is(.listen-seek,#reference-volume)::-webkit-slider-runnable-track{height:4px;border:0;border-radius:999px;box-shadow:none;background:linear-gradient(to right,var(--listen-played) 0 var(--listen-progress,0%),var(--listen-track) var(--listen-progress,0%) 100%)}
+html.reference-listening :is(.listen-seek,#reference-volume)::-webkit-slider-thumb{appearance:none;-webkit-appearance:none;width:12px;height:12px;margin-top:-4px;border:0;border-radius:50%;box-shadow:none;background:#e5ebf3}
+html.reference-listening :is(.listen-seek,#reference-volume)::-moz-range-track{height:4px;border:0;border-radius:999px;background:var(--listen-track)}
+html.reference-listening :is(.listen-seek,#reference-volume)::-moz-range-progress{height:4px;border:0;border-radius:999px;background:var(--listen-played)}
+html.reference-listening :is(.listen-seek,#reference-volume)::-moz-range-thumb{width:12px;height:12px;border:0;border-radius:50%;box-shadow:none;background:#e5ebf3}
+html.reference-listening :is(.listen-seek,#reference-volume):focus-visible{outline:2px solid #a8afb7;outline-offset:3px;border-radius:5px}
 html.reference-listening .listen-controls.is-compact .listen-time{font-size:14px;line-height:20px}
-html.reference-listening .listen-controls.is-compact #reference-mute{display:flex;align-items:center;justify-content:center;flex:none;width:30px;height:30px;min-height:30px;padding:0;border-radius:50%;font-size:0;background:transparent}
+html.reference-listening .listen-controls.is-compact #reference-mute{display:flex;align-items:center;justify-content:center;flex:none;width:36px;height:36px;min-height:36px;margin:0 -4px;padding:0;border-radius:50%;font-size:0;background:transparent}
 html.reference-listening .listen-controls.is-compact #reference-mute:hover:not(:disabled){background:#394555}
-html.reference-listening #reference-mute svg{width:18px;height:18px}
+html.reference-listening #reference-mute svg{width:24px;height:24px}
 html.reference-listening #reference-mute[data-muted="true"] .listen-sound-wave{display:none}
-html.reference-listening .listen-controls.is-compact #reference-volume:not([hidden]){display:block;flex:0 0 72px;width:72px;min-width:0;height:20px;min-height:0;margin:0;padding:0;border:0;background:transparent;accent-color:#a7bdd9;cursor:pointer}
-html.reference-listening #reference-volume:focus-visible{outline:2px solid #a8afb7;outline-offset:3px;border-radius:5px}
-@media(max-width:420px){html.reference-listening .listen-controls.is-compact{gap:6px}html.reference-listening .listen-controls.is-compact .listen-time{font-size:12px}html.reference-listening .listen-controls.is-compact #continuous{width:32px;height:32px;min-height:32px}html.reference-listening .listen-controls.is-compact #reference-mute{width:28px;height:28px;min-height:28px}html.reference-listening .listen-controls.is-compact #reference-volume:not([hidden]){flex-basis:40px;width:40px}}
+html.reference-listening .listen-controls.is-compact #reference-volume:not([hidden]){display:block;flex:0 0 72px;width:72px;min-width:0}
+@media(max-width:420px){html.reference-listening .listen-controls.is-compact{gap:6px}html.reference-listening .listen-controls.is-compact .listen-time{font-size:12px}html.reference-listening .listen-controls.is-compact #continuous{width:32px;height:32px;min-height:32px}html.reference-listening .listen-controls.is-compact #reference-mute{width:32px;height:32px;min-height:32px;margin:0 -2px}html.reference-listening #reference-mute svg{width:22px;height:22px}html.reference-listening .listen-controls.is-compact #reference-volume:not([hidden]){flex-basis:40px;width:40px}}
 </style>
 <main class="listen-preview">
   <div class="listen-workspace">
@@ -115,7 +115,7 @@ const playedItems=new Set(),pageSize=5;
 function syncVolume(){
   if(hard)return;
   const level=Math.round(Math.max(0,Math.min(1,Number.isFinite(audio.volume)?audio.volume:1))*100),muted=audio.muted||level===0;
-  volume.value=String(level);volume.setAttribute('aria-valuetext',`${level}%${audio.muted?' · 음소거':''}`);volume.setAttribute('title',`음량 ${level}%`);
+  volume.value=String(level);volume.style.setProperty('--listen-progress',`${level}%`);volume.setAttribute('aria-valuetext',`${level}%${audio.muted?' · 음소거':''}`);volume.setAttribute('title',`음량 ${level}%`);
   if(referenceMute){referenceMute.setAttribute('data-muted',String(muted));referenceMute.setAttribute('title',audio.muted?'소리 켜기':`음소거 · 음량 ${level}%`);}
 }
 volume.addEventListener('input',()=>{

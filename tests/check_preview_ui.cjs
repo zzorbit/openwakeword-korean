@@ -181,6 +181,7 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
   const volumeTag=html.match(/<input\b[^>]*\bid="reference-volume"[^>]*>/)[0];
   for(const attribute of ['min="0"','max="100"','step="1"'])assert.ok(volumeTag.includes(attribute));
   assert.equal(volumeControl.value,'100');assert.equal(volumeControl.getAttribute('aria-valuetext'),'100%');
+  assert.equal(volumeControl.style.getPropertyValue('--listen-progress'),'100%');
   volumeAudio.currentTime=1.25;
   const mediaState=()=>({src:volumeAudio.src,currentTime:volumeAudio.currentTime,played:volumeAudio.played,pauses:volumeAudio.pauses,paused:volumeAudio.paused,ended:volumeAudio.ended,rate:volumeAudio.playbackRate});
   for(const playing of [false,true]){
@@ -188,11 +189,13 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
     for(const value of [35,0,100]){
       const before=mediaState();volumeControl.value=String(value);volumeControl.handlers.input();volumeAudio.handlers.volumechange();
       assert.equal(volumeAudio.volume,value/100);assert.equal(volumeControl.value,String(value));assert.equal(volumeControl.getAttribute('aria-valuetext'),`${value}%`);
+      assert.equal(volumeControl.style.getPropertyValue('--listen-progress'),`${value}%`,'the volume fill follows the selected volume');
       assert.deepEqual(mediaState(),before,'volume input changes neither paused nor active playback');
     }
   }
   const beforeVolumeChange=mediaState();volumeAudio.volume=0.37;volumeAudio.handlers.volumechange();
   assert.equal(volumeControl.value,'37');assert.equal(volumeControl.getAttribute('aria-valuetext'),'37%');assert.match(volumeMute.getAttribute('title'),/37%/);
+  assert.equal(volumeControl.style.getPropertyValue('--listen-progress'),'37%','external volume changes refresh the painted fill');
   volumeMute.handlers.click();volumeAudio.handlers.volumechange();
   assert.equal(volumeAudio.muted,true);assert.equal(volumeAudio.volume,0.37);assert.equal(volumeMute.attributes['aria-pressed'],'true');
   assert.equal(volumeMute.getAttribute('title'),'소리 켜기');assert.equal(volumeMute.getAttribute('data-muted'),'true');
