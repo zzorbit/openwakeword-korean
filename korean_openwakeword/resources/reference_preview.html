@@ -31,27 +31,28 @@ html.reference-listening .listen-position{flex:none;width:auto;min-width:48px;fo
 html.reference-listening .listen-status{position:static;max-height:40px;overflow:auto;font-size:14px;line-height:20px}
 html.reference-listening main:has(#error:not(:empty)) .listen-player{gap:6px}
 .voice-picker{flex:1;min-width:0}
-.voice-picker-button{display:flex;align-items:center;gap:8px;width:100%;height:40px;min-height:40px;padding:7px 12px;border:1px solid #3f4957;border-radius:var(--reference-picker-radius,20px);background:#232a34;font:500 16px/24px system-ui,"Malgun Gothic",sans-serif;text-align:left;overflow:hidden;white-space:nowrap}
+.voice-picker-button{display:flex;align-items:center;gap:8px;width:100%;height:40px;min-height:40px;padding:7px 12px;border:1px solid #3f4957;border-radius:var(--reference-picker-radius,20px);background:#232a34;color:#e9edf2;font:500 16px/24px system-ui,"Malgun Gothic",sans-serif;text-align:left;overflow:hidden;white-space:nowrap;transition:background-color .2s ease}
 .voice-picker-button::before{content:"";display:block;flex:none;width:16px;height:16px;background:currentColor;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='m12 2 10 6-10 6L2 8Zm-8.3 9.1L12 16l8.3-4.9L22 12l-10 6-10-6Zm0 4L12 20l8.3-4.9L22 16l-10 6-10-6Z'/%3E%3C/svg%3E") center/contain no-repeat}
 #voice-picker-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .voice-picker .voice-picker-button[aria-expanded="true"]{border-color:#47515e;background:#232a34}
-.voice-picker .voice-picker-button:hover:not(:disabled),.voice-picker .voice-picker-button:focus-visible{background:#303a48}
+.voice-picker .voice-picker-button:hover:not(:disabled),.voice-picker .voice-picker-button:focus-visible{background:#303a48;color:#e9edf2}
 .voice-picker[data-side="down"] .voice-picker-button[aria-expanded="true"]{border-bottom-color:transparent;border-radius:var(--reference-picker-radius,20px) var(--reference-picker-radius,20px) 0 0}
 .voice-picker[data-side="up"] .voice-picker-button[aria-expanded="true"]{border-top-color:transparent;border-radius:0 0 var(--reference-picker-radius,20px) var(--reference-picker-radius,20px)}
 .voice-picker-button::after{content:"";flex:none;width:7px;height:7px;margin:0 4px 4px;border:solid currentColor;border-width:0 1px 1px 0;transform:rotate(45deg)}
 .voice-picker-button[aria-expanded="true"]::after{transform:rotate(225deg);margin-top:4px;margin-bottom:0}
-.voice-picker-list{position:fixed;z-index:10;max-height:240px;padding:4px;border:1px solid #47515e;border-radius:var(--reference-picker-radius,20px);background:#232a34;box-shadow:0 8px 22px #0005;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;outline:none}
-.voice-picker-list[data-side="down"]{border-top-color:transparent;border-radius:0 0 var(--reference-picker-radius,20px) var(--reference-picker-radius,20px)}
-.voice-picker-list[data-side="up"]{border-bottom-color:transparent;border-radius:var(--reference-picker-radius,20px) var(--reference-picker-radius,20px) 0 0}
-.voice-picker-list:not([hidden]){animation:voice-picker-reveal .13s ease-out both}
-.voice-picker-option{position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:6px;height:36px;padding:8px 24px 8px 8px;border-radius:5px;color:#dce3ec;font:400 14px/20px system-ui,"Malgun Gothic",sans-serif;cursor:pointer}
-.voice-picker-group{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.voice-picker-number{white-space:nowrap;font-variant-numeric:tabular-nums}
-.voice-picker-option[data-active="true"]{background:#394555;color:#f0f2f6}
+.voice-picker-popup{position:fixed;z-index:10;max-height:240px;border:1px solid #47515e;border-radius:var(--reference-picker-radius,20px);background:#232a34;box-shadow:0 8px 22px #0005;overflow:hidden}
+.voice-picker-list{max-height:238px;padding:4px;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;outline:none}
+.voice-picker-popup[data-side="down"]{border-top-color:transparent;border-radius:0 0 var(--reference-picker-radius,20px) var(--reference-picker-radius,20px)}
+.voice-picker-popup[data-side="up"]{border-bottom-color:transparent;border-radius:var(--reference-picker-radius,20px) var(--reference-picker-radius,20px) 0 0}
+.voice-picker-popup:not([hidden]){animation:voice-picker-reveal .13s ease-out both}
+.voice-picker-option{position:relative;display:flex;align-items:center;gap:6px;height:36px;padding:8px 24px 8px 8px;border-radius:5px;color:#e9edf2;font:400 14px/20px system-ui,"Malgun Gothic",sans-serif;cursor:pointer}
+.voice-picker-group{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.voice-picker-number{flex:none;white-space:nowrap;font-variant-numeric:tabular-nums}
+.voice-picker-option[data-active="true"]{background:#394555;color:#e9edf2}
 .voice-picker-option[aria-selected="true"]{font-weight:600}
 .voice-picker-option[aria-selected="true"]::after{content:"✓";position:absolute;right:8px;top:8px;font-size:14px;line-height:20px}
 @keyframes voice-picker-reveal{from{opacity:0}to{opacity:1}}
-@media(prefers-reduced-motion:reduce){.voice-picker-list:not([hidden]){animation:none}}
+@media(prefers-reduced-motion:reduce){.voice-picker-popup:not([hidden]){animation:none}.voice-picker-button{transition:none}}
 .listen-playback{display:flex;flex-direction:column;gap:14px}
 html.reference-listening .listen-playback{gap:0;border-radius:var(--reference-radius);background:#232a34}
 html.reference-listening .listen-controls.is-compact{height:52px;min-height:52px;padding:8px;gap:10px;flex-wrap:nowrap;border:0;border-radius:var(--reference-radius);background:#232a34}
@@ -78,7 +79,7 @@ html.reference-listening .listen-controls.is-compact #reference-volume:not([hidd
     <div class="listen-list-pager"><button id="list-prev" type="button" aria-label="이전 음원 목록" disabled>‹</button><span id="list-position"></span><button id="list-next" type="button" aria-label="다음 음원 목록" disabled>›</button></div>
   </aside>
   <div class="listen-player">
-  <div class="listen-heading"><select id="voice" class="listen-select" aria-label="들을 목소리" disabled hidden></select><div id="voice-picker" class="voice-picker" hidden><button id="voice-picker-button" class="voice-picker-button" type="button" aria-label="들을 목소리" aria-haspopup="listbox" aria-expanded="false" aria-controls="voice-picker-list" disabled><span id="voice-picker-label"></span></button><div id="voice-picker-list" class="voice-picker-list" role="listbox" aria-label="들을 목소리" tabindex="-1" hidden></div></div><p id="sentence" class="listen-title"></p><p id="position" class="listen-position" aria-live="polite"></p></div>
+  <div class="listen-heading"><select id="voice" class="listen-select" aria-label="들을 목소리" disabled hidden></select><div id="voice-picker" class="voice-picker" hidden><button id="voice-picker-button" class="voice-picker-button" type="button" aria-label="들을 목소리" aria-haspopup="listbox" aria-expanded="false" aria-controls="voice-picker-list" disabled><span id="voice-picker-label"></span></button><div id="voice-picker-popup" class="voice-picker-popup" hidden><div id="voice-picker-list" class="voice-picker-list" role="listbox" aria-label="들을 목소리" tabindex="-1" hidden></div></div></div><p id="sentence" class="listen-title"></p><p id="position" class="listen-position" aria-live="polite"></p></div>
   <div class="listen-playback">
   <audio id="audio" class="listen-audio" controls preload="none"></audio>
   <div class="controls listen-controls">
@@ -101,6 +102,7 @@ const previous=document.getElementById('previous'), next=document.getElementById
 const continuous=document.getElementById('continuous'), sentence=document.getElementById('sentence');
 const position=document.getElementById('position'), errorMessage=document.getElementById('error');
 const picker=document.getElementById('voice-picker'), pickerButton=document.getElementById('voice-picker-button'), pickerList=document.getElementById('voice-picker-list');
+const pickerPopup=document.getElementById('voice-picker-popup');
 const pickerLabel=document.getElementById('voice-picker-label');
 const volume=document.getElementById('reference-volume');
 let referenceMute=null;
@@ -108,7 +110,7 @@ const hard=location.pathname.startsWith('/hard-preview/');
 if(hard){document.title='유사어 전체 듣기';voice.setAttribute('aria-label','들을 유사어 음원');}
 else document.documentElement?.classList?.add('reference-listening');
 document.getElementById('listening-sidebar').hidden=!hard;
-voice.hidden=true;sentence.hidden=!hard;picker.hidden=hard;pickerList.hidden=true;
+voice.hidden=true;sentence.hidden=!hard;picker.hidden=hard;pickerPopup.hidden=true;pickerList.hidden=true;
 let items=[], playing=false, playbackVersion=0, playbackAllowed=true,listPage=0;
 let pickerOpen=false,pickerReady=false,pickerRequest=0,pickerIndex=0,pickerRows=[];
 const playedItems=new Set(),pageSize=5;
@@ -133,11 +135,11 @@ function positionPicker(){
   const rect=pickerButton.getBoundingClientRect(),margin=8,gap=-1;
   const below=Math.max(0,window.innerHeight-rect.bottom-gap-margin),above=Math.max(0,rect.top-gap-margin);
   const height=Math.min(240,pickerRows.length*36+10,Math.max(below,above)),down=below>=above;
-  const side=down?'down':'up';picker.setAttribute('data-side',side);pickerList.setAttribute('data-side',side);
-  pickerList.style.maxHeight=`${Math.floor(height)}px`;
-  pickerList.style.top=`${Math.floor(down?rect.bottom+gap:Math.max(margin,rect.top-gap-height))}px`;
-  pickerList.style.left=`${Math.max(0,Math.min(rect.left,window.innerWidth-rect.width))}px`;
-  pickerList.style.width=`${Math.max(0,Math.min(rect.width,window.innerWidth))}px`;
+  const side=down?'down':'up';picker.setAttribute('data-side',side);pickerPopup.setAttribute('data-side',side);
+  pickerPopup.style.maxHeight=`${Math.floor(height)}px`;pickerList.style.maxHeight=`${Math.max(0,Math.floor(height)-2)}px`;
+  pickerPopup.style.top=`${Math.floor(down?rect.bottom+gap:Math.max(margin,rect.top-gap-height))}px`;
+  pickerPopup.style.left=`${Math.max(0,Math.min(rect.left,window.innerWidth-rect.width))}px`;
+  pickerPopup.style.width=`${Math.max(0,Math.min(rect.width,window.innerWidth))}px`;
 }
 function highlightPicker(index){
   pickerIndex=Math.max(0,Math.min(items.length-1,index));
@@ -151,18 +153,18 @@ function highlightPicker(index){
 }
 function closePicker(restoreFocus=false){
   if(!pickerOpen)return;
-  pickerOpen=false;pickerReady=false;pickerList.hidden=true;picker.removeAttribute('data-side');pickerList.removeAttribute('data-side');pickerButton.setAttribute('aria-expanded','false');notifyPicker(false);
+  pickerOpen=false;pickerReady=false;pickerPopup.hidden=true;pickerList.hidden=true;picker.removeAttribute('data-side');pickerPopup.removeAttribute('data-side');pickerButton.setAttribute('aria-expanded','false');notifyPicker(false);
   if(restoreFocus)pickerButton.focus();
 }
 function openPicker(){
   if(hard||!items.length||pickerButton.disabled)return;
   if(pickerOpen){if(pickerReady)pickerList.focus();return;}
-  pickerOpen=true;pickerReady=false;pickerRequest++;pickerList.hidden=true;pickerButton.setAttribute('aria-expanded','true');highlightPicker(Number(voice.value));
+  pickerOpen=true;pickerReady=false;pickerRequest++;pickerPopup.hidden=true;pickerList.hidden=true;pickerButton.setAttribute('aria-expanded','true');highlightPicker(Number(voice.value));
   if(window.parent===window)revealPicker(pickerRequest);else notifyPicker(true);
 }
 function revealPicker(request){
   if(!pickerOpen||pickerReady||request!==pickerRequest||!items.length||document.hidden)return;
-  pickerReady=true;positionPicker();pickerList.hidden=false;highlightPicker(pickerIndex);pickerList.focus();
+  pickerReady=true;positionPicker();pickerPopup.hidden=false;pickerList.hidden=false;highlightPicker(pickerIndex);pickerList.focus();
 }
 function choosePicker(index){select(index,playing);closePicker(true);}
 function renderPicker(){

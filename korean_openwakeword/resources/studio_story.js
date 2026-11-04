@@ -760,12 +760,16 @@
         tick.setAttribute("aria-current", i === position ? "step" : "false");
       });
       if (!transitioning) {
-        back.hidden = position === 0; back.disabled = state.busy || position === 0;
+        back.hidden = position === 0;
+        const backDisabled = Boolean(state.busy || position === 0);
+        if (back.disabled !== backDisabled) back.disabled = backDisabled;
         next.hidden = current === "microphone";
-        next.disabled = state.busy;
-        next.textContent = "다음"; next.title = "";
-        if (!project) next.disabled = state.busy || !state.recipeReady || (current === "materials" && $("create").disabled);
-        else next.disabled = state.busy || (current === stageStep(project) && humanGate(project)) || (position >= maximum && !releaseStep(project));
+        const nextDisabled = Boolean(!project
+          ? state.busy || !state.recipeReady || (current === "materials" && $("create").disabled)
+          : state.busy || (current === stageStep(project) && humanGate(project)) || (position >= maximum && !releaseStep(project)));
+        if (next.disabled !== nextDisabled) next.disabled = nextDisabled;
+        if (next.textContent !== "다음") next.textContent = "다음";
+        if (next.title) next.title = "";
       }
       const action = operationAction(project);
       operation.hidden = !action;

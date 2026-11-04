@@ -30,7 +30,8 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
     finish() { this.ended=true; this.paused=true; this.handlers.pause?.(); this.handlers.ended?.(); }
   }
   for (const match of html.matchAll(/id="([^"]+)"/g)) nodes.set(match[1], new Element());
-  nodes.get('voice-picker').append(nodes.get('voice-picker-button'),nodes.get('voice-picker-list'));
+  nodes.get('voice-picker').append(nodes.get('voice-picker-button'),nodes.get('voice-picker-popup'));
+  nodes.get('voice-picker-popup').append(nodes.get('voice-picker-list'));
   nodes.get('voice-picker-button').append(nodes.get('voice-picker-label'));
   const playbackControls=new Element(),calls = [], enhancements = [], parentMessages = [], messages = {}, documentEvents = {}, document = { title: "기준 목소리 듣기", hidden:false, addEventListener:(name,callback)=>{documentEvents[name]=callback;}, getElementById: id => nodes.get(id), createElement: () => new Element(),querySelector:selector=>selector==='.listen-controls'?playbackControls:null };
   playbackControls.append(nodes.get('previous'),nodes.get('continuous'),nodes.get('next'));
@@ -62,6 +63,12 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
   assert.ok(html.indexOf('id="voice"') < html.indexOf('id="audio"'));
   assert.doesNotMatch(html, /<form|localStorage|listened|decision|whole_pool_policy_approved/);
   assert.doesNotMatch(html, /reference-more-|reference-playback-actions|play-single|play-auto/);
+  assert.match(html,/\.voice-picker-popup\{[^}]*overflow:hidden/,'the rounded popup clips its inner native scrollbar');
+  assert.match(html,/\.voice-picker-list\{[^}]*overflow-y:auto/,'the existing listbox remains the keyboard-scrollable element');
+  assert.match(html,/\.voice-picker-button\{[^}]*color:#e9edf2[^}]*transition:background-color \.2s ease/);
+  assert.match(html,/\.voice-picker-option\{[^}]*display:flex[^}]*color:#e9edf2/,'voice numbers follow their labels instead of filling a distant grid column');
+  assert.doesNotMatch(html.match(/\.voice-picker-option\{([^}]*)\}/)[1],/transition/,'list keyboard and pointer highlights remain immediate');
+  assert.match(html,/\.voice-picker-option\[data-active="true"\]\{[^}]*color:#e9edf2/,'hover keeps the same foreground color');
   const items = [
     { id: "hard1", text: "돌아와", voice_family_id: "train_01", audio: "/hard-preview/audio/0?project=bora" },
     { id: "hard2", text: "기다려", voice_family_id: "train_02", audio: "/hard-preview/audio/1?project=bora" }
@@ -212,32 +219,35 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
   assert.equal(volumeScreen.calls.length,1,'volume controls do not autoplay, reload the queue, or save listening decisions');
   const choiceItems=Array.from({length:50},(_,i)=>({id:`choice-${i}`,group:i<20?'학습용':'공통 평가용',text:'오늘은',audio:`/reference-preview/audio/${i}?project=bora`}));
   const choices=await screen('reference-preview',choiceItems);
-  const pickerButton=choices.nodes.get('voice-picker-button'),pickerList=choices.nodes.get('voice-picker-list');
+  const pickerButton=choices.nodes.get('voice-picker-button'),pickerList=choices.nodes.get('voice-picker-list'),pickerPopup=choices.nodes.get('voice-picker-popup');
   const key=(element,value)=>{let prevented=false;element.handlers.keydown({key:value,preventDefault:()=>{prevented=true;}});return prevented;};
   pickerButton.handlers.click();
-  assert.equal(pickerList.hidden,false);assert.equal(pickerButton.attributes['aria-expanded'],'true');
+  assert.equal(pickerList.hidden,false);assert.equal(pickerPopup.hidden,false);assert.equal(pickerButton.attributes['aria-expanded'],'true');
+  assert.equal(pickerList.parentElement,pickerPopup,'the scrollable listbox stays inside the rounded clipping boundary');
   assert.equal(choices.document.activeElement,pickerList);
   assert.equal(pickerList.children.length,50);
   assert.deepEqual(pickerList.children[0].children.map(node=>node.textContent),['학습용','1']);assert.equal(pickerList.children[0].attributes['aria-label'],'학습용 · 목소리 1');
   assert.deepEqual(pickerList.children[19].children.map(node=>node.textContent),['학습용','20']);
   assert.deepEqual(pickerList.children[20].children.map(node=>node.textContent),['공통 평가용','1']);
   assert.deepEqual(pickerList.children[49].children.map(node=>node.textContent),['공통 평가용','30']);assert.equal(pickerList.children[49].attributes['aria-label'],'공통 평가용 · 목소리 30');
-  assert.equal(pickerList.style.maxHeight,'75px','popup fits the available iframe and overlaps the selected control border');
-  assert.equal(pickerList.style.top,'61px');assert.equal(pickerList.style.left,'8px');assert.equal(pickerList.style.width,'460px');
-  assert.equal(pickerList.attributes['data-side'],'down');
-  assert.ok(parseFloat(pickerList.style.top)+parseFloat(pickerList.style.maxHeight)<=144-8);
+  assert.equal(pickerPopup.style.maxHeight,'75px','popup fits the available iframe and overlaps the selected control border');
+  assert.equal(pickerList.style.maxHeight,'73px','the inner scrollbar reserves both wrapper border pixels');
+  assert.equal(pickerPopup.style.top,'61px');assert.equal(pickerPopup.style.left,'8px');assert.equal(pickerPopup.style.width,'460px');
+  assert.equal(pickerPopup.attributes['data-side'],'down');
+  assert.ok(parseFloat(pickerPopup.style.top)+parseFloat(pickerPopup.style.maxHeight)<=144-8);
   assert.deepEqual(choices.parentMessages,[{message:{type:'koww:voice-picker',open:true,request:1},origin:'http://127.0.0.1:8793'}]);
   choices.resize(300,{top:100,bottom:140});
-  assert.equal(pickerList.style.maxHeight,'153px');
-  assert.ok(parseFloat(pickerList.style.top)+parseFloat(pickerList.style.maxHeight)<=300-8);
-  choices.resize(700,{top:100,bottom:140});assert.equal(pickerList.style.maxHeight,'240px');
+  assert.equal(pickerPopup.style.maxHeight,'153px');assert.equal(pickerList.style.maxHeight,'151px');
+  assert.ok(parseFloat(pickerPopup.style.top)+parseFloat(pickerPopup.style.maxHeight)<=300-8);
+  choices.resize(700,{top:100,bottom:140});assert.equal(pickerPopup.style.maxHeight,'240px');assert.equal(pickerList.style.maxHeight,'238px');
   choices.resize(300,{top:240,bottom:280});
-  assert.equal(pickerList.style.top,'8px','picker opens upward when space below is smaller');
-  assert.equal(pickerList.style.maxHeight,'233px');assert.equal(pickerList.attributes['data-side'],'up');
+  assert.equal(pickerPopup.style.top,'8px','picker opens upward when space below is smaller');
+  assert.equal(pickerPopup.style.maxHeight,'233px');assert.equal(pickerList.style.maxHeight,'231px');assert.equal(pickerPopup.attributes['data-side'],'up');
   assert.equal(key(pickerList,'End'),true);assert.equal(pickerList.attributes['aria-activedescendant'],'voice-option-49');
+  assert.ok(pickerList.scrollTop>=pickerList.children[49].offsetTop+pickerList.children[49].offsetHeight-pickerList.clientHeight,'End scrolls the inner listbox to reveal its final row');
   key(pickerList,'Home');key(pickerList,'ArrowDown');key(pickerList,'Enter');
   assert.equal(choices.nodes.get('voice').value,'1');assert.equal(choices.nodes.get('position').textContent,'2 / 50');
-  assert.equal(choices.nodes.get('voice-picker-label').textContent,'학습용 · 2');assert.equal(pickerList.hidden,true);
+  assert.equal(choices.nodes.get('voice-picker-label').textContent,'학습용 · 2');assert.equal(pickerList.hidden,true);assert.equal(pickerPopup.hidden,true);
   assert.equal(choices.document.activeElement,pickerButton);assert.equal(choices.nodes.get('audio').played,0,'choosing a voice does not autoplay');
   assert.deepEqual(choices.parentMessages.at(-1),{message:{type:'koww:voice-picker',open:false,request:1},origin:'http://127.0.0.1:8793'});
   key(pickerButton,' ');key(pickerList,'ArrowUp');key(pickerList,' ');
@@ -258,17 +268,17 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
   assert.equal(choices.nodes.get('voice-picker-label').textContent,'공통 평가용 · 30');assert.equal(pickerList.children[49].attributes['aria-selected'],'true');
   assert.equal(pickerList.children[49].children[1].textContent,'30','the selected voice number stays separate from a possibly truncated group name');
   const awaiting=await screen('reference-preview',choiceItems,{autoReady:false});
-  const awaitingButton=awaiting.nodes.get('voice-picker-button'),awaitingList=awaiting.nodes.get('voice-picker-list');
+  const awaitingButton=awaiting.nodes.get('voice-picker-button'),awaitingList=awaiting.nodes.get('voice-picker-list'),awaitingPopup=awaiting.nodes.get('voice-picker-popup');
   awaitingButton.focus();key(awaitingButton,'End');
-  assert.equal(awaitingButton.attributes['aria-expanded'],'true');assert.equal(awaitingList.hidden,true);
+  assert.equal(awaitingButton.attributes['aria-expanded'],'true');assert.equal(awaitingList.hidden,true);assert.equal(awaitingPopup.hidden,true);
   assert.equal(awaiting.document.activeElement,awaitingButton,'the list does not take focus while the parent layout is pending');
-  assert.equal(awaitingList.style.top,undefined);
-  awaiting.resize(300,{top:100,bottom:140});assert.equal(awaitingList.style.top,undefined,'resize before acknowledgment cannot show or position the small pending popup');
+  assert.equal(awaitingPopup.style.top,undefined);
+  awaiting.resize(300,{top:100,bottom:140});assert.equal(awaitingPopup.style.top,undefined,'resize before acknowledgment cannot show or position the small pending popup');
   awaiting.messages.message({origin:'https://other.example',source:awaiting.parent,data:{type:'koww:voice-picker-ready',request:1}});
   awaiting.messages.message({origin:'http://127.0.0.1:8793',source:{},data:{type:'koww:voice-picker-ready',request:1}});
   for(const request of [0,-1,1.5,'1',undefined])awaiting.ready(request);
   assert.equal(awaitingList.hidden,true,'only an authentic acknowledgment for this open request can show the list');
-  awaiting.ready(1);assert.equal(awaitingList.hidden,false);assert.equal(awaitingList.style.maxHeight,'153px');
+  awaiting.ready(1);assert.equal(awaitingList.hidden,false);assert.equal(awaitingPopup.hidden,false);assert.equal(awaitingPopup.style.maxHeight,'153px');assert.equal(awaitingList.style.maxHeight,'151px');
   assert.equal(awaitingList.attributes['aria-activedescendant'],'voice-option-49','End while pending is preserved by the ready acknowledgment');
   assert.equal(awaiting.document.activeElement,awaitingList);assert.equal(awaiting.nodes.get('audio').played,0);
   key(awaitingList,'Escape');awaiting.ready(1);assert.equal(awaitingList.hidden,true,'late acknowledgments cannot reopen a closed picker');
