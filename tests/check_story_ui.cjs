@@ -201,6 +201,13 @@ async function main() {
     assert.equal(p.shell.dataset.step, "materials");
     const columns = p.shell.querySelector(".story-material-columns"), training = () => columns.children[0];
     const capacities = () => training().querySelectorAll(".story-material-capacity");
+    training().querySelectorAll(".story-material-row").forEach((row, index) => {
+      const title = row.querySelector("dt"), amount = row.querySelector("dd"), item = materials.training[index];
+      assert.deepEqual(title.children.map(node => node.textContent), [item.name, item.sources.map(source => source.name).join(" · ")], "each material title keeps its source immediately below it");
+      assert.equal(amount.children.length, 2, "the right column contains quantity and capacity only");
+      assert.equal(amount.children[0].tagName, "strong"); assert.equal(amount.children[0].textContent, item.amount);
+      assert.equal(amount.children[1], row.querySelector(".story-material-capacity"));
+    });
     assert.deepEqual(capacities().map(node => node.textContent), ["생성 예정", "다운로드 1KiB", "다운로드 약 2KiB", "비호출 자료 재사용", "다운로드 용량 미확정", "다운로드 3KiB"]);
     assert.equal(capacities()[0].title, "Qwen TTS: 생성 예정"); assert.equal(capacities()[1].title, "고정 자료: 1024B");
     assert.equal(capacities()[2].title, "자동 선정: 약 2048B"); assert.equal(capacities()[3].title, "학습 음원: 비호출 자료 재사용");
@@ -219,13 +226,16 @@ async function main() {
     assert.equal(p.calls.some(call => ["start", "resume", "input"].includes(call)), false);
   });
   await test("small material screens switch groups without slicing rows or starting work", async () => {
-    const rows = (prefix, length) => Array.from({ length }, (_, index) => ({ name: `${prefix} ${index + 1}`, amount: "1시간", downloadLabel: index ? "다운로드 약 1GiB" : "다운로드 용량 미확정", sources: [{ name: "선정 자료" }] }));
+    const rows = (prefix, length) => Array.from({ length }, (_, index) => ({ name: `${prefix} ${index + 1}`, amount: "1시간", downloadLabel: index ? "다운로드 약 1GiB" : "다운로드 용량 미확정", description: "직접 준비할 자료", sources: index ? [{ name: "선정 자료" }] : [] }));
     const p = page(null, { width: 319, height: 420, matchMedia: query => query.includes("max-width:760px"), materials: () => ({ training: rows("학습", 6), evaluation: rows("평가", 5) }) });
     p.state.recipes = [{ id: "check" }];
     await p.next.fire("click"); await p.settle(); await p.next.fire("click"); await p.settle();
     const columns = p.shell.querySelector(".story-material-columns"), tabs = p.shell.querySelectorAll(".story-material-tab");
     assert.equal(columns.children[0].hidden, false); assert.equal(columns.children[1].hidden, true);
     assert.equal(columns.children[0].querySelectorAll(".story-material-row").length, 6);
+    const first = columns.children[0].querySelector(".story-material-row");
+    assert.equal(first.querySelector("dt").children[1].textContent, "직접 준비할 자료", "source-less items retain their description under the title on narrow screens");
+    assert.equal(first.querySelector("dd").children.length, 2);
     await tabs[1].fire("click");
     assert.equal(columns.children[0].hidden, true); assert.equal(columns.children[1].hidden, false);
     assert.equal(columns.children[1].querySelectorAll(".story-material-row").length, 5);

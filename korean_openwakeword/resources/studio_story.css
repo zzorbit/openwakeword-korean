@@ -63,9 +63,10 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-material-heading h2{font-size:18px;line-height:26px;font-weight:600;margin:0;color:#e3e7ec}
 .story-material-heading span{font-size:14px;line-height:20px;color:#bdc5d1;white-space:nowrap}
 .story-material-list{margin:0}
-.story-material-row{display:grid;grid-template-columns:112px minmax(0,1fr);gap:12px;align-items:start;min-height:0;padding:4px 0;border-bottom:1px solid #343c47}
+.story-material-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:start;min-height:0;padding:4px 0;border-bottom:1px solid #343c47}
 .story-material-row:last-child{border-bottom:0}
-.story-material-row dt{font:500 16px/24px system-ui,"Malgun Gothic",sans-serif;margin:0;word-break:keep-all}
+.story-material-row dt{display:grid;gap:2px;min-width:0;font:500 16px/24px system-ui,"Malgun Gothic",sans-serif;margin:0;word-break:keep-all;overflow-wrap:break-word}
+.story-material-source{font-size:14px;line-height:20px;font-weight:400;color:#bdc5d1}
 .story-material-row dd{display:grid;gap:2px;min-width:0;margin:0;text-align:right}
 .story-material-row dd strong{font-size:16px;line-height:24px;font-weight:600;color:#eaedf1;word-break:keep-all}
 .story-material-row dd span{font-size:14px;line-height:20px;color:#bdc5d1;word-break:keep-all;overflow-wrap:break-word}
@@ -259,7 +260,7 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
   .story-scale .preset{min-height:74px;padding:10px 16px;gap:4px;border-radius:10px}
   .story-scale .preset-title{font-size:17px;line-height:24px}
   .story-scale .preset-description{font-size:14px;line-height:20px}
-  .story-material-row{grid-template-columns:112px minmax(0,1fr);min-height:0;gap:8px;padding:4px 0}
+  .story-material-row{min-height:0;gap:8px;padding:4px 0}
   .story-live .progress-text{font-size:15px;line-height:22px}
   .story-live #counts{gap:4px 14px}
   .story-live #counts>span{font-size:13px;line-height:20px}
@@ -280,9 +281,10 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
   .story-voice-row>span{font-size:14px;line-height:22px}
 }
 @media(max-width:420px){
-  .story-material-row{grid-template-columns:1fr;gap:3px;padding:6px 0}
+  .story-material-row{gap:8px;padding:6px 0}
   .story-material-row dt{font-size:15px;line-height:22px}
-  .story-material-row dd{text-align:left;gap:2px}
+  .story-material-source{font-size:13px;line-height:20px}
+  .story-material-row dd{gap:2px}
   .story-material-row dd strong{font-size:15px;line-height:22px}
   .story-material-row dd span{font-size:14px;line-height:20px}
   .story-material-tabs{gap:18px}

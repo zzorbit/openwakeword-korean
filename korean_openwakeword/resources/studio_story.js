@@ -465,10 +465,12 @@
         for (const item of rows) {
           const row = node("div", undefined, "story-material-row"), amount = node("dd");
           const names = [...new Set((item.sources || []).map(source => (source.name === "RIRS_NOISES" ? "OpenSLR RIR" : source.name) + (source.downloadReuse === "학습용 자료와 공유" ? "(공유)" : "")))];
-          row.append(node("dt", item.name));
+          const title = node("dt");
+          title.append(node("span", item.name, "story-material-name"), node("span", names.join(" · ") || item.description, "story-material-source"));
+          row.append(title);
           const capacity = node("span", item.downloadLabel || "다운로드 용량 미확정", "story-material-capacity");
           capacity.title = (item.sources || []).map(source => `${source.name}: ${source.downloadReuse || (Number.isFinite(source.downloadBytes) ? `${source.downloadEstimated ? "약 " : ""}${bridge.formatBytes(source.downloadBytes)}` : "용량 미확정")}`).join("\n");
-          amount.append(node("strong", item.amount), node("span", names.join(" · ") || item.description), capacity); row.append(amount); list.append(row);
+          amount.append(node("strong", item.amount), capacity); row.append(amount); list.append(row);
         }
         section.append(head, list); sections.push(section);
       }
