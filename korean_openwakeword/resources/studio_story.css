@@ -71,7 +71,6 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-material-row dd strong{font-size:16px;line-height:24px;font-weight:600;color:#eaedf1;word-break:keep-all}
 .story-material-row dd span{font-size:14px;line-height:20px;color:#bdc5d1;word-break:keep-all;overflow-wrap:break-word}
 .story-material-row dd .story-material-capacity{color:#d4dce7}
-.story-material-note{flex:none;font:400 14px/20px system-ui,"Malgun Gothic",sans-serif;color:#bdc5d1;margin:8px 0 0;text-align:center;text-wrap:pretty}
 .story-material-tabs{display:none;flex:none}
 .story-pagination{display:flex;align-items:center;justify-content:center;gap:16px;height:32px;color:#bdc5d1;font-size:14px;line-height:20px;flex:none}
 .story-shell .story-small{display:grid;place-items:center;width:36px;height:32px;padding:0;margin:0;border:0;border-radius:6px;box-shadow:none;background:#292d33;color:#e3e7ec;font:500 18px/24px system-ui,sans-serif;cursor:pointer}
@@ -241,7 +240,8 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
   .story-shell .story-material-tab{padding:6px 0;margin:0;border:0;border-bottom:2px solid transparent;border-radius:0;background:transparent;box-shadow:none;color:#bdc5d1;font:500 16px/24px system-ui,"Malgun Gothic",sans-serif}
   .story-material-tab[aria-selected="true"]{border-bottom-color:#bac5d6;color:#eaedf1}
   .story-material-columns{display:block}
-  .story-material-heading{display:none}
+  .story-material-heading{justify-content:flex-end;border-bottom:0;padding-bottom:4px}
+  .story-material-heading h2{display:none}
   .story-live{gap:12px}
   .story-live .downloads-list{grid-template-columns:1fr;gap:0}
   .story-live .download-item{padding:8px 0}

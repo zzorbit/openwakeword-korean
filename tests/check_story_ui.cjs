@@ -190,6 +190,7 @@ async function main() {
         { name: "잔향 자료", amount: "270개", downloadLabel: "다운로드 3KiB", sources: [{ name: "MIT RIR", downloadBytes: 3072 }] },
       ],
       evaluation: Array.from({ length: 5 }, (_, index) => ({ name: `평가 자료 ${index + 1}`, amount: "2,000개", downloadLabel: "생성 예정", sources: [{ name: "Qwen TTS", downloadReuse: "생성 예정" }] })),
+      downloadTotals: { training: { bytes: 6144, unknown: true, label: "약 6KiB + 미정" }, evaluation: { bytes: 0, unknown: false, label: "별도 다운로드 없음" } },
     };
     const p = page(null, { materials: () => materials, create: state => {
       state.project = { id: "capacity-model", wakeword: "보라야", preset: "check", status: "ready", stage_id: "frontend", progress: {},
@@ -200,6 +201,9 @@ async function main() {
     await p.next.fire("click"); await p.settle(); await p.next.fire("click"); await p.settle();
     assert.equal(p.shell.dataset.step, "materials");
     const columns = p.shell.querySelector(".story-material-columns"), training = () => columns.children[0];
+    assert.deepEqual(p.shell.querySelectorAll(".story-material-total").map(node => node.textContent), ["약 6KiB + 미정", "별도 다운로드 없음"]);
+    assert.equal(p.shell.querySelector(".story-material-total").getAttribute("aria-label"), "학습용 자료 합산 다운로드 용량: 약 6KiB + 미정");
+    assert.equal(p.shell.querySelector(".story-material-note"), null, "the footer does not repeat the capacity explanation");
     const capacities = () => training().querySelectorAll(".story-material-capacity");
     training().querySelectorAll(".story-material-row").forEach((row, index) => {
       const title = row.querySelector("dt"), amount = row.querySelector("dd"), item = materials.training[index];

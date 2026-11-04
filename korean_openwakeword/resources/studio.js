@@ -566,7 +566,24 @@
         : `다운로드 ${downloadEstimated ? "약 " : ""}${bytes(downloadBytes)}`;
       return { ...item, downloadBytes: unknown ? undefined : downloadBytes, downloadEstimated, downloadLabel };
     };
-    return { training: training.map(capacity), evaluation: evaluation.map(capacity), policy };
+    const downloadTotal = rows => {
+      let total = 0, estimated = false, unknown = false;
+      for (const item of rows) {
+        if (["positive", "hard"].includes(item.id)) continue;
+        const records = item.sources || [];
+        if (!records.length) unknown = true;
+        for (const record of records) {
+          const value = record.downloadBytes;
+          if (!Number.isFinite(value) || value < 0 || !Number.isFinite(total + value)) { unknown = true; continue; }
+          // Reused and hash-verified shared sources already carry zero bytes.
+          total += value; estimated ||= value > 0 && Boolean(record.downloadEstimated);
+        }
+      }
+      return { bytes: total, estimated, unknown,
+        label: total > 0 ? `약 ${bytes(total)}${unknown ? " + 미정" : ""}` : unknown ? "용량 미정" : "별도 다운로드 없음" };
+    };
+    return { training: training.map(capacity), evaluation: evaluation.map(capacity), policy,
+      downloadTotals: { training: downloadTotal(training), evaluation: downloadTotal(evaluation) } };
   }
   let activeMaterial = null;
   function renderRecipe() {

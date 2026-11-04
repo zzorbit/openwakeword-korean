@@ -53,7 +53,7 @@ html.reference-listening main:has(#error:not(:empty)) .listen-player{gap:6px}
 @media(prefers-reduced-motion:reduce){.voice-picker-list:not([hidden]){animation:none}}
 .listen-playback{display:flex;flex-direction:column;gap:14px}
 html.reference-listening .listen-playback{gap:0;border-radius:26px;background:#232a34}
-html.reference-listening .listen-controls.is-compact{height:52px;min-height:52px;padding:8px;gap:10px;border:0;border-radius:26px;background:#232a34}
+html.reference-listening .listen-controls.is-compact{height:52px;min-height:52px;padding:8px;gap:10px;flex-wrap:nowrap;border:0;border-radius:26px;background:#232a34}
 html.reference-listening .listen-controls.is-compact #continuous{display:flex;flex:none;width:36px;height:36px;min-height:36px}
 html.reference-listening .listen-controls.is-compact .listen-seek{appearance:none;-webkit-appearance:none;min-width:24px;height:20px;border:0;box-shadow:none;background:transparent;--listen-track:#35404e;--listen-played:#a7bdd9}
 html.reference-listening .listen-seek::-webkit-slider-runnable-track{height:4px;border:0;border-radius:999px;box-shadow:none;background:linear-gradient(to right,var(--listen-played) 0 var(--listen-progress,0%),var(--listen-track) var(--listen-progress,0%) 100%)}
@@ -63,28 +63,13 @@ html.reference-listening .listen-seek::-moz-range-progress{height:4px;border:0;b
 html.reference-listening .listen-seek::-moz-range-thumb{width:12px;height:12px;border:0;border-radius:50%;box-shadow:none;background:#e5ebf3}
 html.reference-listening .listen-seek:focus-visible{outline:2px solid #a8afb7;outline-offset:3px;border-radius:5px}
 html.reference-listening .listen-controls.is-compact .listen-time{font-size:14px;line-height:20px}
-html.reference-listening .listen-controls.is-compact .reference-more-button{display:flex;align-items:center;justify-content:center;flex:none;width:36px;height:36px;min-height:36px;padding:0;border-radius:50%;font-size:0;background:#2b3441}
-html.reference-listening .listen-controls.is-compact .reference-more-button:hover:not(:disabled),html.reference-listening .listen-controls.is-compact .reference-more-button[aria-expanded="true"]{background:#394555}
-.reference-more-button svg{display:block;width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
-.reference-more-button[data-muted="true"] .reference-volume-waves,.reference-more-button:not([data-muted="true"]) .reference-volume-cross{display:none}
-.reference-more-button[aria-expanded="true"]{background:#394555}
-.reference-more-panel{position:fixed;z-index:10;max-height:240px;padding:8px;border:1px solid #47515e;border-radius:10px;background:#232a34;box-shadow:0 8px 22px #0005;overflow:auto;overscroll-behavior:contain;outline:none}
-.reference-more-panel:not([hidden]){animation:voice-picker-reveal .13s ease-out both}
-.reference-more-panel[hidden],.reference-more-button[hidden]{display:none}
-.reference-volume-control{display:flex;align-items:center;gap:8px;padding:0 0 10px;margin-bottom:8px;border-bottom:1px solid #3b4655;font:400 14px/20px system-ui,"Malgun Gothic",sans-serif}
-.reference-volume-control input{flex:1;min-width:30px;width:100%;height:24px;margin:0;accent-color:#a7bdd9}
-.reference-volume-control output{flex:none;min-width:36px;text-align:right;font-variant-numeric:tabular-nums}
-.reference-more-panel .reference-playback-actions{display:grid;grid-template-columns:1fr 1fr;padding:0;gap:6px}
-.reference-more-transport{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-top:6px}
-.reference-more-transport button{display:flex;align-items:center;justify-content:center;width:100%;min-width:0;height:30px;min-height:30px;padding:3px 6px;background:#303945;font:500 14px/22px system-ui,"Malgun Gothic",sans-serif}
-.reference-more-transport .listen-skip::before{display:none}
-.reference-more-transport svg{width:16px;height:16px;fill:currentColor}
-@media(prefers-reduced-motion:reduce){.reference-more-panel:not([hidden]){animation:none}}
-.reference-playback-actions{display:flex;justify-content:center;gap:6px;padding:0 8px 8px}
-.reference-playback-actions[hidden]{display:none}
-.reference-playback-actions button{width:auto;min-width:76px;height:30px;min-height:30px;padding:3px 10px;border:1px solid #485362;background:#303945;font:500 14px/22px system-ui,"Malgun Gothic",sans-serif}
-.reference-playback-actions button[aria-pressed="true"]{border-color:#8795a8;background:#47576b;color:#eef1f5}
-@media(max-width:300px){html.reference-listening .listen-controls.is-compact{gap:6px}html.reference-listening .listen-controls.is-compact .listen-time{font-size:12px}html.reference-listening .listen-controls.is-compact #continuous,html.reference-listening .listen-controls.is-compact .reference-more-button{width:32px;height:32px;min-height:32px}}
+html.reference-listening .listen-controls.is-compact #reference-mute{display:flex;align-items:center;justify-content:center;flex:none;width:30px;height:30px;min-height:30px;padding:0;border-radius:50%;font-size:0;background:transparent}
+html.reference-listening .listen-controls.is-compact #reference-mute:hover:not(:disabled){background:#394555}
+html.reference-listening #reference-mute svg{width:18px;height:18px}
+html.reference-listening #reference-mute[data-muted="true"] .listen-sound-wave{display:none}
+html.reference-listening .listen-controls.is-compact #reference-volume:not([hidden]){display:block;flex:0 0 72px;width:72px;min-width:0;height:20px;min-height:0;margin:0;padding:0;border:0;background:transparent;accent-color:#a7bdd9;cursor:pointer}
+html.reference-listening #reference-volume:focus-visible{outline:2px solid #a8afb7;outline-offset:3px;border-radius:5px}
+@media(max-width:420px){html.reference-listening .listen-controls.is-compact{gap:6px}html.reference-listening .listen-controls.is-compact .listen-time{font-size:12px}html.reference-listening .listen-controls.is-compact #continuous{width:32px;height:32px;min-height:32px}html.reference-listening .listen-controls.is-compact #reference-mute{width:28px;height:28px;min-height:28px}html.reference-listening .listen-controls.is-compact #reference-volume:not([hidden]){flex-basis:40px;width:40px}}
 </style>
 <main class="listen-preview">
   <div class="listen-workspace">
@@ -101,9 +86,7 @@ html.reference-listening .listen-controls.is-compact .reference-more-button:hove
     <button id="continuous" type="button" aria-pressed="false" disabled>재생</button>
     <button id="next" type="button" disabled>다음</button>
   </div>
-  <div id="reference-playback-actions" class="reference-playback-actions" hidden><button id="play-single" type="button" aria-pressed="false" disabled>재생</button><button id="play-auto" type="button" aria-pressed="false" disabled>자동 재생</button></div>
-  <button id="reference-more-button" class="reference-more-button" type="button" aria-label="음량 조절" aria-expanded="false" aria-controls="reference-more-panel" data-muted="false" disabled hidden><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4z"/><path class="reference-volume-waves" d="M16 8c2 2 2 6 0 8m3-11c4 4 4 10 0 14"/><path class="reference-volume-cross" d="m16 9 5 6m0-6-5 6"/></svg></button>
-  <div id="reference-more-panel" class="reference-more-panel" role="group" aria-label="음량과 재생 설정" tabindex="-1" hidden><div class="reference-volume-control"><label for="reference-volume">음량</label><input id="reference-volume" type="range" min="0" max="100" step="1" value="100" aria-label="음량" disabled><output id="reference-volume-value" for="reference-volume">100%</output></div><div id="reference-more-transport" class="reference-more-transport"></div></div>
+  <input id="reference-volume" type="range" min="0" max="100" step="1" value="100" aria-label="음량" disabled hidden>
   </div>
   <p id="error" class="listen-status" role="alert"></p>
   </div>
@@ -119,24 +102,21 @@ const continuous=document.getElementById('continuous'), sentence=document.getEle
 const position=document.getElementById('position'), errorMessage=document.getElementById('error');
 const picker=document.getElementById('voice-picker'), pickerButton=document.getElementById('voice-picker-button'), pickerList=document.getElementById('voice-picker-list');
 const pickerLabel=document.getElementById('voice-picker-label');
-const singlePlay=document.getElementById('play-single'),autoPlay=document.getElementById('play-auto');
-const moreButton=document.getElementById('reference-more-button'),morePanel=document.getElementById('reference-more-panel'),moreTransport=document.getElementById('reference-more-transport');
-const volume=document.getElementById('reference-volume'),volumeValue=document.getElementById('reference-volume-value');
+const volume=document.getElementById('reference-volume');
+let referenceMute=null;
 const hard=location.pathname.startsWith('/hard-preview/');
 if(hard){document.title='유사어 전체 듣기';voice.setAttribute('aria-label','들을 유사어 음원');}
 else document.documentElement?.classList?.add('reference-listening');
 document.getElementById('listening-sidebar').hidden=!hard;
 voice.hidden=true;sentence.hidden=!hard;picker.hidden=hard;pickerList.hidden=true;
-document.getElementById('reference-playback-actions').hidden=hard;
-let items=[], playing=false,playMode=hard?'auto':'single', playbackVersion=0, playbackAllowed=true,listPage=0;
+let items=[], playing=false, playbackVersion=0, playbackAllowed=true,listPage=0;
 let pickerOpen=false,pickerReady=false,pickerRequest=0,pickerIndex=0,pickerRows=[];
-let moreOpen=false,moreReady=false;
 const playedItems=new Set(),pageSize=5;
 function syncVolume(){
   if(hard)return;
   const level=Math.round(Math.max(0,Math.min(1,Number.isFinite(audio.volume)?audio.volume:1))*100),muted=audio.muted||level===0;
-  volume.value=String(level);volumeValue.textContent=`${level}%`;volume.setAttribute('aria-valuetext',`${level}%${audio.muted?' · 음소거':''}`);
-  moreButton.setAttribute('data-muted',String(muted));moreButton.setAttribute('title',muted?'음량 조절 · 음소거':`음량 조절 · ${level}%`);
+  volume.value=String(level);volume.setAttribute('aria-valuetext',`${level}%${audio.muted?' · 음소거':''}`);volume.setAttribute('title',`음량 ${level}%`);
+  if(referenceMute){referenceMute.setAttribute('data-muted',String(muted));referenceMute.setAttribute('title',audio.muted?'소리 켜기':`음소거 · 음량 ${level}%`);}
 }
 volume.addEventListener('input',()=>{
   if(hard)return;
@@ -177,7 +157,6 @@ function closePicker(restoreFocus=false){
 function openPicker(){
   if(hard||!items.length||pickerButton.disabled)return;
   if(pickerOpen){if(pickerReady)pickerList.focus();return;}
-  closeMore();
   pickerOpen=true;pickerReady=false;pickerRequest++;pickerList.hidden=true;pickerButton.setAttribute('aria-expanded','true');highlightPicker(Number(voice.value));
   if(window.parent===window)revealPicker(pickerRequest);else notifyPicker(true);
 }
@@ -185,33 +164,6 @@ function revealPicker(request){
   if(!pickerOpen||pickerReady||request!==pickerRequest||!items.length||document.hidden)return;
   pickerReady=true;positionPicker();pickerList.hidden=false;highlightPicker(pickerIndex);pickerList.focus();
 }
-function positionMore(){
-  if(!moreOpen||!moreReady)return;
-  const rect=moreButton.getBoundingClientRect(),margin=8,gap=6,width=Math.min(232,Math.max(0,window.innerWidth-margin*2));
-  const below=Math.max(0,window.innerHeight-rect.bottom-gap-margin),above=Math.max(0,rect.top-gap-margin);
-  const height=Math.min(240,(morePanel.scrollHeight||90)+2,Math.max(below,above)),down=below>=above;
-  morePanel.style.width=`${width}px`;morePanel.style.maxHeight=`${Math.floor(height)}px`;
-  morePanel.style.left=`${Math.max(margin,Math.min((rect.right??rect.left+rect.width)-width,window.innerWidth-width-margin))}px`;
-  morePanel.style.top=`${Math.floor(down?rect.bottom+gap:Math.max(margin,rect.top-gap-height))}px`;
-}
-function closeMore(restoreFocus=false){
-  if(!moreOpen)return;
-  moreOpen=false;moreReady=false;morePanel.hidden=true;moreButton.setAttribute('aria-expanded','false');notifyPicker(false);
-  if(restoreFocus)moreButton.focus();
-}
-function revealMore(request){
-  if(!moreOpen||moreReady||request!==pickerRequest||document.hidden)return;
-  moreReady=true;morePanel.hidden=false;positionMore();morePanel.focus();
-}
-function openMore(){
-  if(hard||!items.length||moreButton.disabled||moreButton.hidden)return;
-  closePicker();moreOpen=true;moreReady=false;pickerRequest++;morePanel.hidden=true;moreButton.setAttribute('aria-expanded','true');
-  if(window.parent===window)revealMore(pickerRequest);else notifyPicker(true);
-}
-moreButton.addEventListener('click',()=>{if(moreOpen)closeMore(true);else openMore();});
-moreButton.addEventListener('keydown',event=>{if(!moreOpen)return;if(event.key==='Escape'){event.preventDefault();closeMore(true);}else if(event.key==='Tab')closeMore();});
-morePanel.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();closeMore(true);}});
-morePanel.addEventListener('focusout',event=>{if(moreReady&&(!event.relatedTarget||(!morePanel.contains(event.relatedTarget)&&event.relatedTarget!==moreButton)))closeMore();});
 function choosePicker(index){select(index,playing);closePicker(true);}
 function renderPicker(){
   if(hard)return;
@@ -239,8 +191,8 @@ pickerList.addEventListener('keydown',event=>{
   if(['Enter',' '].includes(event.key)){choosePicker(pickerIndex);return;}
   highlightPicker(event.key==='Home'?0:event.key==='End'?items.length-1:pickerIndex+(event.key==='ArrowDown'?1:-1));
 });
-document.addEventListener('pointerdown',event=>{if(pickerOpen&&!picker.contains(event.target))closePicker();if(moreOpen&&!morePanel.contains(event.target)&&!moreButton.contains(event.target))closeMore();});
-window.addEventListener('resize',()=>{if(pickerOpen&&pickerReady&&!pickerList.hidden){positionPicker();highlightPicker(pickerIndex);}if(moreOpen&&moreReady&&!morePanel.hidden)positionMore();});
+document.addEventListener('pointerdown',event=>{if(pickerOpen&&!picker.contains(event.target))closePicker();});
+window.addEventListener('resize',()=>{if(pickerOpen&&pickerReady&&!pickerList.hidden){positionPicker();highlightPicker(pickerIndex);}});
 function renderList(){
   if(!hard)return;
   const list=document.getElementById('listening-list'),pages=Math.max(1,Math.ceil(items.length/pageSize));
@@ -257,23 +209,15 @@ function renderList(){
 }
 function setPlaying(value){
   playing=value;continuous.textContent=value?'일시정지':'재생';continuous.setAttribute('aria-pressed',String(value));
-  singlePlay.textContent=value&&playMode==='single'?'일시정지':'재생';singlePlay.setAttribute('aria-pressed',String(value&&playMode==='single'));
-  autoPlay.textContent=value&&playMode==='auto'?'일시정지':'자동 재생';autoPlay.setAttribute('aria-pressed',String(value&&playMode==='auto'));
-}
-function toggleMode(mode){
-  if(hard||!items.length)return;
-  if(playing&&playMode===mode){stop();return;}
-  playMode=mode;
-  if(playing)setPlaying(true);else playCurrent();
 }
 function stop(release=false){
   playbackVersion++;setPlaying(false);audio.pause();
-  if(release){closePicker();closeMore();playbackAllowed=false;audio.removeAttribute('src');audio.load();}
+  if(release){closePicker();playbackAllowed=false;audio.removeAttribute('src');audio.load();}
 }
 window.addEventListener('message',event=>{
   if(event.origin!==location.origin||event.source!==window.parent)return;
-  if(event.data?.type==='koww:voice-picker-ready'&&Number.isSafeInteger(event.data.request)&&event.data.request>0){revealPicker(event.data.request);revealMore(event.data.request);}
-  else if(event.data?.type==='koww:voice-picker-close'){closePicker();closeMore();}
+  if(event.data?.type==='koww:voice-picker-ready'&&Number.isSafeInteger(event.data.request)&&event.data.request>0)revealPicker(event.data.request);
+  else if(event.data?.type==='koww:voice-picker-close')closePicker();
   else if(event.data?.type==='koww:pause')stop(true);
 });
 document.addEventListener('visibilitychange',()=>{if(document.hidden)stop(true);});
@@ -306,28 +250,24 @@ function select(index,play=false){
   if(play)playCurrent();
 }
 voice.addEventListener('change',()=>select(Number(voice.value),playing));
-previous.addEventListener('click',()=>select(Number(voice.value)-1,playing));
-next.addEventListener('click',()=>select(Number(voice.value)+1,playing));
+if(hard){previous.addEventListener('click',()=>select(Number(voice.value)-1,playing));next.addEventListener('click',()=>select(Number(voice.value)+1,playing));}
 continuous.addEventListener('click',()=>{if(playing){stop();return;}playCurrent();});
-singlePlay.addEventListener('click',()=>{toggleMode('single');closeMore(true);});
-autoPlay.addEventListener('click',()=>{toggleMode('auto');closeMore(true);});
 audio.addEventListener('play',()=>{if(document.hidden||!playbackAllowed){stop(true);return;}setPlaying(true);});
 audio.addEventListener('pause',()=>{if(!audio.ended&&audio.paused)setPlaying(false);});
 audio.addEventListener('error',()=>{stop();errorMessage.textContent='음원을 재생하지 못했습니다. 재생을 다시 눌러주세요.';});
 audio.addEventListener('ended',()=>{
   if(!audio.ended||!playing||!items.length||document.hidden)return;
   playedItems.add(items[Number(voice.value)].id);
-  if(playMode==='auto')select((Number(voice.value)+1)%items.length,true);
+  if(hard)select((Number(voice.value)+1)%items.length,true);
   else{setPlaying(false);renderList();}
 });
 document.getElementById('list-prev').addEventListener('click',()=>{listPage--;renderList();});
 document.getElementById('list-next').addEventListener('click',()=>{listPage++;renderList();});
 const playbackControls=document.querySelector?.('.listen-controls');
 const listeningPlayer=window.KowwListening?.enhance(audio,playbackControls,{play:continuous,previous,next});
-if(!hard&&listeningPlayer?.mute){
-  moreTransport.append(previous,next,listeningPlayer.mute);
-  morePanel.append(document.getElementById('reference-playback-actions'),moreTransport);
-  playbackControls.append(moreButton);moreButton.hidden=false;
+if(!hard){
+  previous.remove();next.remove();
+  if(listeningPlayer?.mute){referenceMute=listeningPlayer.mute;referenceMute.id='reference-mute';referenceMute.disabled=true;volume.hidden=false;playbackControls.append(volume);syncVolume();}
 }
 (async()=>{
   try{
@@ -347,7 +287,7 @@ if(!hard&&listeningPlayer?.mute){
       if(!hard){item.groupLabel=group;item.voiceNumber=count;}voice.append(option);
     });
     if(!items.length)throw Error(hard?'준비된 유사어 음원이 없습니다.':'준비된 기준 목소리가 없습니다.');
-    voice.disabled=false;continuous.disabled=false;pickerButton.disabled=hard;singlePlay.disabled=hard;autoPlay.disabled=hard;moreButton.disabled=hard;volume.disabled=hard;renderPicker();select(0);
+    voice.disabled=false;continuous.disabled=false;pickerButton.disabled=hard;volume.disabled=hard;if(referenceMute)referenceMute.disabled=false;renderPicker();select(0);
   }catch(error){errorMessage.textContent=error.message;}
 })();
 </script>

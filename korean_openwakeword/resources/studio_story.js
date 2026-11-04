@@ -128,9 +128,7 @@
     const materials = node("div", undefined, "story-materials");
     const materialsTabs = node("div", undefined, "story-material-tabs"); materialsTabs.setAttribute("role", "tablist"); materialsTabs.setAttribute("aria-label", "자료 구분");
     const materialColumns = node("div", undefined, "story-material-columns"); materialColumns.tabIndex = 0; materialColumns.setAttribute("aria-label", "준비할 자료 목록");
-    const materialNote = node("p", "다운로드 용량 · ‘약’은 추정 · 변환·생성 파일과 모델·도구 공간은 별도", "story-material-note");
-    materialNote.title = "학습·평가에서 공유하는 파일은 한 번만 받습니다. 다운로드 용량은 최종 저장 용량이나 필요한 전체 여유 공간과 다릅니다.";
-    materials.append(materialsTabs, materialColumns, materialNote);
+    materials.append(materialsTabs, materialColumns);
     const live = node("div", undefined, "story-live");
     const statusCard = document.querySelector(".current-card");
     const liveSummary = node("div", undefined, "story-live-summary");
@@ -460,7 +458,11 @@
       for (const [key, label] of [["training", "학습용 자료"], ["evaluation", "성능 평가용 자료"]]) {
         const section = node("section", undefined, "story-material-section"); section.hidden = small && key !== materialTab;
         const head = node("div", undefined, "story-material-heading");
-        head.append(node("h2", label), node("span", key === "training" ? materialData.label : "공통 평가"));
+        const total = materialData.downloadTotals?.[key];
+        const totalLabel = node("span", total?.label || "용량 미정", "story-material-total");
+        totalLabel.setAttribute("aria-label", `${label} 합산 다운로드 용량: ${totalLabel.textContent}`);
+        totalLabel.title = "합산 다운로드 용량 · 재사용·공유 파일은 중복 제외 · 생성 파일과 모델·도구 공간은 별도" + (total?.unknown ? " · 미정인 자료는 합계에서 제외" : "");
+        head.append(node("h2", label), totalLabel);
         const list = node("dl", undefined, "story-material-list"), rows = materialData[key] || [];
         for (const item of rows) {
           const row = node("div", undefined, "story-material-row"), amount = node("dd");
@@ -826,7 +828,7 @@
         const fingerprint = JSON.stringify([values, !project ? [$("adv-originals").value, $("adv-generic").value, $("adv-korean").value] : null]);
         if (fingerprint !== materialKey) {
           materialKey = fingerprint;
-          materialData = values ? { ...bridge.materials(values, Boolean(project)), label: titles[project?.preset || state.selectedPreset] || "학습 규모" } : null;
+          materialData = values ? bridge.materials(values, Boolean(project)) : null;
           if (project && materialData && project.settings) {
             const s = project.settings, training = materialData.training;
             const update = (id, value) => { const item = training.find(row => row.id === id); if (item && value !== undefined) item.amount = value; };
