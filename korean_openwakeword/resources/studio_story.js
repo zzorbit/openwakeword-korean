@@ -877,8 +877,15 @@
     window.addEventListener("message", event => {
       const frame = $("reference-preview-frame"), origin = window.location?.origin;
       if (!origin || event.origin !== origin || !frame?.contentWindow || event.source !== frame.contentWindow
-        || event.data?.type !== "koww:voice-picker" || typeof event.data.open !== "boolean") return;
-      voiceListening.classList.toggle("is-selecting", event.data.open && current === "voice-listening" && !transitioning);
+        || event.data?.type !== "koww:voice-picker" || typeof event.data.open !== "boolean"
+        || !Number.isSafeInteger(event.data.request) || event.data.request < 1) return;
+      const open = event.data.open && current === "voice-listening" && !transitioning;
+      voiceListening.classList.toggle("is-selecting", open);
+      if (open) {
+        // Resolve the expanded frame before its popup becomes visible.
+        frame.getBoundingClientRect();
+        frame.contentWindow.postMessage({ type: "koww:voice-picker-ready", request: event.data.request }, origin);
+      }
     });
     window.addEventListener("pagehide", () => { stopTransition(); pauseMedia(); });
     return { render };

@@ -29,13 +29,24 @@ html.reference-listening .listen-heading{align-items:center;gap:12px}
 html.reference-listening .listen-status{position:static}
 html.reference-listening #continuous{display:none}
 .voice-picker{flex:1;min-width:0}
-.voice-picker-button{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;height:40px;min-height:40px;padding:6px 8px;background:transparent;font-weight:500;text-align:left;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.voice-picker-button{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;height:40px;min-height:40px;padding:6px 8px;border:1px solid transparent;background:transparent;font-weight:500;text-align:left;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.voice-picker .voice-picker-button[aria-expanded="true"]{border-color:#47515e;background:#252c35}
+.voice-picker[data-side="down"] .voice-picker-button[aria-expanded="true"]{border-bottom-color:transparent;border-radius:8px 8px 0 0}
+.voice-picker[data-side="up"] .voice-picker-button[aria-expanded="true"]{border-top-color:transparent;border-radius:0 0 8px 8px}
 .voice-picker-button::after{content:"";flex:none;width:7px;height:7px;margin:0 4px 4px;border:solid currentColor;border-width:0 1px 1px 0;transform:rotate(45deg)}
 .voice-picker-button[aria-expanded="true"]::after{transform:rotate(225deg);margin-top:4px;margin-bottom:0}
 .voice-picker-list{position:fixed;z-index:10;max-height:240px;padding:4px;border:1px solid #47515e;border-radius:9px;background:#252c35;box-shadow:0 8px 22px #0005;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;outline:none}
-.voice-picker-option{height:36px;padding:8px 10px;border-radius:5px;color:#dce3ec;font:400 14px/20px system-ui,"Malgun Gothic",sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+.voice-picker-list[data-side="down"]{border-top-color:transparent;border-radius:0 0 8px 8px}
+.voice-picker-list[data-side="up"]{border-bottom-color:transparent;border-radius:8px 8px 0 0}
+.voice-picker-list:not([hidden]){animation:voice-picker-reveal .13s ease-out both}
+.voice-picker-option{position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:6px;height:36px;padding:8px 24px 8px 8px;border-radius:5px;color:#dce3ec;font:400 14px/20px system-ui,"Malgun Gothic",sans-serif;cursor:pointer}
+.voice-picker-group{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.voice-picker-number{white-space:nowrap;font-variant-numeric:tabular-nums}
 .voice-picker-option[data-active="true"]{background:#394555;color:#f0f2f6}
 .voice-picker-option[aria-selected="true"]{font-weight:600}
+.voice-picker-option[aria-selected="true"]::after{content:"✓";position:absolute;right:8px;top:8px;font-size:14px;line-height:20px}
+@keyframes voice-picker-reveal{from{opacity:0}to{opacity:1}}
+@media(prefers-reduced-motion:reduce){.voice-picker-list:not([hidden]){animation:none}}
 .listen-playback{display:flex;flex-direction:column;gap:14px}
 html.reference-listening .listen-playback{gap:0;border-radius:9px;background:#232a34}
 .reference-playback-actions{display:flex;justify-content:center;gap:6px;padding:0 8px 8px}
@@ -81,59 +92,67 @@ document.getElementById('listening-sidebar').hidden=!hard;
 voice.hidden=true;sentence.hidden=!hard;picker.hidden=hard;pickerList.hidden=true;
 document.getElementById('reference-playback-actions').hidden=hard;
 let items=[], playing=false,playMode=hard?'auto':'single', playbackVersion=0, playbackAllowed=true,listPage=0;
-let pickerOpen=false,pickerIndex=0,pickerRows=[];
+let pickerOpen=false,pickerReady=false,pickerRequest=0,pickerIndex=0,pickerRows=[];
 const playedItems=new Set(),pageSize=5;
 function notifyPicker(open){
-  if(window.parent!==window)window.parent.postMessage?.({type:'koww:voice-picker',open},location.origin);
+  if(window.parent!==window)window.parent.postMessage?.({type:'koww:voice-picker',open,request:pickerRequest},location.origin);
 }
 function positionPicker(){
-  if(!pickerOpen)return;
-  const rect=pickerButton.getBoundingClientRect(),margin=8,gap=6;
+  if(!pickerOpen||!pickerReady)return;
+  const rect=pickerButton.getBoundingClientRect(),margin=8,gap=-1;
   const below=Math.max(0,window.innerHeight-rect.bottom-gap-margin),above=Math.max(0,rect.top-gap-margin);
   const height=Math.min(240,pickerRows.length*36+10,Math.max(below,above)),down=below>=above;
+  const side=down?'down':'up';picker.setAttribute('data-side',side);pickerList.setAttribute('data-side',side);
   pickerList.style.maxHeight=`${Math.floor(height)}px`;
   pickerList.style.top=`${Math.floor(down?rect.bottom+gap:Math.max(margin,rect.top-gap-height))}px`;
-  pickerList.style.left=`${Math.max(margin,Math.min(rect.left,window.innerWidth-margin-rect.width))}px`;
-  pickerList.style.width=`${Math.max(0,Math.min(rect.width,window.innerWidth-margin*2))}px`;
+  pickerList.style.left=`${Math.max(0,Math.min(rect.left,window.innerWidth-rect.width))}px`;
+  pickerList.style.width=`${Math.max(0,Math.min(rect.width,window.innerWidth))}px`;
 }
 function highlightPicker(index){
   pickerIndex=Math.max(0,Math.min(items.length-1,index));
   pickerRows.forEach((row,i)=>row.setAttribute('data-active',String(i===pickerIndex)));
   pickerList.setAttribute('aria-activedescendant',`voice-option-${pickerIndex}`);
   const row=pickerRows[pickerIndex];
-  if(row&&pickerOpen){
+  if(row&&pickerOpen&&pickerReady){
     if(row.offsetTop<pickerList.scrollTop)pickerList.scrollTop=row.offsetTop;
     else if(row.offsetTop+row.offsetHeight>pickerList.scrollTop+pickerList.clientHeight)pickerList.scrollTop=row.offsetTop+row.offsetHeight-pickerList.clientHeight;
   }
 }
 function closePicker(restoreFocus=false){
   if(!pickerOpen)return;
-  pickerOpen=false;pickerList.hidden=true;pickerButton.setAttribute('aria-expanded','false');notifyPicker(false);
+  pickerOpen=false;pickerReady=false;pickerList.hidden=true;picker.removeAttribute('data-side');pickerList.removeAttribute('data-side');pickerButton.setAttribute('aria-expanded','false');notifyPicker(false);
   if(restoreFocus)pickerButton.focus();
 }
 function openPicker(){
   if(hard||!items.length||pickerButton.disabled)return;
-  if(!pickerOpen){pickerOpen=true;pickerList.hidden=false;pickerButton.setAttribute('aria-expanded','true');notifyPicker(true);}
-  positionPicker();highlightPicker(Number(voice.value));pickerList.focus();
+  if(pickerOpen){if(pickerReady)pickerList.focus();return;}
+  pickerOpen=true;pickerReady=false;pickerRequest++;pickerList.hidden=true;pickerButton.setAttribute('aria-expanded','true');highlightPicker(Number(voice.value));
+  if(window.parent===window)revealPicker(pickerRequest);else notifyPicker(true);
+}
+function revealPicker(request){
+  if(!pickerOpen||pickerReady||request!==pickerRequest||!items.length||document.hidden)return;
+  pickerReady=true;positionPicker();pickerList.hidden=false;highlightPicker(pickerIndex);pickerList.focus();
 }
 function choosePicker(index){select(index,playing);closePicker(true);}
 function renderPicker(){
   if(hard)return;
   pickerRows=items.map((item,index)=>{
-    const row=document.createElement('div');row.id=`voice-option-${index}`;row.className='voice-picker-option';row.setAttribute('role','option');
-    row.textContent=item.label;row.addEventListener('click',()=>choosePicker(index));row.addEventListener('pointermove',()=>highlightPicker(index));return row;
+    const row=document.createElement('div'),group=document.createElement('span'),number=document.createElement('span');row.id=`voice-option-${index}`;row.className='voice-picker-option';row.setAttribute('role','option');
+    group.className='voice-picker-group';group.textContent=item.groupLabel;number.className='voice-picker-number';number.textContent=String(item.voiceNumber);row.append(group,number);
+    row.setAttribute('aria-label',item.fullLabel||item.label);row.addEventListener('click',()=>choosePicker(index));row.addEventListener('pointermove',()=>highlightPicker(index));return row;
   });
   pickerList.replaceChildren(...pickerRows);
 }
 pickerButton.addEventListener('click',()=>{if(pickerOpen)closePicker(true);else openPicker();});
 pickerButton.addEventListener('keydown',event=>{
+  if(pickerOpen&&['Escape','Tab'].includes(event.key)){if(event.key==='Escape')event.preventDefault();closePicker(event.key==='Escape');return;}
   if(!['ArrowDown','ArrowUp','Home','End','Enter',' '].includes(event.key))return;
   event.preventDefault();
   if(['Enter',' '].includes(event.key)){if(pickerOpen)closePicker(true);else openPicker();return;}
   openPicker();if(event.key==='Home')highlightPicker(0);else if(event.key==='End')highlightPicker(items.length-1);
 });
 pickerList.addEventListener('keydown',event=>{
-  if(!pickerOpen)return;
+  if(!pickerOpen||!pickerReady)return;
   if(event.key==='Tab'){closePicker();return;}
   if(!['ArrowDown','ArrowUp','Home','End','Enter',' ','Escape'].includes(event.key))return;
   event.preventDefault();
@@ -142,7 +161,7 @@ pickerList.addEventListener('keydown',event=>{
   highlightPicker(event.key==='Home'?0:event.key==='End'?items.length-1:pickerIndex+(event.key==='ArrowDown'?1:-1));
 });
 document.addEventListener('pointerdown',event=>{if(pickerOpen&&!picker.contains(event.target))closePicker();});
-window.addEventListener('resize',()=>{positionPicker();if(pickerOpen)highlightPicker(pickerIndex);});
+window.addEventListener('resize',()=>{if(pickerOpen&&pickerReady&&!pickerList.hidden){positionPicker();highlightPicker(pickerIndex);}});
 function renderList(){
   if(!hard)return;
   const list=document.getElementById('listening-list'),pages=Math.max(1,Math.ceil(items.length/pageSize));
@@ -174,7 +193,8 @@ function stop(release=false){
 }
 window.addEventListener('message',event=>{
   if(event.origin!==location.origin||event.source!==window.parent)return;
-  if(event.data?.type==='koww:voice-picker-close')closePicker();
+  if(event.data?.type==='koww:voice-picker-ready'&&Number.isSafeInteger(event.data.request)&&event.data.request>0)revealPicker(event.data.request);
+  else if(event.data?.type==='koww:voice-picker-close')closePicker();
   else if(event.data?.type==='koww:pause')stop(true);
 });
 document.addEventListener('visibilitychange',()=>{if(document.hidden)stop(true);});
@@ -201,7 +221,7 @@ function select(index,play=false){
   stop();
   voice.value=String(index);audio.src=items[index].audio;sentence.textContent=items[index].text;
   errorMessage.textContent='';position.textContent=`${index+1} / ${items.length}`;
-  if(!hard){pickerButton.textContent=items[index].label;pickerButton.setAttribute('aria-label',`들을 목소리: ${items[index].label}`);pickerRows.forEach((row,i)=>row.setAttribute('aria-selected',String(i===index)));}
+  if(!hard){pickerButton.textContent=items[index].label;pickerButton.setAttribute('aria-label',`들을 목소리: ${items[index].fullLabel||items[index].label}`);pickerRows.forEach((row,i)=>row.setAttribute('aria-selected',String(i===index)));}
   previous.disabled=index===0;next.disabled=index===items.length-1;
   listPage=Math.floor(index/pageSize);renderList();
   if(play)playCurrent();
@@ -238,7 +258,8 @@ window.KowwListening?.enhance(audio,document.querySelector?.('.listen-controls')
     items.forEach((item,index)=>{
       const option=document.createElement('option'),group=hard?item.text:item.group||'목소리';
       const count=(groupCounts.get(group)||0)+1;groupCounts.set(group,count);
-      option.value=String(index);option.textContent=hard?`${item.text} · 목소리 ${count}`:`${group} · 목소리 ${count}`;item.label=option.textContent;voice.append(option);
+      option.value=String(index);option.textContent=hard?`${item.text} · 목소리 ${count}`:`${group} · 목소리 ${count}`;item.fullLabel=option.textContent;item.label=hard?option.textContent:`${group} · ${count}`;
+      if(!hard){item.groupLabel=group;item.voiceNumber=count;}voice.append(option);
     });
     if(!items.length)throw Error(hard?'준비된 유사어 음원이 없습니다.':'준비된 기준 목소리가 없습니다.');
     voice.disabled=false;continuous.disabled=false;pickerButton.disabled=hard;singlePlay.disabled=hard;autoPlay.disabled=hard;renderPicker();select(0);
