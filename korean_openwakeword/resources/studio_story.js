@@ -108,7 +108,6 @@
     const panel = node("div", undefined, "story-panel"); panel.id = "story-panel";
     const heading = node("h1"); heading.id = "story-title"; heading.tabIndex = -1;
     panel.setAttribute("aria-labelledby", heading.id);
-    const context = node("p", undefined, "story-context");
     const content = node("div", undefined, "story-content");
     const entry = node("div", undefined, "story-entry"); entry.append($("wakeword"));
     // A saved model is a read-only view; leave the new-model draft untouched.
@@ -210,7 +209,7 @@
     const back = button("이전", "story-button", () => navigate(order.indexOf(current) - 1));
     const operation = button("일시정지", "story-button story-operation", controlJob); operation.hidden = true;
     const next = button("다음", "story-button", advance);
-    footer.append(back, operation, next); panel.append(heading, context, content, footer);
+    footer.append(back, operation, next); panel.append(heading, content, footer);
     const loader = node("div", undefined, "story-loader"); loader.hidden = true; loader.setAttribute("role", "status");
     const loaderDots = node("span", undefined, "story-loading-dots"); loaderDots.setAttribute("aria-hidden", "true");
     for (let i = 0; i < 3; i++) loaderDots.append(node("i"));
@@ -641,10 +640,8 @@
       if (!stage.getBoundingClientRect || typeof getComputedStyle !== "function") return Math.max(80, innerHeight - 210);
       const rect = stage.getBoundingClientRect(), style = getComputedStyle(stage);
       const gap = parseFloat(getComputedStyle(panel).rowGap) || 0;
-      const contextHeight = context.getBoundingClientRect().height;
       let available = rect.height - (parseFloat(style.paddingTop) || 0) - (parseFloat(style.paddingBottom) || 0)
-        - heading.getBoundingClientRect().height - contextHeight - footer.getBoundingClientRect().height
-        - gap * (contextHeight > 0 ? 3 : 2);
+        - heading.getBoundingClientRect().height - footer.getBoundingClientRect().height - gap * 2;
       if (!listenActions.hidden) available -= listenActions.getBoundingClientRect().height + (parseFloat(getComputedStyle(live).rowGap) || 0);
       if (!migrationNote.hidden) available -= migrationNote.getBoundingClientRect().height + (parseFloat(getComputedStyle(live).rowGap) || 0);
       return Math.max(80, available);
@@ -756,8 +753,6 @@
       const preparingResults = Boolean(project && current === "results" && !done(project.status) && stageStep(project) === "results");
       heading.textContent = preparingResults ? "학습 결과를 준비합니다." : definitions[position]?.[2] || "학습 상태";
       document.title = definitions[position]?.[1] || "한국어 호출어 학습";
-      context.textContent = project && position >= 3 ? `‘${project.wakeword || ""}’ · ${titles[project.preset] || "호출어 학습"}` : "";
-      context.hidden = !context.textContent;
       logButton.hidden = !project;
       if (!project) setupReached = Math.max(setupReached, position);
       const visibleThrough = project ? maximum : setupReached;

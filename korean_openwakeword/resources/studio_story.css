@@ -25,7 +25,6 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-panel.is-leaving{opacity:0;transform:translateY(-6px);pointer-events:none}
 .story-panel h1{flex:none;text-align:center;font:500 26px/36px system-ui,"Malgun Gothic",sans-serif;letter-spacing:-.035em;margin:0;color:#eaedf1;word-break:keep-all}
 .story-panel h1:focus{outline:none}
-.story-context{flex:none;margin:-16px 0 0;color:#c3cbd6;font:400 14px/22px system-ui,"Malgun Gothic",sans-serif;text-align:center}
 .story-content{width:100%;min-height:0;display:flex;flex-direction:column;align-items:center}
 .story-shell[data-step="entry"] .story-panel{width:460px;gap:28px;transform:translateY(-10px)}
 .story-shell[data-step="entry"] .story-panel.is-leaving{opacity:0;transform:translateY(-16px)}
@@ -241,7 +240,6 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
   .story-live{gap:12px}
   .story-live .downloads-list{grid-template-columns:1fr;gap:0}
   .story-live .download-item{padding:8px 0}
-  .story-context{margin:-10px 0 0}
 }
 @media(max-width:600px){
   .story-stage{padding-top:58px;padding-bottom:18px}
@@ -287,7 +285,6 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
   .story-shell .story-material-tab{font-size:15px;line-height:22px}
   .story-index{left:4px}
   .story-index-tick{transform:translateY(-50%) scaleX(.75);transform-origin:left center}
-  .story-context{font-size:13px;line-height:20px}
   .story-live .progress-text{font-size:14px;line-height:20px}
   .story-voice-row{grid-template-columns:1fr;gap:5px}
   .story-history-title{font-size:17px;line-height:26px}
@@ -296,13 +293,11 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 @media(max-height:560px){
   .story-stage{padding-top:54px;padding-bottom:12px}
   .story-panel{gap:12px}
-  .story-context{margin:-6px 0 0}
   .story-shell[data-step="entry"] .story-panel{gap:24px}
   .story-live{gap:8px}
   .story-live .current-eta{font-size:13px;line-height:20px}
   .story-live #counts{display:none}
   .story-shell:is([data-step="pronunciation"],[data-step="hard-review"],[data-step="results"],[data-step="microphone"]) .story-panel{gap:8px}
-  .story-shell:is([data-step="results"],[data-step="microphone"]) .story-context{display:none}
   .story-live #project-error,.story-live #migration-note{max-height:72px;font-size:13px;line-height:20px}
 }
 @media(max-width:600px) and (max-height:560px){.story-scale .preset{min-height:60px;padding:6px 10px;gap:2px}.story-scale #presets,.story-scale #story-saved-presets{margin:0}.story-history-rows{gap:10px}.story-history-row{padding:8px 0}}
