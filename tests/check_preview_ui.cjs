@@ -6,16 +6,19 @@ const vm = require("node:vm");
 const html = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources/reference_preview.html"), "utf8");
 const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 
-async function screen(mode, items, { error, ok = true, playback } = {}) {
+async function screen(mode, items, { error, ok = true, playback, height = 144, width = 560, buttonRect = {top:22,bottom:62,left:8,width:460} } = {}) {
   const nodes = new Map();
   class Element {
-    constructor() { this.value = ""; this.textContent = ""; this.children = []; this.handlers = {}; this.attributes = {}; this.played = 0; this.pauses = 0; this.paused = true; this.ended = false; }
-    append(...nodes) { this.children.push(...nodes); }
-    replaceChildren(...nodes) { this.children = nodes; }
+    constructor() { this.value = ""; this.textContent = ""; this.children = []; this.handlers = {}; this.attributes = {}; this.style = {}; this.scrollTop = 0; this.clientHeight = 68; this.offsetTop = 0; this.offsetHeight = 36; this.played = 0; this.pauses = 0; this.paused = true; this.ended = false; }
+    append(...nodes) { nodes.forEach((node,index)=>{node.parentElement=this;node.offsetTop=(this.children.length+index)*36+4;});this.children.push(...nodes); }
+    replaceChildren(...nodes) { this.children=[];this.append(...nodes); }
     addEventListener(event, callback) { this.handlers[event] = callback; }
     setAttribute(key, value) { this.attributes[key] = value; }
     getAttribute(key) { return this.attributes[key] ?? null; }
     removeAttribute(key) { delete this.attributes[key]; }
+    contains(node) { return node===this || this.children.some(child=>child.contains(node)); }
+    focus() { document.activeElement=this; }
+    getBoundingClientRect() { return {...buttonRect}; }
     get src() { return this.attributes.src; }
     set src(value) { this.attributes.src=value; this.ended=false; }
     load() { this.ended=false; }
@@ -24,14 +27,15 @@ async function screen(mode, items, { error, ok = true, playback } = {}) {
     finish() { this.ended=true; this.paused=true; this.handlers.pause?.(); this.handlers.ended?.(); }
   }
   for (const match of html.matchAll(/id="([^"]+)"/g)) nodes.set(match[1], new Element());
-  const calls = [], messages = {}, documentEvents = {}, document = { title: "기준 목소리 듣기", hidden:false, addEventListener:(name,callback)=>{documentEvents[name]=callback;}, getElementById: id => nodes.get(id), createElement: () => new Element() };
-  const context = vm.createContext({ document, URL, location: new URL(`http://127.0.0.1:8793/${mode}/?project=bora`),
+  nodes.get('voice-picker').append(nodes.get('voice-picker-button'),nodes.get('voice-picker-list'));
+  const calls = [], parentMessages = [], messages = {}, documentEvents = {}, document = { title: "기준 목소리 듣기", hidden:false, addEventListener:(name,callback)=>{documentEvents[name]=callback;}, getElementById: id => nodes.get(id), createElement: () => new Element() };
+  const context = vm.createContext({ document, URL, innerHeight:height,innerWidth:width,location: new URL(`http://127.0.0.1:8793/${mode}/?project=bora`),
     fetch: async (url, options) => { calls.push({ url, options }); return { ok, json: async () => ({ items, error }) }; } });
-  context.window = context; context.parent = {};
+  context.window = context; context.parent = {postMessage:(message,origin)=>parentMessages.push({message:JSON.parse(JSON.stringify(message)),origin})};
   context.addEventListener = (name, callback) => { messages[name] = callback; };
   vm.runInContext(script, context);
   for (let index = 0; index < 8; index++) await new Promise(resolve => setImmediate(resolve));
-  return { nodes, calls, document, documentEvents, messages, parent: context.parent };
+  return { nodes, calls, document, documentEvents, messages, parentMessages, parent: context.parent, resize:(nextHeight,nextRect)=>{context.innerHeight=nextHeight;if(nextRect)Object.assign(buttonRect,nextRect);messages.resize();} };
 }
 
 (async () => {
@@ -84,7 +88,10 @@ async function screen(mode, items, { error, ok = true, playback } = {}) {
   assert.equal(reference.document.title, "기준 목소리 듣기");
   assert.equal(reference.nodes.get("voice").children[0].textContent, "학습용 · 목소리 1");
   assert.equal(reference.nodes.get("listening-sidebar").hidden, true);
-  assert.equal(reference.nodes.get("voice").hidden, false);
+  assert.equal(reference.nodes.get("voice").hidden, true);
+  assert.equal(reference.nodes.get("voice-picker").hidden, false);
+  assert.equal(reference.nodes.get("voice-picker-button").textContent, "학습용 · 목소리 1");
+  assert.equal(reference.nodes.get("voice-picker-list").hidden, true);
   assert.equal(reference.nodes.get("sentence").hidden, true);
   assert.equal(reference.nodes.get("listening-list").children.length, 0);
   assert.equal(reference.nodes.get("audio").played, 0); // Opening is never autoplay.
@@ -99,6 +106,55 @@ async function screen(mode, items, { error, ok = true, playback } = {}) {
   assert.equal(many.nodes.get('voice').value,'0','reference listening loops after the last selected voice');
   assert.equal(many.nodes.get('audio').played,2);
   assert.equal(many.calls.length,1,'voice selection and playback make no approval or extra data request');
+  const choiceItems=Array.from({length:50},(_,i)=>({id:`choice-${i}`,group:'학습용',text:'오늘은',audio:`/reference-preview/audio/${i}?project=bora`}));
+  const choices=await screen('reference-preview',choiceItems);
+  const pickerButton=choices.nodes.get('voice-picker-button'),pickerList=choices.nodes.get('voice-picker-list');
+  const key=(element,value)=>{let prevented=false;element.handlers.keydown({key:value,preventDefault:()=>{prevented=true;}});return prevented;};
+  pickerButton.handlers.click();
+  assert.equal(pickerList.hidden,false);assert.equal(pickerButton.attributes['aria-expanded'],'true');
+  assert.equal(choices.document.activeElement,pickerList);
+  assert.equal(pickerList.children.length,50);
+  assert.equal(pickerList.children[0].textContent,'학습용 · 목소리 1');
+  assert.equal(pickerList.style.maxHeight,'68px','popup fits the initial144px iframe before its parent expands');
+  assert.ok(parseFloat(pickerList.style.top)+parseFloat(pickerList.style.maxHeight)<=144-8);
+  assert.deepEqual(choices.parentMessages,[{message:{type:'koww:voice-picker',open:true},origin:'http://127.0.0.1:8793'}]);
+  choices.resize(300,{top:100,bottom:140});
+  assert.equal(pickerList.style.maxHeight,'146px');
+  assert.ok(parseFloat(pickerList.style.top)+parseFloat(pickerList.style.maxHeight)<=300-8);
+  choices.resize(700,{top:100,bottom:140});assert.equal(pickerList.style.maxHeight,'240px');
+  choices.resize(300,{top:240,bottom:280});
+  assert.equal(pickerList.style.top,'8px','picker opens upward when space below is smaller');
+  assert.equal(pickerList.style.maxHeight,'226px');
+  assert.equal(key(pickerList,'End'),true);assert.equal(pickerList.attributes['aria-activedescendant'],'voice-option-49');
+  key(pickerList,'Home');key(pickerList,'ArrowDown');key(pickerList,'Enter');
+  assert.equal(choices.nodes.get('voice').value,'1');assert.equal(choices.nodes.get('position').textContent,'2 / 50');
+  assert.equal(pickerButton.textContent,'학습용 · 목소리 2');assert.equal(pickerList.hidden,true);
+  assert.equal(choices.document.activeElement,pickerButton);assert.equal(choices.nodes.get('audio').played,0,'choosing a voice does not autoplay');
+  assert.deepEqual(choices.parentMessages.at(-1),{message:{type:'koww:voice-picker',open:false},origin:'http://127.0.0.1:8793'});
+  key(pickerButton,' ');key(pickerList,'ArrowUp');key(pickerList,' ');
+  assert.equal(choices.nodes.get('voice').value,'0');assert.equal(pickerList.hidden,true);
+  key(pickerButton,'ArrowDown');key(pickerList,'Escape');
+  assert.equal(pickerList.hidden,true);assert.equal(choices.document.activeElement,pickerButton);
+  pickerButton.handlers.click();choices.documentEvents.pointerdown({target:pickerList.children[3]});
+  assert.equal(pickerList.hidden,false,'clicking inside the picker does not dismiss it before selection');
+  pickerList.children[3].handlers.click();assert.equal(choices.nodes.get('voice').value,'3');assert.equal(pickerList.hidden,true);
+  pickerButton.handlers.click();choices.documentEvents.pointerdown({target:choices.nodes.get('continuous')});assert.equal(pickerList.hidden,true);
+  pickerButton.handlers.click();choices.messages.message({origin:'http://127.0.0.1:8793',source:choices.parent,data:{type:'koww:pause'}});
+  assert.equal(pickerList.hidden,true);assert.equal(choices.nodes.get('audio').src,undefined);
+  pickerButton.handlers.click();choices.document.hidden=true;choices.documentEvents.visibilitychange();assert.equal(pickerList.hidden,true);
+  choices.document.hidden=false;pickerButton.handlers.click();choices.messages.pagehide();assert.equal(pickerList.hidden,true);
+  assert.equal(choices.calls.length,1,'picker interactions do not request approvals or reload the queue');
+  const parentClose=await screen('reference-preview',choiceItems);
+  parentClose.nodes.get('continuous').handlers.click();parentClose.nodes.get('voice-picker-button').handlers.click();
+  parentClose.messages.message({origin:'https://other.example',source:parentClose.parent,data:{type:'koww:voice-picker-close'}});
+  parentClose.messages.message({origin:'http://127.0.0.1:8793',source:{},data:{type:'koww:voice-picker-close'}});
+  assert.equal(parentClose.nodes.get('voice-picker-list').hidden,false,'foreign messages cannot close the reference picker');
+  parentClose.messages.message({origin:'http://127.0.0.1:8793',source:parentClose.parent,data:{type:'koww:voice-picker-close'}});
+  assert.equal(parentClose.nodes.get('voice-picker-list').hidden,true);
+  assert.equal(parentClose.nodes.get('audio').paused,false,'clicking the parent outside the picker does not interrupt playback');
+  assert.equal(parentClose.nodes.get('audio').played,1);
+  assert.equal(hard.nodes.get('voice-picker').hidden,true);
+  assert.deepEqual(hard.parentMessages,[],'hard-example playback never requests reference-picker expansion');
   const hardPages=await screen('hard-preview',Array.from({length:7},(_,i)=>({id:`hard-${i}`,text:'돌아와',audio:`/hard-preview/audio/${i}?project=bora`})));
   assert.equal(hardPages.nodes.get('listening-list').children.length,5);
   hardPages.nodes.get('list-next').handlers.click();

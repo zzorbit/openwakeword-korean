@@ -23,6 +23,7 @@ function page(initialProject = null, options = {}) {
       this.hidden = false; this.disabled = false; this.textContent = ""; this.value = ""; this.open = false;
       if (tag === "audio") { this.paused = true; this.ended = false; this.playCalls = 0; this.loadCalls = 0; }
       this.classList = {
+        contains: name => this.className.split(/\s+/).includes(name),
         add: name => { this.className = [...new Set([...this.className.split(/\s+/).filter(Boolean), name])].join(" "); },
         remove: name => { this.className = this.className.split(/\s+/).filter(value => value !== name).join(" "); },
         toggle: (name, force) => { if (force) this.classList.add(name); else this.classList.remove(name); },
@@ -76,7 +77,7 @@ function page(initialProject = null, options = {}) {
   const document = { body, hidden: false, createElement: tag => new Element(tag), getElementById: get, querySelector: selector => body.querySelector(selector), title: "", addEventListener: (name, fn) => { (documentHandlers[name] ||= []).push(fn); } };
   const state = { project: initialProject, recipes: [], selectedPreset: "check", recipeReady: true, busy: false };
   const windowHandlers = {};
-  const context = vm.createContext({ document, console, innerWidth: options.width || 1200, innerHeight: options.height || 900, matchMedia: () => ({ matches: false }),
+  const context = vm.createContext({ document, console, location: { origin: "http://studio.local" }, innerWidth: options.width || 1200, innerHeight: options.height || 900, matchMedia: () => ({ matches: false }),
     setTimeout: (callback, delay) => { const timer = { callback, delay, at: clock + delay }; timers.push(timer); return timer; },
     clearTimeout: timer => { if (timer) timer.canceled = true; } });
   context.window = context; context.addEventListener = (name, fn) => { (windowHandlers[name] ||= []).push(fn); };
@@ -97,7 +98,7 @@ function page(initialProject = null, options = {}) {
   function advanceTimer() { const timer = timers.filter(timer => !timer.canceled && !timer.ran).sort((a, b) => a.at - b.at)[0]; if (!timer) return false; clock = Math.max(clock, timer.at); timer.ran = true; timer.callback(); return true; }
   async function settle() { let advanced = false; await flush(); while (advanceTimer()) { advanced = true; await flush(); } return advanced; }
   ui.render();
-  return { api: context.KowwStory, ui, shell, get, state, calls, timers, creationOptions, viewModes, next, operation, back, settle, advanceTimer, flush, now: () => clock, elapse: value => { clock += value; }, windowEvent: async name => { for (const fn of windowHandlers[name] || []) fn(); await flush(); }, element: tag => new Element(tag), visibility: async hidden => { document.hidden = hidden; await Promise.all((documentHandlers.visibilitychange || []).map(fn => fn())); }, ticks: shell.querySelectorAll(".story-index-step") };
+  return { api: context.KowwStory, ui, shell, get, state, calls, timers, creationOptions, viewModes, next, operation, back, settle, advanceTimer, flush, now: () => clock, elapse: value => { clock += value; }, windowEvent: async (name, event) => { for (const fn of windowHandlers[name] || []) fn(event); await flush(); }, element: tag => new Element(tag), visibility: async hidden => { document.hidden = hidden; await Promise.all((documentHandlers.visibilitychange || []).map(fn => fn())); }, ticks: shell.querySelectorAll(".story-index-step") };
 }
 
 async function main() {
@@ -428,6 +429,34 @@ async function main() {
     await p.next.fire("click"); await p.settle(); await p.next.fire("click");
     assert.equal(p.calls.filter(call => call === "resume").length, 1, "no audio must be played or approved to continue");
     assert.equal(p.calls.includes("input"), false); await p.settle(); assert.equal(p.shell.dataset.step, "pronunciation");
+  });
+  await test("only the active reference frame can expand its picker and navigation clears the expansion", async () => {
+    const p = page(navigationProject("voices"));
+    await p.next.fire("click"); await p.settle();
+    const wrapper = p.shell.querySelector(".story-voice-listening"), posted = [];
+    const source = { postMessage: (data, origin) => posted.push({ data, origin }) };
+    p.get("reference-preview-frame").contentWindow = source;
+    const message = { origin: "http://studio.local", source, data: { type: "koww:voice-picker", open: true } };
+    await p.windowEvent("message", { ...message, origin: "https://other.invalid" });
+    await p.windowEvent("message", { ...message, source: {} });
+    await p.windowEvent("message", { ...message, data: { type: "koww:voice-picker", open: "true" } });
+    assert.equal(wrapper.className.includes("is-selecting"), false);
+    await p.windowEvent("message", message);
+    assert.equal(wrapper.className.includes("is-selecting"), true);
+    p.ui.render(); assert.equal(wrapper.className.includes("is-selecting"), true);
+    await p.windowEvent("message", { ...message, data: { ...message.data, open: false } });
+    assert.equal(wrapper.className.includes("is-selecting"), false);
+    await p.windowEvent("message", message);
+    await p.windowEvent("pointerdown");
+    assert.equal(wrapper.className.includes("is-selecting"), false);
+    assert.equal(posted.length, 1); assert.equal(posted[0].data.type, "koww:voice-picker-close");
+    assert.equal(posted[0].origin, "http://studio.local");
+    await p.windowEvent("message", message);
+    await p.back.fire("click"); await p.settle();
+    assert.equal(wrapper.className.includes("is-selecting"), false);
+    await p.windowEvent("message", message);
+    assert.equal(wrapper.className.includes("is-selecting"), false);
+    assert.equal(p.calls.some(call => ["create", "start", "resume", "input"].includes(call)), false);
   });
   await test("story next never becomes a task control and pending work pauses and resumes only through the central button", async () => {
     const project = navigationProject("downloads");

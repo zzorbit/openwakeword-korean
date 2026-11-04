@@ -275,6 +275,7 @@
     }
     function openDialog(value) { if (!value.dialog.open) value.dialog.showModal(); }
     function pauseMedia() {
+      voiceListening.classList.remove("is-selecting");
       for (const id of ["review-frame", "reference-preview-frame", "hard-preview-frame", "result-frame"]) bridge.pause($(id));
       stopHistoryPlayback(true);
       if (listenDialog.dialog.open) listenDialog.dialog.close();
@@ -868,6 +869,17 @@
       if (event.target?.tagName === "DETAILS") Promise.resolve().then(paginateDownloads);
     }, true);
     window.addEventListener("resize", () => { if (current === "materials") renderMaterials(); if (current === "downloads") paginateDownloads(); if (lastProject && !historic.hidden) renderHistory(lastProject); });
+    window.addEventListener("pointerdown", () => {
+      if (!voiceListening.classList.contains("is-selecting")) return;
+      voiceListening.classList.remove("is-selecting");
+      $("reference-preview-frame")?.contentWindow?.postMessage({ type: "koww:voice-picker-close" }, window.location.origin);
+    });
+    window.addEventListener("message", event => {
+      const frame = $("reference-preview-frame"), origin = window.location?.origin;
+      if (!origin || event.origin !== origin || !frame?.contentWindow || event.source !== frame.contentWindow
+        || event.data?.type !== "koww:voice-picker" || typeof event.data.open !== "boolean") return;
+      voiceListening.classList.toggle("is-selecting", event.data.open && current === "voice-listening" && !transitioning);
+    });
     window.addEventListener("pagehide", () => { stopTransition(); pauseMedia(); });
     return { render };
   }
