@@ -895,7 +895,10 @@
     $("input-value").hidden = dependencies || hard; $("input-value").required = !dependencies && !hard;
     $("hard-phrase-editor").hidden = !hard;
     $("dependency-backend").hidden = !dependencies;
-    $("input-submit").textContent = dependencies ? "선택한 도구 설치하고 계속" : "저장하고 이어서 진행";
+    if (input.kind !== "material_admissions") {
+      const submitText = dependencies ? "선택한 도구 설치하고 계속" : "저장하고 이어서 진행";
+      if ($("input-submit").textContent !== submitText) $("input-submit").textContent = submitText;
+    }
     $("input-hint").textContent = input.hint || (dependencies ? "현재 가상 환경에만 설치합니다. NVIDIA GPU가 없다면 CPU용을 선택하세요." : hard ? "확인한 후보로 소수의 검수용 음성을 먼저 만듭니다." : "직접 준비한 자료의 승인 기록이 필요합니다. 원본 음원 경로만 입력하면 승인된 것으로 처리하지 않습니다.");
     if (identity !== inputIdentity) {
       $("input-value").value = (input.phrases || input.values || input.suggestions || []).join("\n");
@@ -914,8 +917,8 @@
     }
     renderInputMode(project);
     renderHardGenerationCounts(project);
-    $("input-submit").disabled = busy;
-    $("hard-phrase-add").disabled = busy;
+    if ($("input-submit").disabled !== busy) $("input-submit").disabled = busy;
+    if ($("hard-phrase-add").disabled !== busy) $("hard-phrase-add").disabled = busy;
     for (const field of hardPhraseFields) { field.input.disabled = busy; field.remove.disabled = busy; }
   }
   function hardPhraseValues() {
@@ -977,7 +980,8 @@
     if (!material) return;
     $("input-label").hidden = source; $("input-value").hidden = source; $("input-value").required = !source;
     $("input-hint").hidden = source;
-    $("input-submit").textContent = source ? "자료 준비하고 검수하기" : "승인 자료 연결하고 계속";
+    const submitText = source ? "자료 준비하고 검수하기" : "승인 자료 연결하고 계속";
+    if ($("input-submit").textContent !== submitText) $("input-submit").textContent = submitText;
   }
   function renderResultFrame(project) {
     const result = project.results || {};

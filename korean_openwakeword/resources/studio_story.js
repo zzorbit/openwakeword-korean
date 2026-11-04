@@ -773,12 +773,16 @@
       }
       const action = operationAction(project);
       operation.hidden = !action;
-      operation.disabled = !action || state.busy || transitioning || project?.status === "pausing";
-      operation.textContent = project?.status === "pausing" ? "정지 중" : action === "pause" ? "일시정지" : action === "resume" ? "재개" : "시작";
-      operation.title = action === "pause" ? "현재 단계가 끝난 뒤 멈춥니다." : "";
+      const operationDisabled = Boolean(!action || state.busy || transitioning || project?.status === "pausing");
+      if (operation.disabled !== operationDisabled) operation.disabled = operationDisabled;
+      const operationText = project?.status === "pausing" ? "정지 중" : action === "pause" ? "일시정지" : action === "resume" ? "재개" : "시작";
+      if (operation.textContent !== operationText) operation.textContent = operationText;
+      const operationTitle = action === "pause" ? "현재 단계가 끝난 뒤 멈춥니다." : "";
+      if (operation.title !== operationTitle) operation.title = operationTitle;
       footer.classList.toggle("has-operation", !operation.hidden);
       downloadActions.hidden = !canStartDownloads(project);
-      downloadPrimary.disabled = state.busy || transitioning || !canStartDownloads(project);
+      const downloadDisabled = Boolean(state.busy || transitioning || !canStartDownloads(project));
+      if (downloadPrimary.disabled !== downloadDisabled) downloadPrimary.disabled = downloadDisabled;
       migrationNote.hidden = !project?.migration;
       // Hidden panels stay connected; polling never rebuilds their inputs or
       // embedded documents, and never resets a review's listening position.
