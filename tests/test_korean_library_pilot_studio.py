@@ -1,10 +1,10 @@
-"""Per-training-voice pronunciation pilots preserve legacy runs and human gates."""
+"""Current two-stage voice pilots preserve coverage, legacy runs, and human gates."""
 from copy import deepcopy
 from pathlib import Path
 
 import pytest
 
-from korean_openwakeword import studio, studio_steps as steps
+from korean_openwakeword import pilot, studio, studio_steps as steps
 from korean_openwakeword.common import digest, identity, now, read_json, read_rows, write_immutable_rows, write_json
 from korean_openwakeword.project import create_project
 from test_korean_library_studio import create, manager  # noqa: F401
@@ -23,30 +23,33 @@ def run(project, settings, stage, context=None):
     return steps.run_stage(project, project.parent.parent, settings, stage, context)
 
 
-def pilot_rows(project, count):
+def pilot_rows(project, count, split="train"):
     root = project.parent
     config = read_json(project)
-    families = [row for row in read_json(root / "voices.json")["families"] if row["split"] == "train"]
+    families = [row for row in read_json(root / "voices.json")["families"] if row["split"] == split]
     rows = []
     for index in range(count):
-        path = root / "data/pilot/train" / f"fixture_{index}.wav"
+        path = root / "data/pilot" / split / f"fixture_{index}.wav"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(("synthetic pilot fixture " + str(index)).encode())
-        rows.append({"sample_id": f"pilot_{index}", "slot": index, "path": str(path.relative_to(root)),
+        path.write_bytes((f"synthetic {split} pilot fixture " + str(index)).encode())
+        rows.append({"sample_id": f"pilot_{split}_{index}", "slot": index, "path": str(path.relative_to(root)),
                      "sha256": digest(path), "voice_family_id": families[index % len(families)]["family_id"],
-                     "split": "train", "qc": {"passed": True}, "generation_method": "clone",
+                     "split": split, "qc": {"passed": True}, "generation_method": "clone",
                      "tts_settings_id": identity(config["tts"]), "text": "보라야"})
     return rows
 
 
 @pytest.mark.parametrize("preset,expected", [("check", 20), ("trial", 100), ("production", 500)])
-def test_default_pronunciation_pilot_budget_follows_training_voices(preset, expected):
+def test_default_pronunciation_pilot_covers_both_voice_banks_before_and_after_generation(preset, expected):
     settings = steps.preset_settings(preset)
-    assert settings["pilot_review_policy"] == "one_per_training_voice_v1"
+    assert settings["pilot_review_policy"] == pilot.PREPOST_PILOT_POLICY
     assert settings["train_references"] == expected
     plan = {stage["id"]: stage for stage in steps.workflow_plan(settings)}
     assert plan["pilot"]["kind"] == "task"
     assert plan["pilot_review"]["kind"] == "review"
+    assert plan["positive_review"]["kind"] == "review" and len(plan) == 20
+    assert list(plan).index("pilot_review") < list(plan).index("positives") < list(plan).index("positive_review")
+    assert settings["train_references"] + settings["validation_references"] == expected + 30
     assert settings["validation_references"] == 30 and settings["final_locked"] is True
 
 
@@ -73,52 +76,60 @@ def test_legacy_pilot_keeps_frozen_twenty_four_generation_and_review(tmp_path, m
 
 
 @pytest.mark.parametrize("preset,expected", [("check", 20), ("trial", 100), ("production", 500)])
-def test_new_pilot_stage_prepares_exactly_one_call_per_training_voice_and_keeps_human_review(tmp_path, monkeypatch, preset, expected):
+def test_current_pilot_stage_prepares_one_call_per_voice_in_both_banks_and_keeps_human_review(tmp_path, monkeypatch, preset, expected):
     from korean_openwakeword import pilot, tts_runtime
     project, settings = make_project(tmp_path, preset)
-    rows = pilot_rows(project, expected)
-    queue = project.parent / "data/pilot/train/selected_fixture.jsonl"
+    rows = pilot_rows(project, expected) + pilot_rows(project, 30, "validation")
+    queue = project.parent / "data/call_pronunciation/preflight_fixture.jsonl"
+    queue.parent.mkdir(parents=True, exist_ok=True)
     write_immutable_rows(queue, rows)
     before = {path: digest(path) for path in (project, project.parent / "voices.json", project.parent / "approval.json", queue)}
     calls = []
 
-    def prepare(path, *, train_count):
-        calls.append((path, train_count))
-        return {"target": expected, "technical_pass": expected, "full_target_reached": True,
-                "review_queue": str(queue), "selected_reference_families": [row["voice_family_id"] for row in rows],
-                "selected_reference_count": expected, "reused_existing_count": expected,
-                "missing_reference_families": []}
+    def prepare(path, supplied_settings, *, prior_rounds):
+        calls.append((path, supplied_settings, prior_rounds))
+        return {"target": expected + 30, "technical_pass": expected + 30, "full_target_reached": True,
+                "review_queue": str(queue), "split_counts": {
+                    "train": {"target": expected, "technical_pass": expected},
+                    "validation": {"target": 30, "technical_pass": 30}},
+                "bindings": {"review_queue": {"path": str(queue.relative_to(project.parent)), "sha256": digest(queue)}}}
 
-    monkeypatch.setattr(pilot, "prepare_pilot", prepare)
-    monkeypatch.setattr(tts_runtime, "generate_with_runtime", lambda *args: pytest.fail("New stage delegates to representative helper"))
+    monkeypatch.setattr(pilot, "prepare_prepost_pilot", prepare)
+    monkeypatch.setattr(pilot, "prepare_pilot", lambda *args, **kwargs: pytest.fail("Current policy cannot use the legacy helper"))
+    monkeypatch.setattr(tts_runtime, "generate_with_runtime", lambda *args: pytest.fail("Current stage delegates to the two-stage helper"))
     result = run(project, settings, "pilot")
-    assert result["state"] == "completed" and calls == [(project, expected)]
+    assert result["state"] == "completed" and calls == [(project, settings, [])]
     selected = read_rows(result["result"]["queue"])
-    assert len(selected) == len({row["voice_family_id"] for row in selected}) == expected
-    assert result["result"]["reused_existing_count"] == expected
+    assert len(selected) == len({row["voice_family_id"] for row in selected}) == expected + 30
+    assert sum(row["split"] == "train" for row in selected) == expected
+    assert sum(row["split"] == "validation" for row in selected) == 30
     assert all(digest(path) == sha for path, sha in before.items())
     pending = run(project, settings, "pilot_review", {"results": {"pilot": result}})
-    assert pending["state"] == "waiting_review" and pending["reviews"][0]["count"] == expected
+    assert pending["state"] == "waiting_review" and pending["reviews"][0]["count"] == expected + 30
     assert read_json(project.parent / "approval.json")["generation_policy_approved"] is False
 
 
 def test_incomplete_voice_coverage_cannot_publish_or_approve_a_pilot(tmp_path, monkeypatch):
     from korean_openwakeword import pilot
     project, settings = make_project(tmp_path)
-    monkeypatch.setattr(pilot, "prepare_pilot", lambda *args, **kwargs: {
-        "full_target_reached": False, "technical_pass": 19, "target": 20, "missing_reference_families": ["missing"]})
+    monkeypatch.setattr(pilot, "prepare_prepost_pilot", lambda *args, **kwargs: {
+        "full_target_reached": False, "technical_pass": 49, "target": 50, "missing_reference_families": ["missing"]})
     before = (project.parent / "approval.json").read_bytes()
     result = run(project, settings, "pilot")
     assert result["state"] == "waiting_input"
+    assert result["result"]["target"] == 50 and result["result"]["technical_pass"] == 49
+    assert "queue" not in result["result"]
     assert not (project.parent / ".studio/pilot_queue.jsonl").exists()
     assert (project.parent / "approval.json").read_bytes() == before
 
 
 @pytest.mark.parametrize("preset,expected", [("check", 20), ("trial", 100), ("production", 500)])
-def test_pilot_progress_uses_voice_budget_without_counting_duplicate_candidates_as_extra_voices(manager, preset, expected):
+def test_legacy_per_training_voice_progress_does_not_count_duplicate_candidates_as_extra_voices(manager, preset, expected):
     view = create(manager, preset=preset)
     manager.start(view["id"])
     state = manager._load(view["id"])
+    # This journal layout and family-based retry count belong to the saved v1 workflow.
+    state["settings"]["pilot_review_policy"] = pilot.TRAIN_PILOT_POLICY
     state["index"] = next(i for i, stage in enumerate(state["plan"]) if stage["id"] == "pilot")
     state["job"]["stage"] = "pilot"
     manager._save(state)
@@ -131,6 +142,33 @@ def test_pilot_progress_uses_voice_budget_without_counting_duplicate_candidates_
     progress = manager.describe(state)["progress"]
     assert progress["total"] == expected
     assert progress["done"] == 3
+    assert all(path.read_bytes() == content for path, content in before.items())
+    assert len(manager.workers.items) == 1
+
+
+@pytest.mark.parametrize("preset,expected", [("check", 20), ("trial", 100), ("production", 500)])
+def test_current_pilot_progress_counts_both_banks_only_in_the_current_preflight_revision(manager, preset, expected):
+    view = create(manager, preset=preset)
+    manager.start(view["id"])
+    state = manager._load(view["id"])
+    state["index"] = next(i for i, stage in enumerate(state["plan"]) if stage["id"] == "pilot")
+    state["job"]["stage"] = "pilot"
+    manager._save(state)
+    root = Path(state["project"]).parent
+    revision = identity([])
+    for name, kind, scope_revision, count in (
+            ("current", "preflight", revision, 3),
+            ("previous", "preflight", "old-review-revision", 8),
+            ("production", "production", revision, 9)):
+        for split in ("train", "validation"):
+            folder = root / "data/call_pronunciation" / name / split
+            write_json(folder / "contract.json", {"staged_scope": {"kind": kind, "revision": scope_revision}})
+            rows = pilot_rows(Path(state["project"]), count, split)
+            # Failed attempts never increase successful sample coverage.
+            write_immutable_rows(folder / "candidates.jsonl", rows + [{**rows[0], "qc": {"passed": False}}])
+    before = {path: path.read_bytes() for path in (root / "approval.json", manager._path(view["id"]))}
+    progress = manager.describe(state)["progress"]
+    assert progress["total"] == expected + 30 and progress["done"] == 6
     assert all(path.read_bytes() == content for path, content in before.items())
     assert len(manager.workers.items) == 1
 

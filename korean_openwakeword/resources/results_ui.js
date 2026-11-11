@@ -9,6 +9,7 @@
   const levels = [20, 15, 10, 5, 0];
   let dashboardView = "models", modelView = "recommendations";
   let compactAudio = null;
+  let resultClipPicker;
   function fitAudioControls() {
     if (typeof window === "undefined" || !Number.isFinite(window.innerHeight)) return;
     const compact = window.innerHeight < 520;
@@ -30,6 +31,7 @@
   }
   function dashboard(view, focus = false) {
     if (!["models", "conditions", "audio", "criteria"].includes(view)) return;
+    if (view !== "audio") resultClipPicker?.close();
     dashboardView = view; activateTabs("results", ["models", "conditions", "audio", "criteria"], view, focus);
   }
   function modelDashboard(view, focus = false) {
@@ -66,6 +68,7 @@
     for (const view of ["player", "reactions", "settings"]) {
       const tab = $(`audio-view-${view}`);
       if (tab) tab.onclick = () => {
+        if (view !== "player") resultClipPicker?.close();
         $("results-panel-audio")?.setAttribute?.("data-audio-view", view);
         for (const name of ["player", "reactions", "settings"]) $(`audio-view-${name}`)?.setAttribute?.("aria-pressed", String(name === view));
       };
@@ -75,6 +78,7 @@
     if (!window.parent || window.parent === window || !window.location?.origin
         || event.origin !== window.location.origin || event.source !== window.parent
         || event.data?.type !== "koww:pause") return;
+    resultClipPicker?.close();
     const pause = $("pause");
     // Reuse the viewer's own pause path so queue state and in-flight autoplay
     // cancellation stay consistent in both static and paged exports.
@@ -472,6 +476,59 @@
     if (clip.kind === "negative") return `호출어 없는 음원 · ${noiseLabel(clip.category)}`;
     return `${clip.original_order ? `음성 ${clip.original_order}` : "호출어 음성"} · ${noiseLabel(clip.category)}`;
   }
+  function mountClipPicker(move, labelAt, pageSize) {
+    const listening = window.KowwListening, container = $("result-clip-picker");
+    if (!listening?.createPicker || !container) return null;
+    const pager = $("clip-list-pager"), previous = $("clip-list-prev"), next = $("clip-list-next");
+    const play = $("resume"), controls = play.parentElement;
+    let page = 0, renderedPage = -1, length = 0, selected = -1, extraLabel = "";
+    const picker = listening.createPicker({
+      container, button: $("result-clip-picker-button"), label: $("result-clip-picker-label"),
+      popup: $("result-clip-picker-popup"), list: $("result-clip-picker-list"),
+      onSelect: offset => move(page * pageSize + offset),
+    });
+    resultClipPicker = picker;
+    container.hidden = false;
+    $("clipTitle").hidden = true;
+    $("results-panel-audio").classList.add("listen-voice-compact");
+    pager.hidden = true;
+    controls.after(pager);
+    listening.enhance($("audio"), controls, {
+      play, previous: $("prev"), next: $("next"), volume: $("result-volume"),
+    });
+
+    function render() {
+      const start = page * pageSize, end = Math.min(length, start + pageSize);
+      const localIndex = !extraLabel && selected >= start && selected < end ? selected - start : -1;
+      const display = extraLabel || (length ? labelAt(selected) : "선택한 조건의 음원 없음");
+      if (renderedPage !== page) {
+        const entries = [];
+        for (let position = start; position < end; position++) {
+          const label = labelAt(position);
+          entries.push({label, fullLabel: `${count(position + 1)}번째 음원 · ${label}`});
+        }
+        picker.setItems(entries, localIndex, display);
+        renderedPage = page;
+      } else {
+        picker.setSelected(localIndex, display);
+      }
+      pager.hidden = length <= pageSize;
+      previous.disabled = page === 0;
+      next.disabled = end >= length;
+      $("clip-list-position").textContent = `${count(start + 1)}–${count(end)} / ${count(length)}`;
+      if (extraLabel) $("queue").textContent = "추가 음원";
+    }
+    previous.onclick = () => { if (!previous.disabled) { page--; render(); } };
+    next.onclick = () => { if (!next.disabled) { page++; render(); } };
+    return (total, index, extra = "", reset = false) => {
+      if (reset || total !== length) renderedPage = -1;
+      if (reset || total !== length || index !== selected) page = Math.floor(index / pageSize);
+      length = total;
+      selected = index;
+      extraLabel = extra;
+      render();
+    };
+  }
   initDashboard();
   fitAudioControls();
   if (typeof window !== "undefined") window.addEventListener?.("resize", fitAudioControls);
@@ -480,7 +537,7 @@
     if (event.key === "Escape") document.querySelectorAll?.("details[open]")?.forEach(detail => { detail.open = false; });
   });
   const api = {modelLabel, noiseLabel, snrLabel, reverbLabel, renderSummary, renderConditions, renderResponses, renderRecommendations, clipLabel,
-    dashboard, modelDashboard, dashboardState: () => ({view: dashboardView, modelView})};
+    dashboard, modelDashboard, mountClipPicker, dashboardState: () => ({view: dashboardView, modelView})};
   if (typeof window !== "undefined") window.KowwResultsUI = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })();

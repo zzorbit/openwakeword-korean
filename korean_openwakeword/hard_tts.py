@@ -15,6 +15,7 @@ import soundfile as sf
 from . import tts
 from .audio import pcm16
 from .common import append_row, bound_file, digest, identity, now, read_json, read_rows, resolved, write_json, writer_lock
+from .task_progress import emit as report_progress, generation_attempt
 from .data import validate_hard_negative
 from .hard_phrase_policy import protected_call_terms, validate_noncall_text
 from .project import load_project
@@ -178,6 +179,7 @@ def generate_hard(project, phrases, count=None, model=None, *, samples_per_phras
         passed, attempts, hashes = _validate_existing(root, output, rows, contract, config, phrases, references, count)
         pending = [slot for slot in range(count) if slot not in passed and attempts[slot] < MAX_ATTEMPTS]
         if model is None and pending:
+            report_progress("tts_model_loading", "음성 생성 모델 준비", eta_eligible=False)
             model = tts._load_model(config["tts"]["clone_model"], config["tts"], root)
         prompts = {}
         for slot in pending:
@@ -185,6 +187,7 @@ def generate_hard(project, phrases, count=None, model=None, *, samples_per_phras
             family = reference["voice_family_id"]
             prompt_key = (family, reference["sha256"])
             if prompt_key not in prompts:
+                report_progress("tts_prompt_preparation", "기준 목소리 복제 정보 준비", eta_eligible=False)
                 prompts[prompt_key] = model.create_voice_clone_prompt(ref_audio=str(resolved(root, reference["path"])),
                     ref_text=reference["text"], x_vector_only_mode=False)
             for attempt in range(attempts[slot], MAX_ATTEMPTS):
@@ -192,8 +195,9 @@ def generate_hard(project, phrases, count=None, model=None, *, samples_per_phras
                 seed = _seed(config, slot, attempt, phrase, reference)
                 tts._seed(seed)
                 started = time.perf_counter()
-                wavs, rate = model.generate_voice_clone(text=phrase, language="Korean",
-                    voice_clone_prompt=prompts[prompt_key], **config["tts"]["generation"])
+                with generation_attempt() as timing:
+                    wavs, rate = model.generate_voice_clone(text=phrase, language="Korean",
+                        voice_clone_prompt=prompts[prompt_key], **config["tts"]["generation"])
                 if (len(wavs) != 1 or type(rate) not in (int, float) or not np.isfinite(rate) or
                     not 8000 <= rate <= 192000 or int(rate) != rate):
                     raise ValueError("Qwen must return exactly one waveform and a valid sample rate")
@@ -226,11 +230,14 @@ def generate_hard(project, phrases, count=None, model=None, *, samples_per_phras
                     "generation_seconds": time.perf_counter() - started, "created_at": now(),
                     "individual_human_listening": False, "content_review": "pending", "training_admitted": False}
                 append_row(output / "candidates.jsonl", row)
+                if timing is not None:
+                    timing.committed(qc["passed"])
                 rows.append(row); hashes.add(sha); attempts[slot] += 1
                 if qc["passed"]:
                     passed[slot] = row
                     break
             print(f"TTS Hard: technical {len(passed)}/{count}; attempts {len(rows)}; content approval pending", flush=True)
+        report_progress("tts_finalizing", "유사어 음원 목록·검사 결과 저장", eta_eligible=False)
         accepted = sorted(passed.values(), key=lambda r: r["slot"])
         summary = {"kind": "qwen_hard_negative_candidate_summary_v1", "target_originals": count,
             "attempts": len(rows), "technical_pass": len(accepted), "full_target_reached": len(accepted) == count,

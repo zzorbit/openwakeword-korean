@@ -1,11 +1,37 @@
 <!doctype html>
-<html lang="ko">
+<html lang="ko" data-studio-boot="loading">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <meta name="theme-color" content="#171a1f">
   <title>한국어 호출어 학습</title>
+  <link rel="preload" as="image" type="image/svg+xml" href="/studio_background_grain.svg">
+  <link rel="preload" as="image" type="image/svg+xml" href="/studio_background_atmosphere.svg">
+  <style id="studio-boot-critical">
+    html:not([data-studio-boot="ready"]){background:#171a1f;color:#e3e7ec}
+    html:not([data-studio-boot="ready"]) body{overflow:hidden}
+    html:not([data-studio-boot="ready"]) body>:not(#studio-boot){visibility:hidden!important;opacity:0!important;pointer-events:none!important}
+    #studio-boot{position:fixed;inset:0;z-index:10000;isolation:isolate;overflow:hidden;display:grid;place-items:center;padding:24px;background:#171a1f;color:#dce3ed;font:400 18px/26px system-ui,"Malgun Gothic",sans-serif}
+    .story-atmosphere{position:absolute;inset:0;z-index:-1;pointer-events:none;isolation:isolate}
+    .story-background-state{position:absolute;inset:0;z-index:-1;pointer-events:none;isolation:isolate;background-color:#171a1f}
+    .story-background-state::before{content:"";position:absolute;inset:0;z-index:-1;pointer-events:none;mix-blend-mode:soft-light}
+    .story-background-previous{background-image:radial-gradient(ellipse at 12% 10%,rgba(84,95,113,.10),transparent 52%),radial-gradient(ellipse at 80% 32%,rgba(9,12,17,.18),transparent 58%),radial-gradient(ellipse at 45% 95%,rgba(81,90,106,.07),transparent 62%)}
+    .story-background-previous::before{background-image:url("/studio_background_grain.svg");background-size:256px 256px;opacity:.10}
+    .story-background-current{opacity:.65}
+    .story-background-current::before{background-image:url("/studio_background_atmosphere.svg");background-size:cover;background-repeat:no-repeat;opacity:.24}
+    .studio-boot-content{position:relative;z-index:0;max-width:560px;text-align:center}
+    .studio-boot-status{display:flex;align-items:center;justify-content:center;gap:12px}
+    #studio-boot-title{margin:0;color:inherit;font:inherit}
+    .studio-boot-dots{display:flex;gap:4px}
+    .studio-boot-dots i{width:5px;height:5px;border-radius:50%;background:#aeb9c9;animation:story-dot-rise 1s ease-in-out infinite}
+    .studio-boot-dots i:nth-child(2){animation-delay:.15s}.studio-boot-dots i:nth-child(3){animation-delay:.3s}
+    @keyframes story-dot-rise{0%,80%,100%{opacity:.3;transform:translateY(0)}40%{opacity:1;transform:translateY(-4px)}}
+    html[data-studio-boot="error"] .studio-boot-dots i{animation:none;opacity:.7;transform:none}
+    .studio-boot-content [hidden]{display:none!important}
+    @media(prefers-reduced-motion:reduce){.studio-boot-dots i{animation:none;opacity:.7}}
+    html[data-studio-boot="ready"] #studio-boot{display:none}
+  </style>
   <link rel="stylesheet" href="/studio.css">
   <link rel="stylesheet" href="/studio_story.css">
   <link rel="stylesheet" href="/audio_listening.css">
@@ -14,7 +40,11 @@
   <script src="/studio.js" defer></script>
 </head>
 <body>
-  <main class="dashboard-shell">
+  <section id="studio-boot" class="studio-boot" role="status" aria-live="polite" aria-busy="true">
+    <div class="story-atmosphere" aria-hidden="true"><div class="story-background-state story-background-previous"></div><div class="story-background-state story-background-current"></div></div>
+    <div class="studio-boot-content"><div class="studio-boot-status"><span id="studio-boot-dots" class="story-loading-dots studio-boot-dots" aria-hidden="true"><i></i><i></i><i></i></span><p id="studio-boot-title">화면을 불러오는 중...</p></div><p id="studio-boot-error" hidden></p><button id="studio-boot-retry" type="button" hidden>다시 불러오기</button><noscript><p>이 화면을 사용하려면 브라우저에서 JavaScript를 켠 뒤 새로고침하세요.</p></noscript></div>
+  </section>
+  <main id="studio-dashboard" class="dashboard-shell" inert>
     <header class="dashboard-topbar"><div id="project-actions" hidden><div id="actions" class="actions"><button id="start" class="primary" type="button">준비·학습 시작</button><button id="resume" class="primary" type="button" hidden>이어서 진행</button><button id="pause" type="button" hidden>현재 단계 후 일시정지</button></div></div><div id="project-switch" class="project-switch" hidden><label class="sr-only" for="project-select">모델</label><select id="project-select" hidden></select><button id="new-project" class="quiet" type="button" hidden>새 호출어</button></div></header>
     <div id="connection" class="notice error" role="alert" hidden></div>
     <div id="message" class="notice" role="status" hidden></div>
@@ -29,7 +59,7 @@
           <fieldset class="purpose"><legend class="field-title">작업 규모</legend><div id="presets" class="preset-grid" aria-live="polite"><p class="muted">설정을 불러오는 중입니다.</p></div></fieldset>
           <div class="storage-location"><span>자동 저장 위치</span><p id="storage-directory" class="directory" aria-live="polite">호출어를 입력하면 표시됩니다.</p></div>
         </div></section>
-          <section id="setup-panel-materials" class="setup-panel" role="tabpanel" aria-labelledby="setup-tab-materials" hidden><div class="card materials-preview"><div class="section-heading"><h2>준비할 자료</h2></div><nav class="materials-type-tabs" role="tablist" aria-label="자료 구분"><button id="materials-tab-training" type="button" role="tab" aria-controls="materials-training-section" aria-selected="true">학습용</button><button id="materials-tab-evaluation" type="button" role="tab" aria-controls="materials-evaluation-section" aria-selected="false">성능 평가용</button></nav><div id="source-preview" class="materials-groups"></div><p id="source-plan-note" class="hint" hidden></p><details id="storage-budget-details" class="storage-budget" hidden><summary>용량 계산 근거</summary><div id="storage-budget-content"></div></details></div></section>
+          <section id="setup-panel-materials" class="setup-panel" role="tabpanel" aria-labelledby="setup-tab-materials" hidden><div class="card materials-preview"><div class="section-heading"><h2>준비 자료</h2></div><nav class="materials-type-tabs" role="tablist" aria-label="자료 구분"><button id="materials-tab-training" type="button" role="tab" aria-controls="materials-training-section" aria-selected="true">학습용</button><button id="materials-tab-evaluation" type="button" role="tab" aria-controls="materials-evaluation-section" aria-selected="false">성능 평가용</button></nav><div id="source-preview" class="materials-groups"></div><p id="source-plan-note" class="hint" hidden></p><details id="storage-budget-details" class="storage-budget" hidden><summary>용량 계산 근거</summary><div id="storage-budget-content"></div></details></div></section>
           <section id="setup-panel-voices" class="setup-panel card" role="tabpanel" aria-labelledby="setup-tab-voices" hidden><section id="setup-voices" class="voice-design" aria-labelledby="setup-voices-title" hidden><h3 id="setup-voices-title">목소리 구성</h3><div class="voice-design-scroll"><table class="voice-design-table"><thead><tr><th scope="col">항목</th><th id="setup-voices-train" scope="col">학습용</th><th id="setup-voices-validation" scope="col">공통 평가용</th></tr></thead><tbody id="setup-voices-rows"></tbody></table></div><p class="hint">생성 지시 기준입니다. 실제 목소리 차이는 음원을 듣고 확인합니다.</p></section><p id="setup-voices-empty" class="hint" hidden>작업 규모를 선택하면 목소리 구성이 표시됩니다.</p></section>
           <section id="setup-panel-advanced" class="setup-panel card" role="tabpanel" aria-labelledby="setup-tab-advanced" hidden><details open id="advanced" class="advanced"><summary>세부 설정</summary><p class="hint">비워 두면 선택한 규모의 설정을 사용합니다.</p><div class="advanced-grid">
             <label>호출어 원본 수<input id="adv-originals" type="number" min="1" step="1" inputmode="numeric"></label>
@@ -75,8 +105,8 @@
             <label id="source-hours-label">준비할 시간<input id="source-hours" type="number" min="0.000001" step="any" placeholder="시간" inputmode="decimal"></label>
           </div><p id="source-rir-note" class="hint" hidden>잔향은 시간을 지정하지 않고 폴더의 전체 자료를 준비합니다.</p><p id="source-format-note" class="hint" hidden>아래 메타데이터에 download-source의 download_receipt.json 경로를 입력하세요.</p><details id="source-metadata-details" class="advanced"><summary>출처 세부 정보 · 필요한 경우</summary><p class="hint">알려진 공개 자료의 원래 형식은 기본 출처 정보를 사용합니다. 별도 음원 목록은 목록·출처·이용 조건이 필요합니다.</p><div class="source-metadata"><label for="source-metadata">메타데이터 / 음원 목록 경로</label><input id="source-metadata" placeholder="해당 자료의 목록 파일" autocomplete="off"><label for="source-url">원본 자료 페이지</label><input id="source-url" type="url" placeholder="https://…"><label for="source-license">이용 조건</label><input id="source-license" placeholder="예: CC-BY-4.0"></div></details><p class="hint">음원을 검사·분리한 뒤 이 화면에서 대표 음원을 검수합니다. 검수 승인 전에는 학습에 넣지 않습니다.</p></div>
         </div>
-        <label id="input-label" for="input-value"></label><textarea id="input-value" rows="6" required></textarea><div id="hard-phrase-editor" hidden><div id="hard-phrase-fields" class="hard-phrase-fields" role="group" aria-labelledby="input-label"></div><div class="hard-tools"><button id="hard-phrase-add" class="quiet hard-phrase-add" type="button">+ 문구 추가</button><p id="hard-generation-counts" class="hint" aria-live="polite" hidden></p></div></div><select id="dependency-backend" aria-label="설치할 연산 도구" hidden><option value="cpu">CPU용</option><option value="cu128">NVIDIA GPU용 · CUDA 12.8</option></select><p id="input-hint" class="hint"></p></div><button id="input-submit" class="primary" type="submit">저장하고 이어서 진행</button></form></section><p id="review-empty" class="workspace-empty">지금 확인할 항목이 없습니다.</p></div>
-            <div id="audio-panel-reference" class="audio-panel" hidden><details id="reference-preview" class="reference-preview" hidden><summary>기준 목소리 듣기</summary><p id="reference-preview-counts" class="hint"></p><iframe id="reference-preview-frame" title="기준 목소리 듣기" allow="autoplay" loading="lazy"></iframe></details></div>
+        <label id="input-label" for="input-value"></label><textarea id="input-value" rows="6" required></textarea><div id="hard-phrase-editor" hidden><p id="hard-phrase-rules" class="hint hard-phrase-rules">공백 없이 한글 1~16자로 입력하세요. 호출어나 같은 이름이 들어간 문구와 중복 문구는 사용할 수 없습니다.</p><div id="hard-phrase-fields" class="hard-phrase-fields" role="group" aria-labelledby="input-label" aria-describedby="hard-phrase-rules"></div><div class="hard-tools"><button id="hard-phrase-add" class="quiet hard-phrase-add" type="button">+ 문구 추가</button><p id="hard-generation-counts" class="hint" aria-live="polite" hidden></p></div></div><select id="dependency-backend" aria-label="설치할 연산 도구" hidden><option value="cpu">CPU용</option><option value="cu128">NVIDIA GPU용 · CUDA 12.8</option></select><p id="input-hint" class="hint"></p></div><button id="input-submit" class="primary" type="submit">저장하고 이어서 진행</button></form></section><p id="review-empty" class="workspace-empty">지금 확인할 항목이 없습니다.</p></div>
+            <div id="audio-panel-reference" class="audio-panel" hidden><details id="reference-preview" class="reference-preview" hidden><summary>기준 목소리 검수</summary><p id="reference-preview-counts" class="hint"></p><iframe id="reference-preview-frame" title="기준 목소리 검수" allow="autoplay" loading="lazy"></iframe></details></div>
             <div id="audio-panel-hard" class="audio-panel" hidden><details id="hard-preview" class="reference-preview" hidden><summary>유사어 전체 듣기</summary><p id="hard-preview-counts" class="hint"></p><iframe id="hard-preview-frame" title="유사어 전체 듣기" allow="autoplay" loading="lazy"></iframe></details></div>
           </section>
           <section id="view-results" class="dashboard-view frame-workspace" aria-label="성능 결과와 마이크 시험" hidden><section id="results-section" class="card work-section" hidden><div class="section-heading"><div><p class="eyebrow">학습 결과</p><h2>성능을 확인하고 직접 시험하세요</h2></div><a id="result-open" class="open-link" target="_blank" rel="noopener">별도 창 ↗</a></div><div class="result-tabs" role="tablist" aria-label="결과 확인" hidden><button id="result-tab" class="tab active" role="tab" type="button" aria-selected="true">성능·평가 오디오</button><button id="mic-tab" class="tab" role="tab" type="button" aria-selected="false" hidden>마이크로 시험</button></div><p id="results-note" class="hint"></p><details id="evaluation-coverage" class="advanced" hidden><summary id="evaluation-coverage-summary"></summary><ul id="evaluation-shortages"></ul></details><iframe id="result-frame" title="성능과 평가 오디오" allow="microphone; autoplay" loading="eager"></iframe></section></section>

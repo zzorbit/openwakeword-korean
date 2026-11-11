@@ -14,7 +14,10 @@ import subprocess
 import sys
 
 from .common import bound_file, digest, identity, now, read_json, read_rows, resolved, write_json
+from .task_progress import emit as report_task_progress
 from .hard_phrase_policy import validate_noncall_text
+from .hard_pilot import HARD_SAMPLE_REVIEW_POLICY
+from .pilot import COMBINED_PILOT_POLICY, POSTGEN_PILOT_POLICY, PREPOST_PILOT_POLICY, TRAIN_PILOT_POLICY
 from .project import BATCH, MAX_TRAIN_VOICE_FAMILIES, load_project, require_standard_common_download
 from .budgets import DEFAULT_GENERIC_HOURS, DEFAULT_KOREAN_HOURS
 
@@ -89,11 +92,13 @@ _STAGES = (
     ("references", "학습 · 평가용 합성 음색 생성", "task"),
     ("references_review", "합성 음색 듣기", "review"),
     ("pilot", "호출어 파일럿 생성", "task"),
-    ("pilot_review", "호출어 발음 확인", "review"),
+    ("pilot_review", "호출어 발음 검수", "review"),
     ("positives", "호출어 음성 생성", "task"),
+    ("positive_review", "호출어 발음 검수", "review"),
     ("hard_phrases", "비호출 유사어 문구 확인", "review"),
+    ("hard_pilot", "유사어 검수용 샘플 생성", "task"),
     ("hard_generation", "비호출 유사어 음성 생성", "task"),
-    ("hard_review", "비호출 유사어 듣기", "review"),
+    ("hard_review", "유사어 발음 검수", "review"),
     ("hard_connect", "검수한 유사어를 학습에 연결", "task"),
     ("features", "소음 · 울림 증강과 특징 추출", "task"),
     ("training", "모델 학습", "task"),
@@ -118,7 +123,7 @@ def preset_settings(name="check"):
             "audio_storage_policy": "canonical_flac_only_v1",
             "voice_design_policy": "balanced_v1",
             "reference_admission_policy": "automatic_technical_v1",
-            "pilot_review_policy": "one_per_training_voice_v1",
+            "pilot_review_policy": PREPOST_PILOT_POLICY,
             "hard_generation_policy": "per_phrase_v1",
             "hard_review_policy": "one_per_phrase_v1",
             "runtime_recommendation_policy": "joint_cached_hard_conditions_v3",
@@ -130,10 +135,34 @@ def preset_settings(name="check"):
 def workflow_plan(settings):
     _validate_settings(settings)
     plan = [{"id": sid, "label": title, "title": title, "kind": kind} for sid, title, kind in _STAGES]
+    pilot_policy = settings.get("pilot_review_policy")
+    if pilot_policy == PREPOST_PILOT_POLICY:
+        for stage in plan:
+            if stage["id"] == "pilot":
+                stage.update(label="호출어 샘플 생성", title="호출어 샘플 생성")
+            elif stage["id"] == "pilot_review":
+                stage.update(label="호출어 발음 사전 검수", title="호출어 발음 사전 검수")
+    else:
+        plan = [stage for stage in plan if stage["id"] != "positive_review"]
+    if pilot_policy == POSTGEN_PILOT_POLICY:
+        generation = next(stage for stage in plan if stage["id"] == "positives")
+        plan = [generation if stage["id"] == "pilot" else stage for stage in plan if stage["id"] != "positives"]
+    if settings.get("hard_review_policy") == HARD_SAMPLE_REVIEW_POLICY:
+        generation = next(i for i, stage in enumerate(plan) if stage["id"] == "hard_generation")
+        plan[generation:generation + 2] = reversed(plan[generation:generation + 2])
+    else:
+        plan = [stage for stage in plan if stage["id"] != "hard_pilot"]
     if settings.get("reference_admission_policy") == "automatic_technical_v1":
         for stage in plan:
             if stage["id"] == "references_review":
                 stage.update(label="기준 목소리 자동 검사", title="기준 목소리 자동 검사", kind="task")
+    if settings.get("reference_selection_policy") == "candidate_pool_v3":
+        for stage in plan:
+            if stage["id"] in ("references", "references_review"):
+                title = "기준 목소리 후보 구성" if stage["id"] == "references" else "기준 목소리 분류 확인"
+                if settings.get("reference_preparation_policy") == "initial_candidate_batches_v1":
+                    title = "기준 목소리 준비" if stage["id"] == "references" else "기준 목소리 후보 확인"
+                stage.update(label=title, title=title, kind="task")
     if settings.get("material_review_policy") == "library_fixed_sources_v1":
         for stage in plan:
             if stage["id"] == "data_review":
@@ -144,19 +173,31 @@ def workflow_plan(settings):
 
 
 def _validate_settings(settings):
+    if settings.get("reference_preparation_policy") not in (None, "initial_candidate_batches_v1"):
+        raise ValueError("Unsupported reference candidate preparation policy")
+    if settings.get("reference_preparation_policy") and settings.get("reference_selection_policy") != "candidate_pool_v3":
+        raise ValueError("Initial candidate preparation requires planned reference selection")
+    if settings.get("reference_selection_policy") not in (None, "candidate_pool_v3"):
+        raise ValueError("Unsupported reference candidate selection policy")
+    if settings.get("reference_selection_policy") == "candidate_pool_v3" and (
+            settings.get("reference_admission_policy") != "automatic_technical_v1"
+            or settings.get("pilot_review_policy") != PREPOST_PILOT_POLICY):
+        raise ValueError("Candidate selection requires technical admission and reviewed call samples")
     if settings.get("runtime_recommendation_policy") not in (None, "joint_cached_score_search_v1", "joint_cached_hard_conditions_v2", "joint_cached_hard_conditions_v3"):
         raise ValueError("Unsupported runtime recommendation policy")
-    if settings.get("hard_review_policy") not in (None, "one_per_phrase_v1"):
+    if settings.get("hard_review_policy") not in (None, "one_per_phrase_v1", HARD_SAMPLE_REVIEW_POLICY):
         raise ValueError("Unsupported Hard representative review policy")
     hard_policy = settings.get("hard_generation_policy")
     if hard_policy not in (None, "per_phrase_v1"):
         raise ValueError("Unsupported Hard generation policy")
+    if settings.get("hard_review_policy") == HARD_SAMPLE_REVIEW_POLICY and hard_policy != "per_phrase_v1":
+        raise ValueError("Hard sample review requires a per-phrase generation budget")
     hard_key = "hard_samples_per_phrase" if hard_policy == "per_phrase_v1" else "hard_originals"
     if type(settings.get(hard_key)) is not int or settings[hard_key] < 1:
         raise ValueError(f"{hard_key} must be a positive integer")
     if hard_policy == "per_phrase_v1" and "hard_originals" in settings:
         raise ValueError("Per-phrase Hard generation cannot also declare a fixed total")
-    if settings.get("pilot_review_policy") not in (None, "one_per_training_voice_v1"):
+    if settings.get("pilot_review_policy") not in (None, TRAIN_PILOT_POLICY, COMBINED_PILOT_POLICY, POSTGEN_PILOT_POLICY, PREPOST_PILOT_POLICY):
         raise ValueError("Unsupported pilot review policy")
     if settings.get("reference_admission_policy") not in (None, "automatic_technical_v1"):
         raise ValueError("Unsupported reference admission policy")
@@ -530,10 +571,22 @@ def _material_review_queues(project, prepared, context, policy):
 
 def _generation_complete(summary):
     if summary.get("full_target_reached") is not True:
-        return _waiting("자동 기술 검사를 통과하지 못해 필요한 음성 수를 채우지 못했습니다. 실행 기록의 실패 사유를 확인하세요. "
-                        "승인한 발음·생성 기준을 자동으로 낮추지 않습니다. 생성 설정을 바꾸려면 기존 자료를 보존하고 새 프로젝트에서 파일럿부터 확인해야 합니다.",
+        failures = summary.get("exhausted_slots") or []
+        reasons = {"duration_outlier": "음성 길이 기준 이탈", "near_silence": "거의 무음",
+                   "does_not_fit_full_call_feature_window": "호출어 음성 구간 초과", "exact_duplicate": "중복 음원",
+                   "clipping": "소리 깨짐", "resampling_clipping": "변환 후 소리 깨짐",
+                   "no_active_audio": "유효한 음성 구간 없음", "empty_nonfinite_or_nonmono": "유효하지 않은 음성 출력"}
+        detail = "; ".join(str(row.get("label", "음성 후보"))
+                           + (f" ({row.get('attempts')}회)" if row.get("attempts") is not None else "") + ": "
+                           + ", ".join(sorted({reasons.get(reason, "기술 검사 미통과") for failure in row.get("failures", [])
+                                              for reason in failure.get("qc", {}).get("reasons", [])}))
+                           for row in failures if isinstance(row, dict))
+        return _waiting("자동 기술 검사를 통과한 음성은 보존했습니다. "
+                        "일부 음성이 검사 기준을 충족하지 못해 필요한 수를 채우지 못했습니다. "
+                        "기준 목소리와 검사 기준은 자동으로 변경하지 않습니다."
+                        + (" 실패 내역: " + detail if detail else " 실행 기록의 실패 사유를 확인하세요."),
                         input_kind="generation_policy", result=summary,
-                        exhausted_slots=summary.get("exhausted_slots", []))
+                        exhausted_slots=failures)
     return None
 
 
@@ -650,11 +703,13 @@ def run_stage(project, workspace, settings, stage_id, context=None):
     workspace.mkdir(parents=True, exist_ok=True)
 
     if stage_id == "frontend":
+        report_task_progress("environment_check", "학습·평가 실행환경 확인", eta_eligible=False)
         from .assets import prepare_frontend
         from .benchmark import doctor
         installation = None
         backend = context.get("inputs", {}).get("dependency_backend")
         if backend:
+            report_task_progress("environment_install", "학습 라이브러리 설치·확인", eta_eligible=False)
             installation = _install_dependencies(root, backend)
             if installation["state"] != "completed":
                 return installation
@@ -663,6 +718,7 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         except (ImportError, OSError, RuntimeError) as error:
             checked = {"versions": _installed_dependencies(), "reference_openwakeword_ready": False,
                        "tts_check": {"ready": False, "reasons": [str(error)]}}
+        report_task_progress("environment_onnx", "모델 내보내기 환경 확인", eta_eligible=False)
         checked["onnx_export_ready"] = _onnx_ready(_installed_dependencies().get("onnx"))
         if (not checked.get("tts_check", {}).get("ready") or not checked.get("reference_openwakeword_ready")
                 or not checked["onnx_export_ready"]):
@@ -675,9 +731,11 @@ def run_stage(project, workspace, settings, stage_id, context=None):
             # Training Torch and evaluation ORT use separate runtimes. Verify
             # GPU evaluation preparation even with CPU-only training packages.
             if not installation or not installation.get("evaluation_gpu_runtime"):
+                report_task_progress("evaluation_environment", "GPU 평가 실행환경 설치·확인", eta_eligible=False)
                 runtime = _prepare_evaluation_runtime(root)
                 installation = dict(installation or {}, evaluation_gpu_runtime=runtime)
         destination = resolved(root, config["frontend_dir"])
+        report_task_progress("frontend_assets", "음성 특징 추출 모델 확인", eta_eligible=False)
         receipt = prepare_frontend(destination)
         return _completed({"check": checked, "frontend": receipt, "installation": installation}, [destination / "receipt.json"])
 
@@ -692,6 +750,9 @@ def run_stage(project, workspace, settings, stage_id, context=None):
             if download_files:
                 record = {**record, "files": list(download_files.values())}
             write_json(workspace / "progress.json", {"stage": stage_id, "updated_at": now(), **record})
+            report_task_progress(record.get("phase", "material_preparation"),
+                record.get("label", "학습 자료 준비"), record.get("done"), record.get("total"),
+                record.get("unit"), eta_eligible=False)
         prepared = prepare_materials(project, selected_workspace, preset=settings["preset"], progress=progress,
                                      evaluation_policy=settings.get("evaluation_policy"),
                                      noise_material_policy=settings.get("noise_material_policy", "official_example"),
@@ -721,9 +782,15 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         return _review_gate(root, reviews, context)
 
     if stage_id == "data_connect":
+        report_task_progress("material_connection", "검수한 학습·평가 자료 연결", eta_eligible=False)
         from .studio_data import admit_materials, prepare_additional_materials, ensure_evaluation_materials
         prepared = deepcopy(_result(context, "data_download"))
-        prepared = ensure_evaluation_materials(project, selected_workspace, prepared)
+        def connection_progress(record):
+            report_task_progress(record.get("phase", "material_connection"),
+                record.get("label", "학습·평가 자료 연결"), record.get("done"), record.get("total"),
+                record.get("unit"), eta_eligible=False)
+        prepared = ensure_evaluation_materials(project, selected_workspace, prepared, progress=connection_progress)
+        report_task_progress("material_admission", "학습 자료 승인·분리 기준 확인", eta_eligible=False)
         inputs = context.get("inputs", {})
         additions = inputs.get("additional_sources", [])
         if not isinstance(additions, list) or any(not isinstance(source, dict) for source in additions):
@@ -777,6 +844,17 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         return _completed(result, additional_artifacts)
 
     if stage_id == "references":
+        if settings.get("reference_selection_policy") == "candidate_pool_v3":
+            from .reference_candidates import prepare_candidate_slots
+            planned = prepare_candidate_slots(project, settings)
+            if settings.get("reference_preparation_policy") == "initial_candidate_batches_v1":
+                from .reference_candidates import source_slots, prepare_initial_candidate_batches
+                prepared = prepare_initial_candidate_batches(project, source_slots(project, settings))
+                if prepared["status"] == "paused":
+                    return {"state": "paused", "result": {**planned, "preparation": prepared}}
+                return _completed({**planned, "preparation": prepared},
+                    [bound_file(root, planned["slot_plan"]), bound_file(root, prepared["receipt"])])
+            return _completed(planned, [bound_file(root, planned["slot_plan"])])
         from .tts import generate_references, _load_model
         families = read_json(root / "voices.json")["families"]
         pending = False
@@ -790,15 +868,29 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         # Both partitions use identical VoiceDesign weights. Keep one model
         # in this worker; the original function still seeds every family and
         # validates the immutable per-split journal before generation.
+        if pending:
+            report_task_progress("tts_model_loading", "음성 생성 모델 준비", eta_eligible=False)
         model = _load_model(config["tts"]["design_model"], config["tts"], root) if pending else None
         outputs = [generate_references(project, "train", settings["train_references"], model=model),
                    generate_references(project, "validation", settings["validation_references"], model=model)]
+        report_task_progress("reference_preparation_finalizing", "기준 목소리 검수 목록 준비", eta_eligible=False)
         rows = [r for output in outputs for r in read_rows(output["review_queue"])]
         queues = _publish_reference_queues(workspace, rows, _result(context, "references").get("queues"))
         return _completed({"outputs": outputs, "queue": str(queues[0]),
                            "queues": [str(queue) for queue in queues], "generated": len(rows)}, queues)
 
     if stage_id == "references_review":
+        report_task_progress("reference_preparation_finalizing", "준비한 기준 목소리 검증", eta_eligible=False)
+        if settings.get("reference_selection_policy") == "candidate_pool_v3":
+            from .reference_candidates import verify_candidate_slots
+            planned = verify_candidate_slots(project, settings, _result(context, "references")["slot_plan"])
+            if settings.get("reference_preparation_policy") == "initial_candidate_batches_v1":
+                from .reference_candidates import source_slots, verify_initial_candidate_preparation
+                prepared = verify_initial_candidate_preparation(project, source_slots(project, settings),
+                    _result(context, "references")["preparation"]["receipt"])
+                return _completed({**planned, "preparation": prepared},
+                    [bound_file(root, planned["slot_plan"]), bound_file(root, prepared["receipt"])])
+            return _completed(planned, [bound_file(root, planned["slot_plan"])])
         queues = _result(context, "references").get("queues") or [workspace / "reference_queue.jsonl"]
         if settings.get("reference_admission_policy") == "automatic_technical_v1":
             from .reference_qc import admit_references
@@ -819,9 +911,24 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         return _review_gate(root, reviews, context)
 
     if stage_id == "pilot":
-        if settings.get("pilot_review_policy") == "one_per_training_voice_v1":
+        policy = settings.get("pilot_review_policy")
+        if policy == POSTGEN_PILOT_POLICY:
+            raise ValueError("The generation-first workflow takes its review clips from the completed call corpus")
+        if policy == PREPOST_PILOT_POLICY:
+            from .pilot import prepare_prepost_pilot
+            prior_rounds = context.get("inputs", {}).get("call_pilot_reviews", [])
+            summary = prepare_prepost_pilot(project, settings, prior_rounds=prior_rounds)
+            incomplete = _generation_complete(summary)
+            if incomplete:
+                return incomplete
+            queue = bound_file(root, summary["bindings"]["review_queue"])
+            return _completed({**summary, "queue": str(queue)}, [queue])
+        if policy in (TRAIN_PILOT_POLICY, COMBINED_PILOT_POLICY):
             from .pilot import prepare_pilot
-            summary = prepare_pilot(project, train_count=settings["train_references"])
+            counts = {"train_count": settings["train_references"]}
+            if policy == COMBINED_PILOT_POLICY:
+                counts["validation_count"] = settings["validation_references"]
+            summary = prepare_pilot(project, **counts)
             incomplete = _generation_complete(summary)
             if incomplete:
                 return incomplete
@@ -837,19 +944,52 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         return _completed({**summary, "queue": str(queue)}, [queue])
 
     if stage_id == "pilot_review":
-        queue = (Path(_result(context, "pilot")["queue"])
-                 if settings.get("pilot_review_policy") == "one_per_training_voice_v1"
-                 else workspace / "pilot_queue.jsonl")
+        policy = settings.get("pilot_review_policy")
+        if policy == PREPOST_PILOT_POLICY:
+            binding = _result(context, "pilot")["bindings"]["review_queue"]
+            queue = bound_file(root, binding)
+            return _review_gate(root, [_review_descriptor(root, queue, "pilot", "pilot")], context)
+        if policy in (POSTGEN_PILOT_POLICY, COMBINED_PILOT_POLICY):
+            from .pilot import combined_approval_matches, combined_review_queue
+            if policy == POSTGEN_PILOT_POLICY:
+                generated = _result(context, "positives")
+                binding = generated["queue_binding"]
+            else:
+                binding = _result(context, "pilot")["bindings"]["review_queue"]
+            queue = combined_review_queue(root, binding,
+                                          settings["train_references"], settings["validation_references"])
+        elif policy == TRAIN_PILOT_POLICY:
+            queue = Path(_result(context, "pilot")["queue"])
+        else:
+            queue = workspace / "pilot_queue.jsonl"
         descriptor = _review_descriptor(root, queue, "pilot", "pilot")
         result = _review_gate(root, [descriptor], context)
         if result["state"] == "completed":
             approval = read_json(root / "approval.json")
-            if approval.get("state") != "accepted" or approval.get("generation_policy_approved") is not True:
+            if (approval.get("state") != "accepted" or approval.get("generation_policy_approved") is not True
+                    or (policy in (COMBINED_PILOT_POLICY, POSTGEN_PILOT_POLICY)
+                        and not combined_approval_matches(root, descriptor, approval))):
                 return _waiting("파일럿에 예외가 있어 생성 정책을 확인해야 합니다. 검수 결과만으로 자동 승인하지 않습니다.",
                                 input_kind="generation_policy")
+            if policy == POSTGEN_PILOT_POLICY:
+                from .pilot import admit_postgeneration_positives
+                result["artifacts"].extend(str(path) for path in admit_postgeneration_positives(project, generated))
         return result
 
     if stage_id == "positives":
+        policy = settings.get("pilot_review_policy")
+        if policy in (POSTGEN_PILOT_POLICY, PREPOST_PILOT_POLICY):
+            from .pilot import stage_positives_for_review
+            if policy == PREPOST_PILOT_POLICY:
+                prior_rounds = context.get("inputs", {}).get("call_pilot_reviews", [])
+                generated = stage_positives_for_review(project, settings, prior_rounds=prior_rounds)
+            else:
+                generated = stage_positives_for_review(project, settings)
+            incomplete = _generation_complete(generated)
+            if incomplete:
+                return incomplete
+            sources = [resolved(root, binding["path"]) for binding in generated["preview_sources"].values()]
+            return _completed(generated, [generated["queue"], *sources])
         from .tts import generate
         from .tts_runtime import CloneRuntime
         # Lazy construction does not load/download until generate's existing
@@ -868,6 +1008,42 @@ def run_stage(project, workspace, settings, stage_id, context=None):
                            "validation_originals": settings["validation_originals"], "independent_STT_runs": 0},
                           [resolved(root, config["manifests"]["positive_" + split]) for split in ("train", "validation")])
 
+    if stage_id == "positive_review":
+        if settings.get("pilot_review_policy") != PREPOST_PILOT_POLICY:
+            raise ValueError("The final call review requires the two-stage pronunciation policy")
+        from .pilot import admit_postgeneration_positives, combined_review_queue
+        generated = _result(context, "positives")
+        repair_rounds = context.get("inputs", {}).get("postgeneration_repair_rounds", [])
+        repair_review = None
+        if repair_rounds:
+            from .postgeneration_repair import (generate_postgeneration_repair,
+                postgeneration_repair_review, resolve_postgeneration_repair)
+            reference_review = context.get("inputs", {}).get("reference_voice_review")
+            generated = resolve_postgeneration_repair(project, generated, repair_rounds, reference_review=reference_review)
+            request = repair_rounds[-1]["request"]
+            if generated.get("postgeneration_repair", {}).get("plan") != request["plan"]:
+                generated = generate_postgeneration_repair(project, settings, request, reference_review=reference_review)
+                incomplete = _generation_complete(generated)
+                if incomplete:
+                    return incomplete
+            repair_review = postgeneration_repair_review(project, generated, reference_review=reference_review)
+        queue = combined_review_queue(root, generated["queue_binding"],
+                                      settings["train_references"], settings["validation_references"])
+        descriptor = _review_descriptor(root, queue, "positive", "positive")
+        if repair_review is not None:
+            descriptor["postgeneration_repair"] = generated["postgeneration_repair"]
+        result = _review_gate(root, [descriptor], context)
+        if repair_review is not None:
+            result["effective_generated"] = generated
+            result.setdefault("artifacts", []).extend(str(bound_file(root, binding)) for binding in (
+                *generated["preview_sources"].values(), generated["postgeneration_repair"]["plan"],
+                generated["postgeneration_repair"]["evidence"]))
+        if result["state"] == "completed":
+            result["artifacts"].extend(str(path) for path in admit_postgeneration_positives(project, generated))
+            if repair_review is not None:
+                result["result"]["effective_generated"] = generated
+        return result
+
     if stage_id == "hard_phrases":
         from .hard_tts import _phrases
         inputs = context.get("inputs", {})
@@ -879,32 +1055,81 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         return _completed({"phrases": phrases, "user_approved": True,
                            **hard_generation_budget(settings, phrases)})
 
+    if stage_id == "hard_pilot":
+        from .hard_pilot import generate_hard_pilot, publish_hard_pilot_review
+        from .tts_runtime import CloneRuntime
+        if settings.get("hard_review_policy") != HARD_SAMPLE_REVIEW_POLICY:
+            raise ValueError("Hard pilot stage requires the sample-first review policy")
+        approved = _result(context, "hard_phrases")
+        if approved.get("user_approved") is not True or not approved.get("phrases"):
+            return _waiting("비호출 문구를 먼저 확인하고 저장하세요.", input_kind="hard_phrases")
+        model = CloneRuntime(config["tts"]["clone_model"], config["tts"], root, "auto", config["training"]["cpu_threads"])
+        per_phrase = settings["hard_samples_per_phrase"]
+        summary, rows = generate_hard_pilot(project, approved["phrases"], per_phrase, model)
+        incomplete = _generation_complete(summary)
+        if incomplete:
+            return incomplete
+        descriptor = publish_hard_pilot_review(root, workspace, summary, rows, per_phrase)
+        return _completed({**summary, "review": descriptor},
+            [descriptor["queue"], descriptor["pool_manifest"], root / descriptor["representative_selection"]["path"]])
+
     if stage_id == "hard_generation":
         from .hard_tts import generate_hard
         from .tts_runtime import CloneRuntime
         approved = _result(context, "hard_phrases")
         if approved.get("user_approved") is not True or not approved.get("phrases"):
             return _waiting("비호출 문구를 먼저 확인하고 저장하세요.", input_kind="hard_phrases")
+        phrases = approved["phrases"]
+        sample_first = settings.get("hard_review_policy") == HARD_SAMPLE_REVIEW_POLICY
+        if sample_first:
+            from .hard_pilot import saved_hard_sample_scope
+            review = _result(context, "hard_pilot").get("review")
+            if not review or context.get("results", {}).get("hard_review", {}).get("state") != "completed":
+                return _waiting("유사어 발음 검수를 완료한 뒤 전체 음성을 생성하세요.", input_kind="generation_policy")
+            scope = saved_hard_sample_scope(root, config, review, context)
+            phrases = scope["approved_phrases"]
+            if (scope["contract"]["phrases"] != approved["phrases"]
+                    or scope["samples_per_phrase"] != settings["hard_samples_per_phrase"]):
+                raise ValueError("Hard pronunciation approval does not match the current phrase plan")
         model = CloneRuntime(config["tts"]["clone_model"], config["tts"], root, "auto", config["training"]["cpu_threads"])
         if settings.get("hard_generation_policy") == "per_phrase_v1":
-            summary = generate_hard(project, approved["phrases"], model=model,
+            summary = generate_hard(project, phrases, model=model,
                                     samples_per_phrase=settings["hard_samples_per_phrase"])
         else:
-            summary = generate_hard(project, approved["phrases"], settings["hard_originals"], model=model)
+            summary = generate_hard(project, phrases, settings["hard_originals"], model=model)
         incomplete = _generation_complete(summary)
         if incomplete:
             return incomplete
+        if sample_first:
+            rows = sorted((row for row in read_rows(summary["candidates"]) if row.get("technical_pass") is True),
+                          key=lambda row: row["slot"])
+            sources = _publish_rows(workspace / "hard_sources_after_sample_review.jsonl", rows)
+            return _completed({**summary, "review": {"pool_manifest": str(sources), "pool_sha256": digest(sources)}}, [sources])
         descriptor = _hard_queue(project, workspace, settings.get("hard_review_policy"))
         return _completed({**summary, "review": descriptor}, [descriptor["queue"], descriptor["pool_manifest"]])
 
     if stage_id == "hard_review":
+        if settings.get("hard_review_policy") == HARD_SAMPLE_REVIEW_POLICY:
+            from .hard_pilot import saved_hard_sample_scope
+            descriptor = _result(context, "hard_pilot")["review"]
+            gate = _review_gate(root, [descriptor], context)
+            if gate["state"] == "completed":
+                scope = saved_hard_sample_scope(root, config, descriptor, context)
+                phrases = scope["approved_phrases"]
+                gate["result"].update(approved_phrases=phrases, excluded_phrases=scope["excluded_phrases"],
+                                      **hard_generation_budget(settings, phrases))
+            return gate
         return _review_gate(root, [_hard_queue(project, workspace, settings.get("hard_review_policy"))], context)
 
     if stage_id == "hard_connect":
         from .data import validate_admission
-        descriptor = _hard_queue(project, workspace, settings.get("hard_review_policy"))
+        sample_first = settings.get("hard_review_policy") == HARD_SAMPLE_REVIEW_POLICY
+        descriptor = (_result(context, "hard_pilot")["review"] if sample_first else
+                      _hard_queue(project, workspace, settings.get("hard_review_policy")))
         if not _saved_review(root, descriptor, context):
             return {"state": "waiting_review", "reviews": [descriptor]}
+        pool = _result(context, "hard_generation")["review"] if sample_first else descriptor
+        pool_path = bound_file(root, {"path": pool["pool_manifest"], "sha256": pool["pool_sha256"]})
         reviewed = context.get("inputs", {}).get("review_results", {}).get("hard", {})
         if not reviewed.get("admission"):
             from .pool_review import approve_pool
@@ -925,6 +1150,7 @@ def run_stage(project, workspace, settings, stage_id, context=None):
                 admission = {"path": admission_path.relative_to(root).as_posix(), "sha256": digest(admission_path)}
                 existing = read_json(admission_path)
                 if (existing.get("human_answers", {}).get("sha256") != digest(answer_path)
+                        or existing.get("source_manifest", {}).get("sha256") != pool["pool_sha256"]
                         or existing.get("excluded_hard_phrases") != excluded
                         or descriptor.get("synthetic_review_policy") and (
                             existing.get("synthetic_review_policy") != descriptor["synthetic_review_policy"]
@@ -932,7 +1158,7 @@ def run_stage(project, workspace, settings, stage_id, context=None):
                     raise ValueError("Frozen Hard admission no longer matches saved listening decisions")
             else:
                 approved = approve_pool(project,
-                    source_manifest={"path": descriptor["pool_manifest"], "sha256": digest(descriptor["pool_manifest"])},
+                    source_manifest={"path": str(pool_path), "sha256": pool["pool_sha256"]},
                     representative_queue={"path": descriptor["queue"], "sha256": descriptor["queue_sha256"]},
                     answers={"path": str(answer_path), "sha256": digest(answer_path)}, output=admission_path,
                     excluded_hard_phrases=excluded,
@@ -943,10 +1169,10 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         else:
             admission = reviewed["admission"]
         record = read_json(bound_file(root, admission))
-        if record.get("source_manifest", {}).get("sha256") != digest(descriptor["pool_manifest"]):
+        if record.get("source_manifest", {}).get("sha256") != pool["pool_sha256"]:
             raise ValueError("Hard admission does not bind the current sources")
         rows = []
-        for source in read_rows(descriptor["pool_manifest"]):
+        for source in read_rows(pool_path):
             if source["sha256"] not in record["accepted_source_sha256"]:
                 continue
             rows.append({**source, "admission": admission})
@@ -963,6 +1189,9 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         outputs = {}
         for role in BATCH:
             directory = resolved(root, config["pool_features"][role])
+            role_label = {"generic_negative": "일반 비호출", "korean_negative": "한국어 비호출",
+                          "positive": "호출어", "hard_negative": "유사어"}[role]
+            report_task_progress("feature_preparation", role_label + " 특징 자료·원본 확인", eta_eligible=False)
             if role == "generic_negative" and (directory / "metadata.json").is_file():
                 outputs[role] = verify_cache(directory)
             else:
@@ -992,6 +1221,7 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         return _completed({"bundle": str(destination), "manifest": result}, [destination / "manifest.json"])
 
     if stage_id == "development":
+        report_task_progress("preparation_validation", "평가 자료 원본·분리 기준 확인", eta_eligible=False)
         from .paired import prepare_evaluation, evaluation_recipe
         connected = _result(context, "data_connect")
         negatives = connected.get("negative_validation_manifest")
@@ -1026,6 +1256,7 @@ def run_stage(project, workspace, settings, stage_id, context=None):
                     and (selection == "legacy" or (directory / "noise_coverage.json").is_file()))
         directory, existing = _next_directory(root / "reports/studio_paired", "manifest.jsonl", matches)
         if existing:
+            report_task_progress("preparation_validation", "기존 평가 자료 목록·커버리지 확인", eta_eligible=False)
             paired = {"manifest": str(directory / "manifest.jsonl"), "noise_selection_policy": recipe["noise_selection"],
                       "recipe": {"path": str(directory / "recipe.json"), "sha256": digest(directory / "recipe.json")}}
             if selection != "legacy":
@@ -1033,6 +1264,7 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         else:
             paired = prepare_evaluation(project, directory, **pair_settings)
         rows = read_rows(paired["manifest"]) + negative_rows
+        report_task_progress("preparation_finalizing", "평가 자료 목록·완료 근거 저장", eta_eligible=False)
         manifest = _publish_rows(workspace / ("development_" + identity([recipe, digest(negatives), digest(paired["manifest"])])[:16] + ".jsonl"), rows)
         artifacts = [manifest, directory / "recipe.json"]
         if paired.get("noise_coverage"):

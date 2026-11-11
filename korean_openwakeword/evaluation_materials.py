@@ -635,7 +635,7 @@ def _zeroth_candidates(project, workspace, known, catalog, paths=None, progress=
         if archive is None:
             archive = _download_archive(asset, workspace / "shared" / "downloads", progress)
         _emit(progress, "공통 평가 한국어 낭독 원본 준비")
-        _extract_zeroth_archive(archive, directory)
+        _extract_zeroth_archive(archive, directory, progress)
         index.parent.mkdir(parents=True, exist_ok=True)
         create_source_index(directory, output=index, dataset="zeroth", dataset_id="zeroth",
                             license=asset["license"], source_url="https://www.openslr.org/40/")

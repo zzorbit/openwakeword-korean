@@ -37,6 +37,9 @@ def source_tree(tmp_path):
     # A newly added check follows the convention without another release list.
     (root / "tests/check_future.cjs").write_text("process.exitCode = 0;\n", encoding="utf-8")
     (root / "tests/test_korean_library_future.py").write_text("def test_future(): pass\n", encoding="utf-8")
+    (root / "tests/test_studio_future.py").write_text("def test_studio_future(): pass\n", encoding="utf-8")
+    (root / "tests/fixtures").mkdir()
+    (root / "tests/fixtures/frozen_contract.json").write_text('{"schema_version": 1}\n', encoding="utf-8")
     (root / "korean_openwakeword/public.py").write_text("VALUE = 1\n", encoding="utf-8")
     return packager, root
 
@@ -45,7 +48,10 @@ def test_source_release_retains_all_browser_checks_and_only_allowlisted_data(sou
     packager, root = source_tree
     for relative in (".env", "cache/private.txt", "reports/private.json", "scripts/local_private.py",
                      "tests/local_private.py", "tests/check_private.cjs.tmp", "korean_openwakeword/__pycache__/private.pyc",
-                     "korean_openwakeword/private.tmp", "korean_openwakeword/.writer.lock"):
+                     "korean_openwakeword/private.tmp", "korean_openwakeword/.writer.lock",
+                     "korean_openwakeword/private.wav", "korean_openwakeword/resources/cache/private.wav",
+                     "korean_openwakeword/resources/sample_chunsik/raw/private.wav",
+                     "examples/library_demo_site/history/private.json"):
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("not distributable", encoding="utf-8")
@@ -57,6 +63,8 @@ def test_source_release_retains_all_browser_checks_and_only_allowlisted_data(sou
     assert {path.name for path in (output / "tests").glob("check_*.cjs")} == expected
     assert (output / "scripts/check_browser.py").read_bytes() == (root / "scripts/check_browser.py").read_bytes()
     assert (output / "tests/test_korean_library_future.py").is_file()
+    assert (output / "tests/test_studio_future.py").is_file()
+    assert (output / "tests/fixtures/frozen_contract.json").is_file()
     paths = {entry["path"] for entry in result["files"]}
     assert not any("private" in path or path.endswith(".writer.lock") for path in paths)
     assert not inventory.is_relative_to(output)
@@ -123,7 +131,8 @@ def test_browser_runner_rejects_missing_checks_instead_of_reporting_success(tmp_
 
 def test_standard_source_release_and_ci_use_the_complete_browser_check_convention():
     manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
-    assert "recursive-include tests test_korean_library*.py check_*.cjs" in manifest
+    assert "recursive-include tests test_*.py check_*.cjs" in manifest
+    assert "recursive-include tests/fixtures *.json" in manifest
     assert "include scripts/check_browser.py" in manifest
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     assert "python scripts/check_browser.py --output .test-tmp/browser-checks" in workflow

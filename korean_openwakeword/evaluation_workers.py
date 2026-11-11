@@ -21,6 +21,7 @@ from .data import source_key
 from .events import EventDetector, PositiveTracker
 from .runtime import WakeWordDetector
 from .common import read_json, write_json
+from .task_progress import activity as report_activity
 
 _DETECTOR = None
 _MODEL_IDS = None
@@ -96,6 +97,11 @@ def score_session(detector, row, path, model_ids):
     with sf.SoundFile(path) as audio:
         if audio.samplerate != 16000 or audio.channels != 1 or audio.subtype != "PCM_16":
             raise ValueError("Scored WAV must already be mono16kHz PCM16; no playback-only gain")
+        total_frames = audio.frames // 1280
+        long_audio = total_frames >= 750
+        if long_audio:
+            report_activity("session_frames", "긴 음원 프레임·이벤트 확인 중", 0, total_frames,
+                            audio_seconds=0, batch_audio_seconds=total_frames * .08, batch_files=1)
         for call in session["calls"]:
             if not 0 <= call["start_s"] < call["end_s"] <= audio.frames / 16000:
                 raise ValueError("Call boundary exceeds evaluation file")
@@ -120,6 +126,9 @@ def score_session(detector, row, path, model_ids):
                 if eligible and row["kind"] == "positive":
                     trackers[key].update(timestamp, float(score), decision)
             frames += 1
+            if long_audio and (frames % 256 == 0 or frames == total_frames):
+                report_activity("session_frames", "긴 음원 프레임·이벤트 확인 중", frames, total_frames,
+                    audio_seconds=frames * .08, batch_audio_seconds=total_frames * .08, batch_files=1)
     results = {}
     for key in model_ids:
         calls = trackers[key].rows

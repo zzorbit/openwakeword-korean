@@ -5,15 +5,19 @@ const path = require("node:path");
 const vm = require("node:vm");
 const script = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources/studio.js"), "utf8");
 const html = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources/studio.html"), "utf8");
+const css = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources/studio.css"), "utf8");
 const flush = async () => { for (let index = 0; index < 12; index++) await new Promise(resolve => setImmediate(resolve)); };
 const locationSettled = async () => { await new Promise(resolve => setTimeout(resolve, 230)); await flush(); };
 const tests = [];
-async function test(name, action) { await action(); tests.push(name); }
+async function test(name, action) {
+  if (process.env.KOWW_STUDIO_TEST_FILTER && !new RegExp(process.env.KOWW_STUDIO_TEST_FILTER).test(name)) return;
+  await action(); tests.push(name);
+}
 
-function browser({ noBoot = false, withStory = false, initialState, recipeError = false, recipeOverrides = {}, recipeList, recipeDirectory = "F:\\test\\models", locationResponse, createdDirectory, logResponse = "ready", logError = false } = {}) {
-  const elements = new Map(), calls = [], intervals = [];
+function browser({ noBoot = false, withStory = true, storyOwnsDownloadRows = false, storyError, onStoryRender, onStoryPrepare, storyPrepareMissing = false, retainReviewFrame,initialState, stateError, stateResponse, recipeResponse, recipeError = false, recipeOverrides = {}, recipeList, recipeDirectory = "F:\\test\\models", locationResponse, createdDirectory, logResponse = "ready", logError = false } = {}) {
+  const elements = new Map(), windowEvents = new Map(), calls = [], intervals = [], clearedIntervals = [];
   class Element {
-    constructor(tag = "div") { this.tagName = tag; this.value = ""; this.textContent = ""; this.children = []; this.handlers = {}; this.attributes = {}; this.hidden = false; this.disabled = false; this.open = false; this.srcWrites = 0; }
+    constructor(tag = "div") { this.tagName = tag; this.value = ""; this.textContent = ""; this.children = []; this.handlers = {}; this.attributes = {}; this.style = {}; this.hidden = false; this.disabled = false; this.open = false; this.srcWrites = 0; }
     append(...children) { this.children.push(...children); }
     replaceChildren(...children) { this.children = children; }
     addEventListener(name, handler) { this.handlers[name] = handler; }
@@ -23,14 +27,24 @@ function browser({ noBoot = false, withStory = false, initialState, recipeError 
     focus() { this.focused = true; }
   }
   for (const match of html.matchAll(/id="([^"]+)"/g)) elements.set(match[1], new Element());
-  const state = { value: initialState || { projects: [], token: "local-token", workspace: "F:\\test" } };
-  const doc = { hidden: false, getElementById: id => elements.get(id), createElement: tag => new Element(tag), createElementNS: (_namespace, tag) => new Element(tag), addEventListener() {} };
+  const state = { value: initialState || { projects: [], token: "local-token", workspace: "F:\\test" }, fetchError: stateError };
+  const root = new Element("html"); root.setAttribute("data-studio-boot", "loading");
+  const doc = { hidden: false, documentElement: root, getElementById: id => elements.get(id), createElement: tag => new Element(tag), createElementNS: (_namespace, tag) => new Element(tag), addEventListener() {} };
   const json = (body, status = 200) => ({ ok: status < 400, status, text: async () => JSON.stringify(body) });
   const presets = recipeList || [{ id: "check", label: "동작 확인용", originals: 1000, rounds: 1, updates: 10000, sources: [{ name: "<img src=x onerror=bad()>", role: "비호출 자료", url: "javascript:alert(1)", bytes: 1024 }], ...recipeOverrides }, { id: "trial", originals: 20000, rounds: 3, updates: 20000 }];
   const fetch = async (url, options) => {
     calls.push({ url, options });
-    if (url === "/api/state") { if (state.fetchError) throw state.fetchError; if (state.httpError) return json(state.httpError.body, state.httpError.status); return json(state.value); }
-    if (url === "/api/recipes") return recipeError ? json({ error: "recipe failure" }, 500) : json({ presets, default_directory: recipeDirectory });
+    if (url.startsWith("/api/state?view=studio")) {
+      if (state.fetchError) throw state.fetchError;
+      if (state.httpError) return json(state.httpError.body, state.httpError.status);
+      const requested = new URL(url, "http://127.0.0.1").searchParams.get("project");
+      const projects = state.value.projects;
+      const selected = projects.find(row => row.id === requested) || projects.find(row => row.id === state.value.active_project_id) || projects[0];
+      const value = { ...state.value, selected_project_id: selected?.id || null,
+        projects: projects.map(row => row === selected ? row : { id: row.id, directory: row.directory, wakeword: row.wakeword }) };
+      return stateResponse ? stateResponse(value, requested) : json(value);
+    }
+    if (url === "/api/recipes") return recipeResponse ? recipeResponse({ presets, default_directory: recipeDirectory }) : recipeError ? json({ error: "recipe failure" }, 500) : json({ presets, default_directory: recipeDirectory });
     if (url === "/api/model-location" && options.method === "POST") {
       const payload = JSON.parse(options.body);
       return json(locationResponse ? await locationResponse(payload) : { directory: recipeDirectory + "\\model_0001" });
@@ -42,15 +56,29 @@ function browser({ noBoot = false, withStory = false, initialState, recipeError 
       return json(project);
     }
     if (/\/api\/projects\/bora\/(start|resume|pause|input|migrate)$/.test(url)) return json({ ok: true });
-    if (url.endsWith("/log")) { if (logError) throw new Error("optional log unavailable"); return json({ log: logResponse }); }
+    if (url.endsWith("/log")) {
+      if (logError) throw new Error("optional log unavailable");
+      return json({ log: typeof logResponse === "function" ? await logResponse(url) : logResponse });
+    }
     throw new Error("Unexpected route " + url);
   };
-  const context = vm.createContext({ document: doc, fetch, URL, AbortController, console, setTimeout, clearTimeout, setInterval: callback => { intervals.push(callback); return intervals.length; }, clearInterval() {} });
-  let storyBridge;
-  if (withStory) context.KowwStory = { create(bridge) { storyBridge = bridge; return { render() {} }; } };
-  context.window = context; context.location = new URL("http://127.0.0.1:8800/"); context.KOWW_STUDIO_TEST = noBoot; context.addEventListener = () => {};
+  const context = vm.createContext({ document: doc, fetch, URL, AbortController, console, setTimeout, clearTimeout, setInterval: callback => { intervals.push(callback); return intervals.length; }, clearInterval(id) { clearedIntervals.push(id); } });
+  let storyBridge, storyPreparations = 0;
+  if (withStory) context.KowwStory = { create(bridge) { if (storyError) throw storyError; storyBridge = bridge;
+    const view={ render() { onStoryRender?.(bridge, root); },ownsDownloadRows:storyOwnsDownloadRows,retainReviewFrame:project=>retainReviewFrame?.(project) };
+    if(!storyPrepareMissing)view.prepareInitialView=()=>{storyPreparations++;return onStoryPrepare?onStoryPrepare(bridge,root):Promise.resolve(true);};
+    return view;
+  } };
+  context.window = context; context.location = new URL("http://127.0.0.1:8800/"); context.KOWW_STUDIO_TEST = noBoot;
+  context.addEventListener = (name, handler) => windowEvents.set(name, handler);
+  let reloads = 0; context.location.reload = () => { reloads++; };
   vm.runInContext(script, context);
-  return { elements, calls, state, intervals, helpers: context.KowwStudio, get storyBridge() { return storyBridge; }, click: id => elements.get(id).handlers.click(), submit: id => elements.get(id).handlers.submit({ preventDefault() {} }), tick: async () => { for (const tick of intervals) await tick(); } };
+  return { elements, calls, state, intervals, clearedIntervals, root, helpers: context.KowwStudio, get reloads() { return reloads; }, get storyBridge() { return storyBridge; }, get storyPreparations(){return storyPreparations;}, click: id => elements.get(id).handlers.click(), submit: id => elements.get(id).handlers.submit({ preventDefault() {} }),
+    fireWindow: (name, event) => windowEvents.get(name)(event),
+    async tick() {
+      for (const [index, tick] of intervals.entries()) if (!clearedIntervals.includes(index + 1)) await tick();
+    }
+  };
 }
 
 const descendants = node => [node, ...(node.children || []).flatMap(descendants)];
@@ -204,6 +232,243 @@ function pendingHardStorageRecipe() {
 }
 
 (async () => {
+  await test("boot first paint hides both layouts before external styles or JavaScript", () => {
+    assert.match(html, /<html[^>]+data-studio-boot="loading"/);
+    assert.ok(html.indexOf('id="studio-boot-critical"') < html.indexOf('href="/studio.css"'));
+    assert.match(html, /body>:not\(#studio-boot\)\{visibility:hidden!important;opacity:0!important;pointer-events:none!important\}/);
+    assert.match(html, /<main id="studio-dashboard"[^>]+inert>/);
+    assert.match(html, /<noscript>[\s\S]*JavaScript[\s\S]*새로고침[\s\S]*<\/noscript>/);
+    const critical=html.match(/<style id="studio-boot-critical">([\s\S]*?)<\/style>/)[1];
+    assert.match(critical,/font:400 18px\/26px system-ui/);
+    assert.match(html,/<span id="studio-boot-dots" class="story-loading-dots studio-boot-dots" aria-hidden="true"><i><\/i><i><\/i><i><\/i><\/span><p id="studio-boot-title">화면을 불러오는 중\.\.\.<\/p>/);
+    for(const rule of [
+      '.studio-boot-status{display:flex;align-items:center;justify-content:center;gap:12px}',
+      '#studio-boot-title{margin:0;color:inherit;font:inherit}',
+      '.studio-boot-dots{display:flex;gap:4px}',
+      '.studio-boot-dots i{width:5px;height:5px;border-radius:50%;background:#aeb9c9;animation:story-dot-rise 1s ease-in-out infinite}',
+      '.studio-boot-dots i:nth-child(2){animation-delay:.15s}.studio-boot-dots i:nth-child(3){animation-delay:.3s}',
+      'html[data-studio-boot="error"] .studio-boot-dots i{animation:none;opacity:.7;transform:none}',
+      '@media(prefers-reduced-motion:reduce){.studio-boot-dots i{animation:none;opacity:.7}}',
+    ]){assert.ok(critical.includes(rule),`critical loader rule missing: ${rule}`);assert.ok(css.includes(rule),`external loader rule differs: ${rule}`);}
+    const storyCss=fs.readFileSync(path.join(__dirname,'../korean_openwakeword/resources/studio_story.css'),'utf8');
+    const dotAnimation='@keyframes story-dot-rise{0%,80%,100%{opacity:.3;transform:translateY(0)}40%{opacity:1;transform:translateY(-4px)}}';
+    assert.ok(critical.includes(dotAnimation));assert.ok(storyCss.includes(dotAnimation));
+  });
+  await test("boot first critical paint shares the exact chapter atmosphere rather than a flat backdrop",()=>{
+    const critical=html.match(/<style id="studio-boot-critical">([\s\S]*?)<\/style>/)[1];
+    const storyCss=fs.readFileSync(path.join(__dirname,'../korean_openwakeword/resources/studio_story.css'),'utf8');
+    const declarations=(source,selector)=>{
+      const escaped=selector.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+      const match=source.match(new RegExp(`${escaped}\\{([^}]+)\\}`));assert.ok(match,`missing background layer ${selector}`);return match[1];
+    };
+    for(const selector of ['.story-atmosphere','.story-background-state','.story-background-state::before','.story-background-previous','.story-background-previous::before','.story-background-current','.story-background-current::before'])
+      assert.equal(declarations(critical,selector),declarations(storyCss,selector),`initial background differs from the chapter layer ${selector}`);
+    assert.match(html,/<section id="studio-boot"[^>]*>[\s\S]*?<div class="story-atmosphere" aria-hidden="true"><div class="story-background-state story-background-previous"><\/div><div class="story-background-state story-background-current"><\/div><\/div>/);
+    assert.match(declarations(critical,'#studio-boot'),/isolation:isolate;overflow:hidden/);
+    for(const asset of ['studio_background_grain.svg','studio_background_atmosphere.svg'])
+      assert.ok(html.indexOf(`rel="preload" as="image" type="image/svg+xml" href="/${asset}"`)<html.indexOf('href="/studio.css"'));
+    assert.equal(declarations(critical,'.studio-boot-content'),declarations(css,'.studio-boot-content'));
+  });
+  await test("review popup paint layer stays above the footer without raising the full footer hit surface",()=>{
+    const storyCss=fs.readFileSync(path.join(__dirname,'../korean_openwakeword/resources/studio_story.css'),'utf8');
+    const frame=storyCss.match(/\.story-shell\.preflight-draft-review\.preflight-picker-open:is\([^\n]+iframe#review-frame\{([^}]+)\}/)?.[1];
+    assert.ok(frame);assert.match(frame,/z-index:4/);assert.match(frame,/top:50%;left:0;transform:translateY\(-50%\)/);
+    assert.doesNotMatch(frame,/pointer-events:none/);
+    assert.match(storyCss,/\.story-actions\{position:relative;z-index:3;/);
+    assert.doesNotMatch(storyCss,/preflight-picker-open[^\n]*\.story-actions\{z-index:4\}/);
+  });
+  await test("empty workspace waits for recipes and current-story rendering before revealing creation", async () => {
+    const reply = value => ({ ok: true, status: 200, text: async () => JSON.stringify(value) });
+    let stateReady, recipesReady;
+    const renders = [];
+    const b = browser({ withStory: true,
+      stateResponse: value => new Promise(resolve => { stateReady = () => resolve(reply(value)); }),
+      recipeResponse: value => new Promise(resolve => { recipesReady = () => resolve(reply(value)); }),
+      onStoryRender: (bridge, root) => renders.push({ mode: root.getAttribute("data-studio-boot"), ready: bridge.state().recipeReady, id: bridge.state().project?.id }) });
+    assert.equal(b.root.getAttribute("data-studio-boot"), "loading");
+    assert.equal(b.elements.get('studio-boot-title').textContent,'화면을 불러오는 중...');
+    assert.equal(b.elements.get("studio-dashboard").inert, true);
+    stateReady(); await flush();
+    assert.equal(b.root.getAttribute("data-studio-boot"), "loading", "a successful first refresh does not expose unfinished recipe/story UI");
+    assert.equal(b.intervals.length, 0);
+    recipesReady(); await flush();
+    assert.equal(b.root.getAttribute("data-studio-boot"), "ready");
+    assert.equal(b.elements.get("studio-dashboard").inert, false);
+    assert.equal(renders.at(-1).mode, "loading");
+    assert.equal(renders.at(-1).ready, true); assert.equal(renders.at(-1).id, undefined);
+    assert.equal(b.elements.get("setup").hidden, false);
+    assert.equal(b.intervals.length, 1);
+    assert.equal(b.storyPreparations,1);
+    assert.equal(b.calls.some(call => call.options.method === "POST"), false);
+  });
+  await test("saved project opens first, switching fetches its detail, and creation fetches recipes only once", async () => {
+    const reply = value => ({ ok: true, status: 200, text: async () => JSON.stringify(value) });
+    const project = { id: "bora", wakeword: "보라야", status: "paused", stage: "pilot" };
+    const other = { id: "other", wakeword: "소라야", status: "paused", stage: "training" };
+    let acceptSwitch, acceptRecipes;
+    const b = browser({ initialState: { projects: [project, other], active_project_id: "bora" },
+      stateResponse: (value, requested) => requested === "other" && !acceptSwitch
+        ? new Promise(resolve => { acceptSwitch = () => resolve(reply(value)); }) : reply(value),
+      recipeResponse: value => new Promise(resolve => { acceptRecipes = () => resolve(reply(value)); }) });
+    await flush();
+    assert.equal(b.root.getAttribute("data-studio-boot"), "ready");
+    assert.equal(b.elements.get("project-title").textContent, "‘보라야’");
+    assert.deepEqual(b.calls.map(call => call.url), ["/api/state?view=studio"]);
+    assert.equal(b.storyBridge.state().recipeReady, false);
+    const selector = b.elements.get("project-select");
+    selector.value = "other"; const switching = selector.handlers.change();
+    assert.equal(b.root.getAttribute("data-studio-boot"), "loading");
+    assert.equal(b.storyBridge.state().project.id, "bora");
+    acceptSwitch(); await switching;
+    assert.equal(b.root.getAttribute("data-studio-boot"), "ready");
+    assert.equal(b.elements.get("project-title").textContent, "‘소라야’");
+    const creating = b.click("new-project");
+    assert.equal(b.root.getAttribute("data-studio-boot"), "loading");
+    acceptRecipes(); await creating;
+    assert.equal(b.root.getAttribute("data-studio-boot"), "ready");
+    assert.equal(b.storyBridge.state().recipeReady, true);
+    assert.equal(b.storyBridge.state().project, null);
+    assert.equal(b.elements.get("wakeword").focused, true);
+    selector.value = "other"; await selector.handlers.change();
+    await b.click("new-project");
+    assert.equal(b.calls.filter(call => call.url === "/api/recipes").length, 1);
+    assert.equal(b.calls.some(call => call.options.method === "POST"), false);
+  });
+  await test("back and forward restore status polling exactly once across repeated page hides", async () => {
+    const project = { id: "bora", wakeword: "보라야", status: "running", stage_id: "training" };
+    const b = browser({ initialState: { projects: [project] } });
+    await flush();
+    const reads = () => b.calls.filter(call => call.url.startsWith("/api/state?")).length;
+    for (let cycle = 1; cycle <= 2; cycle++) {
+      const before = reads();
+      b.fireWindow("pagehide", { persisted: true });
+      await b.tick();
+      assert.equal(reads(), before);
+      project.status = cycle === 1 ? "paused" : "running";
+      b.fireWindow("pageshow", { persisted: true });
+      await flush();
+      assert.equal(reads(), before + 1);
+      assert.equal(b.storyBridge.state().project.status, project.status);
+      assert.equal(b.intervals.length, cycle + 1);
+      await b.tick();
+      assert.equal(reads(), before + 2);
+    }
+  });
+  await test("back and forward resumes a cancelled save location preview", async () => {
+    const b = browser();
+    await flush();
+    const wakeword = b.elements.get("wakeword");
+    wakeword.value = "보라야";
+    wakeword.handlers.input();
+    b.fireWindow("pagehide", { persisted: true });
+    await locationSettled();
+    assert.equal(b.calls.filter(call => call.url === "/api/model-location").length, 0);
+    b.fireWindow("pageshow", { persisted: true });
+    await locationSettled();
+    assert.equal(b.calls.filter(call => call.url === "/api/model-location").length, 1);
+    assert.equal(b.elements.get("create").disabled, false);
+  });
+  await test("boot remains concealed until the current story accepts child readiness and final geometry", async()=>{
+    let acceptView;
+    const project={id:'bora',wakeword:'보라야',status:'waiting_review',stage_id:'positive_review',review:{queue_sha256:'post-queue'},error:null};
+    const renders=[];
+    const b=browser({withStory:true,initialState:{projects:[project],active_project_id:'bora'},
+      onStoryRender:(bridge,root)=>renders.push(root.getAttribute('data-studio-boot')),
+      onStoryPrepare:(bridge,root)=>{assert.equal(root.getAttribute('data-studio-boot'),'loading');assert.equal(bridge.state().recipeReady,false);assert.equal(bridge.state().project.id,'bora');return new Promise(resolve=>{acceptView=resolve;});}});
+    await flush();assert.equal(b.storyPreparations,1);assert.equal(b.root.getAttribute('data-studio-boot'),'loading');
+    assert.equal(b.elements.get('studio-dashboard').inert,true);assert.equal(b.elements.get('studio-boot-dots').hidden,false);
+    await b.tick();await flush();
+    assert.equal(b.root.getAttribute('data-studio-boot'),'loading','ordinary renders and polls cannot reveal a child waiting for its geometry ACK');
+    assert.ok(renders.length>1);assert.ok(renders.every(mode=>mode==='loading'));
+    acceptView(true);await flush();assert.equal(b.root.getAttribute('data-studio-boot'),'ready');
+    assert.equal(b.elements.get('studio-dashboard').inert,false);assert.equal(b.elements.get('studio-boot-dots').hidden,true);
+    assert.equal(b.calls.some(call=>call.options.method==='POST'),false);
+  });
+  await test("boot readiness false timeout cancellation or missing API stays masked and releases its poll timer",async()=>{
+    const cancelled=Object.assign(new Error('첫 화면을 준비하는 동안 프로젝트가 바뀌었습니다.'),{name:'AbortError'});
+    for(const options of [
+      {onStoryPrepare:()=>false},
+      {onStoryPrepare:()=>Promise.reject(new Error('첫 화면 준비 시간이 초과됐습니다.'))},
+      {onStoryPrepare:()=>Promise.reject(cancelled)},
+      {storyPrepareMissing:true},
+    ]){
+      const b=browser({withStory:true,...options});await flush();
+      assert.equal(b.root.getAttribute('data-studio-boot'),'error');assert.equal(b.elements.get('studio-dashboard').inert,true);
+      assert.equal(b.elements.get('studio-boot').getAttribute('aria-busy'),'false');assert.equal(b.elements.get('studio-boot-dots').hidden,true);
+      assert.equal(b.elements.get('studio-boot-retry').hidden,false);assert.equal(b.elements.get('studio-boot-error').hidden,false);
+      assert.equal(b.intervals.length,1);assert.ok(b.clearedIntervals.includes(1));
+      b.click('studio-boot-retry');assert.equal(b.reloads,1);assert.equal(b.calls.some(call=>call.options.method==='POST'),false);
+    }
+  });
+  await test("boot missing current-story script cannot expose the legacy dashboard",async()=>{
+    const b=browser({withStory:false});await flush();
+    assert.equal(b.root.getAttribute('data-studio-boot'),'error');assert.equal(b.elements.get('studio-dashboard').inert,true);
+    assert.equal(b.elements.get('studio-boot-retry').hidden,false);assert.equal(b.elements.get('studio-boot-dots').hidden,true);
+    assert.match(b.elements.get('studio-boot-error').textContent,/첫 화면의 준비 상태/);
+    assert.ok(b.clearedIntervals.includes(1));b.click('studio-boot-retry');assert.equal(b.reloads,1);
+    assert.equal(b.calls.some(call=>call.options.method==='POST'),false);
+  });
+  await test("boot propagates a changed current-project preparation without flashing a ready screen",async()=>{
+    let rejectView;
+    const project={id:'bora',wakeword:'보라야',status:'waiting_review',stage_id:'positive_review',error:null};
+    const b=browser({withStory:true,initialState:{projects:[project],active_project_id:'bora'},
+      onStoryPrepare:()=>new Promise((_resolve,reject)=>{rejectView=reject;})});
+    await flush();b.state.value.projects=[{...project,id:'next-project',stage_id:'hard_review'}];b.state.value.active_project_id='next-project';
+    await b.tick();await flush();assert.equal(b.root.getAttribute('data-studio-boot'),'loading');
+    rejectView(Object.assign(new Error('현재 화면이 바뀌어 초기 준비를 취소했습니다.'),{name:'AbortError'}));await flush();
+    assert.equal(b.root.getAttribute('data-studio-boot'),'error');assert.match(b.elements.get('studio-boot-error').textContent,/초기 준비를 취소/);
+    assert.equal(b.elements.get('studio-dashboard').inert,true);assert.equal(b.elements.get('studio-boot-retry').hidden,false);
+    assert.ok(b.clearedIntervals.includes(1));assert.equal(b.calls.some(call=>call.options.method==='POST'),false);
+  });
+  await test("boot state failures cannot be swallowed into a successfully revealed screen", async () => {
+    const pending = { ok: false, status: 503, text: async () => JSON.stringify({ code: "progress_read_pending", error: "초기 상태 확인 실패" }) };
+    for (const options of [{ stateError: new Error("state offline") }, { stateResponse: async () => pending }]) {
+      const b = browser(options); await flush();
+      assert.equal(b.root.getAttribute("data-studio-boot"), "error");
+      assert.equal(b.elements.get("studio-dashboard").inert, true);
+      assert.equal(b.elements.get("studio-boot").getAttribute("role"), "alert");
+      assert.equal(b.elements.get("studio-boot-retry").hidden, false);
+      assert.equal(b.calls.some(call => call.url === "/api/recipes"), false);
+      assert.equal(b.calls.length, options.stateResponse ? 2 : 1);
+      assert.equal(b.intervals.length, 0);
+      b.click("studio-boot-retry"); assert.equal(b.reloads, 1);
+      assert.equal(b.calls.some(call => call.options.method === "POST"), false);
+    }
+  });
+  await test("a transient first state read is retried once before displaying a saved project", async () => {
+    let reads = 0;
+    const b = browser({ initialState: { projects: [{ id: "bora", wakeword: "보라야", status: "paused" }] },
+      stateResponse: async value => ++reads === 1
+        ? { ok: false, status: 503, text: async () => JSON.stringify({ error: "busy" }) }
+        : { ok: true, status: 200, text: async () => JSON.stringify(value) } });
+    await flush();
+    assert.equal(reads, 2);
+    assert.equal(b.root.getAttribute("data-studio-boot"), "ready");
+    assert.equal(b.storyBridge.state().project.id, "bora");
+    assert.equal(b.calls.every(call => call.options.method === "GET" && call.url.startsWith("/api/state?")), true);
+  });
+  await test("boot recipe failures and empty recipes expose a retry instead of either layout", async () => {
+    for (const options of [{ recipeError: true }, { recipeList: [] }]) {
+      const b = browser({ ...options, withStory: true }); await flush();
+      assert.equal(b.root.getAttribute("data-studio-boot"), "error");
+      assert.equal(b.elements.get("studio-boot-retry").hidden, false);
+      assert.equal(b.elements.get("studio-boot-error").hidden, false);
+      assert.match(b.elements.get("studio-boot-error").textContent, /recipe failure|설정이 비어/);
+      assert.equal(b.intervals.length, 0);
+    }
+  });
+  await test("boot catches initial story creation and render exceptions behind the same retry screen", async () => {
+    for (const options of [{ storyError: new Error("story create failed") }, { onStoryRender() { throw new Error("story render failed"); } }]) {
+      const b = browser({ ...options, withStory: true }); await flush();
+      assert.equal(b.root.getAttribute("data-studio-boot"), "error");
+      assert.match(b.elements.get("studio-boot-error").textContent, /story (?:create|render) failed/);
+      assert.equal(b.elements.get("studio-boot-retry").hidden, false);
+      assert.equal(b.elements.get("studio-dashboard").inert, true);
+      assert.equal(b.intervals.length, 0);
+      b.click("studio-boot-retry"); assert.equal(b.reloads, 1);
+      assert.equal(b.calls.some(call => call.options.method === "POST"), false);
+    }
+  });
   await test("budget request preserves selected values and does not invent overrides", () => {
     const { helpers } = browser({ noBoot: true });
     const result = helpers.requestBody({ wakeword: " 보라야 ", advanced: { positive_originals: "", generic_hours: "" } }, "check");
@@ -244,7 +509,7 @@ function pendingHardStorageRecipe() {
     await locationSettled();
     assert.equal(b.elements.get("storage-directory").textContent, label);
     assert.equal(b.elements.get("storage-directory").children.length, 0);
-    assert.match(textOf(b.elements.get("project-select")), /새 모델/);
+    assert.match(textOf(b.elements.get("project-select")), /새 호출어/);
   });
   await test("location previews debounce edits, follow every workload choice and do not repeat on polling", async () => {
     const b = browser(); await flush();
@@ -292,7 +557,7 @@ function pendingHardStorageRecipe() {
     result = { directory: "F:\\test\\models\\model_0001" };
     b.elements.get("adv-updates").value = "-1"; b.elements.get("adv-updates").handlers.input();
     await locationSettled();
-    assert.match(b.elements.get("storage-directory").textContent, /입력한 값을/);
+    assert.match(b.elements.get("storage-directory").textContent, /수량과 시간을 확인/);
     b.elements.get("adv-updates").value = "10000"; await b.submit("create-form");
     assert.equal(b.calls.some(call => call.url === "/api/projects"), false);
     await locationSettled(); assert.equal(b.elements.get("create").disabled, false);
@@ -462,7 +727,7 @@ function pendingHardStorageRecipe() {
   });
   await test("initial load checks state/recipes only and untrusted source labels remain text", async () => {
     const b = browser(); await flush();
-    assert.deepEqual(b.calls.map(call => call.url), ["/api/state", "/api/recipes"]);
+    assert.deepEqual(b.calls.map(call => call.url), ["/api/state?view=studio", "/api/recipes"]);
     assert.equal(b.elements.get("create").disabled, true);
     const preview = b.elements.get("source-preview");
     const label = descendants(preview).find(node => node.textContent === "<img src=x onerror=bad()>");
@@ -1221,16 +1486,30 @@ function pendingHardStorageRecipe() {
     await b.storyBridge.create({ navigationCheckpoints: true });
     const mutations = b.calls.filter(call => call.options.method === "POST" && call.url !== "/api/model-location");
     assert.deepEqual(mutations.map(call => call.url), ["/api/projects"]);
-    assert.deepEqual(JSON.parse(mutations[0].options.body), { wakeword: "보라야", preset: "check", navigation_checkpoints: true });
+    assert.deepEqual(JSON.parse(mutations[0].options.body), { wakeword: "보라야", preset: "check", navigation_checkpoints: true, reference_voice_review: true });
     assert.equal(b.calls.some(call => /\/(start|resume)$/.test(call.url)), false);
+  });
+  await test("candidate reference preview is available before any source audio exists", async () => {
+    const project = { id: "candidate", wakeword: "보라야", status: "running", stage_id: "references",
+      reference_preview: { url: "/reference-preview/?project=candidate", count: 0, train: 0, validation: 0, candidate_selection: true } };
+    const b = browser({ initialState: { projects: [project] } }); await flush();
+    const details = b.elements.get("reference-preview"), frame = b.elements.get("reference-preview-frame");
+    assert.equal(details.hidden, false); assert.equal(frame.getAttribute("src"), null);
+    assert.equal(b.elements.get("audio-tab-reference").disabled, false);
+    await b.click("dashboard-review"); await b.click("audio-tab-reference");
+    assert.equal(b.elements.get("audio-panel-reference").hidden, false);
+    details.open = true; details.handlers.toggle();
+    assert.equal(frame.getAttribute("src"), project.reference_preview.url);
+    await b.tick(); assert.equal(details.open, true); assert.equal(frame.srcWrites, 1);
+    assert.equal(b.calls.some(call => call.options.method === "POST" && call.url !== "/api/model-location"), false);
   });
   await test("optional reference listening loads only on request and polling preserves playback without writing decisions", async () => {
     const project = { id: "bora", wakeword: "보라야", status: "running", stage: "pilot",
       reference_preview: { url: "/reference-preview/?project=bora", count: 50, train: 20, validation: 30 } };
     const b = browser({ initialState: { projects: [project] } }); await flush();
     const details = b.elements.get("reference-preview"), frame = b.elements.get("reference-preview-frame");
-    assert.match(html, /<summary>기준 목소리 듣기<\/summary>/);
-    assert.doesNotMatch(html, /기준 목소리 듣기\s*\(선택\)/);
+    assert.match(html, /<summary>기준 목소리 검수<\/summary>/);
+    assert.doesNotMatch(html, /기준 목소리 검수\s*\(선택\)/);
     assert.doesNotMatch(html.match(/<iframe id="reference-preview-frame"[^>]*>/)[0], /\ssrc=/);
     assert.equal(details.hidden, false); assert.equal(details.open, false);
     assert.equal(frame.getAttribute("src"), null); assert.equal(frame.srcWrites, 0);
@@ -1251,14 +1530,14 @@ function pendingHardStorageRecipe() {
     const b = browser({ initialState: { projects: [project, other], active_project_id: "bora" } }); await flush();
     const details = b.elements.get("reference-preview"), frame = b.elements.get("reference-preview-frame");
     details.open = true; details.handlers.toggle();
-    b.elements.get("project-select").value = "other"; b.elements.get("project-select").handlers.change();
+    b.elements.get("project-select").value = "other"; await b.elements.get("project-select").handlers.change();
     assert.equal(details.open, false); assert.equal(frame.getAttribute("src"), null);
     details.open = true; details.handlers.toggle();
     assert.equal(frame.getAttribute("src"), "/reference-preview/?project=other");
     await b.click("new-project");
     assert.equal(details.hidden, true); assert.equal(details.open, false); assert.equal(frame.getAttribute("src"), null);
     other.reference_preview.url = "https://example.com/reference-preview/";
-    b.elements.get("project-select").value = "other"; b.elements.get("project-select").handlers.change(); await b.tick();
+    b.elements.get("project-select").value = "other"; await b.elements.get("project-select").handlers.change(); await b.tick();
     assert.equal(details.hidden, true); assert.equal(frame.getAttribute("src"), null);
     other.reference_preview = { url: "/reference-preview/?project=other", count: 0 }; await b.tick();
     assert.equal(details.hidden, true);
@@ -1296,14 +1575,14 @@ function pendingHardStorageRecipe() {
     const b = browser({ initialState: { projects: [project, other], active_project_id: "bora" } }); await flush();
     const details = b.elements.get("hard-preview"), frame = b.elements.get("hard-preview-frame");
     details.open = true; details.handlers.toggle();
-    b.elements.get("project-select").value = "other"; b.elements.get("project-select").handlers.change();
+    b.elements.get("project-select").value = "other"; await b.elements.get("project-select").handlers.change();
     assert.equal(details.open, false); assert.equal(frame.getAttribute("src"), null);
     details.open = true; details.handlers.toggle();
     assert.equal(frame.getAttribute("src"), "/hard-preview/?project=other");
     await b.click("new-project");
     assert.equal(details.hidden, true); assert.equal(details.open, false); assert.equal(frame.getAttribute("src"), null);
     other.hard_preview.url = "https://example.com/hard-preview/";
-    b.elements.get("project-select").value = "other"; b.elements.get("project-select").handlers.change(); await b.tick();
+    b.elements.get("project-select").value = "other"; await b.elements.get("project-select").handlers.change(); await b.tick();
     assert.equal(details.hidden, true); assert.equal(frame.getAttribute("src"), null);
     other.hard_preview = { url: "/hard-preview/?project=other", count: 0 }; await b.tick();
     assert.equal(details.hidden, true);
@@ -1413,11 +1692,11 @@ function pendingHardStorageRecipe() {
   });
   await test("same wakeword revisions use their model folders in the selector without changing IDs", async () => {
     const b = browser({ initialState: { active_project_id:"new", projects:[
-      {id:"old",wakeword:"언년아",directory:"F:\\test\\models\\model_0001",status:"paused",stage:"references_review"},
-      {id:"new",wakeword:"언년아",directory:"F:\\test\\models\\model_0002",status:"paused",stage:"references"}
+      {id:"old",wakeword:"보라야",directory:"F:\\test\\models\\model_0001",status:"paused",stage:"references_review"},
+      {id:"new",wakeword:"보라야",directory:"F:\\test\\models\\model_0002",status:"paused",stage:"references"}
     ] } }); await flush();
     const options = b.elements.get("project-select").children;
-    assert.deepEqual(options.map(option => [option.textContent,option.value]), [["언년아 · model_0001","old"],["언년아 · model_0002","new"]]);
+    assert.deepEqual(options.map(option => [option.textContent,option.value]), [["보라야 · model_0001","old"],["보라야 · model_0002","new"],["새 호출어…",""]]);
     assert.equal(b.elements.get("project-select").value,"new");
   });
   await test("human input is explicit; polling does not overwrite the text being edited", async () => {
@@ -1510,8 +1789,8 @@ function pendingHardStorageRecipe() {
     const b = browser({ initialState: { projects: [project] } }); await flush();
     assert.match(b.elements.get("stages").children[0].className, /done/);
     assert.match(b.elements.get("stages").children[5].className, /current/);
-    assert.equal(b.elements.get("progress").hidden, true); assert.equal(b.elements.get("progress-percent").textContent, "");
-    assert.equal(b.elements.get("progress-label").textContent, "전체 절차 13 / 19단계 완료");
+    assert.equal(b.elements.get("progress-section").hidden, true); assert.equal(b.elements.get("progress-percent").textContent, "");
+    assert.equal(b.elements.get("progress-label").textContent, "");
     assert.equal(b.elements.get("elapsed").textContent, "이 작업 경과 30초 · 전체 경과 1시간");
     assert.match(b.elements.get("eta").textContent, /측정한 뒤/);
   });
@@ -1535,7 +1814,8 @@ function pendingHardStorageRecipe() {
       assert.equal(groups.filter(group => /\bcurrent\b/.test(group.className)).length, 1);
       assert.equal(groups[groupIndexes[index]].getAttribute("aria-current"), "step");
       assert.equal(groups.filter(group => /\bdone\b/.test(group.className)).length, groupIndexes[index]);
-      assert.equal(b.elements.get("progress-label").textContent, `전체 절차 ${index} / 19단계 완료`);
+      assert.equal(b.elements.get("progress-section").hidden, true);
+      assert.equal(b.elements.get("progress-label").textContent, "");
       assert.equal(b.elements.get("progress-percent").textContent, "");
       assert.deepEqual(project.stages.map(stage => stage.id), workflow);
       assert.equal(project.settings.frozen_policy, "unchanged");
@@ -1622,6 +1902,22 @@ function pendingHardStorageRecipe() {
     b.state.fetchError = null; await b.tick();
     assert.equal(b.elements.get("connection").hidden, true);
     assert.equal(b.elements.get("project-title").textContent, "‘보라야’");
+  });
+  await test("a finalizing story request retains its review frame through an earlier completed-input poll only until ACK",async()=>{
+    for(const [stage,queue] of [['pilot_review','pilot'],['positive_review','positive']]){
+      let finalizing=false;const project={id:'bora',wakeword:'보라야',status:'waiting_review',stage,review:{queue_id:queue,queue_sha256:'q-'+queue,url:'/review/?project=bora&queue='+queue}};
+      const b=browser({withStory:true,initialState:{projects:[project],active_project_id:'bora'},retainReviewFrame:row=>finalizing&&row.id==='bora'});await flush();
+      const frame=b.elements.get('review-frame'),source=frame.getAttribute('src'),writes=frame.srcWrites;assert.ok(source);
+      finalizing=true;project.status='paused';delete project.review;await b.tick();
+      assert.equal(frame.getAttribute('src'),source);assert.equal(frame.srcWrites,writes,'a poll cannot unload the still-awaited '+queue+' finalize response');
+      finalizing=false;await b.tick();assert.equal(frame.getAttribute('src'),null,'the normal clear path resumes immediately after the bound request releases retention');
+      assert.equal(b.calls.some(call=>call.options?.method==='POST'),false,'frame retention performs no backend action');
+    }
+  });
+  await test("story action returns an explicit success or failure while preserving normal refresh behavior",async()=>{
+    const b=browser({withStory:true,initialState:{projects:[{id:'bora',wakeword:'보라야',status:'paused',stage:'pilot_review'}],active_project_id:'bora'}});await flush();
+    assert.equal(await b.storyBridge.action('resume'),true);assert.equal(await b.storyBridge.action('unknown-review-action'),false);
+    assert.equal(b.calls.filter(call=>call.url.startsWith('/api/state?')).length,3);
   });
   await test("a timed-out state poll keeps the last project and iframe while automatic polling recovers", async () => {
     const project = { id: "bora", wakeword: "보라야", status: "waiting_review", stage: "pilot", error: null,
@@ -1801,6 +2097,42 @@ function pendingHardStorageRecipe() {
     assert.equal(failed.elements.get("project-switch").hidden, true);
     assert.equal(failed.elements.get("create").disabled, true); assert.match(failed.elements.get("message").textContent, /recipe failure/);
   });
+  await test("concurrent log reads share the same request and a prior project cannot replace current logs", async () => {
+    const projects = [{ id: "bora", status: "ready" }, { id: "other", status: "ready" }];
+    const respond = new Map();
+    const b = browser({ initialState: { projects },
+      logResponse: url => new Promise(resolve => respond.set(url, resolve)) });
+    await flush();
+    b.elements.get("log-details").open = true;
+    const first = b.click("refresh-log");
+    assert.equal(b.elements.get("log-details").handlers.toggle(), first);
+    assert.equal(b.storyBridge.logs(), first);
+    assert.equal(b.calls.filter(call => call.url.endsWith("/log")).length, 1);
+    const selector = b.elements.get("project-select");
+    selector.value = "other";
+    await selector.handlers.change();
+    const second = b.storyBridge.logs();
+    assert.notEqual(second, first);
+    respond.get("/api/projects/other/log")("current log");
+    await second;
+    respond.get("/api/projects/bora/log")("stale log");
+    await first;
+    assert.equal(b.elements.get("log").textContent, "current log");
+    assert.equal(b.calls.filter(call => call.url.endsWith("/log")).length, 2);
+  });
+  await test("elapsed timing explanations track the displayed project record", async () => {
+    const old = { id: "bora", status: "completed", timing: { total_seconds: 60, legacy_estimate: true } };
+    const current = { id: "other", status: "running", current_stage_elapsed_seconds: 4 };
+    const b = browser({ initialState: { projects: [old, current] } });
+    await flush();
+    const elapsed = b.elements.get("elapsed");
+    assert.match(elapsed.title, /과거 기록/);
+    const selector = b.elements.get("project-select");
+    selector.value = current.id;
+    await selector.handlers.change();
+    assert.match(elapsed.textContent, /4초/);
+    assert.equal(elapsed.title, "");
+  });
   await test("running evaluation consumes structured progress and fetches logs only on request", async () => {
     const project = { id: "bora", wakeword: "보라야", status: "running", stage: { id: "evaluation" }, progress: { done: 80, total: 100, unit: "개 음원", phase: "scoring", label: "성능 평가 · GPU" } };
     const b = browser({ initialState: { projects: [project] }, logResponse: "Evaluate development: 80/100 (CUDA batch=128, CPU rechecked=8)\n" });
@@ -1827,6 +2159,38 @@ function pendingHardStorageRecipe() {
     b.elements.get("log-details").open = true; await b.tick();
     assert.match(b.elements.get("log").textContent, /optional log unavailable/);
     assert.equal(b.elements.get("connection").hidden, true);
+  });
+  await test("long evaluation activity updates one caption while keeping durable completed audio counts unchanged",async()=>{
+    const project={id:"bora",status:"running",stage_id:"evaluation",progress:{phase:"scoring",label:"성능 평가 · GPU",done:48000,total:48137,unit:"개 음원",
+      activity:{phase:"gpu_compute",label:"긴 비호출 음원 평가 중",done:100,total:1000,unit:"frames",audio_seconds:8,batch_audio_seconds:80}}};
+    const b=browser({initialState:{projects:[project]}});await flush();
+    const durable=b.elements.get("progress").value;
+    assert.match(b.elements.get("eta").textContent,/긴 비호출 음원 평가 중.*오디오 0:08 \/ 1:20/);
+    assert.match(b.elements.get("progress-label").textContent,/48,000 \/ 48,137/);
+    assert.equal(b.elements.get("eta").style.whiteSpace,"nowrap");
+    project.progress.activity.audio_seconds=40;await b.tick();
+    assert.match(b.elements.get("eta").textContent,/0:40 \/ 1:20/);assert.equal(b.elements.get("progress").value,durable);
+    project.progress.phase="finalizing";project.progress.done=48137;await b.tick();
+    assert.match(b.elements.get("eta").textContent,/통계와 결과 파일/);assert.doesNotMatch(b.elements.get("eta").textContent,/긴 비호출/);
+    assert.equal(b.elements.get("eta").style.whiteSpace,"");
+    assert.equal(b.calls.some(call=>call.options.method==="POST"),false);
+  });
+  await test("evaluation activity ignores invalid measurements and never hides a requested pause or failure",async()=>{
+    const project={id:"bora",status:"running",stage_id:"evaluation",progress:{phase:"scoring",done:48000,total:48137,unit:"개 음원",
+      activity:{label:"CPU 재확인 중",audio_seconds:100,batch_audio_seconds:20,done:-5,total:100,unit:"frames"}}};
+    const b=browser({initialState:{projects:[project]}});await flush();
+    assert.equal(b.elements.get("eta").textContent,"CPU 재확인 중");
+    project.status="pausing";await b.tick();assert.match(b.elements.get("eta").textContent,/일시정지/);
+    project.status="failed";project.error="음원 검증 실패";await b.tick();
+    assert.equal(b.elements.get("project-error").textContent,"음원 검증 실패");assert.doesNotMatch(b.elements.get("eta").textContent,/CPU 재확인/);
+  });
+  await test("development generation and final registration are described separately without declaring completion",async()=>{
+    const project={id:"bora",status:"running",stage_id:"development",progress:{phase:"preparation_generation",label:"평가 자료 생성",done:12000,total:48000,unit:"개 음원"}};
+    const b=browser({initialState:{projects:[project]}});await flush();
+    assert.match(b.elements.get("eta").textContent,/평가용 음원을 생성/);assert.equal(b.elements.get("progress").value,25);
+    project.progress.phase="preparation_finalizing";project.progress.done=48000;await b.tick();
+    assert.match(b.elements.get("eta").textContent,/자료 목록과 연결 상태를 검증/);assert.equal(b.elements.get("project-status").textContent,"진행 중");
+    assert.equal(b.elements.get("progress").value,100);assert.equal(b.calls.some(call=>call.options.method==="POST"),false);
   });
   await test("a server evaluation progress record needs no extra closed-log request", async () => {
     const project = { id: "bora", status: "running", stage: { id: "evaluation" }, progress: { done: 100, total: 100, unit: "개 음원", phase: "finalizing" } };
@@ -1959,7 +2323,7 @@ function pendingHardStorageRecipe() {
     const second = { id: "other", status: "running", stage: "data_download", progress: { done: 1, total: 2, unit: "files" } };
     const b = browser({ initialState: { projects: [first, second], active_project_id: "bora" } }); await flush();
     assert.equal(b.elements.get("downloads-section").hidden, false);
-    b.elements.get("project-select").value = "other"; b.elements.get("project-select").handlers.change();
+    b.elements.get("project-select").value = "other"; await b.elements.get("project-select").handlers.change();
     assert.equal(b.elements.get("downloads-section").hidden, true); assert.equal(b.elements.get("downloads-list").children.length, 0);
     assert.equal(b.elements.get("progress").value, 50);
     second.progress.files = [null, { label: "no ID" }]; await b.tick();
@@ -2120,6 +2484,16 @@ function pendingHardStorageRecipe() {
     assert.equal(b.elements.get("coverage-tabs").hidden,true);
     assert.equal(b.elements.get("materials-empty").hidden,false);
     assert.equal(b.calls.some(call=>call.options.method==="POST"),false);
+  });
+  await test("the current chapter adapter does not build hidden duplicate download rows", async()=>{
+    const project={id:'bora',wakeword:'새봄아',status:'running',stage_id:'data_download',download_files:[
+      {id:'one',label:'자료',state:'downloading',done:10,total:100,unit:'bytes'}]};
+    const b=browser({storyOwnsDownloadRows:true,initialState:{projects:[project],active_project_id:'bora'}});await flush();
+    assert.equal(b.root.getAttribute('data-studio-boot'),'ready');assert.equal(b.elements.get('downloads-list').children.length,0);
+    assert.equal(b.storyBridge.state().project.download_files.length,1);
+    project.download_files[0].done=20;project.download_files.push({id:'two',label:'추가 자료',state:'waiting',done:0,total:100,unit:'bytes'});
+    await b.tick();assert.equal(b.elements.get('downloads-list').children.length,0);assert.equal(b.storyBridge.state().project.download_files[0].done,20);
+    assert.equal(b.calls.some(call=>call.options.method==='POST'),false);
   });
   console.log(`Studio UI: ${tests.length} tests passed`);
   for (const name of tests) console.log("  ✓ " + name);

@@ -9,25 +9,71 @@ from .project import load_project
 from .web_page import render_page_config
 
 
-def apply_review(project, queue, decisions, kind):
+PLAY_STARTED_POLICY = "play_started_default_keep_v1"
+
+
+def validate_started_decision(answer):
+    """Keep actual playback start separate from completed listening."""
+    if (not isinstance(answer, dict) or answer.get("decision") not in ("keep", "discard")
+            or type(answer.get("playback_started")) is not bool
+            or type(answer.get("playback_completed")) is not bool
+            or type(answer.get("listened")) is not bool
+            or answer["playback_completed"] and not answer["playback_started"]
+            or answer["listened"] != answer["playback_completed"]
+            or answer["decision"] == "keep" and not answer["playback_started"]):
+        raise ValueError("실제 재생한 음원만 정상으로 기록할 수 있습니다. 재생 완료 여부는 별도로 보존합니다.")
+
+
+def apply_review(project, queue, decisions, kind, *, playback_policy=None):
+    from .pilot import PREPOST_PILOT_POLICY
+
     root, config = load_project(project)
     queue = Path(queue).resolve()
     rows = read_rows(queue)
     by_id = {r["sample_id"]: r for r in rows}
-    if not rows or len(by_id) != len(rows) or kind not in ("references", "pilot", "content"):
+    if not rows or len(by_id) != len(rows) or kind not in ("references", "pilot", "positive", "content"):
         raise ValueError("A nonempty unique review queue and supported review kind are required")
+    prepost = any(row.get("pronunciation_policy") == PREPOST_PILOT_POLICY for row in rows)
+    started_policy = playback_policy == PLAY_STARTED_POLICY and kind == "pilot" and prepost
+    if playback_policy is not None and not started_policy:
+        raise ValueError("재생 시작 자동 저장은 호출어 사전 검수에서만 사용할 수 있습니다.")
+    if kind == "positive" and not prepost:
+        raise ValueError("Final pronunciation review requires a staged call queue")
+    if prepost:
+        if kind not in ("pilot", "positive") or any(
+                row.get("pronunciation_policy") != PREPOST_PILOT_POLICY
+                or ("preflight_round" in row) != (kind == "pilot")
+                or row.get("text") != config["wakeword"] or row.get("generation_method") != "clone"
+                or row.get("tts_settings_id") != identity(config["tts"])
+                or row.get("qc", {}).get("passed") is not True for row in rows):
+            raise ValueError("Pronunciation review does not match this project's staged generation")
     if set(decisions) != set(by_id):
         raise ValueError("Every queued item must be listened to or explicitly rejected/review-held")
     for key, value in decisions.items():
         if value.get("decision") not in ("keep", "discard", "review"):
             raise ValueError("Invalid disposition")
-        if value["decision"] == "keep" and not value.get("listened"):
+        if started_policy:
+            validate_started_decision(value)
+        elif prepost and (value.get("listened") is not True or value["decision"] == "review"):
+            raise ValueError("사전·본검수 음원을 끝까지 듣고 정상 또는 제외를 선택하세요.")
+        if not started_policy and value["decision"] == "keep" and not value.get("listened"):
             raise ValueError("Unheard audio cannot be silently marked listened/kept")
         if digest(resolved(root, by_id[key]["path"])) != by_id[key]["sha256"]:
             raise ValueError("Review audio changed")
     report = {"kind": kind + "_listening_review", "queue_sha256": digest(queue), "wakeword": config["wakeword"],
         "queued_audio_sha256": {r["sample_id"]: r["sha256"] for r in rows},
         "decisions": decisions, "saved_at": now(), "source_scope": "Human dispositions entered through the local review screen"}
+    if started_policy:
+        report.update(autosave_policy=PLAY_STARTED_POLICY,
+                      playback_started_count=sum(answer["playback_started"] for answer in decisions.values()),
+                      playback_completed_count=sum(answer["playback_completed"] for answer in decisions.values()))
+    if prepost:
+        binding = snapshot_json(root, report, kind + "_review")
+        write_json(root / "review" / (kind + "_results.json"), report)
+        kept = sum(answer["decision"] == "keep" for answer in decisions.values())
+        approved = kept == len(rows)
+        return {"state": "saved" if approved else "pilot_exceptions_need_policy_fix",
+                "kept": kept, "total": len(rows), "policy_approved": approved, "report": binding}
     write_json(root / "review" / (kind + "_results.json"), report)
     archive = root / "review" / "evidence" / (kind + "_" + digest(root / "review" / (kind + "_results.json")) + ".json")
     write_json(archive, report)

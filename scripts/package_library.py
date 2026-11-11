@@ -4,7 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
-import shutil
+import stat
 
 
 ROOT_FILES = (
@@ -14,13 +14,51 @@ ROOT_FILES = (
 GUIDES = (
     "LIBRARY_GUIDE.md", "DATASETS.md", "DATA_FORMAT.md", "VALIDATION.md",
     "TRAINING_RESULTS_SITE.md", "STORAGE_POLICY.md",
-    "WEB_GUIDE.md",
+    "WEB_GUIDE.md", "WEB_LAYOUT.md", "CODE_IMPROVEMENTS.md",
 )
 PRIVATE_TEXT = re.compile(
-    r"C:[\\/]+Users[\\/]+|F:[\\/]+project-wakeword|"
-    r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
+    r"C:[\\/]+Users[\\/]+|F:[\\/]+project-(?:test_)?wakeword|"
+    r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}",
+    re.IGNORECASE,
 )
-IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", "*.tmp", ".writer.lock")
+
+
+def _release_paths(repository):
+    """List the distributable tree without traversing caches or workspaces."""
+    yield from (Path(name) for name in ROOT_FILES)
+    yield from (Path("docs", name) for name in GUIDES)
+    yield from (Path("scripts", name) for name in (
+        "Use-ProjectStorage.ps1", "Start-Web.ps1", "Start-Web.cmd",
+        "package_library.py", "check_browser.py"))
+    patterns = (
+        "korean_openwakeword/*.py",
+        *("korean_openwakeword/resources/*." + ext for ext in ("json", "html", "js", "css", "svg", "txt")),
+        *("korean_openwakeword/resources/sample_chunsik/*." + ext for ext in ("json", "md")),
+        "korean_openwakeword/resources/sample_chunsik/licenses/*.txt",
+        "korean_openwakeword/resources/sample_chunsik/models/*.onnx",
+        "korean_openwakeword/resources/sample_chunsik/frontend/*.onnx",
+        "korean_openwakeword/resources/sample_chunsik/audio/*.wav",
+        ".github/workflows/*.yml", ".github/workflows/*.yaml",
+        *("examples/library_demo_site/*." + ext for ext in ("html", "js", "css", "json")),
+        "examples/library_demo_site/audio/*.wav",
+        "tests/test_*.py", "tests/check_*.cjs", "tests/fixtures/*.json", "validation/*.json",
+    )
+    for pattern in patterns:
+        for path in sorted(repository.glob(pattern)):
+            yield path.relative_to(repository)
+
+
+def _require_release_file(repository, relative):
+    path = repository
+    for part in relative.parts:
+        path /= part
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode) or (
+                getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+            raise ValueError("Linked source in release: " + relative.as_posix())
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError("Expected a regular source file: " + relative.as_posix())
+    return path
 
 
 def stage_library(repository, output, inventory):
@@ -33,34 +71,18 @@ def stage_library(repository, output, inventory):
     if inventory.is_relative_to(output):
         raise ValueError("Inventory belongs outside the distributable source tree")
     output.mkdir(parents=True, exist_ok=True)
-    for name in ROOT_FILES:
-        shutil.copyfile(repository / name, output / name)
-    for name in ("korean_openwakeword", ".github", "examples/library_demo_site"):
-        shutil.copytree(repository / name, output / name, ignore=IGNORE)
-    (output / "docs").mkdir()
-    for name in GUIDES:
-        shutil.copyfile(repository / "docs" / name, output / "docs" / name)
-    (output / "scripts").mkdir()
-    for name in ("Use-ProjectStorage.ps1", "Start-Web.ps1", "Start-Web.cmd", "package_library.py", "check_browser.py"):
-        shutil.copyfile(repository / "scripts" / name, output / "scripts" / name)
-    (output / "tests").mkdir()
-    for source in sorted((repository / "tests").glob("test_korean_library*.py")):
-        shutil.copyfile(source, output / "tests" / source.name)
-    for source in sorted((repository / "tests").glob("check_*.cjs")):
-        shutil.copyfile(source, output / "tests" / source.name)
-    (output / "validation").mkdir()
-    for source in sorted((repository / "validation").glob("*.json")):
-        shutil.copyfile(source, output / "validation" / source.name)
     records = []
-    for source in sorted(output.rglob("*")):
-        if not source.is_file():
-            continue
+    for relative in sorted(set(_release_paths(repository))):
+        source = _require_release_file(repository, relative)
         data = source.read_bytes()
-        relative = source.relative_to(output).as_posix()
+        name = relative.as_posix()
         if source.suffix.lower() not in (".onnx", ".wav"):
             if PRIVATE_TEXT.search(data.decode("utf-8-sig")):
-                raise ValueError("Private path or credential in release: " + relative)
-        records.append({"path": relative, "bytes": len(data),
+                raise ValueError("Private path or credential in release: " + name)
+        target = output / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        records.append({"path": name, "bytes": len(data),
                         "sha256": hashlib.sha256(data).hexdigest(),
                         "git_blob_sha": hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest()})
     result = {"source": str(output), "files": records, "file_count": len(records),

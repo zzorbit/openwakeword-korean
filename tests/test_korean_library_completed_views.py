@@ -5,8 +5,9 @@ import wave
 
 import pytest
 
-from korean_openwakeword import studio, studio_data
+from korean_openwakeword import studio, studio_data, studio_steps
 from korean_openwakeword.common import digest, read_json, write_json
+from korean_openwakeword.pilot import PREPOST_PILOT_POLICY, TRAIN_PILOT_POLICY
 from test_korean_library_studio import create, http_server, manager  # noqa: F401
 
 
@@ -18,10 +19,19 @@ def complete(manager, project_id, results):
     return state
 
 
-def saved_review(manager, *, hard=False):
+def saved_review(manager, *, hard=False, legacy=False):
     project = create(manager)
-    state = complete(manager, project["id"], {"hard_generation" if hard else "pilot": {},
-                                             "hard_review" if hard else "pilot_review": {}})
+    state = manager._load(project["id"])
+    assert state["settings"]["pilot_review_policy"] == PREPOST_PILOT_POLICY
+    if legacy:
+        assert not hard
+        state["settings"]["pilot_review_policy"] = TRAIN_PILOT_POLICY
+        state["plan"] = studio_steps.workflow_plan(state["settings"])
+        manager._save(state)
+    generation = "hard_generation" if hard else "pilot" if legacy else "positives"
+    review_stage = "hard_review" if hard else "pilot_review" if legacy else "positive_review"
+    queue_id = "hard" if hard else "pilot" if legacy else "positive"
+    state = complete(manager, project["id"], {generation: {}, review_stage: {"reviewed_queues": 1}})
     root = Path(state["project"]).parent
     audio = root / "data/history.wav"
     with wave.open(str(audio), "wb") as stream:
@@ -33,7 +43,10 @@ def saved_review(manager, *, hard=False):
            "sha256": digest(audio), "voice_family_id": "voice-1"}
     queue = root / ".studio/history-queue.jsonl"
     queue.write_text(json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
-    answer = {"wakeword": state["wakeword"], "saved_at": "2026-11-01T00:00:00Z", "queue_sha256": digest(queue),
+    answer = {"kind": ("content" if hard else queue_id) + "_listening_review",
+              "wakeword": state["wakeword"], "saved_at": "2026-11-01T00:00:00Z", "queue_sha256": digest(queue),
+              "representative_queue_sha256": digest(queue),
+              "source_scope": "Human dispositions entered through the local review screen",
               "queued_audio_sha256": {row["sample_id"]: row["sha256"]},
               "decisions": {row["sample_id"]: {"decision": "keep", "listened": True}}}
     if hard:
@@ -45,10 +58,14 @@ def saved_review(manager, *, hard=False):
         # A different whole pool must never replace the actually heard queue.
         state["results"]["hard_generation"]["result"]["review"] = {"queue": str(root / "whole-pool.jsonl")}
     else:
-        state["results"]["pilot"]["result"]["queue"] = str(queue)
+        state["results"][generation]["result"].update(queue=str(queue),
+            queue_binding={"path": str(queue), "sha256": digest(queue)})
     answer_path = root / ".studio/history-answer.json"
     write_json(answer_path, answer)
-    state["inputs"]["review_answers"] = {"hard" if hard else "pilot": {"path": str(answer_path), "sha256": digest(answer_path)}}
+    state["inputs"]["review_answers"] = {queue_id: {"path": str(answer_path), "sha256": digest(answer_path)}}
+    if not hard:
+        state["inputs"]["review_results"] = {queue_id: {"state": "saved", "kept": 1, "total": 1,
+            "policy_approved": True}}
     manager._save(state)
     return state, audio, queue, answer_path
 
@@ -136,9 +153,9 @@ def test_download_history_uses_verified_receipt_bytes_without_opening_archives(m
     assert any(row["state"] == "unknown" and row["done"] is None for row in files)
 
 
-@pytest.mark.parametrize("hard", [False, True])
-def test_completed_review_replays_exact_saved_decisions_without_save_route(manager, http_server, hard):
-    state, audio, queue, answer = saved_review(manager, hard=hard)
+@pytest.mark.parametrize("hard,legacy", [(False, False), (False, True), (True, False)])
+def test_completed_review_replays_exact_saved_decisions_without_save_route(manager, http_server, hard, legacy):
+    state, audio, queue, answer = saved_review(manager, hard=hard, legacy=legacy)
     step = "hard-review" if hard else "pronunciation"
     paths = [manager._path(state["id"]), audio, queue, answer]
     before = {str(path): digest(path) for path in paths}
@@ -149,7 +166,7 @@ def test_completed_review_replays_exact_saved_decisions_without_save_route(manag
     status, content, headers = http_server(item["audio"])
     assert status == 200 and content == audio.read_bytes()
     assert headers["Content-Type"].startswith("audio/")
-    queue_id = "hard" if hard else "pilot"
+    queue_id = "hard" if hard else "pilot" if legacy else "positive"
     assert http_server(f"/review/queue?project={state['id']}&queue={queue_id}")[0] == 400
     assert http_server(item["audio"], method="POST", payload={}, headers={"X-Koww-Token": manager.token})[0] in (400, 404)
     assert {str(path): digest(path) for path in paths} == before

@@ -67,6 +67,8 @@ def _check_tts_imports():
 
 
 def doctor(include_tts=False):
+    from .task_progress import emit
+    emit("environment_versions", "설치된 라이브러리 버전 확인", eta_eligible=False)
     versions = {}
     for name in ("korean-openwakeword", "openwakeword", "torch", "torchaudio", "onnxruntime", "qwen-tts", "numpy"):
         try:
@@ -75,9 +77,11 @@ def doctor(include_tts=False):
             versions[name] = None
     report = {"versions": versions, "reference_openwakeword_ready": versions["openwakeword"] == "0.6.0"}
     try:
+        emit("environment_torch", "PyTorch 불러오기", eta_eligible=False)
         import torch
+        emit("environment_cuda", "CUDA 장치·메모리 확인", eta_eligible=False)
         report["cuda_available"] = torch.cuda.is_available()
-        if torch.cuda.is_available():
+        if report["cuda_available"]:
             free, total = torch.cuda.mem_get_info()
             report["GPU"] = {"name": torch.cuda.get_device_name(), "free_bytes": free, "total_bytes": total}
     except ImportError:
@@ -89,6 +93,7 @@ def doctor(include_tts=False):
                 reasons.append(f"{name}=={expected} is required for the supported TTS path")
         warnings, notes = "", []
         if not reasons:
+            emit("environment_tts_import", "Qwen 음성 생성 라이브러리 확인", eta_eligible=False)
             reasons, warnings, notes = _check_tts_imports()
         report["tts_check"] = {"ready": not reasons, "reasons": reasons,
                                "import_warnings": warnings, "notes": notes,

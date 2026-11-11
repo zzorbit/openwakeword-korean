@@ -115,6 +115,31 @@ def _seed_reference_prefix(project, root, bundle, manifest, rows, backend):
     return directory, scores.copy()
 
 
+@pytest.mark.parametrize("resume", [False, True])
+def test_scoring_start_is_reported_before_first_long_batch_yields(monkeypatch, tmp_path, capsys, resume):
+    project, root, bundle, manifest, rows = _evaluation_inputs(tmp_path)
+    monkeypatch.setattr(evaluation_backend, "resolve_evaluation_backend", lambda requested="auto", **kw:
+                        _selection(requested, "cuda", kw["resume_backend"]))
+    if resume:
+        output, prefix = _seed_reference_prefix(project, root, bundle, manifest, rows, "cuda")
+    else:
+        output = root / "reports/first_long_batch"
+    expected_start = int(resume)
+    before, yielded = [], []
+    def slow_first_batch(environment, directory, model_ids, items, **kwargs):
+        # This executes inside the scorer, before its first completion yield.
+        before.append(capsys.readouterr().out)
+        assert f"Evaluate development: {expected_start}/2 (CUDA batch=128, CPU rechecked=0)" in before[-1]
+        for value in _reference_gpu_seam([])(environment, directory, model_ids, items, **kwargs):
+            yielded.append(value[0])
+            yield value
+    monkeypatch.setattr(evaluate, "_gpu_sessions_with_environment", slow_first_batch)
+    report = evaluate.evaluate(project, bundle, output, manifest=manifest, smoke=True, workers=1,
+                               resume=resume, backend="cuda")
+    assert before and yielded == list(range(expected_start, 2))
+    assert report["execution"]["resumed_sessions"] == expected_start
+
+
 def test_cpu_prefix_is_preserved_until_cpu_resume_is_explicitly_chosen(monkeypatch, tmp_path):
     project, root, bundle, manifest, rows = _evaluation_inputs(tmp_path)
     output, prefix = _seed_reference_prefix(project, root, bundle, manifest, rows, "cpu")

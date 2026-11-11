@@ -28,7 +28,8 @@ def analysis(experiment, monkeypatch):
                  "evaluation": {"result": {"evaluation": str(evaluation)}}}}
     manager = SimpleNamespace(_load=lambda project_id: state, _lock=threading.RLock(),
         token="analysis-local-token", registry={"projects": {"fixture": str(project)}},
-        _job_alive=lambda job: False, _microphones={})
+        _job_alive=lambda job: False, _microphones={},
+        _reference_review_job_alive=lambda state: False, _stop_reference_worker=lambda: None)
     calls = []
     def popen(args, **kwargs):
         calls.append((args, kwargs))

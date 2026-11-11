@@ -8,8 +8,8 @@ const html = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resour
 const flush = async () => { for (let count = 0; count < 8; count++) await new Promise(resolve => setImmediate(resolve)); };
 const tests = [];
 async function test(name, run) { await run(); tests.push(name); }
-function browser(tuples, {deferPages = false, pageFailure = false, staticViewer = false, viewportHeight, playback, enhance, indexPath = "viewer-index.json", report = {wakeword: "보라야", models: []}} = {}) {
-  const elements = new Map(), calls = [], deferred = new Map(), listeners = {}, parentWindow = {};
+function browser(tuples, {deferPages = false, pageFailure = false, indexFailure = false, invalidIndex = false, summaryFailure = false, autoBoot = false, readinessHook = true, staticViewer = false, viewportHeight, playback, enhance, createPicker, indexPath = "viewer-index.json", report = {wakeword: "보라야", models: []}} = {}) {
+  const elements = new Map(), calls = [], deferred = new Map(), listeners = {}, parentWindow = {}, readiness = [];
   class Element {
     constructor(tag = "div") { this.tagName = tag; this.children = []; this.value = ""; this.textContent = ""; this.disabled = false; this.src = ""; this.plays = 0; this.pauses = 0; this.attributes = {}; this.paused = true; this.ended = false; this.volume = 1; this.playbackRate = 1; }
     append(...nodes) { this.children.push(...nodes); }
@@ -30,26 +30,85 @@ function browser(tuples, {deferPages = false, pageFailure = false, staticViewer 
   const page = number => ({start: number * 128, clips: tuples.slice(number * 128, (number + 1) * 128).map((tuple, offset) => row(tuple, number * 128 + offset))});
   const context = vm.createContext({document: {getElementById: id => elements.get(id), createElement: tag => new Element(tag)}, console, evaluationScopeText: () => "시험 범위", evaluationNoiseCoverageText: () => "시험 배경", evaluationBackgroundTypeText: clip => clip.noise_eval_label || "", fetch: async url => {
     calls.push(url);
-    if (url === indexPath) return {ok: true, json: async () => ({schema_version: 1, scope_text: "정확한 평가 범위", noise_coverage_text: "전체 음원 사용", clips: tuples})};
+    if (url === indexPath) return {ok: !indexFailure, status: indexFailure ? 503 : 200, json: async () => ({schema_version: invalidIndex ? 99 : 1, scope_text: "정확한 평가 범위", noise_coverage_text: "전체 음원 사용", clips: tuples})};
     const number = Number(url.match(/page-(\d+)\.json/)[1]);
     if (pageFailure) return {ok: false, status: 503};
     if (deferPages) return new Promise(resolve => deferred.set(number, () => resolve({ok: true, json: async () => page(number)})));
     return {ok: true, json: async () => page(number)};
   }});
-  context.window = context; context.location = new URL("http://127.0.0.1/results/bora/"); context.URL = URL; context.KOWW_RESULTS_TEST = true;
-  if (enhance) context.KowwListening = {enhance};
+  context.window = context; context.location = new URL("http://127.0.0.1/results/bora/"); context.URL = URL; context.KOWW_RESULTS_TEST = !autoBoot;
+  if (readinessHook) context.KowwChapterReady = {
+    loading: () => readiness.push({status: "loading"}),
+    ready: () => readiness.push({status: "ready", scope: elements.get("scope").textContent, title: elements.get("clipTitle").textContent, source: elements.get("audio").src, listCount: elements.get("item").children.length}),
+    fail: message => readiness.push({status: "failed", message}),
+  };
+  if (enhance) context.KowwListening = {enhance, createPicker};
+  elements.get("resume").parentElement = {after() {}};
+  elements.get("results-panel-audio").classList = {add() {}};
   context.innerHeight = viewportHeight;
   context.parent = parentWindow; context.addEventListener = (name, listener) => { listeners[name] = listener; };
   context.KOWW_RESULTS = {report, clips: staticViewer ? tuples.map(row) : undefined, viewer: {schema_version: 1, index_path: indexPath, page_size: 128}};
   vm.runInContext(presentation, context);
+  if (summaryFailure) context.KowwResultsUI.renderSummary = () => { throw new Error("결과 요약 오류"); };
   vm.runInContext(staticViewer ? staticScript : script, context);
-  return {elements, calls, deferred, helper: context.KowwResults,
+  return {elements, calls, deferred, readiness, helper: context.KowwResults,
     resize(height) { context.innerHeight = height; listeners.resize?.(); },
     message: extra => listeners.message({origin: context.location.origin, source: parentWindow, data: {type: "koww:pause"}, ...extra})};
 }
 const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "positive", ["environment", "music", "competing_speech"][index % 3], 10, "none", `original_${Math.floor(index / 3)}`, Math.floor(index / 3) + 1, 4]; for (const [key, field] of Object.entries(overrides)) value[Number(key)] = field; return value; };
 
 (async () => {
+  await test("paged chapter readiness waits for the initial detail, filters and list without playing audio", async () => {
+    const b = browser([tuple(0), tuple(1)], {deferPages: true});
+    const boot = b.helper.boot(); await flush();
+    assert.deepEqual(b.readiness, [{status: "loading"}], "metadata alone cannot finish the chapter transition");
+    assert.equal(b.elements.get("audio").plays, 0);
+    assert.equal(b.elements.get("item").children.length, 2);
+    b.deferred.get(0)(); await boot;
+    assert.deepEqual(b.readiness.map(value => value.status), ["loading", "ready"]);
+    assert.equal(b.readiness[1].scope, "정확한 평가 범위");
+    assert.equal(b.readiness[1].source, "audio/0.wav");
+    assert.equal(b.readiness[1].title, "음성 1 · 환경소음");
+    assert.equal(b.readiness[1].listCount, 2); assert.equal(b.elements.get("audio").plays, 0);
+    await b.helper.move(1); assert.equal(b.readiness.length, 2, "later detail browsing does not restart chapter readiness");
+  });
+  await test("an empty initial results filter is ready without fetching a detail page", async () => {
+    const b = browser([tuple(0, {1: "negative"})]); await b.helper.boot();
+    assert.deepEqual(b.readiness.map(value => value.status), ["loading", "ready"]);
+    assert.equal(b.calls.length, 1); assert.equal(b.elements.get("audio").plays, 0);
+    assert.match(b.readiness[1].title, /오디오가 없습니다/);
+  });
+  await test("a cancelled first detail cannot announce a completed results chapter", async () => {
+    const b = browser([tuple(0)], {deferPages: true});
+    const boot = b.helper.boot(); await flush();
+    b.message(); b.deferred.get(0)(); await boot;
+    assert.deepEqual(b.readiness.map(value => value.status), ["loading", "failed"]);
+    assert.equal(b.elements.get("audio").plays, 0); assert.notEqual(b.elements.get("audio").src, "audio/0.wav");
+  });
+  await test("initial index and detail errors fail chapter readiness and keep standalone inline errors", async () => {
+    for (const failure of [{indexFailure: true}, {invalidIndex: true}, {pageFailure: true}, {summaryFailure: true}]) {
+      const b = browser([tuple(0)], {...failure, autoBoot: true}); await flush();
+      assert.deepEqual(b.readiness.map(value => value.status), ["loading", "failed"]);
+      assert.ok(b.readiness[1].message); assert.ok(b.elements.get("playState").textContent);
+      assert.equal(b.elements.get("audio").plays, 0);
+    }
+  });
+  await test("static results signal readiness after initial rendering and report synchronous boot failures", async () => {
+    const b = browser([tuple(0), tuple(1)], {staticViewer: true});
+    assert.deepEqual(b.readiness.map(value => value.status), ["loading", "ready"]);
+    assert.equal(b.readiness[1].source, "audio/0.wav"); assert.equal(b.readiness[1].listCount, 2);
+    assert.equal(b.elements.get("audio").plays, 0); assert.equal(b.calls.length, 0);
+    const failed = browser([tuple(0)], {staticViewer: true, summaryFailure: true});
+    assert.deepEqual(failed.readiness.map(value => value.status), ["loading", "failed"]);
+    assert.equal(failed.readiness[1].message, "결과 요약 오류"); assert.equal(failed.elements.get("playState").textContent, "결과 요약 오류");
+  });
+  await test("portable static and paged viewers still boot without the optional chapter protocol", async () => {
+    for (const staticViewer of [false, true]) {
+      const b = browser([tuple(0)], {staticViewer, readinessHook: false});
+      if (!staticViewer) await b.helper.boot();
+      assert.equal(b.elements.get("audio").src, "audio/0.wav"); assert.equal(b.elements.get("audio").plays, 0);
+    }
+  });
   await test("112137 clips load one detail page and keep selectors bounded", async () => {
     const tuples = Array.from({length: 112137}, (_, index) => tuple(index));
     for (let index = 110000; index < tuples.length; index++) tuples[index] = tuple(index, {1: "negative", 2: "environment"});
@@ -214,6 +273,46 @@ const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "posi
   });
   for (const staticViewer of [false, true]) {
     const mode = staticViewer ? "static" : "paged";
+    await test(`${mode} shared picker browses bounded pages without changing audio and selects the correct clip`, async () => {
+      const picker = {
+        mounts: 0, closed: 0,
+        setItems(entries, index, label) { this.entries = entries; this.mounts++; this.setSelected(index, label); },
+        setSelected(index, label) { this.index = index; this.label = label; },
+        close() { this.closed++; },
+      };
+      let choose, transport;
+      const items = Array.from({length: 321}, (_, i) => tuple(i));
+      items[320][2] = "clean";
+      const b = browser(items, {staticViewer,
+        createPicker: options => { choose = options.onSelect; return picker; },
+        enhance: (audio, controls, options) => { transport = options; },
+      });
+      if (b.helper) await b.helper.boot();
+      assert.equal(transport.volume, b.elements.get("result-volume"));
+      assert.equal(picker.entries.length, 100);
+      assert.equal(picker.index, 0);
+      const audio = b.elements.get("audio"), calls = b.calls.length;
+      audio.currentTime = 2.25;
+      b.elements.get("clip-list-next").onclick();
+      assert.equal(picker.index, -1);
+      assert.match(picker.entries[0].fullLabel, /^101번째 음원/);
+      assert.equal(audio.src, "audio/0.wav");
+      assert.equal(audio.currentTime, 2.25);
+      assert.equal(b.calls.length, calls);
+      await choose(2);
+      assert.equal(audio.src, "audio/102.wav");
+      assert.equal(picker.index, 2);
+      await choose(3);
+      assert.equal(picker.mounts, 2, "selecting within a page keeps its options in place");
+      b.elements.get("extra").value = staticViewer ? "clip_320" : "0";
+      await b.elements.get("extra").onchange();
+      assert.equal(audio.src, "audio/320.wav");
+      assert.equal(picker.index, -1);
+      assert.match(picker.label, /조용한 환경/);
+      assert.equal(b.elements.get("queue").textContent, "추가 음원");
+      b.elements.get("results-tab-conditions").onclick();
+      assert.equal(picker.closed, 1);
+    });
     await test(`${mode} C-style list stays at five global rows and browsing pages never fetches or changes playback`, async () => {
       let mounted = 0;
       const b = browser(Array.from({length: 320}, (_, i) => tuple(i)), {staticViewer, enhance: () => { mounted++; }});

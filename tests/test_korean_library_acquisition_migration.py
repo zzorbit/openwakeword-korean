@@ -26,6 +26,8 @@ def audited_pair(manager, monkeypatch):
     current["stages"]["data_download"] = "5" * 64
     current["stages"]["development"] = "6" * 64
     manager._implementation_id = "audited-acquisition-release"
+    # The process runs the audited target; only its saved workflow is older.
+    monkeypatch.setattr(studio, "_implementation", lambda: "audited-acquisition-release")
     manager._execution_contract = current
     audit = {"source_stages_sha256": identity(previous["stages"]),
              "target_computation_sha256": current["computation_sha256"],

@@ -278,11 +278,19 @@ def test_studio_recommends_after_scoring_only_for_the_versioned_policy(tmp_path,
 
 def test_new_policy_does_not_add_stages_or_enable_final_access():
     from korean_openwakeword import studio_steps as steps
+    from korean_openwakeword.pilot import PREPOST_PILOT_POLICY
+    expected = ["frontend", "data_download", "data_review", "data_connect", "references", "references_review",
+                "pilot", "pilot_review", "positives", "positive_review", "hard_phrases", "hard_generation",
+                "hard_review", "hard_connect", "features", "training", "package", "development", "evaluation", "results"]
     for name in ("check", "trial", "production"):
         settings = steps.preset_settings(name)
         assert settings["runtime_recommendation_policy"] == "joint_cached_hard_conditions_v3"
+        assert settings["pilot_review_policy"] == PREPOST_PILOT_POLICY
         plan = steps.workflow_plan(settings)
-        assert len(plan) == 19
+        assert len(plan) == 20
+        assert [row["id"] for row in plan] == expected
+        baseline = dict(settings, runtime_recommendation_policy=None)
+        assert plan == steps.workflow_plan(baseline)
         assert not any("final" in row["id"].lower() for row in plan)
 
 

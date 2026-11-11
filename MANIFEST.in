@@ -1,18 +1,25 @@
 include README.md LICENSE THIRD_PARTY_NOTICES.md plan.md CHANGELOG.md pytest.ini
-recursive-include docs *.md
-recursive-include korean_openwakeword *.py *.json *.html *.js *.css *.svg *.md *.txt *.onnx *.wav
+include docs/LIBRARY_GUIDE.md docs/DATASETS.md docs/DATA_FORMAT.md docs/VALIDATION.md docs/TRAINING_RESULTS_SITE.md docs/STORAGE_POLICY.md docs/WEB_GUIDE.md docs/WEB_LAYOUT.md docs/CODE_IMPROVEMENTS.md
+include korean_openwakeword/*.py
+include korean_openwakeword/resources/*.json korean_openwakeword/resources/*.html korean_openwakeword/resources/*.js
+include korean_openwakeword/resources/*.css korean_openwakeword/resources/*.svg korean_openwakeword/resources/*.txt
+include korean_openwakeword/resources/sample_chunsik/*.json korean_openwakeword/resources/sample_chunsik/*.md
+include korean_openwakeword/resources/sample_chunsik/licenses/*.txt
+include korean_openwakeword/resources/sample_chunsik/models/*.onnx korean_openwakeword/resources/sample_chunsik/frontend/*.onnx
+include korean_openwakeword/resources/sample_chunsik/audio/*.wav
 prune data
 prune logs
 prune models
 prune runs
 prune reports
 prune .venv
-prune wakeword_lab
 prune scripts
 include scripts/Use-ProjectStorage.ps1
 include scripts/Start-Web.ps1 scripts/Start-Web.cmd
 include scripts/package_library.py
 include scripts/check_browser.py
-recursive-include tests test_korean_library*.py check_*.cjs
+recursive-include tests test_*.py check_*.cjs
+recursive-include tests/fixtures *.json
 recursive-include validation *.json
-recursive-include examples/library_demo_site *.html *.js *.css *.json *.wav
+include examples/library_demo_site/*.html examples/library_demo_site/*.js examples/library_demo_site/*.css examples/library_demo_site/*.json
+include examples/library_demo_site/audio/*.wav

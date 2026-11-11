@@ -7,6 +7,7 @@ import pytest
 from korean_openwakeword import studio_steps as steps
 from korean_openwakeword.common import digest, identity, read_json, read_rows, write_json
 from korean_openwakeword.hard_phrase_policy import validate_noncall_text
+from korean_openwakeword.pilot import PREPOST_PILOT_POLICY, TRAIN_PILOT_POLICY
 from korean_openwakeword.project import BATCH, create_project
 from korean_openwakeword.review import apply_review
 
@@ -93,19 +94,28 @@ def test_retired_common_download_policy_blocks_new_preparation_without_migration
     assert not (project.parent / ".studio").exists()
 
 
-def test_retired_saved_common_policy_keeps_completed_workflow_plan_readable():
+@pytest.mark.parametrize("pilot_policy,stage_count", [(PREPOST_PILOT_POLICY, 20), (TRAIN_PILOT_POLICY, 19)])
+def test_retired_saved_common_policy_keeps_completed_workflow_plan_readable(pilot_policy, stage_count):
     settings = steps.preset_settings("check")
+    settings["pilot_review_policy"] = pilot_policy
     settings["common_download_policy"] = "selected_common_zip_v1"
-    assert len(steps.workflow_plan(settings)) == 19
+    before = deepcopy(settings)
+    plan = steps.workflow_plan(settings)
+    assert len(plan) == stage_count
+    assert ("positive_review" in [row["id"] for row in plan]) is (pilot_policy == PREPOST_PILOT_POLICY)
+    assert settings == before
 
 
-def test_fixed_material_policy_keeps_nineteen_stages_and_legacy_review_plan():
+@pytest.mark.parametrize("pilot_policy,stage_count", [(PREPOST_PILOT_POLICY, 20), (TRAIN_PILOT_POLICY, 19)])
+def test_fixed_material_policy_keeps_stage_counts_and_legacy_review_plan(pilot_policy, stage_count):
     settings = steps.preset_settings()
+    settings["pilot_review_policy"] = pilot_policy
     plan = steps.workflow_plan(settings)
     legacy_settings = dict(settings)
     legacy_settings.pop("material_review_policy")
     legacy = steps.workflow_plan(legacy_settings)
-    assert len(plan) == len(legacy) == 19
+    assert len(plan) == len(legacy) == stage_count
+    assert ("positive_review" in [row["id"] for row in plan]) is (pilot_policy == PREPOST_PILOT_POLICY)
     assert [stage["id"] for stage in plan] == [stage["id"] for stage in legacy]
     current = {stage["id"]: stage for stage in plan}
     historical = {stage["id"]: stage for stage in legacy}
@@ -342,6 +352,10 @@ def test_incomplete_generation_stops_without_approving_failed_slots(project, mon
 
 def test_positive_generation_uses_standalone_train_and_disjoint_validation_only(project, monkeypatch):
     from korean_openwakeword import tts, tts_runtime
+    settings = steps.preset_settings("check")
+    # The historical direct generator remains supported under its own policy.
+    # Current PREPOST generation requires an admitted bank and frozen preflight.
+    settings["pilot_review_policy"] = TRAIN_PILOT_POLICY
     calls = []
     models = []
     def generate(*args, **kwargs):
@@ -351,12 +365,24 @@ def test_positive_generation_uses_standalone_train_and_disjoint_validation_only(
     shared = object()
     monkeypatch.setattr(tts_runtime, "CloneRuntime", lambda *a: shared)
     monkeypatch.setattr(tts, "generate", generate)
-    result = run(project, "positives")
+    result = run(project, "positives", settings=settings)
     assert calls == [(project, "train", 1000, False, "clone"), (project, "validation", 2000, False, "clone")]
     assert models == [shared, shared]
     assert result["result"]["independent_STT_runs"] == 0
     assert result["result"]["validation_originals"] == 2000
     assert not (project.parent / "data/generated/final").exists()
+
+
+def test_current_positive_generation_requires_admitted_banks_before_loading_model(project, monkeypatch):
+    from korean_openwakeword import tts_runtime
+    settings = steps.preset_settings("check")
+    assert settings["pilot_review_policy"] == PREPOST_PILOT_POLICY
+    before = {path: digest(path) for path in (project, project.parent / "approval.json")}
+    monkeypatch.setattr(tts_runtime, "CloneRuntime", lambda *a, **k: pytest.fail("Unadmitted references must not load a model"))
+    with pytest.raises(ValueError, match="admitted Train reference bank"):
+        run(project, "positives", settings=settings)
+    assert {path: digest(path) for path in before} == before
+    assert not (project.parent / "data/call_pronunciation").exists()
 
 
 def test_features_reuse_generic_and_resume_actual_contracts_without_reducing_n(project, monkeypatch):
@@ -640,7 +666,7 @@ def test_fixed_material_connection_never_bypasses_existing_incomplete_answers(pr
         return {"shortages": [], "state": "connected"}
 
     monkeypatch.setattr(studio_data, "material_review_queues", manual_queues, raising=False)
-    monkeypatch.setattr(studio_data, "ensure_evaluation_materials", lambda p, w, data: data)
+    monkeypatch.setattr(studio_data, "ensure_evaluation_materials", lambda p, w, data, progress=None: data)
     monkeypatch.setattr(studio_data, "admit_materials", admit)
     result = run(project, "data_connect", context)
     assert result["state"] == "waiting_review"
@@ -709,7 +735,7 @@ def test_additional_raw_sources_are_prepared_once_then_reviewed_and_admitted_in_
         return {"shortages": [], "state": "connected"}
     monkeypatch.setattr(studio_data, "prepare_additional_materials", prepare)
     monkeypatch.setattr(studio_data, "admit_materials", admit)
-    monkeypatch.setattr(studio_data, "ensure_evaluation_materials", lambda p, w, prepared: prepared, raising=False)
+    monkeypatch.setattr(studio_data, "ensure_evaluation_materials", lambda p, w, prepared, progress=None: prepared, raising=False)
     context = {"results": {"data_download": {"result": {"review_queues": [], "shortages": ["needs Korean"]}}},
                "inputs": {"additional_sources": [{"directory": str(root / "raw"), "dataset": "zeroth", "pool": "korean_negative", "hours": 1}]}}
     old_cache = root / ".studio" / ("additional_" + identity(context["inputs"]["additional_sources"][0]) + ".json")

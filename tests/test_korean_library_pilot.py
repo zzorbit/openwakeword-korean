@@ -33,10 +33,12 @@ def reference_fixture(tmp_path, count=20):
 
 
 def contract_for(project,references):
+    # Explicit historical fixture: the recovery bridge only accepts this exact
+    # audited prior implementation; current journals include prepared-input data.
+    from korean_openwakeword.tts import LEGACY_CALL_IMPLEMENTATION
     config=read_json(project)
     return {"word":config["wakeword"],"split":"train","tts":config["tts"],"method":"clone",
-        "references":references,"pilot":True,"implementation_sha256":digest(
-            Path(__file__).parents[1]/"korean_openwakeword/tts.py")}
+        "references":references,"pilot":True,"implementation_sha256":LEGACY_CALL_IMPLEMENTATION}
 
 
 def add_calls(project,references,slots,*,passed=True,attempt=0):

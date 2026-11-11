@@ -203,6 +203,7 @@ def make_server(service, port=8792):
     """Build the localhost-only server without starting a background thread."""
     resources = files("korean_openwakeword") / "resources"
     routes = {"/": ("microphone.html", "text/html; charset=utf-8"),
+              "/listening_player.js": ("listening_player.js", "text/javascript; charset=utf-8"),
               "/microphone.js": ("microphone.js", "text/javascript; charset=utf-8"),
               "/microphone_worklet.js": ("microphone_worklet.js", "text/javascript; charset=utf-8"),
               "/microphone.css": ("microphone.css", "text/css; charset=utf-8")}

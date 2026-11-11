@@ -16,9 +16,12 @@ from .common import now, read_json, write_json, writer_lock
 from .download_control import AdaptiveConcurrency
 
 
-def _file_identity(path):
-    info = Path(path).stat()
+def _stat_identity(info):
     return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _file_identity(path):
+    return _stat_identity(Path(path).stat())
 
 
 class VerificationCache:
@@ -29,16 +32,23 @@ class VerificationCache:
 
     def matches(self, path, algorithm, expected):
         path = Path(path).resolve()
-        identity = _file_identity(path)
+        checksum = self._checksum(path, algorithm, _file_identity(path))
+        return checksum is not None and checksum == expected
+
+    def _checksum(self, path, algorithm, observed_identity):
         with self._lock:
-            return self._verified.get((str(path), algorithm, expected)) == identity
+            checksum, identity = self._verified.get((str(path), algorithm), (None, None))
+        return checksum if identity == observed_identity else None
+
+    def verified_sha256(self, path, observed_identity):
+        return self._checksum(Path(path).resolve(), "sha256", observed_identity)
 
     def record(self, path, algorithm, expected, observed_identity):
         path = Path(path).resolve()
         if _file_identity(path) != observed_identity:
             raise ValueError("File changed during checksum verification")
         with self._lock:
-            self._verified[(str(path), algorithm, expected)] = observed_identity
+            self._verified[(str(path), algorithm)] = (expected, observed_identity)
 
 
 def download_many(items, worker, *, progress=None, max_workers=None):
@@ -237,6 +247,10 @@ def verify_checksum(path, algorithm, expected, *, progress=None, verification_ca
     if progress:
         progress({"phase": "hash", "done": 0, "total": before[2], "unit": "bytes"})
     with path.open("rb") as stream:
+        opened = _stat_identity(os.fstat(stream.fileno()))
+        # Windows may report different timestamp precision for a path and a handle.
+        if opened[:3] != before[:3]:
+            raise ValueError("File changed during checksum verification")
         for chunk in iter(lambda: stream.read(8 * 1024**2), b""):
             checksum.update(chunk)
             if sha256 is not None and sha256 is not checksum:
@@ -249,6 +263,8 @@ def verify_checksum(path, algorithm, expected, *, progress=None, verification_ca
                           "bytes_per_second": rate,
                           "eta_seconds": max(0, (before[2] - done) / rate) if rate else None})
                 emitted = elapsed
+        if _stat_identity(os.fstat(stream.fileno())) != opened:
+            raise ValueError("File changed during checksum verification")
     if _file_identity(path) != before:
         raise ValueError("File changed during checksum verification")
     if checksum.hexdigest() != expected:

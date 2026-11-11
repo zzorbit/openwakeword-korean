@@ -11,7 +11,8 @@ from test_korean_library_studio import create, manager  # noqa: F401
 GROUPS = (
     ("downloads", ("frontend", "data_download", "data_review", "data_connect")),
     ("voices", ("references", "references_review")),
-    ("pronunciation", ("pilot", "pilot_review")), ("positive-generation", ("positives",)),
+    ("call-pilot-generation", ("pilot",)), ("call-pilot-review", ("pilot_review",)),
+    ("positive-generation", ("positives",)), ("pronunciation", ("positive_review",)),
     ("phrases", ("hard_phrases",)), ("hard-generation", ("hard_generation",)),
     ("hard-review", ("hard_review", "hard_connect")), ("features", ("features",)),
     ("training", ("training", "package")), ("evaluation", ("development", "evaluation")),
@@ -60,7 +61,7 @@ def test_each_story_group_holds_for_next_and_keeps_computation_and_approval_unch
         assert manager._path(project["id"]).read_bytes() == before
         assert len(manager.workers.calls) == finished
     assert manager.start(project["id"])["status"] == "completed"
-    assert len(manager.workers.calls) == 19
+    assert len(manager.workers.calls) == 20
     assert {path: digest(path) for path in protected} == protected
     for worker in manager.workers.items:
         request = read_json(worker.request_path)
@@ -116,7 +117,8 @@ def test_voice_completion_while_server_closed_recovers_without_starting_pilot(ma
         recovered.close()
 
 
-@pytest.mark.parametrize("step,gate", [("downloads", "waiting_input"), ("pronunciation", "waiting_review"), ("phrases", "waiting_input")])
+@pytest.mark.parametrize("step,gate", [("downloads", "waiting_input"), ("call-pilot-review", "waiting_review"),
+                                     ("pronunciation", "waiting_review"), ("phrases", "waiting_input")])
 def test_story_next_never_bypasses_review_input_or_shortage_gates(manager, step, gate):
     project = create(manager, navigation_checkpoints=True)
     for group in GROUPS:
@@ -129,7 +131,8 @@ def test_story_next_never_bypasses_review_input_or_shortage_gates(manager, step,
     if gate == "waiting_review":
         queue = Path(state["project"]).parent / ".studio/gated-review.jsonl"
         queue.write_text("", encoding="utf-8")
-        output["reviews"] = [{"id": "pilot", "kind": "pilot", "queue": str(queue), "queue_sha256": digest(queue)}]
+        review_kind = "positive" if step == "pronunciation" else "pilot"
+        output["reviews"] = [{"id": review_kind, "kind": review_kind, "queue": str(queue), "queue_sha256": digest(queue)}]
     else:
         output.update(input_kind="material_admissions" if step == "downloads" else "hard_phrases", shortages=["required input"])
     manager.workers.items[-1].finish(output); manager.tick()

@@ -13,6 +13,7 @@ import soundfile as sf
 
 from .common import bound_file, digest, identity, now, read_json, read_rows, resolved, write_json, writer_lock
 from .data import CATEGORIES, audit_project, source_key, validate_hard_negative
+from .hard_pilot import HARD_SAMPLE_REVIEW_POLICY
 from .project import load_project
 
 
@@ -275,18 +276,18 @@ def _exclude_public_sources(root, sources, previews, result, excluded_source_ids
     return selected, kept, [by_id[s] for s in sorted(excluded)], removed
 
 
-def _phrase_review_selection(root, selection, manifest, queue, sources, previews, answers):
+def _phrase_review_selection(root, selection, manifest, queue, sources, previews, answers, policy="one_per_phrase_v1"):
     """Bind the reduced hearing scope to an explicit, immutable selection."""
     _, binding = _binding(root, selection)
     receipt = read_json(binding["path"])
     if (receipt.get("kind") != "hard_phrase_representative_selection_v1"
-            or receipt.get("policy") != "one_per_phrase_v1"):
+            or receipt.get("policy") != policy):
         raise ValueError("Unknown Hard phrase representative selection policy")
     for key, expected in (("source_manifest", manifest), ("representative_queue", queue)):
         _, actual = _binding(root, receipt.get(key))
         if actual != expected:
             raise ValueError("Hard representative selection does not bind the frozen source and queue")
-    if (answers.get("synthetic_review_policy") != "one_per_phrase_v1"
+    if (answers.get("synthetic_review_policy") != policy
             or answers.get("representative_selection_sha256") != binding["sha256"]):
         raise ValueError("Human answers must explicitly bind the one-per-phrase selection policy")
     if any(row.get("provenance") != "qwen_tts" or row.get("category") != "competing_speech" for row in sources):
@@ -307,6 +308,50 @@ def _phrase_review_selection(root, selection, manifest, queue, sources, previews
             or receipt.get("representatives") != selected):
         raise ValueError("Hard selection must cover every distinct phrase exactly once")
     return binding
+
+
+def hard_sample_consent(root, config, selection, queue, answers):
+    """Verify the reviewed sample bank and the exact phrases it authorizes."""
+    selection_path, selection_binding = _binding(root, selection)
+    receipt = read_json(selection_path)
+    manifest_path, manifest_binding = _binding(root, receipt["source_manifest"])
+    queue_path, queue_binding = _binding(root, queue)
+    if (answers.get("whole_pool_policy_approved") is not True
+            or answers.get("kind") != "content_listening_review" or answers.get("wakeword") != config["wakeword"]
+            or answers.get("source_scope") != "Human dispositions entered through the local review screen"
+            or not answers.get("saved_at") or answers.get("source_manifest_sha256") != manifest_binding["sha256"]
+            or answers.get("queue_sha256") != queue_binding["sha256"]
+            or answers.get("representative_queue_sha256") != queue_binding["sha256"]):
+        raise ValueError("Saved human approval must bind the Hard pilot sources and queue")
+    sources, previews = read_rows(manifest_path), read_rows(queue_path)
+    contract_path, contract_binding = _binding(root, receipt["generation_contract"])
+    contract = read_json(contract_path)
+    if (contract.get("kind") != HARD_SAMPLE_REVIEW_POLICY or contract.get("word") != config["wakeword"]
+            or contract.get("tts") != config["tts"] or contract.get("samples_per_phrase") != receipt.get("samples_per_phrase")
+            or type(contract.get("samples_per_phrase")) is not int or contract["samples_per_phrase"] < 1
+            or contract.get("phrases") != [row.get("text") for row in sources]
+            or not sources or len(sources) != len(previews)
+            or any(row.get("generation_contract") != receipt["generation_contract"] or row.get("split") != "train"
+                   or row.get("human_reference_used") is not False or row.get("technical_pass") is not True
+                   or row.get("qc", {}).get("passed") is not True or row.get("generation_method") != "clone"
+                   or row.get("individual_human_listening") is not False
+                   or resolved(root, row["path"]).parent != contract_path.parent for row in sources)):
+        raise ValueError("Hard pilot contract no longer binds one checked Train sample per phrase")
+    if bound_file(root, contract["positive_policy"]) != root / "approval.json":
+        raise ValueError("Hard pilot approval must bind this project's generation policy")
+    _phrase_review_selection(root, selection, manifest_binding, queue_binding, sources, previews, answers,
+                             policy=HARD_SAMPLE_REVIEW_POLICY)
+    decisions = answers.get("decisions")
+    if (not isinstance(decisions, dict) or set(decisions) != {row["sample_id"] for row in previews}
+            or any(not isinstance(answer, dict) or answer.get("decision") not in ("keep", "discard")
+                   or answer.get("listened") is not True for answer in decisions.values())):
+        raise ValueError("Every Hard pilot phrase needs a listened keep or discard decision")
+    excluded = [row["text"] for row in previews if decisions[row["sample_id"]]["decision"] == "discard"]
+    kept_sources, kept_previews, _, excluded_previews = _selected_pool(root, sources, previews, answers, excluded)
+    return {"approved_phrases": [row["text"] for row in kept_sources], "excluded_phrases": excluded,
+            "samples_per_phrase": contract["samples_per_phrase"], "contract": contract,
+            "source_manifest": manifest_binding, "selection": selection_binding, "contract_binding": contract_binding,
+            "sources": kept_sources, "previews": kept_previews, "excluded_previews": excluded_previews}
 
 
 def _prior_phrase_reviews(root, evidence, manifest, sources, previews, answers):
@@ -386,7 +431,7 @@ def approve_pool(project, *, source_manifest, representative_queue, answers, out
     and never claims all originals were heard or wakeword-free.
     """
     root, config = load_project(project)
-    if synthetic_review_policy not in (None, "one_per_phrase_v1"):
+    if synthetic_review_policy not in (None, "one_per_phrase_v1", HARD_SAMPLE_REVIEW_POLICY):
         raise ValueError("Unsupported synthetic review policy")
     if synthetic_review_policy is None and (representative_selection is not None or prior_review_evidence):
         raise ValueError("Representative selection requires the explicit one-per-phrase policy")
@@ -399,9 +444,10 @@ def approve_pool(project, *, source_manifest, representative_queue, answers, out
     queue_path, queue_binding = _binding(root, representative_queue)
     answers_path, answers_binding = _binding(root, answers)
     result = read_json(answers_path)
+    sample_first = synthetic_review_policy == HARD_SAMPLE_REVIEW_POLICY
     if result.get("whole_pool_policy_approved") is not True:
         raise ValueError("Explicit whole_pool_policy_approved=True human consent is required")
-    if result.get("source_manifest_sha256") != manifest_binding["sha256"]:
+    if not sample_first and result.get("source_manifest_sha256") != manifest_binding["sha256"]:
         raise ValueError("Human pool consent does not bind this frozen source manifest")
     if result.get("representative_queue_sha256") != queue_binding["sha256"] or result.get("queue_sha256") != queue_binding["sha256"]:
         raise ValueError("Human pool consent does not bind this frozen representative queue")
@@ -414,7 +460,18 @@ def approve_pool(project, *, source_manifest, representative_queue, answers, out
     if not sources or not previews:
         raise ValueError("Source pool and representative queue must be nonempty")
     selection_binding, prior_bindings, prior_heard, prior_unresolved = None, [], set(), set()
-    if synthetic_review_policy == "one_per_phrase_v1":
+    pilot_scope = None
+    if sample_first:
+        if prior_review_evidence or excluded_source_ids:
+            raise ValueError("Hard pilot approval only applies to the current generated Train pool")
+        pilot_scope = hard_sample_consent(root, config, representative_selection, representative_queue, result)
+        if (set(excluded_hard_phrases) != set(pilot_scope["excluded_phrases"])
+                or Counter(row.get("text") for row in sources) != {
+                    phrase: pilot_scope["samples_per_phrase"] for phrase in pilot_scope["approved_phrases"]}
+                or any(row.get("provenance") != "qwen_tts" for row in sources)):
+            raise ValueError("Generated Hard pool must match the exact reviewed phrases and approved counts")
+        selection_binding = pilot_scope["selection"]
+    elif synthetic_review_policy == "one_per_phrase_v1":
         # Selection and preserved-answer bindings can refer directly to source
         # WAVs. Audit the full frozen metadata before following those bindings,
         # including phrases later excluded from this admission.
@@ -430,8 +487,12 @@ def approve_pool(project, *, source_manifest, representative_queue, answers, out
         prior_bindings, prior_heard, prior_unresolved = _prior_phrase_reviews(
             root, prior_review_evidence, manifest_binding, sources, previews, result)
     full_source_count, full_preview_count = len(sources), len(previews)
-    sources, previews, excluded_sources, excluded_previews = _selected_pool(
-        root, sources, previews, result, excluded_hard_phrases)
+    if sample_first:
+        previews = pilot_scope["previews"]
+        excluded_sources, excluded_previews = [], pilot_scope["excluded_previews"]
+    else:
+        sources, previews, excluded_sources, excluded_previews = _selected_pool(
+            root, sources, previews, result, excluded_hard_phrases)
     sources, previews, public_exclusions, public_previews = _exclude_public_sources(
         root, sources, previews, result, excluded_source_ids)
     excluded_sources += public_exclusions
@@ -497,6 +558,17 @@ def approve_pool(project, *, source_manifest, representative_queue, answers, out
 
     decisions = result["decisions"]
     covered, covered_synthetic, heard_sources, heard_previews = set(), set(), set(), []
+    if sample_first:
+        if len(contracts) != 1:
+            raise ValueError("Hard bulk originals must share a single generation contract")
+        bulk_contract = next(iter(contracts.values()))[0]
+        if (bulk_contract.get("kind") != "qwen_hard_negative_generation_contract_v2"
+                or bulk_contract.get("texts") != pilot_scope["approved_phrases"]
+                or bulk_contract.get("samples_per_phrase") != pilot_scope["samples_per_phrase"]
+                or any(bulk_contract.get(key) != pilot_scope["contract"][key]
+                       for key in ("references", "positive_policy", "tts"))):
+            raise ValueError("Hard bulk generation settings or voices changed after sample review")
+        originals = {(str(resolved(root, row["path"])), row["sha256"]): row for row in pilot_scope["sources"]}
     for preview in previews:
         decision = decisions[preview["sample_id"]]
         if decision.get("decision") != "keep" or decision.get("listened") is not True:
@@ -518,7 +590,7 @@ def approve_pool(project, *, source_manifest, representative_queue, answers, out
                               "dataset_id": original["dataset_id"], "category": original["category"]})
     if covered != set(strata):
         raise ValueError("Actual listened representatives must cover every declared dataset/category stratum")
-    if synthetic_review_policy == "one_per_phrase_v1":
+    if synthetic_review_policy:
         if {(d, text) for d, text, _ in covered_synthetic} != {(d, text) for d, text, _ in synthetic_strata}:
             raise ValueError("Actual listened representatives must cover every synthetic phrase")
         if prior_unresolved & source_hashes:
@@ -533,6 +605,7 @@ def approve_pool(project, *, source_manifest, representative_queue, answers, out
     # never substituted for the representative answers or explicit policy vote.
     for binding in (manifest_binding, queue_binding, answers_binding,
                     *((selection_binding,) if selection_binding else ()),
+                    *((pilot_scope["source_manifest"], pilot_scope["contract_binding"]) if sample_first else ()),
                     *(binding for entry in prior_bindings for binding in entry.values())):
         bound_file(root, binding)
     record = {
@@ -565,7 +638,7 @@ def approve_pool(project, *, source_manifest, representative_queue, answers, out
                                           for d, t, f in sorted(synthetic_strata)],
         "scope": "Explicit approval of accepted hashes from the exact frozen Train pool under public provider-label/provenance/technical/split policy or verified Qwen-only Hard Negative generation policy. Explicitly excluded phrases and their saved discard previews remain excluded; source/queue/answer evidence was not rewritten. Only the listed representative previews were heard; other originals were policy-admitted, not individually heard or certified wakeword-free.",
     }
-    if synthetic_review_policy == "one_per_phrase_v1":
+    if synthetic_review_policy:
         record.update(synthetic_review_policy=synthetic_review_policy,
                       representative_selection=selection_binding,
                       preserved_prior_review_evidence=prior_bindings,
@@ -577,6 +650,13 @@ def approve_pool(project, *, source_manifest, representative_queue, answers, out
                            "Every distinct phrase has an actually heard representative; all originals retain generation, "
                            "reference, split and automatic technical checks. Other originals are policy-admitted, "
                            "not individually heard or pronunciation-certified. Prior answers and exclusions remain bound.")
+    if sample_first:
+        record.update(pilot_source_manifest=pilot_scope["source_manifest"],
+                      pilot_generation_contract=pilot_scope["contract_binding"],
+                      representative_source_sha256=[],
+                      unheard_source_policy_admitted_sha256=sorted(source_hashes),
+                      scope="Each included Hard phrase had a separately generated representative reviewed before bulk generation. "
+                            "Bulk originals are policy-admitted after automatic technical checks.")
     with writer_lock(destination.parent):
         if destination.exists():
             raise ValueError("Pool admission output is immutable; choose a new path")

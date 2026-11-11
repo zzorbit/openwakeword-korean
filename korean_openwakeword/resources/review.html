@@ -16,17 +16,104 @@ audio{width:100%;height:44px;margin:0;flex:none}.buttons{display:flex;align-item
 @media(prefers-reduced-motion:reduce){button,select{transition:none}}
 </style>
 <link rel="stylesheet" href="/audio_listening.css">
-<main><div class="review-intro"><header class="review-header"><h1 id="review-heading">듣고 판정해 주세요</h1><details class="review-guidance" aria-label="검수 기준"><summary>판단 기준</summary><div class="review-guidance-content"><p id="purpose"></p><ul id="criteria"><li><b>정상:</b> 기대 문장이 명확하고, 다른 말·문제 소리가 없습니다.</li><li><b>제외 / 다시 확인:</b> 발음이 틀리거나 다른 말이 들리거나 판단이 어렵습니다.</li></ul><p id="instruction"></p><p>검수 결과 저장을 누르면 판정이 작업 폴더에 저장됩니다.</p></div></details></header><p id="review-instruction" class="listen-instruction">끝까지 들으면 정상으로 표시됩니다. 발음이 다르면 제외·다시 확인을 선택하고, 모두 확인한 뒤 결과를 저장하세요.</p><p id="review-progress" class="listen-summary" role="status"></p></div><div class="review-workspace"><div class="listen-workspace"><aside class="listen-sidebar" aria-label="확인할 음원 목록"><div id="listening-list" class="listen-list"></div><div class="listen-list-pager"><button id="list-prev" type="button" aria-label="이전 음원 목록" disabled>‹</button><span id="list-position"></span><button id="list-next" type="button" aria-label="다음 음원 목록" disabled>›</button></div></aside><section class="review-player listen-player" aria-label="음원 듣기와 판정">
-<div class="listen-heading"><p id="expected" class="listen-title"></p><h2 id="title" class="listen-position"></h2></div><audio id="audio" class="listen-audio" controls preload="none"></audio><div class="buttons listen-controls"><button id="prev" type="button" disabled>이전</button><button id="start" type="button" aria-pressed="false" disabled>재생</button><button id="next" type="button" disabled>다음</button><button id="pause" type="button" hidden>일시정지</button></div>
+<style>
+.compact-review main{width:min(680px,100%);gap:14px;overflow:auto;justify-content:safe center}
+html.listening-embedded.compact-review:not(.preflight-review):not(.compact-call-review) main{justify-content:flex-start}
+.compact-review .review-intro,.compact-review .review-footer{width:100%}
+.compact-review .review-workspace{flex:none;overflow:visible}
+.compact-review .listen-workspace{display:block;width:100%}
+.compact-review .review-player #expected,.compact-review .review-player #state{text-align:center;font-size:14px;line-height:20px}
+.preflight-review :is(.review-guidance,#review-instruction,#review-progress,#expected){display:none}
+html.listening-embedded.preflight-review :is(.review-intro,.review-header){display:contents}
+html.preflight-review,html.preflight-review body{height:auto;overflow:visible}
+.preflight-review main{height:auto;min-height:0;overflow:visible}
+.preflight-review .review-workspace{overflow:visible}
+html.preflight-review.preflight-picker-open main{height:100dvh;min-height:0;justify-content:center}
+.compact-call-review :is(.review-guidance,#review-instruction,#review-progress,#expected){display:none}
+html.listening-embedded.compact-call-review :is(.review-intro,.review-header){display:contents}
+html.compact-call-review,html.compact-call-review body{height:auto;overflow:visible}
+.compact-call-review main{height:auto;min-height:0;overflow:visible}
+.compact-call-review .review-workspace{overflow:visible}
+html.compact-call-review.preflight-picker-open main{height:100dvh;min-height:0;justify-content:center}
+/* Expanding only the picker must not switch the embedded player's spacing
+   at the iframe-height breakpoints and recenter its controls by a few pixels. */
+html.listening-embedded.compact-call-review main{gap:10px}
+html.listening-embedded.compact-call-review :is(.review-footer,.review-save){gap:6px}
+@media(max-height:480px){.compact-review main{gap:10px}}
+</style>
+<main><div class="review-intro"><header class="review-header"><h1 id="review-heading">듣고 판정해 주세요</h1><details class="review-guidance" aria-label="검수 기준"><summary>판단 기준</summary><div class="review-guidance-content"><p id="purpose"></p><ul id="criteria"><li><b>정상:</b> 기대 문장이 명확하고, 다른 말·문제 소리가 없습니다.</li><li><b>제외 / 다시 확인:</b> 발음이 틀리거나 다른 말이 들리거나 판단이 어렵습니다.</li></ul><p id="instruction"></p><p>검수 결과 저장을 누르면 판정이 작업 폴더에 저장됩니다.</p></div></details></header><p id="review-instruction" class="listen-instruction">끝까지 들으면 정상으로 표시됩니다. 발음이 다르면 제외·다시 확인을 선택하고, 모두 확인한 뒤 결과를 저장하세요.</p><p id="review-progress" class="listen-summary" role="status"></p></div><div class="review-workspace"><div class="listen-workspace"><aside class="listen-sidebar" id="review-sidebar" aria-label="확인할 음원 목록"><div id="listening-list" class="listen-list"></div><div class="listen-list-pager"><button id="list-prev" type="button" aria-label="이전 음원 목록" disabled>‹</button><span id="list-position"></span><button id="list-next" type="button" aria-label="다음 음원 목록" disabled>›</button></div></aside><section class="review-player listen-player" id="review-player" aria-label="음원 듣기와 판정">
+<div class="listen-heading"><p id="expected" class="listen-title"></p>
+  <div class="voice-picker" id="review-picker" hidden>
+    <button class="voice-picker-button" id="review-picker-button" type="button" aria-label="확인할 목소리" aria-haspopup="listbox" aria-expanded="false" aria-controls="review-picker-list"><span class="voice-picker-label" id="review-picker-label"></span></button>
+    <div class="voice-picker-popup" id="review-picker-popup" hidden>
+      <div class="voice-picker-list" id="review-picker-list" role="listbox" aria-label="확인할 목소리" tabindex="-1" hidden></div>
+    </div>
+  </div>
+  <h2 id="title" class="listen-position"></h2>
+</div><audio id="audio" class="listen-audio" controls preload="none"></audio><div class="buttons listen-controls" id="review-controls"><button id="prev" type="button" disabled>이전</button><button id="start" type="button" aria-pressed="false" disabled>재생</button><button id="next" type="button" disabled>다음</button><button id="pause" type="button" hidden>일시정지</button><input id="review-volume" type="range" min="0" max="100" step="1" value="100" aria-label="음량" hidden></div>
 <select id="items" class="listen-select" aria-label="확인할 음원" disabled hidden></select><p id="state" class="listen-status" role="status"></p><div class="buttons review-decisions listen-decisions" role="group" aria-label="음원 판정"><button id="keep" aria-pressed="false">정상</button><button id="discard" aria-pressed="false">제외</button><button id="review" aria-pressed="false">다시 확인</button></div>
-</section></div></div><footer class="review-footer"><label id="policy" hidden><input id="policy-approved" type="checkbox"> <span id="policy-text"></span></label><div class="review-save"><p id="saved" role="status"></p><button id="save">검수 결과 저장</button></div></footer></main>
+</section></div></div><footer class="review-footer"><label id="policy" hidden><input id="policy-approved" type="checkbox"> <span id="policy-text"></span></label><div class="review-save"><p id="saved" role="status"></p><button id="preflight-retry" type="button" hidden>저장 상태 다시 확인</button><button id="review-pending" type="button" hidden>첫 미판정 음원으로 이동</button><button id="save">검수 결과 저장</button></div></footer></main>
 <!--KOWW_PAGE_CONFIG-->
 <script src="/listening_player.js"></script>
 <script>
 "use strict";if(window.parent!==window)document.documentElement?.classList?.add('listening-embedded');
-let data,index=0,continuous=false,decisions={},referenceReview=false,pilotReview=false,playbackVersion=0,playbackAllowed=true,started=false,listPage=0;const $=x=>document.getElementById(x),audio=$("audio"),pageSize=5;
+let data,index=0,continuous=false,decisions={},referenceReview=false,pilotReview=false,pronunciationReview=false,callReviewPhase="",hardCompactReview=false,playbackVersion=0,playbackAllowed=true,started=false,listPage=0;const $=x=>document.getElementById(x),audio=$("audio"),pageSize=5;
 const config=JSON.parse($("koww-page-config")?.textContent||"{}");
 const labels={keep:'정상',discard:'제외',review:'다시 확인'};
+const queueKind=new URLSearchParams(location.search).get('queue');
+let reviewPicker,groupSummary='';
+const project=new URLSearchParams(location.search).get('project'),preflightPolicy='play_started_default_keep_v1';
+let preflightAutosave=false,preflightRevision=0,preflightWriter=null,preflightBlocked=false,preflightFinalizing=false,preflightFinalized=false,preflightReported='';
+let preflightParentRequest=null,preflightPendingRequest=null;
+let preflightPlayback=null;
+let preflightChoiceTarget=null,preflightPlayRequest=null;
+let preflightBadgeCache=[];
+let preflightPlaybackError='';
+let postReviewNotice='',postReviewError=false;
+let postAllItems=null,postRetainedDecisions={},postRepairReview=false;
+let preflightPickerOpen=false,preflightPickerClosing=null,preflightPickerRequest=null,preflightBaseHeight=null,preflightReportedHeight=null;
+const preflightIntents=new Map(),preflightStarted=new Set(),preflightCompleted=new Set();
+function postReviewBridge(){return callReviewPhase==='post'&&!data?.policy_review&&window.parent!==window&&Boolean(project);}
+function hardReviewBridge(){return hardCompactReview&&window.parent!==window&&Boolean(project);}
+function completedReview(){return callReviewPhase==='post'||hardCompactReview;}
+function callReviewBridge(){return preflightAutosave||postReviewBridge()||hardReviewBridge();}
+function hardBridgePhase(){return hardCompactReview?{phase:'hard'}:{};}
+function matchingBridgePhase(phase){return hardCompactReview?phase==='hard':phase!=='hard';}
+function preparePostReview(payload){
+  if(callReviewPhase!=='post')return;
+  postAllItems=payload.items.slice();
+  const hasCarry=Object.hasOwn(payload,'retained_decisions'),hasFocus=Object.hasOwn(payload,'focus_sample_ids');
+  if(!hasCarry&&!hasFocus)return;
+  if(!hasCarry||!hasFocus||!payload.retained_decisions||typeof payload.retained_decisions!=='object'||Array.isArray(payload.retained_decisions)||!Array.isArray(payload.focus_sample_ids))
+    throw Error('이어받을 검수 정보를 확인할 수 없습니다.');
+  const rows=new Map();
+  for(const row of postAllItems){
+    if(rows.has(row.id)||typeof row.audio_sha256!=='string'||!/^[0-9a-f]{64}$/.test(row.audio_sha256))throw Error('이어받을 음원의 버전을 확인할 수 없습니다.');
+    rows.set(row.id,row);
+  }
+  const retained={};
+  for(const [id,answer] of Object.entries(payload.retained_decisions)){
+    if(!rows.has(id)||!answer||typeof answer!=='object'||Array.isArray(answer)||answer.decision!=='keep'||answer.listened!==true||answer.audio_sha256!==rows.get(id).audio_sha256)
+      throw Error('보존할 검수 결과가 현재 음원과 일치하지 않습니다.');
+    retained[id]=Object.freeze({decision:'keep',listened:true});
+  }
+  const focus=new Set(payload.focus_sample_ids);
+  if(!focus.size||focus.size!==payload.focus_sample_ids.length||[...focus].some(id=>typeof id!=='string'||!rows.has(id)||Object.hasOwn(retained,id))||
+    focus.size+Object.keys(retained).length!==rows.size)throw Error('다시 검수할 음원 목록을 확인할 수 없습니다.');
+  postRetainedDecisions=Object.freeze(retained);postRepairReview=true;
+  payload.items=postAllItems.filter(row=>focus.has(row.id));
+}
+function restorePostDecisions(saved){
+  const pending=new Set(data.items.map(row=>row.id)),restored={...postRetainedDecisions};
+  for(const [id,answer] of Object.entries(saved||{}))if(pending.has(id)&&answer&&typeof answer==='object'&&!Array.isArray(answer)&&['keep','discard'].includes(answer.decision)&&typeof answer.listened==='boolean')restored[id]={decision:answer.decision,listened:answer.listened};
+  return restored;
+}
+function postDecisionSnapshot(){
+  const result={...postRetainedDecisions};
+  for(const row of data.items)if(decisions[row.id])result[row.id]={...decisions[row.id]};
+  return JSON.parse(JSON.stringify(result));
+}
+function clearPostReviewError(){if(!completedReview())return;postReviewError=false;postReviewNotice='';$("saved").textContent='';}
 function localUrl(value){
   if(typeof value!=='string'||!value)throw Error('음원 경로가 올바르지 않습니다.');
   const url=new URL(value,location.href||location.origin+'/');
@@ -34,16 +121,42 @@ function localUrl(value){
   return url.pathname+url.search;
 }
 function setContinuous(value){continuous=value;$("start").textContent=value?'일시정지':'재생';$("start").setAttribute('aria-pressed',String(value));}
-function stop(release=false){setContinuous(false);started=false;playbackVersion++;audio.pause();if(release){playbackAllowed=false;audio.removeAttribute('src');audio.load();}}
-window.addEventListener('message',event=>{if(event.origin!==location.origin||event.source!==window.parent||event.data?.type!=='koww:pause')return;stop(true);});
+function stop(release=false){preflightPlayback=null;preflightPlayRequest=null;setContinuous(false);started=false;playbackVersion++;audio.pause();if(release){reviewPicker?.close();playbackAllowed=false;audio.removeAttribute('src');audio.load();}}
+window.addEventListener('message',event=>{
+  if(event.origin!==location.origin||event.source!==window.parent)return;
+  if(event.data?.type==='koww:pause'){stop(true);return;}
+  if(event.data?.type==='koww:preflight-status'&&event.data.project===project&&Number.isSafeInteger(event.data.request)&&event.data.request>0){
+    if(data&&!matchingBridgePhase(event.data.phase))return;
+    preflightPendingRequest={queue_sha256:event.data.queue_sha256,request:event.data.request,phase:event.data.phase};
+    if(callReviewBridge()&&event.data.queue_sha256===data.queue_sha256&&matchingBridgePhase(event.data.phase)){
+      if(preflightParentRequest!==event.data.request&&(preflightPickerOpen||preflightPickerClosing!==null)){
+        reviewPicker?.close();releasePreflightPickerLayout();
+      }
+      preflightParentRequest=event.data.request;reportPreflight(true);reportPreflightHeight(true);
+    }return;
+  }
+  if(!callReviewBridge()||event.data?.project!==project||event.data.queue_sha256!==data?.queue_sha256||!matchingBridgePhase(event.data.phase))return;
+  if(event.data.type==='koww:preflight-finalize'&&event.data.request===preflightParentRequest&&Number.isSafeInteger(preflightParentRequest))finalizePreflight();
+  else if(event.data.type==='koww:preflight-picker-ready'&&event.data.request===preflightParentRequest&&preflightPickerOpen&&event.data.picker_request===preflightPickerRequest)reviewPicker?.reveal(event.data.picker_request);
+  else if(event.data.type==='koww:preflight-picker-closed'&&Number.isSafeInteger(preflightParentRequest)&&event.data.request===preflightParentRequest&&!preflightPickerOpen&&
+    Number.isSafeInteger(event.data.picker_request)&&event.data.picker_request===preflightPickerClosing){releasePreflightPickerLayout();reportPreflightHeight();}
+});
 document.addEventListener('visibilitychange',()=>{if(document.hidden)stop(true);});
 window.addEventListener('pagehide',()=>stop(true));
+window.KowwChapterReady?.loading();
 Promise.resolve().then(()=>fetch(localUrl(config.queue_url||'/queue'))).then(async r=>{const d=await r.json();if(!r.ok)throw Error(d.error||'목록을 불러오지 못했습니다.');return d;}).then(d=>{
   if(!Array.isArray(d.items)||!d.items.length||d.items.some(r=>!r||typeof r.id!=='string'||typeof r.text!=='string'))throw Error('음원 목록이 올바르지 않습니다.');
   d.items=d.items.map(r=>({...r,audio:localUrl(r.audio)}));
+  referenceReview=d.kind==='references'||queueKind==='references';
+  const kind=d.kind||queueKind;
+  const callReview=kind==='pilot'||kind==='positive';
+  hardCompactReview=queueKind==='hard'&&d.policy_review===true&&!referenceReview&&Boolean(project);
+  callReviewPhase=kind==='pilot'&&d.review_phase==='pre'?'pre':kind==='positive'&&d.review_phase==='post'?'post':'';
+  if((callReviewPhase||hardCompactReview)&&(typeof d.queue_sha256!=='string'||!d.queue_sha256))throw Error('검수 목록의 버전을 확인할 수 없습니다.');
   data=d;
-  referenceReview=d.kind==='references'||new URLSearchParams(location.search).get('queue')==='references';
-  pilotReview=d.kind==='pilot'||new URLSearchParams(location.search).get('queue')==='pilot'||(!d.policy_review&&d.items.every(row=>row.text===d.wakeword));
+  pilotReview=callReview||queueKind==='pilot'||(!d.policy_review&&d.items.every(row=>row.text===d.wakeword));
+  pronunciationReview=!referenceReview&&(callReview||kind==='hard'||hardCompactReview);
+  $("review").hidden=pronunciationReview;
   $("purpose").textContent=d.purpose;
   if(referenceReview){
     $("review-heading").textContent='합성 목소리 확인';
@@ -54,14 +167,295 @@ Promise.resolve().then(()=>fetch(localUrl(config.queue_url||'/queue'))).then(asy
     $("policy").hidden=false;$("policy-text").textContent=d.policy_text;$("criteria").innerHTML='<li><b>정상:</b> 각 음원 아래 안내에 맞고 소리가 정상입니다.</li><li><b>제외 / 다시 확인:</b> 안내와 다르거나 소리가 깨지거나 판단이 어렵습니다.</li>';
     $("review-instruction").textContent='끝까지 들으면 정상으로 표시됩니다. 안내와 다르거나 소리가 깨지면 제외·다시 확인을 선택하고, 모두 확인한 뒤 결과를 저장하세요.';
   }
-  d.items.forEach((r,i)=>{const o=document.createElement('option');o.value=i;o.textContent=`${i+1} · ${r.text||r.group||'음원'}`;$("items").append(o);});
-  try{const saved=JSON.parse(localStorage.getItem('koww:'+d.queue_sha256)||'{}');if(saved&&typeof saved==='object'&&!Array.isArray(saved))decisions=saved;}catch(e){}
+  if(pronunciationReview){
+    $("criteria").innerHTML='<li><b>정상:</b> 기대 문장이 명확하고, 다른 말·문제 소리가 없습니다.</li><li><b>제외:</b> 발음이 틀리거나 다른 말이 들리거나 소리가 깨집니다.</li>';
+    $("review-instruction").textContent='끝까지 들으면 정상으로 표시됩니다. 문제가 있으면 제외를 선택하고, 모두 확인한 뒤 결과를 저장하세요.';
+  }
+  if(callReviewPhase==='pre'){
+    document.documentElement.classList.add('preflight-review');
+    $("review-heading").textContent='호출어 발음 사전 검수';
+    $("discard").textContent='다시 생성';
+    preflightAutosave=d.autosave_policy===preflightPolicy;
+    if(preflightAutosave){
+      validatePreflightPayload(d);preflightRevision=d.draft_revision;decisions={...d.draft_decisions};
+      if(preflightPendingRequest?.queue_sha256===d.queue_sha256&&matchingBridgePhase(preflightPendingRequest.phase))preflightParentRequest=preflightPendingRequest.request;
+      $("keep").hidden=true;$("discard").textContent='부적합';$("save").hidden=true;
+      $("review-instruction").textContent='호출어 샘플을 연속으로 듣고, 문제가 있는 음원만 부적합으로 표시하세요.';
+    }
+  }else if(callReviewPhase==='post'){
+    $("review-heading").textContent='호출어 발음 검수';
+    $("review-instruction").textContent='연속으로 듣고, 문제가 있는 음원만 부적합으로 표시하세요. 끝까지 재생한 음원은 적합으로 판정하며 부적합한 음원이 있으면 승인이 보류됩니다.';
+    $("keep").hidden=true;$("discard").textContent='부적합';$("save").hidden=postReviewBridge();
+    if(preflightPendingRequest?.queue_sha256===d.queue_sha256&&matchingBridgePhase(preflightPendingRequest.phase))preflightParentRequest=preflightPendingRequest.request;
+  }else if(hardCompactReview){
+    $("review-heading").textContent='유사어 발음 검수';
+    $("review-instruction").textContent='연속으로 듣고, 문제가 있는 음원만 부적합으로 표시하세요. 다음을 누르면 판정을 저장하고 적합한 유사어를 학습에 사용합니다.';
+    $("keep").hidden=true;$("discard").textContent='부적합';$("policy").hidden=true;
+    $("save").hidden=hardReviewBridge();$("save").textContent='다음';
+    if(preflightPendingRequest?.queue_sha256===d.queue_sha256&&matchingBridgePhase(preflightPendingRequest.phase))preflightParentRequest=preflightPendingRequest.request;
+  }
+  if(callReviewPhase||hardCompactReview)document.documentElement.classList.add('compact-call-review');
+  preparePostReview(d);
+  const groupCounts=new Map([['학습용',0],['공통 평가용',0]]);
+  d.items.forEach((r,i)=>{
+    if(callReviewPhase&&typeof r.label==='string'&&r.label.trim())r.voice={label:r.label,fullLabel:r.label};
+    if(!r.voice&&pilotReview&&!referenceReview&&groupCounts.has(r.group)){
+      const position=groupCounts.get(r.group)+1;
+      const number=Number.isSafeInteger(r.voice_number)&&r.voice_number>0?r.voice_number:position;
+      groupCounts.set(r.group,position);
+      r.voice={label:`${r.group} · ${number}`,fullLabel:`${r.group} · 목소리 ${number}`,groupLabel:r.group,voiceNumber:number};
+    }
+    const o=document.createElement('option');o.value=i;o.textContent=r.voice?.fullLabel||`${i+1} · ${r.text||r.group||'음원'}`;$("items").append(o);
+  });
+  groupSummary=[...groupCounts].filter(([,count])=>count).map(([group,count])=>` · ${group} ${count}개`).join('');
+  if(!preflightAutosave)try{const saved=JSON.parse(localStorage.getItem(key())||'{}');if(saved&&typeof saved==='object'&&!Array.isArray(saved))decisions=saved;}catch(e){}
+  if(completedReview())decisions=restorePostDecisions(decisions);
+  setupListening();
   $("items").disabled=false;$("start").disabled=false;
   show();
-}).catch(e=>{$("saved").textContent='목록을 불러오지 못했습니다: '+e.message;});
-function key(){return 'koww:'+data.queue_sha256;}
-function remember(){localStorage.setItem(key(),JSON.stringify(decisions));}
-function judged(row){const answer=decisions[row.id];return answer&&Object.hasOwn(labels,answer.decision)&&(answer.decision!=='keep'||answer.listened===true);}
+  reportPreflight(true);reportPreflightHeight();
+  window.KowwChapterReady?.ready();
+}).catch(e=>{$("saved").textContent='목록을 불러오지 못했습니다: '+e.message;window.KowwChapterReady?.fail($("saved").textContent);});
+function validatePreflightPayload(payload){
+  if(payload.autosave_policy!==preflightPolicy||payload.queue_sha256!==data.queue_sha256||!Number.isSafeInteger(payload.draft_revision)||payload.draft_revision<0||
+    !payload.draft_decisions||typeof payload.draft_decisions!=='object'||Array.isArray(payload.draft_decisions))throw Error('사전 검수 저장 정보를 확인할 수 없습니다.');
+  const ids=new Set(data.items.map(row=>row.id));
+  if(ids.size!==data.items.length||data.items.some(row=>typeof row.audio_sha256!=='string'||!row.audio_sha256))throw Error('사전 검수 음원의 연결을 확인할 수 없습니다.');
+  for(const [id,answer] of Object.entries(payload.draft_decisions))if(!ids.has(id)||!answer||!['keep','discard'].includes(answer.decision)||
+    typeof answer.playback_started!=='boolean'||typeof answer.playback_completed!=='boolean'||answer.playback_completed&&!answer.playback_started||
+    answer.decision==='keep'&&!answer.playback_started)throw Error('사전 검수 판정 정보가 올바르지 않습니다.');
+}
+function preflightFact(row,name){return (name==='playback_started'?preflightStarted:preflightCompleted).has(row.id)||decisions[row.id]?.[name]===true;}
+function samePreflightAnswer(answer,intent){return intent.decision==='clear'?!answer:Boolean(answer&&answer.decision===intent.decision&&
+  (!intent.playback_started||answer.playback_started)&&(!intent.playback_completed||answer.playback_completed));}
+function queuePreflight(row,decision){
+  if(!preflightAutosave||preflightFinalized||preflightFinalizing)return;
+  const intent={sample_id:row.id,audio_sha256:row.audio_sha256,decision,
+    playback_started:preflightFact(row,'playback_started'),playback_completed:preflightFact(row,'playback_completed')};
+  if(decision==='keep'&&!intent.playback_started)return;
+  const previous=preflightIntents.get(row.id);
+  if(previous&&JSON.stringify(previous)===JSON.stringify(intent)||!previous&&samePreflightAnswer(decisions[row.id],intent))return;
+  preflightIntents.set(row.id,intent);renderDecision();
+  if(!preflightBlocked)writePreflight();
+}
+async function preflightPost(body){
+  const headers={'Content-Type':'application/json'};if(config.token)headers['X-Koww-Token']=config.token;
+  const response=await fetch(localUrl(config.save_url||'/save'),{method:'POST',headers,body:JSON.stringify(body)});
+  if(!response.ok)throw Error(await response.text());return response.json();
+}
+function applyPreflightDraft(payload){
+  validatePreflightPayload(payload);
+  if(payload.draft_revision<preflightRevision)throw Error('이전 저장 응답은 적용할 수 없습니다.');
+  decisions={...payload.draft_decisions};preflightRevision=payload.draft_revision;
+  for(const [id,intent] of preflightIntents)if(samePreflightAnswer(decisions[id],intent))preflightIntents.delete(id);
+}
+async function reconcilePreflight(){
+  const response=await fetch(localUrl(config.queue_url||'/queue')),payload=await response.json();
+  if(!response.ok)throw Error(payload.error||'저장 상태를 확인하지 못했습니다.');
+  if(!Array.isArray(payload.items)||payload.items.length!==data.items.length||payload.items.some((row,i)=>row.id!==data.items[i].id||row.audio_sha256!==data.items[i].audio_sha256))
+    throw Error('검수 목록이 바뀌었습니다. 화면을 새로고침해 주세요.');
+  applyPreflightDraft(payload);
+}
+function writePreflight(){
+  if(preflightWriter||preflightBlocked||!preflightIntents.size)return preflightWriter;
+  preflightWriter=(async()=>{
+    try{
+      while(preflightIntents.size){
+        const intent=preflightIntents.values().next().value;
+        const payload=await preflightPost({action:'autosave',queue_sha256:data.queue_sha256,...intent,revision:preflightRevision});
+        applyPreflightDraft(payload);
+        if(preflightIntents.get(intent.sample_id)===intent&&!samePreflightAnswer(decisions[intent.sample_id],intent))throw Error('저장한 판정을 확인하지 못했습니다.');
+      }
+      $("saved").textContent='';
+    }catch(error){
+      preflightBlocked=true;stop();$("saved").textContent='저장 상태를 다시 확인하고 있습니다.';
+      try{await reconcilePreflight();preflightBlocked=preflightIntents.size>0;
+        $("saved").textContent=preflightBlocked?'판정이 아직 저장되지 않았습니다. 저장 상태 다시 확인을 눌러 주세요.':'저장된 판정을 다시 확인했습니다.';
+      }catch(recovery){$("saved").textContent='저장 상태 확인 실패 · '+recovery.message;}
+    }finally{preflightWriter=null;renderDecision();}
+  })();
+  renderDecision();return preflightWriter;
+}
+$("preflight-retry").onclick=async()=>{
+  if(postReviewBridge()||hardReviewBridge()){
+    if(preflightFinalizing||preflightFinalized)return;
+    clearPostReviewError();renderDecision();return;
+  }
+  if(!preflightAutosave||preflightWriter||preflightFinalizing)return;
+  try{await reconcilePreflight();preflightBlocked=false;$("saved").textContent='';writePreflight();}
+  catch(error){preflightBlocked=true;$("saved").textContent='저장 상태 확인 실패 · '+error.message;}
+  renderDecision();
+};
+function reportPreflight(force=false){
+  if(!callReviewBridge()||window.parent===window)return;
+  const status={type:'koww:preflight-state',project,queue_sha256:data.queue_sha256,
+    request:preflightParentRequest,
+    ...hardBridgePhase(),
+    ready:!preflightFinalized&&!preflightFinalizing&&!preflightBlocked&&!postReviewError&&!preflightWriter&&!preflightIntents.size&&data.items.every(judged),
+    pending:Boolean(preflightWriter||preflightIntents.size||preflightFinalizing),error:preflightBlocked||postReviewError,
+    ...(postRepairReview?{retained_count:Object.keys(postRetainedDecisions).length,review_count:data.items.length}:{})};
+  const encoded=JSON.stringify(status);if(!force&&encoded===preflightReported)return;preflightReported=encoded;
+  window.parent.postMessage?.(status,location.origin);
+}
+function reportPreflightHeight(force=false){
+  if(!callReviewBridge()||window.parent===window)return;
+  const measure=()=>{const height=preflightPickerOpen||preflightPickerClosing!==null?preflightBaseHeight:Math.ceil(document.querySelector?.('main')?.getBoundingClientRect?.().height||0);
+    if(Number.isSafeInteger(height)&&height>0&&(force===true||height!==preflightReportedHeight)){
+      preflightReportedHeight=height;
+      window.parent.postMessage?.({type:'koww:preflight-height',project,queue_sha256:data.queue_sha256,request:preflightParentRequest,height,...hardBridgePhase()},location.origin);
+    }};
+  if(typeof requestAnimationFrame==='function')requestAnimationFrame(measure);else measure();
+}
+function releasePreflightPickerLayout(){
+  preflightPickerOpen=false;preflightPickerClosing=null;preflightPickerRequest=null;
+  document.documentElement.classList.remove('preflight-picker-open');
+}
+function preflightPickerChanged(open,request){
+  if(!callReviewBridge()||window.parent===window)return;
+  if(open){
+    if(!preflightPickerOpen&&preflightPickerClosing===null)preflightBaseHeight=Math.ceil(document.querySelector?.('main')?.getBoundingClientRect?.().height||preflightReportedHeight||0);
+    preflightPickerOpen=true;preflightPickerClosing=null;preflightPickerRequest=request;document.documentElement.classList.add('preflight-picker-open');
+  }else{
+    preflightPickerOpen=false;preflightPickerClosing=request;
+    if(!Number.isSafeInteger(preflightParentRequest))releasePreflightPickerLayout();
+  }
+  if(Number.isSafeInteger(preflightParentRequest))window.parent.postMessage?.({type:'koww:preflight-picker',project,queue_sha256:data.queue_sha256,
+    request:preflightParentRequest,picker_request:request,open,...hardBridgePhase()},location.origin);
+  if(!open&&preflightPickerClosing===null)reportPreflightHeight();
+}
+async function finalizePreflight(){
+  if(hardReviewBridge())return finalizeHardReview();
+  if(postReviewBridge())return finalizePostReview();
+  if(!preflightAutosave||preflightFinalized||preflightFinalizing||preflightBlocked)return;
+  preflightFinalizing=true;stop();renderDecision();
+  try{
+    await preflightWriter;
+    if(preflightBlocked||preflightIntents.size||!data.items.every(judged))throw Error('모든 음원의 적합·부적합을 선택한 뒤 다음으로 진행하세요.');
+    const result=await preflightPost({action:'finalize',queue_sha256:data.queue_sha256,revision:preflightRevision});
+    if(result.review_finalized!==true||!['resume','none','retry'].includes(result.workflow_action))throw Error('검수 확정 응답을 확인하지 못했습니다.');
+    preflightFinalized=true;$("saved").textContent='';
+    window.parent.postMessage?.({type:'koww:preflight-finalized',project,queue_sha256:data.queue_sha256,request:preflightParentRequest,workflow_action:result.workflow_action},location.origin);
+  }catch(error){preflightBlocked=true;$("saved").textContent='검수 확정 실패 · '+error.message;}
+  finally{preflightFinalizing=false;renderDecision();}
+}
+async function finalizeHardReview(){
+  if(!hardReviewBridge()||preflightFinalized||preflightFinalizing||postReviewError)return;
+  const request=preflightParentRequest,queue=data.queue_sha256;
+  if(!Number.isSafeInteger(request))return;
+  preflightFinalizing=true;stop();renderDecision();
+  try{
+    if(!data.items.every(judged))throw Error('모든 음원을 끝까지 들은 뒤 다음으로 진행하세요.');
+    const submitted=postDecisionSnapshot(),kept=data.items.filter(row=>submitted[row.id]?.decision==='keep').length;
+    const freshResponse=await fetch(localUrl(config.queue_url||'/queue')),fresh=await freshResponse.json();
+    if(!freshResponse.ok||fresh.queue_sha256!==queue||!Array.isArray(fresh.items)||fresh.items.length!==data.items.length||
+      fresh.items.some((row,i)=>row?.id!==data.items[i].id||localUrl(row.audio)!==data.items[i].audio))
+      throw Error('검수 목록이 변경됐습니다. 화면을 다시 불러온 뒤 확인해 주세요.');
+    if(preflightParentRequest!==request||data.queue_sha256!==queue)return;
+    // The deliberate parent Next confirms use of the kept phrases. Playback
+    // and local draft updates never submit this bundle approval.
+    const result=await preflightPost({decisions:submitted,queue_sha256:queue,policy_approved:true});
+    if(preflightParentRequest!==request||data.queue_sha256!==queue)return;
+    if(result.state!=='review_saved'||result.total!==data.items.length||result.kept!==kept||result.admission_pending!==true)
+      throw Error('유사어 검수 저장 응답을 확인하지 못했습니다. 다시 시도해 주세요.');
+    if(!kept){
+      index=0;show();postReviewError=false;postReviewNotice='적합한 유사어를 하나 이상 남겨주세요.';$("saved").textContent='';
+      window.parent.postMessage?.({type:'koww:preflight-held',project,queue_sha256:queue,request,held_count:data.items.length,phase:'hard'},location.origin);return;
+    }
+    preflightFinalized=true;$("saved").textContent='';
+    window.parent.postMessage?.({type:'koww:preflight-finalized',project,queue_sha256:queue,request,workflow_action:'resume',phase:'hard'},location.origin);
+  }catch(error){
+    if(preflightParentRequest===request&&data.queue_sha256===queue){postReviewError=true;postReviewNotice=error.message;$("saved").textContent='검수 저장 실패 · '+error.message;}
+  }finally{preflightFinalizing=false;renderDecision();}
+}
+async function finalizePostReview(){
+  if(!postReviewBridge()||preflightFinalized||preflightFinalizing||postReviewError)return;
+  const request=preflightParentRequest,queue=data.queue_sha256;
+  if(!Number.isSafeInteger(request))return;
+  preflightFinalizing=true;stop();renderDecision();
+  try{
+    if(!data.items.every(judged))throw Error('모든 음원을 끝까지 들은 뒤 다음으로 진행하세요.');
+    const submitted=postDecisionSnapshot(),allItems=postAllItems||data.items;
+    const result=await preflightPost({decisions:submitted,queue_sha256:queue});
+    if(preflightParentRequest!==request||data.queue_sha256!==queue)return;
+    const rejected=allItems.filter(row=>submitted[row.id]?.decision==='discard');
+    const matchingCounts=result.total===allItems.length&&result.kept===allItems.length-rejected.length;
+    if(result.review_finalized===true&&result.workflow_action==='repair'&&result.policy_approved===false&&matchingCounts&&rejected.length>0&&
+      ['postgeneration_repair_started','postgeneration_repair_pending'].includes(result.state)){
+      preflightFinalized=true;postReviewNotice='';$("saved").textContent='';
+      window.parent.postMessage?.({type:'koww:preflight-finalized',project,queue_sha256:queue,request,workflow_action:'repair',
+        repair_pending:result.state==='postgeneration_repair_pending'},location.origin);return;
+    }
+    if(result.policy_approved===false&&result.state==='pilot_exceptions_need_policy_fix'&&rejected.length>0&&
+      matchingCounts){
+      // A saved negative disposition is an expected approval hold, not a
+      // failed write. Keep every answer and bring the first marked clip back.
+      index=Math.max(0,data.items.findIndex(row=>row.id===rejected[0].id));show();postReviewError=false;
+      postReviewNotice=`부적합 ${rejected.length}개가 있습니다. 판정을 확인해 주세요.`;$("saved").textContent='';
+      window.parent.postMessage?.({type:'koww:preflight-held',project,queue_sha256:queue,request,held_count:rejected.length},location.origin);
+      return;
+    }
+    if(result.policy_approved!==true||result.state!=='saved'||rejected.length)throw Error('검수 저장 응답을 확인하지 못했습니다. 다시 시도해 주세요.');
+    preflightFinalized=true;$("saved").textContent='';
+    window.parent.postMessage?.({type:'koww:preflight-finalized',project,queue_sha256:queue,request,workflow_action:'resume'},location.origin);
+  }catch(error){
+    if(preflightParentRequest===request&&data.queue_sha256===queue){postReviewError=true;postReviewNotice=error.message;$("saved").textContent='검수 저장 실패 · '+error.message;}
+  }finally{preflightFinalizing=false;renderDecision();}
+}
+window.addEventListener('resize',reportPreflightHeight);
+if(typeof ResizeObserver==='function')new ResizeObserver(reportPreflightHeight).observe(document.querySelector('main'));
+function key(){return `koww:${callReviewPhase?callReviewPhase+':':''}${data.queue_sha256}`;}
+function remember(){if(!preflightAutosave){const saved=postRepairReview?Object.fromEntries(data.items.filter(row=>decisions[row.id]).map(row=>[row.id,decisions[row.id]])):decisions;localStorage.setItem(key(),JSON.stringify(saved));}}
+function decisionLabel(decision){return preflightAutosave||completedReview()?{keep:'적합',discard:'부적합'}[decision]:callReviewPhase==='pre'&&decision==='discard'?'다시 생성':labels[decision];}
+function judged(row){
+  const answer=decisions[row.id];
+  if(preflightAutosave)return Boolean(answer&&(answer.decision==='discard'||answer.decision==='keep'&&answer.playback_started===true));
+  return answer&&Object.hasOwn(labels,answer.decision)
+    &&(!pronunciationReview||answer.decision!=='review')
+    &&(answer.listened===true||(answer.decision!=='keep'&&!((data.require_listened_discard||callReviewPhase||hardCompactReview)&&answer.decision==='discard')));
+}
+function decisionBadge(row){
+  const answer=decisions[row.id];
+  if(preflightAutosave&&preflightIntents.has(row.id))return preflightBlocked?'저장 확인 필요':'저장 중';
+  if(pronunciationReview&&answer?.decision==='review')return '판정 보류';
+  if(judged(row))return decisionLabel(answer.decision);
+  return answer?.listened===true?'청취':'미청취';
+}
+function setupListening(){
+  const listening=window.KowwListening, controls=$("review-controls"), play=$("start");
+  const kind=data.kind||queueKind;
+  const hardReview=kind==='hard'||hardCompactReview;
+  const compactReview=hardReview||((kind==='pilot'||kind==='positive')&&!data.policy_review);
+  if(!compactReview||referenceReview||!listening?.createPicker){
+    listening?.enhance(audio,controls,{play,previous:$("prev"),next:$("next")});
+    return;
+  }
+  const button=$("review-picker-button"), list=$("review-picker-list");
+  if(hardReview){
+    button.setAttribute('aria-label','확인할 유사어 음원');
+    list.setAttribute('aria-label','확인할 유사어 음원');
+  }
+  reviewPicker=listening.createPicker({
+    container:$("review-picker"),button,label:$("review-picker-label"),
+    popup:$("review-picker-popup"),list,onSelect:moveTo,
+    onOpenChange:callReviewBridge()&&window.parent!==window?preflightPickerChanged:undefined,
+  });
+  reviewPicker.setItems(data.items.map((row,i)=>{
+    const badge=decisionBadge(row);
+    if(hardReview){
+      const phrase=row.text||row.group||`음원 ${i+1}`;
+      return {label:phrase,fullLabel:`유사어 음원 ${i+1} · ${phrase}`,badge};
+    }
+    return {...(row.voice||{label:`목소리 ${i+1}`,groupLabel:'목소리',voiceNumber:i+1}),badge};
+  }));
+  if(preflightAutosave)preflightBadgeCache=data.items.map(decisionBadge);
+  listening.enhance(audio,controls,{play,volume:$("review-volume")});
+  document.documentElement.classList.add('compact-review','listen-voice-compact');
+  $("review-sidebar").hidden=true;
+  $("review-picker").hidden=false;
+  $("prev").hidden=true;$("next").hidden=true;
+  $("review-volume").hidden=false;
+  $("review-player").insertBefore($("expected"),$("state"));
+}
 function renderList(){
   if(!data)return;
   const list=$("listening-list"),pages=Math.max(1,Math.ceil(data.items.length/pageSize));
@@ -70,8 +464,8 @@ function renderList(){
     const position=listPage*pageSize+offset,row=document.createElement('button'),title=document.createElement('span'),badge=document.createElement('span');
     const answer=decisions[item.id],state=answer?.decision;
     row.type='button';row.className='voice-row';row.setAttribute('aria-current',String(position===index));
-    title.className='listen-row-title';title.textContent=referenceReview||pilotReview?`목소리 ${position+1}`:item.text||item.group||`음원 ${position+1}`;
-    badge.className='listen-badge';badge.textContent=judged(item)?labels[state]:answer?.listened===true?'청취':'미청취';badge.setAttribute('data-state',judged(item)?state:'unheard');
+    title.className='listen-row-title';title.textContent=referenceReview||pilotReview?(item.voice?.fullLabel||`목소리 ${position+1}`):item.text||item.group||`음원 ${position+1}`;
+    badge.className='listen-badge';badge.textContent=decisionBadge(item);badge.setAttribute('data-state',judged(item)?state:'unheard');
     row.setAttribute('data-number',String(position+1));row.setAttribute('aria-label',`${title.textContent} · ${badge.textContent}`);
     row.append(title,badge);row.onclick=()=>moveTo(position);list.append(row);
   });
@@ -80,39 +474,203 @@ function renderList(){
 function renderProgress(){
   if(!data)return;
   const total=data.items.length,complete=data.items.filter(judged).length,recheck=data.items.filter(row=>decisions[row.id]?.decision==='review').length;
-  $("review-progress").textContent=`판정한 음원 ${complete} / ${total}개 · 미판정 ${total-complete}개 · 다시 확인 ${recheck}개`;
+  const pendingLabel=pronunciationReview?(recheck?` · 판정 보류 ${recheck}개`:''):` · 다시 확인 ${recheck}개`;
+  $("review-progress").textContent=`판정한 음원 ${complete} / ${total}개 · 미판정 ${total-complete}개`+pendingLabel+groupSummary;
+  if(callReviewPhase==='pre'&&!preflightAutosave)$("save").textContent=data.items.some(row=>decisions[row.id]?.decision==='discard')?'문제 목소리 다시 생성':'사전 검수 저장';
+  if(callReviewBridge()){$("review-pending").hidden=true;reportPreflight();reportPreflightHeight();return;}
+  if($("review-pending").hidden===false)showRemainingReview(total-complete);
 }
-function renderDecision(){const decision=decisions[data.items[index].id]?.decision;$("state").textContent=labels[decision]||'아직 듣지 않음';for(const value of ['keep','discard','review'])$(value).setAttribute('aria-pressed',String(decision===value));renderList();renderProgress();}
+function showRemainingReview(count){
+  if((postReviewBridge()||hardReviewBridge())){$("review-pending").hidden=true;return;}
+  $("review-pending").hidden=!pronunciationReview||count===0;
+  $("saved").textContent=count?`검수가 필요한 음원이 ${count}개 남았습니다.`:'';
+}
+function renderDecision(){
+  const row=data.items[index],decision=decisions[row.id]?.decision;
+  $("state").textContent=callReviewPhase==='pre'?preflightPlaybackError:pronunciationReview&&decision==='review'
+    ?'보류된 음원입니다. 정상 또는 제외를 선택해 주세요.':decisionLabel(decision)||'아직 듣지 않음';
+  for(const value of ['keep','discard','review'])$(value).setAttribute('aria-pressed',String(decision===value));
+  if(preflightAutosave){
+    const pending=preflightIntents.get(row.id),guarded=preflightFinalizing||preflightFinalized||preflightBlocked;
+    for(const value of ['keep','discard'])$(value).setAttribute('aria-pressed',String((pending?.decision||decision)===value));
+    $("keep").disabled=guarded||!preflightFact(row,'playback_started');$("discard").disabled=guarded;
+    $("start").disabled=guarded;
+    $("preflight-retry").hidden=!preflightBlocked;$("preflight-retry").disabled=Boolean(preflightWriter)||preflightFinalizing;
+  }
+  if(completedReview()){
+    $("state").textContent=postReviewNotice;$("state").hidden=!postReviewNotice;
+    const guarded=preflightFinalizing||preflightFinalized;
+    $("discard").disabled=guarded;$("start").disabled=guarded;$("save").disabled=guarded;
+    if((postReviewBridge()||hardReviewBridge())){$("preflight-retry").textContent='다시 시도';$("preflight-retry").hidden=!postReviewError;$("preflight-retry").disabled=guarded;}
+  }
+  if(reviewPicker){if(preflightAutosave)data.items.forEach((item,i)=>{const badge=decisionBadge(item);if(preflightBadgeCache[i]!==badge){preflightBadgeCache[i]=badge;reviewPicker.setBadge(i,badge);}});else reviewPicker.setBadge(index,decisionBadge(row));}else renderList();
+  renderProgress();
+}
 function show(){
   const r=data.items[index];if(!r)return;
-  stop();playbackAllowed=true;
+  stop();playbackAllowed=true;if(preflightAutosave)preflightPlaybackError='';
   $("title").textContent=`${index+1} / ${data.items.length}`;
-  $("expected").textContent=(referenceReview?'샘플 문장: ':r.group?'확인할 소리: ':'기대 문장: ')+r.text;
-  $("instruction").textContent=r.instruction||'';audio.src=r.audio;$("items").value=index;
+  $("expected").textContent=(referenceReview?'샘플 문장: ':r.group&&!r.voice?'확인할 소리: ':'기대 문장: ')+r.text;
+  $("instruction").textContent=r.instruction||'';audio.src=r.audio;$("items").value=index;reviewPicker?.setSelected(index);
   $("prev").disabled=index===0;$("next").disabled=index===data.items.length-1;listPage=Math.floor(index/pageSize);renderDecision();
 }
-function choose(decision){if(!data?.items[index])return;const id=data.items[index].id;decisions[id]={decision,listened:decisions[id]?.listened||false};remember();renderDecision();}
+function choose(decision,event){if(!data?.items[index]||(pronunciationReview&&decision==='review'))return;
+  if(preflightAutosave){
+    const target=preflightChoiceTarget;preflightChoiceTarget=null;
+    if(preflightBlocked||preflightFinalizing||preflightFinalized||decision!=='discard'||event?.detail>1)return;
+    const row=data.items[index];
+    if(target&&(target.id!==row.id||target.sha256!==row.audio_sha256))return;
+    const answer=preflightIntents.get(row.id)||decisions[row.id];
+    queuePreflight(row,answer?.decision==='discard'?(preflightFact(row,'playback_started')?'keep':'clear'):'discard');return;
+  }
+  if(completedReview()){
+    const target=preflightChoiceTarget;preflightChoiceTarget=null;
+    if(preflightFinalizing||preflightFinalized||decision!=='discard'||event?.detail>1)return;
+    const row=data.items[index];
+    if(target&&(target.id!==row.id||target.audio!==row.audio||target.version!==playbackVersion))return;
+    clearPostReviewError();
+    const answer=decisions[row.id];
+    if(answer?.decision==='discard'){
+      if(answer.listened===true)decisions[row.id]={decision:'keep',listened:true};
+      else delete decisions[row.id];
+    }else decisions[row.id]={decision:'discard',listened:answer?.listened===true};
+    remember();renderDecision();return;
+  }
+  const id=data.items[index].id;decisions[id]={decision,listened:decisions[id]?.listened||false};remember();renderDecision();}
 async function play(){
   if(!data?.items[index]||document.hidden)return;
+  if(completedReview()&&(preflightFinalizing||preflightFinalized))return;
+  if(completedReview())clearPostReviewError();
+  if(preflightAutosave&&(preflightBlocked||preflightFinalizing||preflightFinalized))return;
+  if(preflightAutosave){preflightPlaybackError='';renderDecision();}
   playbackAllowed=true;if(!audio.src)audio.src=data.items[index].audio;
   const version=++playbackVersion;
-  try{await audio.play();}catch(e){if(version!==playbackVersion)return;stop();$("state").textContent='재생하지 못했습니다. 다시 눌러주세요.';}
+  if(preflightAutosave){const row=data.items[index];preflightPlayRequest={id:row.id,sha256:row.audio_sha256,version,startedAt:typeof performance==='object'?performance.now():null};}
+  try{await audio.play();}catch(e){if(version!==playbackVersion)return;stop();if(preflightAutosave){preflightPlaybackError='재생하지 못했습니다. 다시 눌러주세요.';renderDecision();}else if(completedReview()){postReviewNotice='재생하지 못했습니다. 다시 눌러주세요.';renderDecision();}else $("state").textContent='재생하지 못했습니다. 다시 눌러주세요.';}
 }
-audio.onplay=()=>{if(!playbackAllowed||document.hidden){stop(true);return;}started=true;setContinuous(true);};
-audio.onpause=()=>{if(!audio.ended&&audio.paused){setContinuous(false);started=false;}};
-audio.onerror=()=>{stop();$("state").textContent='재생하지 못했습니다. 다시 눌러주세요.';};
-audio.onended=()=>{
-  if(!audio.ended||!data?.items[index]||!started||!playbackAllowed||document.hidden)return;
-  started=false;const id=data.items[index].id;
-  decisions[id]={decision:decisions[id]?.decision||'keep',listened:true};remember();renderDecision();
-  $("state").textContent='청취 완료 · '+labels[decisions[id].decision];
-  if(continuous&&index+1<data.items.length){index++;show();setContinuous(true);play();}
-  else if(continuous){setContinuous(false);$("state").textContent='전체 청취 완료 · 검수 결과 저장을 눌러주세요.';}
+audio.onplay=()=>{if(!playbackAllowed||document.hidden||preflightAutosave&&(preflightBlocked||preflightFinalizing||preflightFinalized)||completedReview()&&(preflightFinalizing||preflightFinalized)){stop(true);return;}started=true;setContinuous(true);};
+audio.onplaying=event=>{
+  if(completedReview()){
+    const row=data?.items[index];if(!row||audio.paused||document.hidden||!playbackAllowed||preflightFinalizing||preflightFinalized)return;
+    if(localUrl(audio.currentSrc||audio.src)!==row.audio)return;
+    preflightPlayback={id:row.id,audio:row.audio,version:playbackVersion,startedAt:typeof performance==='object'?performance.now():null};return;
+  }
+  const row=data?.items[index];if(!preflightAutosave||!row||audio.paused||document.hidden||!playbackAllowed||preflightBlocked||preflightFinalizing||preflightFinalized)return;
+  if(localUrl(audio.currentSrc||audio.src)!==row.audio)return;
+  const request=preflightPlayRequest;
+  if(!request||request.id!==row.id||request.sha256!==row.audio_sha256||request.version!==playbackVersion||
+    Number.isFinite(event?.timeStamp)&&Number.isFinite(request.startedAt)&&event.timeStamp<request.startedAt)return;
+  preflightPlayback={id:row.id,sha256:row.audio_sha256,version:playbackVersion,startedAt:request.startedAt};
+  preflightStarted.add(row.id);
+  queuePreflight(row,(preflightIntents.get(row.id)||decisions[row.id])?.decision==='discard'?'discard':'keep');
+  renderDecision();
 };
-$("start").onclick=()=>{if(continuous||!audio.paused){stop();return;}setContinuous(true);return play();};$("pause").onclick=()=>stop();for(const d of ['keep','discard','review'])$(d).onclick=()=>choose(d);
-function moveTo(value){if(!data||!Number.isInteger(value)||value<0||value>=data.items.length)return;const resume=continuous;index=value;show();if(resume){setContinuous(true);return play();}}
+audio.onpause=()=>{if(!audio.ended&&audio.paused){setContinuous(false);started=false;}};
+audio.onerror=()=>{stop();if(preflightAutosave){preflightPlaybackError='재생하지 못했습니다. 다시 눌러주세요.';renderDecision();}else if(completedReview()){postReviewNotice='재생하지 못했습니다. 다시 눌러주세요.';renderDecision();}else $("state").textContent='재생하지 못했습니다. 다시 눌러주세요.';};
+function fullyPlayed(){
+  const {duration,played}=audio;
+  if(!Number.isFinite(duration)||duration<=0||played.length!==1)return false;
+  // Allow for rounding of media timestamps while requiring a contiguous interval.
+  const tolerance=Math.min(0.02,duration*0.02);
+  return played.start(0)<=tolerance&&played.end(0)>=duration-tolerance;
+}
+audio.onended=event=>{
+  const row=data?.items[index];
+  const intended=preflightAutosave?preflightPlayback?.id===row?.id&&preflightPlayback?.sha256===row?.audio_sha256&&preflightPlayback?.version===playbackVersion:started;
+  if(!audio.ended||!row||!intended||!playbackAllowed||document.hidden)return;
+  if(completedReview()&&(!preflightPlayback||preflightPlayback.id!==row.id||preflightPlayback.audio!==row.audio||preflightPlayback.version!==playbackVersion||localUrl(audio.currentSrc||audio.src)!==row.audio||Number.isFinite(event?.timeStamp)&&Number.isFinite(preflightPlayback.startedAt)&&event.timeStamp<preflightPlayback.startedAt))return;
+  if(preflightAutosave&&(localUrl(audio.currentSrc||audio.src)!==row.audio||Number.isFinite(event?.timeStamp)&&Number.isFinite(preflightPlayback?.startedAt)&&event.timeStamp<preflightPlayback.startedAt))return;
+  started=false;
+  if(preflightAutosave){
+    preflightPlayback=null;
+    if(preflightStarted.has(row.id)&&fullyPlayed()&&Number.isFinite(audio.currentTime)&&audio.currentTime>=audio.duration-Math.min(.02,audio.duration*.02)){
+      preflightCompleted.add(row.id);
+      const answer=preflightIntents.get(row.id)||decisions[row.id];if(answer)queuePreflight(row,answer.decision);
+    }
+    if(continuous&&!preflightBlocked&&!preflightFinalizing&&!preflightFinalized&&index+1<data.items.length){index++;show();setContinuous(true);play();}
+    else setContinuous(false);
+    return;
+  }
+  const answer=decisions[row.id];
+  const listened=!pronunciationReview||answer?.listened===true||fullyPlayed();
+  if(listened){
+    const decision=answer?.decision||'keep';
+    decisions[row.id]={decision,listened:true};
+    remember();renderDecision();
+    if(callReviewPhase!=='pre'&&!completedReview()&&(!pronunciationReview||decision!=='review'))$("state").textContent='청취 완료 · '+decisionLabel(decision);
+  }else if(!judged(row)){
+    setContinuous(false);
+    $("state").textContent='건너뛴 구간이 있습니다. 음원을 처음부터 끝까지 재생해 주세요.';
+    if(completedReview()){postReviewNotice=$("state").textContent;$("state").hidden=false;}
+    showRemainingReview(data.items.filter(item=>!judged(item)).length);
+    return;
+  }
+  if(!continuous)return;
+  if(index+1<data.items.length){index++;show();setContinuous(true);play();return;}
+  setContinuous(false);
+  const pending=pronunciationReview?data.items.filter(item=>!judged(item)).length:0;
+  if(pending)showRemainingReview(pending);
+  else if(completedReview()){postReviewNotice='';$("state").textContent='';$("state").hidden=true;}
+  else $("state").textContent=pronunciationReview
+    ?'모든 음원의 판정이 끝났습니다. 검수 결과를 저장하세요.'
+    :'전체 청취 완료 · 검수 결과 저장을 눌러주세요.';
+};
+$("start").onclick=()=>{if(preflightAutosave&&(preflightBlocked||preflightFinalizing||preflightFinalized||document.hidden))return;if(continuous||!audio.paused){stop();return;}setContinuous(true);return play();};$("pause").onclick=()=>stop();for(const d of ['keep','discard','review'])$(d).onclick=event=>choose(d,event);
+function capturePreflightChoice(){if(!(preflightAutosave||completedReview())||!data?.items[index])return;const row=data.items[index];preflightChoiceTarget={id:row.id,sha256:row.audio_sha256,audio:row.audio,version:playbackVersion};}
+$("discard").onpointerdown=capturePreflightChoice;
+$("discard").onpointercancel=()=>{preflightChoiceTarget=null;};
+for(const d of ['keep','discard'])$(d).onkeydown=event=>{if(!(preflightAutosave||completedReview())||!['Enter',' '].includes(event.key))return;if(event.repeat){event.preventDefault();return;}if(d==='discard')capturePreflightChoice();};
+function moveTo(value){if(!data||!Number.isInteger(value)||value<0||value>=data.items.length||completedReview()&&(preflightFinalizing||preflightFinalized))return;if(completedReview())clearPostReviewError();const resume=continuous;index=value;show();if(resume){setContinuous(true);return play();}}
 $("prev").onclick=()=>moveTo(index-1);$("next").onclick=()=>moveTo(index+1);$("items").onchange=()=>moveTo(Number($("items").value));
 $("list-prev").onclick=()=>{listPage--;renderList();};$("list-next").onclick=()=>{listPage++;renderList();};
-window.KowwListening?.enhance(audio,document.querySelector?.('.listen-controls'),{play:$("start"),previous:$("prev"),next:$("next")});
-$("save").onclick=async()=>{if(!data)return;const pending=data.items.filter(r=>!judged(r));if(pending.length){$("saved").textContent=`아직 ${pending.length}개가 남았습니다. 미청취 항목은 보존 승인하지 않습니다.`;return;}if(data.policy_review&&!$("policy-approved").checked){$("saved").textContent='아래 자료 묶음 사용 동의에 체크한 뒤 저장하세요.';return;}$("save").disabled=true;$("saved").textContent='결과 저장 및 자료 확인 중…';try{const saveUrl=localUrl(config.save_url||'/save');const headers={'Content-Type':'application/json'};if(config.token)headers['X-Koww-Token']=config.token;const response=await fetch(saveUrl,{method:'POST',headers,body:JSON.stringify(data.policy_review?{decisions,policy_approved:$("policy-approved").checked}:decisions)});if(!response.ok)throw Error(await response.text());const result=await response.json();const hold=data.items.some(r=>decisions[r.id]?.decision==='review')||!data.items.some(r=>decisions[r.id]?.decision==='keep')||['content_exceptions_pending','pilot_exceptions_need_policy_fix','review_incomplete_or_policy_rejected'].includes(result.state);$("saved").textContent=hold?'판정을 저장했습니다. 다음 단계로 진행하기 전에 문제 항목을 확인하세요.':config.saved_message||'검수 결과를 저장했습니다.';}catch(e){$("saved").textContent='저장 실패 · '+e.message;}finally{$("save").disabled=false;}};
+$("review-pending").onclick=()=>{
+  const pendingIndex=data?.items.findIndex(item=>!judged(item));
+  if(pendingIndex===undefined||pendingIndex<0)return;
+  showRemainingReview(0);
+  index=pendingIndex;show();
+  $("start").focus();
+};
+$("save").onclick=async()=>{
+  if(!data||$("save").disabled||postReviewBridge())return;
+  const pending=data.items.filter(row=>!judged(row)).length;
+  if(pending){
+    if(pronunciationReview)showRemainingReview(pending);
+    else $("saved").textContent=`아직 ${pending}개가 남았습니다. 미청취 항목은 보존 승인하지 않습니다.`;
+    return;
+  }
+  if(data.policy_review&&!hardCompactReview&&!$("policy-approved").checked){$("saved").textContent='아래 자료 묶음 사용 동의에 체크한 뒤 저장하세요.';return;}
+  $("save").disabled=true;$("saved").textContent='결과 저장 및 자료 확인 중…';
+  let retryStarted=false;
+  try{
+    const saveUrl=localUrl(config.save_url||'/save');
+    const headers={'Content-Type':'application/json'};
+    if(config.token)headers['X-Koww-Token']=config.token;
+    const payload=hardCompactReview?{decisions:postDecisionSnapshot(),queue_sha256:data.queue_sha256,policy_approved:true}
+      :callReviewPhase?{decisions:callReviewPhase==='post'?postDecisionSnapshot():decisions,queue_sha256:data.queue_sha256}
+      :data.policy_review?{decisions,policy_approved:$("policy-approved").checked}:decisions;
+    const response=await fetch(saveUrl,{method:'POST',headers,body:JSON.stringify(payload)});
+    if(!response.ok)throw Error(await response.text());
+    const result=await response.json();
+    if(callReviewPhase==='post'&&result.review_finalized===true&&result.workflow_action==='repair'&&
+      ['postgeneration_repair_started','postgeneration_repair_pending'].includes(result.state)){
+      retryStarted=true;preflightFinalized=true;stop();renderDecision();
+      $("saved").textContent='판정을 저장했습니다. 학습 페이지에서 다시 생성한 음원을 검수해 주세요.';return;
+    }
+    retryStarted=callReviewPhase==='pre'&&['pilot_retry_started','pilot_retry_pending'].includes(result.state);
+    if(retryStarted){
+      stop();
+      $("saved").textContent=result.state==='pilot_retry_pending'
+        ? '판정을 저장했습니다. 사전 생성 단계에서 재개하면 표시한 목소리를 다시 생성합니다.'
+        : '판정을 저장했습니다. 표시한 목소리를 다시 생성합니다.';
+      return;
+    }
+    if(callReviewPhase==='post'&&(result.policy_approved===false||data.items.some(row=>decisions[row.id]?.decision==='discard'))){
+      $("saved").textContent='본생성 승인이 보류됐습니다. 제외한 음원을 다시 듣고 판정을 확인하세요.';
+      return;
+    }
+    const hold=data.items.some(r=>decisions[r.id]?.decision==='review')||!data.items.some(r=>decisions[r.id]?.decision==='keep')||['content_exceptions_pending','pilot_exceptions_need_policy_fix','review_incomplete_or_policy_rejected'].includes(result.state);
+    $("saved").textContent=hold?'판정을 저장했습니다. 다음 단계로 진행하기 전에 문제 항목을 확인하세요.':config.saved_message||'검수 결과를 저장했습니다.';
+  }catch(e){$("saved").textContent='저장 실패 · '+e.message;}
+  finally{if(!retryStarted)$("save").disabled=false;}
+};
 </script></html>

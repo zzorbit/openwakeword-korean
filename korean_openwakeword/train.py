@@ -4,6 +4,8 @@ No experimental AST rewriting or machine-specific paths are used by this API.
 The selected CNN, sampler, dropout hook, optimizer and schedule math are retained.
 """
 import copy
+from contextlib import contextmanager
+from contextvars import ContextVar
 import math
 import random
 import time
@@ -14,6 +16,27 @@ from .common import digest, identity, now, read_json, resolved, write_json, appe
 from .features import verify_cache
 from .project import BATCH, LEGACY_BATCH, training_batch, load_project, workload_summary
 from .storage import project_storage
+
+
+_TRAINING_PROGRESS = ContextVar("training_progress_callback", default=None)
+
+
+@contextmanager
+def training_progress(callback):
+    """Scope optional preparation telemetry to one training invocation."""
+    if callback is not None and not callable(callback):
+        raise ValueError("Training progress callback must be callable or None")
+    token = _TRAINING_PROGRESS.set(callback)
+    try:
+        yield
+    finally:
+        _TRAINING_PROGRESS.reset(token)
+
+
+def _report_training_progress(phase, label, done=None, total=None, unit="개", **details):
+    callback = _TRAINING_PROGRESS.get()
+    if callback is not None:
+        callback({"phase": phase, "label": label, "done": done, "total": total, "unit": unit, **details})
 
 
 def validate_training_scale(config, metadata):
@@ -124,12 +147,23 @@ class InputDelivery:
             free, _ = torch.cuda.mem_get_info(device)
             safe = max(0, free - 2 * 1024**3)
             budget = min(safe, budget_mb * 1024**2) if budget_mb else safe
-        for role in sorted(pools, key=lambda r: pools[r].nbytes, reverse=True):
+        ordered = sorted(pools, key=lambda r: pools[r].nbytes, reverse=True)
+        remaining, cache_bytes = budget, 0
+        for role in ordered:
+            if pools[role].nbytes <= remaining:
+                cache_bytes += pools[role].nbytes
+                remaining -= pools[role].nbytes
+        copied_bytes = 0
+        if cache_bytes:
+            _report_training_progress("gpu_cache_loading", "학습 자료를 GPU에 준비", 0, cache_bytes, "bytes")
+        for role in ordered:
             array = pools[role]
             if array.nbytes <= budget:
                 cached = torch.empty(array.shape, dtype=torch.float16 if array.dtype == np.float16 else torch.float32, device=device)
                 for i in range(0, len(array), 4096):
                     cached[i:i+4096] = torch.from_numpy(np.array(array[i:i+4096], copy=True)).to(device)
+                    copied_bytes += array[i:i+4096].nbytes
+                    _report_training_progress("gpu_cache_loading", "학습 자료를 GPU에 준비", copied_bytes, cache_bytes, "bytes")
                 self.cached[role] = cached
                 budget -= array.nbytes
         self.report = {r: {"mode": "GPU_pool_cache" if r in self.cached else "CPU_mmap_gather",
@@ -187,6 +221,7 @@ class _SharedInputDelivery:
 
 def _train_member(config, root, metadata, pools, seed, output, smoke, resume,
                   selected_device=None, delivery=None):
+    _report_training_progress("model_initialization", "학습 모델 준비")
     import torch
     settings = config["training"]
     device = settings["device"]
@@ -247,9 +282,11 @@ def _train_member(config, root, metadata, pools, seed, output, smoke, resume,
             torch.set_rng_state(state["torch_rng"].cpu()); np.random.set_state(state["numpy_rng"]); random.setstate(state["python_rng"])
             if device.startswith("cuda"):
                 torch.cuda.set_rng_state_all([v.cpu() for v in state["cuda_rng"]])
+        _report_training_progress("training", "모델 학습", step, settings["updates"], "학습 업데이트")
         started = time.perf_counter()
         write_json(output / "progress.json", {"state": "running", "pid": __import__("os").getpid(),
             "started_at": now(), "completed_updates": step, "total_updates": settings["updates"], "device": device})
+        rate_step, rate_stamp = step, time.perf_counter()
         for step in range(step + 1, settings["updates"] + 1):
             x, y = delivery.batch(sampler.next_indices())
             for group in optimizer.param_groups:
@@ -267,6 +304,10 @@ def _train_member(config, root, metadata, pools, seed, output, smoke, resume,
                        "learning_rate": optimizer.param_groups[0]["lr"], "draws": dict(sampler.draws)}
                 append_row(output / "training.jsonl", row)
                 write_json(output / "progress.json", {"state": "running", **row, "total_updates": settings["updates"]})
+                stamp = time.perf_counter()
+                _report_training_progress("training", "모델 학습", step, settings["updates"], "학습 업데이트",
+                                          rate_sample=(step - rate_step, stamp - rate_stamp))
+                rate_step, rate_stamp = step, stamp
                 print(f"seed {seed}: {step}/{settings['updates']} loss={loss_value:.6f}", flush=True)
             if step in settings["checkpoints"] or step == settings["updates"]:
                 path = output / f"checkpoint_{step:06d}.pt"
@@ -277,6 +318,7 @@ def _train_member(config, root, metadata, pools, seed, output, smoke, resume,
                 temporary = path.with_suffix(".tmp")
                 torch.save(state, temporary); temporary.replace(path)
                 write_json(output / "last_checkpoint.json", {"path": path.name, "sha256": digest(path), "update": step})
+        _report_training_progress("training_finalizing", "학습 모델 내보내기·검증", eta_eligible=False)
         model.eval().cpu()
         scoring = torch.nn.Sequential(model, torch.nn.Sigmoid()).eval()
         torch.onnx.export(scoring, torch.zeros(1, 16, 96), str(output / "model.onnx"), input_names=["input"],
@@ -314,7 +356,11 @@ def train(project, output=None, smoke=False, resume=False):
         name += f"_N{workload['positive_tts_originals']}_U{workload['updates_per_model']}_M{workload['model_count']}"
     directory = Path(output).resolve() if output else root / "runs" / name
     metadata, pools = {}, {}
-    for role in training_batch(config):
+    roles = training_batch(config)
+    labels = {"generic_negative": "일반 비호출", "korean_negative": "한국어 비호출",
+              "positive": "호출어 음성", "hard_negative": "유사어 음성"}
+    for index, role in enumerate(roles):
+        _report_training_progress("feature_validation", labels.get(role, role) + " 학습 자료 검증", index, len(roles), "개 자료")
         cache = resolved(root, config["pool_features"][role])
         meta = verify_cache(cache)
         if meta.get("role") != role or meta.get("split") != "train" or not meta.get("split_audit_passed"):
@@ -323,6 +369,7 @@ def train(project, output=None, smoke=False, resume=False):
             raise ValueError("Formal training refuses smoke or unapproved feature inputs")
         metadata[role] = meta
         pools[role] = np.load(resolved(cache, meta.get("feature_path", "features.npy")), mmap_mode="r", allow_pickle=False)
+        _report_training_progress("feature_validation", labels.get(role, role) + " 학습 자료 검증", index + 1, len(roles), "개 자료")
     ids = {m["frontend_id"] for m in metadata.values() if not m.get("legacy_generic_bridge")}
     if len(ids) != 1:
         raise ValueError("Feature pools use different frontend identities")
@@ -341,6 +388,7 @@ def train(project, output=None, smoke=False, resume=False):
     receipts = []
     selected_device = None
     if config["training"]["device"] == "auto":
+        _report_training_progress("device_selection", "학습 장치 확인")
         from .benchmark import benchmark_training, doctor
         resource = doctor()
         if "GPU" in resource:

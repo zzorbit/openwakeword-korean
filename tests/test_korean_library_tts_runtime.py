@@ -151,6 +151,39 @@ def test_explicit_eager_never_qualifies_or_repeats(tmp_path, monkeypatch):
     assert runtime.report["qualifications"] == []
 
 
+def test_qualification_telemetry_excludes_warmup_without_changing_sample_or_rng(tmp_path, monkeypatch):
+    from korean_openwakeword.task_progress import task_progress
+
+    runtime, cuda_rng, _, _ = fake_cuda_runtime(tmp_path, monkeypatch)
+    expected, expected_rng, expected_cuda = one_eager_call(runtime, cuda_rng)
+    prompt = [object()]
+    records = []
+    with task_progress(records.append):
+        actual, _ = runtime.generate_voice_clone(text="보라야", language="Korean", voice_clone_prompt=prompt)
+        assert np.array_equal(actual[0], expected[0])
+        assert torch.equal(torch.get_rng_state(), expected_rng)
+        assert torch.equal(cuda_rng.get_state(), expected_cuda)
+        runtime.generate_voice_clone(text="보라야", language="Korean", voice_clone_prompt=prompt)
+    assert [(record["phase"], record["eta_eligible"]) for record in records] == [
+        ("tts_qualification", False), ("tts_generation", True), ("tts_generation", True)]
+    assert all(record["done"] is None and record["total"] is None for record in records)
+    assert len(runtime.report["qualifications"]) == 1
+
+
+def test_prompt_preparation_is_not_counted_as_utterance_generation(tmp_path):
+    from korean_openwakeword.task_progress import task_progress
+
+    prompt = object()
+    runtime = CloneRuntime("unused", {}, tmp_path)
+    runtime.model = SimpleNamespace(create_voice_clone_prompt=lambda **kwargs: prompt)
+    records = []
+    with task_progress(records.append):
+        assert runtime.create_voice_clone_prompt(ref_text="기준 문장") is prompt
+    assert [(record["phase"], record["eta_eligible"]) for record in records] == [
+        ("tts_prompt_preparation", False), ("tts_generation", True)]
+    assert runtime.report["qualifications"] == []
+
+
 @pytest.mark.parametrize("setup_error", [ValueError, RuntimeError, TypeError, AttributeError])
 def test_partial_graph_setup_failure_restores_both_methods_and_one_call_rng(tmp_path, monkeypatch, setup_error):
     from korean_openwakeword import tts_cuda_graph

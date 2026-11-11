@@ -40,7 +40,12 @@ def _describe(tmp_path, *, version=4, candidate=None, admitted=None):
     manager = object.__new__(StudioManager)
     manager._implementation_id = "fixture-implementation"
     manager._timing_receipts = {}
+    # __new__ bypasses the real manager's in-memory ETA cache initialization.
+    manager._rates = {}
     manager.review_descriptors = lambda state: []
+    # Download-row projection has its own cache/catalog tests. This fixture
+    # isolates duration metadata and forbids evaluation-artifact reads.
+    manager._live_download_files = lambda *args, **kwargs: []
     state = {"id": "fixture", "wakeword": "보라야", "preset": "check", "status": "paused",
         "implementation_id": manager._implementation_id,
         "project": str(tmp_path / "not_opened/project.json"), "index": 0,

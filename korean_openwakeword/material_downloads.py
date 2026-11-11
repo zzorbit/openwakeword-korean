@@ -9,15 +9,16 @@ from pathlib import Path
 from urllib.parse import urlsplit
 import os
 
-from .downloads import VerificationCache, download_checked, download_many
+from .downloads import VerificationCache, _file_identity, download_checked, download_many
 
 
 _current = ContextVar("koww_material_downloads", default=None)
 
 
-def _identity(path):
-    info = Path(path).stat()
-    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+def verified_archive_sha256(path, observed_identity):
+    """Return proof for the opened archive from this preparation, if available."""
+    owner = _current.get()
+    return owner.verification_cache.verified_sha256(path, observed_identity) if owner is not None else None
 
 
 def borrowed_download(path, algorithm, expected, size_bytes):
@@ -30,7 +31,7 @@ def borrowed_download(path, algorithm, expected, size_bytes):
     if binding is None:
         return None
     try:
-        return path if _identity(path) == binding else None
+        return path if _file_identity(path) == binding else None
     except FileNotFoundError:
         return None
 
@@ -99,8 +100,8 @@ class MaterialDownloads:
     def _remember(self, path, item):
         path = Path(path).resolve()
         key = (str(path), item["algorithm"], item["expected"], item["size_bytes"])
-        observed = _identity(path)
-        if self.verification_cache.matches(path, item["algorithm"], item["expected"]) and _identity(path) == observed:
+        observed = _file_identity(path)
+        if self.verification_cache.matches(path, item["algorithm"], item["expected"]) and _file_identity(path) == observed:
             self.verified[key] = observed
             return True
         return False

@@ -2,6 +2,7 @@
 import copy
 import json
 from pathlib import Path
+import shutil
 
 import numpy as np
 import pytest
@@ -226,6 +227,47 @@ def test_catalog_pin_change_invalidates_previously_generated_evidence(fixed_zero
     next(item for item in changed_assets if item["id"] == "zeroth")["sha256"] = "0" * 64
     monkeypatch.setattr(studio_data, "_official_assets", lambda: changed_assets)
     with pytest.raises(ValueError):
+        validate_library_policy_evidence(project.parent, _artifact(evidence, preparation), "noise")
+
+
+@pytest.fixture
+def isolated_material_resources(tmp_path, monkeypatch):
+    from korean_openwakeword import material_policy
+
+    resources = tmp_path / "policy_package" / "resources"
+    resources.mkdir(parents=True)
+    for source in (Path(material_policy.__file__).parent / "resources").glob("*.json"):
+        if source.name != "voice_design_options.json":
+            shutil.copyfile(source, resources / source.name)
+    monkeypatch.setattr(material_policy, "__file__", str(resources.parent / "material_policy.py"))
+    return resources
+
+
+@pytest.mark.parametrize("options_name", ["voice_design_options.json", "unrelated_screen_preferences.json"])
+def test_voice_design_options_addition_and_edits_preserve_fixed_material_evidence(
+        fixed_zeroth, isolated_material_resources, options_name):
+    project, prepared, queue, preparation = fixed_zeroth
+    evidence = fixed_queue_evidence(project, prepared, queue)
+    evidence_path = resolved(project.parent, evidence["path"])
+    original_bytes = evidence_path.read_bytes()
+    original = read_json(evidence_path)
+    assert "voice_design_options.json" not in original["catalog_pins"]["resources"]
+
+    for options in ({"ages": ["child"]}, {"ages": ["child", "elderly"], "prompt": "updated"}):
+        write_json(isolated_material_resources / options_name, options)
+        assert validate_library_policy_evidence(
+            project.parent, _artifact(evidence, preparation), "korean_negative") == original
+        assert fixed_queue_evidence(project, prepared, queue) == evidence
+        assert evidence_path.read_bytes() == original_bytes
+
+
+def test_material_catalog_resource_hash_change_still_invalidates_evidence(
+        fixed_zeroth, isolated_material_resources):
+    project, prepared, queue, preparation = fixed_zeroth
+    evidence = fixed_queue_evidence(project, prepared, queue)
+    catalog = isolated_material_resources / "public_datasets.json"
+    catalog.write_bytes(catalog.read_bytes() + b"\n")
+    with pytest.raises(ValueError, match="policy evidence/catalog/preparation/source lineage changed"):
         validate_library_policy_evidence(project.parent, _artifact(evidence, preparation), "noise")
 
 

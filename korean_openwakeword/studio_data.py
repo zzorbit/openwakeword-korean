@@ -7,6 +7,7 @@ path invents human listening or changes the existing split and Final rules.
 from __future__ import annotations
 
 import csv
+import hashlib
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -17,11 +18,12 @@ import time
 import zipfile
 
 import requests
+from .task_progress import emit as report_task_progress
 
 from .common import (bound_file, digest, identity, iter_rows, now, read_json, read_rows,
                      resolved, write_immutable_rows, write_json, writer_lock)
-from .downloads import (VerificationCache, dataset_catalog, download_checked, download_many,
-                        verified_asset)
+from .downloads import (VerificationCache, _file_identity, _stat_identity, dataset_catalog,
+                        download_checked, download_many, verified_asset)
 from .project import load_project, require_standard_common_download
 from .budgets import DEFAULT_GENERIC_HOURS, DEFAULT_KOREAN_HOURS
 
@@ -343,13 +345,62 @@ def _archive_target(root, name):
     return target
 
 
+def _require_unchanged_archive(archive, stream, observed):
+    path_identity, opened_identity = observed
+    if (_stat_identity(os.fstat(stream.fileno())) != opened_identity
+            or _file_identity(archive) != path_identity):
+        raise ValueError("Archive changed during extraction; original receipt preserved")
+
+
+def _archive_sha256(archive, stream, observed_identity, progress):
+    from .material_downloads import verified_archive_sha256
+
+    total = observed_identity[2]
+    checksum = verified_archive_sha256(archive, observed_identity)
+    if checksum is not None:
+        _emit(progress, "검증한 압축파일 재사용: " + archive.name, total, total, "bytes", phase="extract_hash",
+              verification_reused=True)
+        return checksum
+    label = "압축파일 원본 무결성 확인: " + archive.name
+    _emit(progress, label, 0, total, "bytes", phase="extract_hash")
+    hasher = hashlib.sha256()
+    done, started, last_update = 0, time.monotonic(), 0.0
+    for chunk in iter(lambda: stream.read(8 * 1024**2), b""):
+        hasher.update(chunk)
+        done += len(chunk)
+        elapsed = time.monotonic() - started
+        if elapsed - last_update >= .5 or done == total:
+            rate = done / elapsed if elapsed > 0 else None
+            _emit(progress, label, done, total, "bytes", phase="extract_hash",
+                  bytes_per_second=rate, eta_seconds=max(0, (total - done) / rate) if rate else None)
+            last_update = elapsed
+    stream.seek(0)
+    return hasher.hexdigest()
+
+
 def extract_archive(archive, output, *, members=None, max_bytes=40 * 1024**3, include_suffixes=None, progress=None):
-    """Safely resume exact selected files; never follow links or call extractall."""
+    """Safely resume exact selected files from the verified archive handle."""
     archive, output = Path(archive).resolve(), Path(output).resolve()
-    _emit(progress, "압축 해제 준비: " + archive.name, phase="extract")
+    path_identity = _file_identity(archive)
+    with archive.open("rb") as archive_stream:
+        opened_identity = _stat_identity(os.fstat(archive_stream.fileno()))
+        # Match the physical file and size, then check each timestamp source against itself.
+        if opened_identity[:3] != path_identity[:3]:
+            raise ValueError("Archive changed during extraction; original receipt preserved")
+        observed = path_identity, opened_identity
+        _require_unchanged_archive(archive, archive_stream, observed)
+        checksum = _archive_sha256(archive, archive_stream, path_identity, progress)
+        _require_unchanged_archive(archive, archive_stream, observed)
+        return _extract_archive(archive, output, archive_stream, observed, checksum,
+                                members, max_bytes, include_suffixes, progress)
+
+
+def _extract_archive(archive, output, archive_stream, observed, checksum,
+                     members, max_bytes, include_suffixes, progress):
+    """Validate all archive members without following links or calling extractall."""
     output.mkdir(parents=True, exist_ok=True)
     requested = set(members) if members is not None else None
-    request = {"archive": {"path": str(archive), "sha256": digest(archive)},
+    request = {"archive": {"path": str(archive), "sha256": checksum},
                "members": sorted(requested) if requested is not None else None, "max_bytes": max_bytes}
     suffixes = None
     if include_suffixes is not None:
@@ -365,12 +416,23 @@ def extract_archive(archive, output, *, members=None, max_bytes=40 * 1024**3, in
         receipt = read_json(receipt_path)
         if receipt.get("request") != request:
             raise ValueError("Archive extraction request changed; use another directory")
-        if all((output / item["path"]).is_file() and digest(output / item["path"]) == item["sha256"] for item in receipt["files"]):
-            return {**receipt, "resumed": True}
-        raise ValueError("Published extracted files changed; original archive preserved")
+        files = receipt["files"]
+        _emit(progress, "기존 압축 해제 자료 검증: " + archive.name, 0, len(files), "개 파일", phase="extract_verify")
+        reported = time.monotonic()
+        for index, item in enumerate(files, 1):
+            if not ((output / item["path"]).is_file() and digest(output / item["path"]) == item["sha256"]):
+                raise ValueError("Published extracted files changed; original archive preserved")
+            stamp = time.monotonic()
+            if stamp - reported >= 1 or index == len(files):
+                _emit(progress, "기존 압축 해제 자료 검증: " + archive.name, index, len(files), "개 파일", phase="extract_verify")
+                reported = stamp
+        _require_unchanged_archive(archive, archive_stream, observed)
+        return {**receipt, "resumed": True}
     with writer_lock(output):
-        is_zip = zipfile.is_zipfile(archive)
-        handle = zipfile.ZipFile(archive) if is_zip else tarfile.open(archive, "r:*")
+        _require_unchanged_archive(archive, archive_stream, observed)
+        is_zip = zipfile.is_zipfile(archive_stream)
+        archive_stream.seek(0)
+        handle = zipfile.ZipFile(archive_stream) if is_zip else tarfile.open(fileobj=archive_stream, mode="r:*")
         with handle:
             inventory = handle.infolist() if is_zip else handle.getmembers()
             selected, names, targets, required = [], set(), set(), 0
@@ -432,6 +494,7 @@ def extract_archive(archive, output, *, members=None, max_bytes=40 * 1024**3, in
                     _emit(progress, "압축 해제: " + archive.name, completed_bytes, required, "bytes", phase="extract",
                           bytes_per_second=rate, eta_seconds=max(0, (required-completed_bytes)/rate) if rate else None)
                     last_update = elapsed
+        _require_unchanged_archive(archive, archive_stream, observed)
         receipt = {"request": request, "files": records, "bytes": required, "completed_at": now(), "content_approved": False}
         write_json(receipt_path, receipt)
         return {**receipt, "resumed": False}
@@ -1020,7 +1083,10 @@ def admit_materials(project_path, prepared, answers_by_preparation=None, *, admi
     receipts, all_pools, evaluation_rows, evaluation_admissions = [], set(), [], []
     if material_review_policy not in (None, "library_fixed_sources_v1"):
         raise ValueError("Unsupported material review policy")
-    for queue in prepared.get("review_queues", []):
+    queues = prepared.get("review_queues", [])
+    for queue_index, queue in enumerate(queues):
+        report_task_progress("material_admission", "검수 자료 승인·학습 연결", queue_index, len(queues),
+                             "개 자료 묶음", eta_eligible=False)
         answer = answers.get(queue["preparation"], answers.get(queue["id"]))
         evidence = None
         if answer is None and material_review_policy == "library_fixed_sources_v1":

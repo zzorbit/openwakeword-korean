@@ -20,7 +20,7 @@ function worklet() {
 }
 
 function browser(config = {}) {
-  const elements = new Map(), listeners = {}, mediaListeners = {}, contexts = [], workers = [], calls = [], streams = [];
+  const elements = new Map(), listeners = {}, mediaListeners = {}, contexts = [], workers = [], calls = [], streams = [], readiness = [];
   let clock = 0, nextTimer = 0;
   const timers = new Map(), intervals = new Map();
   class Element {
@@ -102,8 +102,11 @@ function browser(config = {}) {
   context.innerHeight = config.viewportHeight;
   context.isSecureContext = true;
   context.addEventListener = (name, handler) => { listeners[name] = handler; };
+  context.KowwChapterReady={loading:()=>readiness.push({status:'loading'}),
+    ready:()=>readiness.push({status:'ready',startDisabled:elements.get('start').disabled,connection:elements.get('connection').textContent,models:elements.get('models').children.length}),
+    fail:message=>readiness.push({status:'error',message,retryHidden:elements.get('retry').hidden})};
   vm.runInContext(fs.readFileSync(path.join(resources, "microphone.js"), "utf8"), context);
-  return { state, elements, listeners, mediaListeners, contexts, workers, calls, streams, timers, intervals, devices, makeStream, info, parent: context.parent,
+  return { state, elements, listeners, mediaListeners, contexts, workers, calls, streams, readiness, timers, intervals, devices, makeStream, info, parent: context.parent,
     click(id) { return elements.get(id).handlers.click({ type: "click", target: elements.get(id) }); },
     frame() { const worker = workers.at(-1); const pcm = vm.runInContext("new ArrayBuffer(2560)", context); worker.port.onmessage?.({ data: { type: "frame", pcm } }); },
     tick(ms) { clock += ms; for (const timer of [...intervals.values()]) timer.callback(); },
@@ -144,6 +147,24 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
     const b = browser(); await flush();
     assert.equal(b.state.permissionCalls, 0); assert.equal(b.elements.get("start").disabled, false);
     assert.equal(b.elements.get("wakeword").textContent, "‘보라야’");
+  });
+  await test("chapter readiness waits for initial model info and rendered controls without opening capture", async () => {
+    const markup=fs.readFileSync(path.join(resources,'microphone.html'),'utf8');
+    assert.ok(markup.indexOf('src="/listening_player.js"')<markup.indexOf('src="microphone.js"'),'the shared readiness helper loads before microphone boot');
+    const pending=deferred(),b=browser({deferredInfo:pending});await flush();
+    assert.deepEqual(b.readiness,[{status:'loading'}]);assert.equal(b.state.permissionCalls,0);
+    pending.resolve(b.response(b.info));await flush();
+    assert.deepEqual(b.readiness.at(-1),{status:'ready',startDisabled:false,connection:'모델 준비됨',models:4});
+    assert.deepEqual(b.calls.map(call=>call.url),['/api/info']);
+    assert.equal(b.contexts.length,0);assert.equal(b.workers.length,0);assert.equal(b.streams.length,0);
+  });
+  await test("chapter readiness exposes a model-info error and returns to ready after explicit retry", async () => {
+    const b=browser({failInfo:true});await flush();
+    assert.equal(b.readiness.at(-1).status,'error');assert.equal(b.readiness.at(-1).retryHidden,false);
+    assert.equal(b.readiness.at(-1).message,b.elements.get('statusText').textContent);
+    b.state.failInfo=false;await b.click('retry');await flush();
+    assert.deepEqual(b.readiness.map(row=>row.status),['loading','error','loading','ready']);
+    assert.deepEqual(b.calls.map(call=>call.url),['/api/info','/api/info']);assert.equal(b.state.permissionCalls,0);
   });
   await test("story reaction bars show every real response and retain the exact detector settings", async () => {
     const b = browser(); await flush();

@@ -477,6 +477,8 @@
 
   async function initialize() {
     if (initializing || run) return;
+    window.KowwChapterReady?.loading();
+    let initializationError = "";
     initializing = true;
     ui.retry.hidden = true;
     ui.connection.textContent = "모델 연결 중";
@@ -509,6 +511,7 @@
       ui.connection.textContent = "모델 준비됨";
       setStatus("시작할 준비가 됐습니다", "시험 시작을 누르면 마이크를 연결합니다.");
     } catch (error) {
+      initializationError = error.message || "모델 정보를 읽지 못했습니다.";
       info = null;
       ui.retry.hidden = false;
       ui.connection.textContent = "모델 연결 실패";
@@ -516,6 +519,8 @@
     } finally {
       initializing = false;
       syncControls();
+      if (initializationError) window.KowwChapterReady?.fail(ui.statusText.textContent);
+      else window.KowwChapterReady?.ready();
     }
   }
   refreshDevices();

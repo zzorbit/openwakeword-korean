@@ -18,7 +18,8 @@ def example(tmp_path,role="positive_train",writer="positives",old=b""):
     path.write_bytes(b'{"sample_id":"generated"}\n')
     populated=root/"populated.json"
     write_json(populated,{"result":{"state":"completed"},"artifact_bindings":[{"path":str(path),"sha256":digest(path)}]})
-    state={"project":str(project),"history":[{"stage":"data_connect","result":str(initial),"sha256":digest(initial)},
+    # Legacy generation publishes through positives; reviewed writers have separate tests.
+    state={"project":str(project),"settings":{},"history":[{"stage":"data_connect","result":str(initial),"sha256":digest(initial)},
         {"stage":writer,"result":str(populated),"sha256":digest(populated)}]}
     return state,path,initial,populated
 

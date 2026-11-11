@@ -2,11 +2,15 @@
 <html lang="ko">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>기준 목소리 듣기</title>
+<title>기준 목소리 검수</title>
 <style>
 :root{color-scheme:dark;font-family:system-ui,"Malgun Gothic",sans-serif;background:#171a1f;color:#e3e7ec}
 *{box-sizing:border-box}html,body{width:100%;height:100%;margin:0;overflow:hidden}body{padding:16px;font-size:16px;line-height:24px}
 main{width:min(640px,100%);height:100%;margin:auto;display:flex;flex-direction:column;justify-content:center}
+#reference-workspace[hidden],#reference-startup[hidden],#reference-startup-retry[hidden]{display:none!important}
+#audio[hidden],#reference-volume[hidden]{display:none!important}
+.reference-startup{display:flex;flex-direction:column;align-items:center;gap:10px;text-align:center;font-size:14px;line-height:22px}
+.reference-startup button{width:auto;min-height:36px;height:36px;font-size:14px}
 select,button{font:inherit;color:#e9edf2;background:#292d33;border:0;border-radius:8px;transition:background-color .2s ease}
 select{width:100%;min-width:0;height:44px;padding:8px 12px;overflow:hidden;text-overflow:ellipsis}
 button{height:44px;width:96px;padding:8px 12px;cursor:pointer;font-weight:500}
@@ -21,209 +25,319 @@ audio{width:100%;height:44px;flex:none}p{margin:0;color:#c3cbd6;overflow-wrap:an
 </style>
 <link rel="stylesheet" href="/audio_listening.css">
 <style>
-html.reference-listening{--reference-radius:26px;--reference-picker-radius:20px}
-html.reference-listening main.listen-preview{width:min(680px,100%);justify-content:center;overflow:visible}
-html.reference-listening .listen-workspace{display:block;width:min(680px,100%);margin:0 auto}
-html.reference-listening .listen-sidebar{display:none}
-html.reference-listening .listen-player{width:100%;gap:14px}
-html.reference-listening .listen-heading{align-items:center;width:100%;gap:8px}
-html.reference-listening .listen-position{flex:none;width:auto;min-width:48px;font-size:16px;line-height:24px;text-align:right;font-variant-numeric:tabular-nums}
-html.reference-listening .listen-status{position:static;max-height:40px;overflow:auto;font-size:14px;line-height:20px}
-html.reference-listening main:has(#error:not(:empty)) .listen-player{gap:6px}
-.voice-picker{flex:1;min-width:0}
-.voice-picker-button{display:flex;align-items:center;gap:8px;width:100%;height:40px;min-height:40px;padding:7px 12px;border:1px solid #3f4957;border-radius:var(--reference-picker-radius,20px);background:#232a34;color:#e9edf2;font:500 16px/24px system-ui,"Malgun Gothic",sans-serif;text-align:left;overflow:hidden;white-space:nowrap;transition:background-color .2s ease}
-.voice-picker-button::before{content:"";display:block;flex:none;width:16px;height:16px;background:currentColor;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='m12 2 10 6-10 6L2 8Zm-8.3 9.1L12 16l8.3-4.9L22 12l-10 6-10-6Zm0 4L12 20l8.3-4.9L22 16l-10 6-10-6Z'/%3E%3C/svg%3E") center/contain no-repeat}
-#voice-picker-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.voice-picker .voice-picker-button[aria-expanded="true"]{border-color:#47515e;background:#232a34}
-.voice-picker .voice-picker-button:hover:not(:disabled),.voice-picker .voice-picker-button:focus-visible{background:#303a48;color:#e9edf2}
-.voice-picker[data-side="down"] .voice-picker-button[aria-expanded="true"]{border-bottom-color:transparent;border-radius:var(--reference-picker-radius,20px) var(--reference-picker-radius,20px) 0 0}
-.voice-picker[data-side="up"] .voice-picker-button[aria-expanded="true"]{border-top-color:transparent;border-radius:0 0 var(--reference-picker-radius,20px) var(--reference-picker-radius,20px)}
-.voice-picker-button::after{content:"";flex:none;width:7px;height:7px;margin:0 4px 4px;border:solid currentColor;border-width:0 1px 1px 0;transform:rotate(45deg)}
-.voice-picker-button[aria-expanded="true"]::after{transform:rotate(225deg);margin-top:4px;margin-bottom:0}
-.voice-picker-popup{position:fixed;z-index:10;max-height:240px;border:1px solid #47515e;border-radius:var(--reference-picker-radius,20px);background:#232a34;box-shadow:0 8px 22px #0005;overflow:hidden}
-.voice-picker-list{max-height:238px;padding:4px;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;outline:none}
-.voice-picker-popup[data-side="down"]{border-top-color:transparent;border-radius:0 0 var(--reference-picker-radius,20px) var(--reference-picker-radius,20px)}
-.voice-picker-popup[data-side="up"]{border-bottom-color:transparent;border-radius:var(--reference-picker-radius,20px) var(--reference-picker-radius,20px) 0 0}
-.voice-picker-popup:not([hidden]){animation:voice-picker-reveal .13s ease-out both}
-.voice-picker-option{position:relative;display:flex;align-items:center;gap:6px;height:36px;padding:8px 24px 8px 8px;border-radius:5px;color:#e9edf2;font:400 14px/20px system-ui,"Malgun Gothic",sans-serif;cursor:pointer}
-.voice-picker-group{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.voice-picker-number{flex:none;white-space:nowrap;font-variant-numeric:tabular-nums}
-.voice-picker-option[data-active="true"]{background:#394555;color:#e9edf2}
-.voice-picker-option[aria-selected="true"]{font-weight:600}
-.voice-picker-option[aria-selected="true"]::after{content:"✓";position:absolute;right:8px;top:8px;font-size:14px;line-height:20px}
-@keyframes voice-picker-reveal{from{opacity:0}to{opacity:1}}
-@media(prefers-reduced-motion:reduce){.voice-picker-popup:not([hidden]){animation:none}.voice-picker-button{transition:none}}
-.listen-playback{display:flex;flex-direction:column;gap:14px}
-html.reference-listening .listen-playback{gap:0;border-radius:var(--reference-radius);background:#232a34}
-html.reference-listening .listen-controls.is-compact{height:52px;min-height:52px;padding:8px;gap:10px;flex-wrap:nowrap;border:0;border-radius:var(--reference-radius);background:#232a34}
-html.reference-listening .listen-controls.is-compact #continuous{display:flex;flex:none;width:36px;height:36px;min-height:36px}
-html.reference-listening .listen-controls.is-compact :is(.listen-seek,#reference-volume){appearance:none;-webkit-appearance:none;min-width:24px;height:20px;min-height:0;margin:0;padding:0;border:0;box-shadow:none;background:transparent;--listen-track:#35404e;--listen-played:#a7bdd9;cursor:pointer}
-html.reference-listening :is(.listen-seek,#reference-volume)::-webkit-slider-runnable-track{height:4px;border:0;border-radius:999px;box-shadow:none;background:linear-gradient(to right,var(--listen-played) 0 var(--listen-progress,0%),var(--listen-track) var(--listen-progress,0%) 100%)}
-html.reference-listening :is(.listen-seek,#reference-volume)::-webkit-slider-thumb{appearance:none;-webkit-appearance:none;width:12px;height:12px;margin-top:-4px;border:0;border-radius:50%;box-shadow:none;background:#e5ebf3}
-html.reference-listening :is(.listen-seek,#reference-volume)::-moz-range-track{height:4px;border:0;border-radius:999px;background:var(--listen-track)}
-html.reference-listening :is(.listen-seek,#reference-volume)::-moz-range-progress{height:4px;border:0;border-radius:999px;background:var(--listen-played)}
-html.reference-listening :is(.listen-seek,#reference-volume)::-moz-range-thumb{width:12px;height:12px;border:0;border-radius:50%;box-shadow:none;background:#e5ebf3}
-html.reference-listening :is(.listen-seek,#reference-volume):focus-visible{outline:2px solid #a8afb7;outline-offset:3px;border-radius:5px}
-html.reference-listening .listen-controls.is-compact .listen-time{font-size:14px;line-height:20px}
-html.reference-listening .listen-controls.is-compact #reference-mute{display:flex;align-items:center;justify-content:center;flex:none;width:36px;height:36px;min-height:36px;margin:0 -4px;padding:0;border-radius:50%;font-size:0;background:transparent}
-html.reference-listening .listen-controls.is-compact #reference-mute:hover:not(:disabled){background:#394555}
-html.reference-listening #reference-mute svg{width:24px;height:24px}
-html.reference-listening #reference-mute[data-muted="true"] .listen-sound-wave{display:none}
-html.reference-listening .listen-controls.is-compact #reference-volume:not([hidden]){display:block;flex:0 0 72px;width:72px;min-width:0}
-@media(max-width:420px){html.reference-listening .listen-controls.is-compact{gap:6px}html.reference-listening .listen-controls.is-compact .listen-time{font-size:12px}html.reference-listening .listen-controls.is-compact #continuous{width:32px;height:32px;min-height:32px}html.reference-listening .listen-controls.is-compact #reference-mute{width:32px;height:32px;min-height:32px;margin:0 -2px}html.reference-listening #reference-mute svg{width:22px;height:22px}html.reference-listening .listen-controls.is-compact #reference-volume:not([hidden]){flex-basis:40px;width:40px}}
+html.listen-voice-compact main.listen-preview{width:min(680px,100%);justify-content:center;overflow:visible}
+html.listen-voice-compact .listen-status{position:static;max-height:40px;overflow:auto;font-size:14px;line-height:20px}
+html.listen-voice-compact main:has(#error:not(:empty)) .listen-player{gap:6px}
+.reference-decisions[hidden],.listen-player .reference-decisions button[hidden]{display:none}
+.listen-player .reference-decisions button{height:36px;min-height:36px;width:auto;padding:4px 12px;font-size:14px}
+.listen-player .reference-decisions button:hover:not(:disabled):not([aria-pressed="true"]){background:#363d47}
+.reference-group-head:not([hidden]){display:flex;align-items:center;justify-content:space-between;gap:8px;color:#e9edf2}
+.reference-group-head p,.reference-group-nav p{font-size:14px;font-variant-numeric:tabular-nums}
+.reference-voices:not([hidden]){position:relative;display:grid;grid-template-columns:repeat(auto-fill,minmax(44px,1fr));gap:5px;max-height:76px;overflow:auto;scrollbar-width:thin;padding:2px}
+.reference-voices button{width:100%;min-width:0;height:33px;padding:2px;border:1px solid #3a4656;border-radius:7px;background:#222932;color:#c3cbd6;font-size:13px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.reference-voices button:hover:not(:disabled){background:#354254}
+.reference-voices button[aria-current="true"]{border-color:#8aabc8;color:#f4f8fc}
+.reference-voices button[data-playing="true"]{background:#436485;border-color:#9dbfdd;color:#fff}
+.reference-voices button[data-replace="true"]{border-color:#d2ac72;color:#f3d7ac}
+.reference-voices button[data-playing="true"][data-replace="true"]{background:#436485;color:#fff}
+.reference-voices .reference-heard{margin-inline-start:3px}
+.reference-voices button:focus-visible{outline-offset:0}
+.reference-group-nav:not([hidden]){display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:6px 10px}
+.reference-group-nav button{width:auto;height:32px;padding:2px 10px;font-size:13px}
+html.reference-grouped .listen-player{gap:8px}
+html.reference-grouped main.listen-preview{justify-content:safe center;overflow:auto;scrollbar-width:thin}
+html.reference-grouped .listen-workspace{flex:none;margin:0 auto;padding-block:3px}
+html.reference-grouped .listen-position{min-width:48px}
+html.reference-grouped #reference-status{color:#c3cbd6}
+@media(max-width:400px){.reference-voices:not([hidden]){max-height:76px}.reference-group-nav{gap:5px}.reference-group-nav button{padding-inline:7px}}
+.listen-page:not([hidden]){display:flex;align-items:center;justify-content:center;gap:8px;font-size:14px;color:#c3cbd6}
+.listen-page button,.listen-page input{width:36px;height:30px;padding:0;font:inherit}
+.listen-page input{width:60px;text-align:center;border:1px solid #454c56;border-radius:6px;background:#22262c;color:inherit}
+/* Candidate cards use a plain audio engine, not the list-view transport. */
+.reference-listening-view{display:contents}
+.candidate-panel[hidden],.candidate-actions[hidden]{display:none}
+.candidate-volume[hidden]{display:none!important}
+.candidate-group-title{display:flex;align-items:center;gap:12px;flex-wrap:wrap;flex:1;min-width:0}
+html.reference-candidates #reference-group-count{display:inline-flex;align-items:center;gap:7px;padding:3px 8px;border:1px solid #4b5665;border-radius:7px;background:#29313b;color:#edf1f6;font-weight:600;font-variant-numeric:tabular-nums;line-height:20px}
+html.reference-candidates #reference-group-count[data-complete="true"]{border-color:#758292}
+html.reference-candidates #reference-group-count[data-complete="true"]::after{content:"";display:inline-block;flex:none;width:12px;height:12px;background:#fff;clip-path:polygon(7% 51%,21% 37%,39% 55%,81% 13%,95% 27%,39% 83%)}
+.candidate-head-tools{display:flex;align-items:center;gap:14px;flex:none}
+.candidate-volume{display:flex;align-items:center;gap:4px;flex:none}
+.candidate-volume .listen-mute{display:flex;align-items:center;justify-content:center;flex:none;width:30px;height:30px;min-height:30px;margin:0;padding:0;border:0;border-radius:50%;background:transparent;color:#c3cbd6;font-size:0;cursor:pointer}
+.candidate-volume .listen-mute:hover:not(:disabled){background:#394555}
+.candidate-volume .listen-mute svg{width:22px;height:22px}
+.candidate-volume .listen-volume{appearance:none;-webkit-appearance:none;width:80px;min-width:0;height:20px;min-height:0;margin:0;padding:0;border:0;box-shadow:none;background:transparent;--listen-track:#35404e;--listen-played:#a7bdd9;cursor:pointer}
+@media(max-width:480px){html.reference-candidates .reference-group-head{flex-wrap:wrap}.candidate-head-tools{gap:7px;margin-left:auto}.candidate-volume{gap:2px}.candidate-volume .listen-volume{width:56px}.candidate-volume .listen-mute{width:26px;height:26px;min-height:26px}}
+html.reference-candidates,html.reference-candidates body{height:auto;min-height:0;overflow:visible}
+html.reference-candidates main.listen-preview{width:min(820px,100%);height:auto;min-height:0;justify-content:center;overflow:visible}
+html.reference-candidates .listen-workspace{width:100%;max-width:820px}
+html.reference-candidates .listen-player{gap:8px}
+.candidate-list{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;align-items:stretch}
+.candidate-row{display:flex;align-items:center;gap:10px;min-height:38px;padding:4px 10px;border:1px solid #36404d;border-radius:10px;background:#20262e;color:#e9edf2}
+.candidate-row[data-playing="true"]{background:#354a63;border-color:#8ba8c8}
+.candidate-row[data-selected="true"]{border-color:#8295ae}
+.candidate-row .candidate-play{display:flex;align-items:center;justify-content:center;flex:none;width:28px;height:28px;min-height:28px;padding:0;border:1px solid #d2d7de;border-radius:50%;font-size:0;background:#c5cbd3;color:#20252d}
+.candidate-row .candidate-play:hover:not(:disabled){background:#e0e4e9}
+.candidate-play::before{content:"";display:block;width:0;height:0;margin-left:2px;border-style:solid;border-width:5px 0 5px 8px;border-color:transparent transparent transparent currentColor}
+.candidate-play[aria-pressed="true"]::before{width:9px;height:11px;margin:0;border:0;background:linear-gradient(to right,currentColor 0 3px,transparent 3px 6px,currentColor 6px)}
+.candidate-info{flex:1;min-width:0}
+.candidate-heading{display:flex;align-items:baseline;flex-wrap:wrap;gap:0 10px;line-height:18px}
+.candidate-number{font-size:14px;font-variant-numeric:tabular-nums}
+.candidate-seed{color:#aeb9c7;font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.candidate-settings{display:flex;flex-wrap:wrap;gap:0 10px;color:#b3bdca;font-size:12px;line-height:18px;overflow-wrap:anywhere}
+.candidate-setting{min-width:0}
+.candidate-card{position:relative;display:grid;grid-template-columns:32px minmax(0,1fr);grid-template-areas:"info info" "play choice";grid-template-rows:1fr auto;gap:12px 6px;align-items:start;padding:8px 7px;border-radius:12px}
+.candidate-card .candidate-info{grid-area:info;align-self:stretch}
+.candidate-card .candidate-heading{display:flex;flex-direction:column;align-items:flex-start;gap:2px;margin-bottom:9px;line-height:18px}
+.candidate-card .candidate-number{font-weight:600;overflow-wrap:anywhere}
+.candidate-card .candidate-seed{font-size:11px;line-height:16px;white-space:normal;overflow-wrap:anywhere}
+.candidate-card .candidate-settings{display:grid;gap:5px;font-size:12px;line-height:17px}
+.candidate-card .candidate-play{grid-area:play;width:30px;height:30px;min-height:30px;align-self:center}
+.candidate-card .candidate-choice{grid-area:choice;align-self:center;justify-self:end;gap:5px;font-size:12px}
+.candidate-card .candidate-choice span{max-width:3em;line-height:14px}
+.candidate-heard{color:#fff;font-size:14px;line-height:20px}
+.candidate-choice{display:flex;align-items:center;gap:6px;flex:none;cursor:pointer;font-size:13px;line-height:20px}
+.candidate-choice input{width:17px;height:17px;margin:0;accent-color:#91a8c4;cursor:pointer}
+.candidate-choice input:disabled{cursor:default}.candidate-choice:has(input:disabled){opacity:.55;cursor:default}
+.candidate-choice input:focus-visible{outline:2px solid #a8afb7;outline-offset:3px}
+.candidate-actions:not([hidden]){display:flex;justify-content:center}
+.candidate-actions button{width:auto;min-height:36px;height:36px;padding:5px 14px;font-size:14px;line-height:24px}
+.candidate-actions button:disabled{opacity:1;color:#a5b0bd}
+.candidate-deck{display:grid;grid-template-columns:42px minmax(0,1fr) 42px;gap:8px;align-items:stretch}
+.candidate-deck[hidden]{display:none}
+.candidate-panel[data-generating="true"]:not([hidden]){display:flex;flex-direction:column;justify-content:center;min-height:var(--candidate-generation-height,232px)}
+.candidate-panel[data-generating="true"] .candidate-empty{padding:0}
+.candidate-panel[data-generating="true"] .candidate-empty,.candidate-deck:not([hidden]){animation:candidate-view-in .16s ease-out}
+@keyframes candidate-view-in{from{opacity:0}to{opacity:1}}
+.candidate-add:not([hidden]){display:flex;align-items:stretch;justify-content:stretch}
+.candidate-add :is(#candidate-more,#candidate-previous){display:flex;align-items:center;justify-content:center;width:100%;height:100%;min-height:44px;padding:0;border:1px dashed #536171;border-radius:12px;background:transparent;color:#c9d3df}
+.candidate-add :is(#candidate-more,#candidate-previous):hover:not(:disabled){background:#2b3542;border-color:#9aacc2}
+.candidate-add :is(#candidate-more,#candidate-previous):disabled{color:#738192;border-color:#3d4856;cursor:default}
+.candidate-add :is(#candidate-more,#candidate-previous)[hidden]{display:none}
+.candidate-add #candidate-previous{font-size:28px;font-weight:300;line-height:1}
+.candidate-add #candidate-more-label{font-size:28px;font-weight:300;line-height:1}
+.candidate-add #candidate-more:focus-visible{outline:2px solid #bac5d6;outline-offset:2px}
+@media(max-width:480px){.candidate-deck{grid-template-columns:34px minmax(0,1fr) 34px;gap:6px}}
+.candidate-job-icon{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;margin-right:7px;vertical-align:-2px;color:#fff}
+.candidate-job-icon[data-state="running"]::before{content:"";display:inline-block;box-sizing:border-box;width:12px;height:12px;flex:none;border:2px solid #70c981;border-right-color:transparent;border-radius:50%;animation:candidate-spin 3s linear infinite}
+.candidate-job-icon[data-state="complete"]::before{content:"✓";font-size:16px;line-height:16px}
+.candidate-job-icon:not([data-state]){display:none}
+.candidate-progress-slot{height:9px;padding-top:6px;flex:none}
+.candidate-progress-slot[hidden]{display:none}
+.candidate-progress{height:3px;border-radius:3px;overflow:hidden;background:#29343c}
+.candidate-progress[hidden]{display:none}.candidate-progress span{display:block;height:100%;width:0;background:#58ae82;transition:width .2s ease}
+.candidate-progress[data-indeterminate="true"] span{transition:none;animation:candidate-progress-wait 3s ease-in-out infinite alternate}
+@keyframes candidate-progress-wait{from{transform:translateX(0)}to{transform:translateX(300%)}}
+.candidate-empty{padding:12px 0;text-align:center;font-size:14px;line-height:22px}
+.candidate-empty .candidate-job-icon{margin:0 0 0 7px;vertical-align:-2px}
+.candidate-empty .candidate-job-icon[hidden]{display:none}
+html.reference-candidates .reference-group-nav{justify-content:space-between;flex-wrap:nowrap}
+html.reference-candidates .reference-group-nav button{height:34px;min-height:34px;padding:4px 12px;font-size:14px}
+html.reference-candidates .reference-group-head p{white-space:nowrap}
+@keyframes candidate-spin{to{transform:rotate(1turn)}}
+@media(prefers-reduced-motion:reduce){.candidate-job-icon[data-state="running"]::before{animation:none}.candidate-progress span{transition:none}.candidate-progress[data-indeterminate="true"] span{animation:none}.candidate-panel[data-generating="true"] .candidate-empty,.candidate-deck:not([hidden]){animation:none}}
+@media(max-width:400px){.candidate-row{gap:7px;padding-inline:7px}.candidate-actions button{padding-inline:10px}.candidate-number{font-size:13px}}
+@media(max-width:679px){.candidate-list{grid-template-columns:repeat(2,minmax(0,1fr))}.candidate-card{padding:9px 10px}.candidate-card .candidate-settings{gap:4px}}
+@media(max-width:400px){.candidate-list{grid-template-columns:minmax(0,1fr)}.candidate-card{grid-template-columns:34px minmax(0,1fr);padding:10px}.candidate-card .candidate-settings{grid-template-columns:repeat(2,minmax(0,1fr));gap:5px 12px}.candidate-card .candidate-number{font-size:14px}}
 </style>
 <main class="listen-preview">
-  <div class="listen-workspace">
-  <aside id="listening-sidebar" class="listen-sidebar" aria-label="들을 음원 목록">
-    <div id="listening-list" class="listen-list"></div>
-    <div class="listen-list-pager"><button id="list-prev" type="button" aria-label="이전 음원 목록" disabled>‹</button><span id="list-position"></span><button id="list-next" type="button" aria-label="다음 음원 목록" disabled>›</button></div>
-  </aside>
+  <div id="reference-startup" class="reference-startup" role="status" aria-busy="true"><p id="reference-startup-status">목소리 목록을 불러오고 있습니다...</p><button id="reference-startup-retry" type="button" hidden>다시 시도</button></div>
+  <div id="reference-workspace" class="listen-workspace" hidden>
   <div class="listen-player">
-  <div class="listen-heading"><select id="voice" class="listen-select" aria-label="들을 목소리" disabled hidden></select><div id="voice-picker" class="voice-picker" hidden><button id="voice-picker-button" class="voice-picker-button" type="button" aria-label="들을 목소리" aria-haspopup="listbox" aria-expanded="false" aria-controls="voice-picker-list" disabled><span id="voice-picker-label"></span></button><div id="voice-picker-popup" class="voice-picker-popup" hidden><div id="voice-picker-list" class="voice-picker-list" role="listbox" aria-label="들을 목소리" tabindex="-1" hidden></div></div></div><p id="sentence" class="listen-title"></p><p id="position" class="listen-position" aria-live="polite"></p></div>
-  <div class="listen-playback">
-  <audio id="audio" class="listen-audio" controls preload="none"></audio>
-  <div class="controls listen-controls">
-    <button id="previous" type="button" disabled>이전</button>
-    <button id="continuous" type="button" aria-pressed="false" disabled>재생</button>
-    <button id="next" type="button" disabled>다음</button>
-  </div>
+  <div id="reference-group-head" class="reference-group-head" hidden><div class="candidate-group-title"><strong id="reference-group-name"></strong><p id="reference-group-count"></p></div><div class="candidate-head-tools"><div id="candidate-volume" class="candidate-volume" role="group" aria-label="음량 조절" hidden></div></div></div>
+  <section id="candidate-panel" class="candidate-panel" aria-label="기준 목소리 후보" hidden>
+    <div id="candidate-deck" class="candidate-deck">
+    <div id="candidate-previous-actions" class="candidate-actions candidate-add" hidden><button id="candidate-previous" type="button" aria-label="이전 후보 5개" title="이전 후보 5개" disabled>‹</button></div>
+    <div id="candidate-list" class="candidate-list"></div>
+    <div id="candidate-actions" class="candidate-actions candidate-add" hidden><button id="candidate-more" type="button" aria-label="기준 목소리 후보 더 뽑기" title="기준 목소리 후보 5개 더 생성" disabled><span id="candidate-more-label" aria-hidden="true">+</span></button></div>
+    </div>
+    <p id="candidate-empty" class="candidate-empty" role="status" hidden><span id="candidate-status-label"></span><span id="candidate-job-icon" class="candidate-job-icon" aria-hidden="true" hidden></span></p>
+    <div id="candidate-progress-slot" class="candidate-progress-slot" hidden><div id="candidate-progress" class="candidate-progress" role="progressbar" aria-label="기준 목소리 후보 생성" aria-valuemin="0" aria-valuemax="5" hidden><span id="candidate-progress-fill"></span></div></div>
+  </section>
+  <audio id="audio" class="listen-audio" preload="none" hidden></audio>
   <input id="reference-volume" type="range" min="0" max="100" step="1" value="100" aria-label="음량" disabled hidden>
-  </div>
+  <div id="reference-listening-mount" class="reference-listening-view"></div>
+  <div id="candidate-retry-actions" class="candidate-actions" hidden><button id="candidate-status-retry" type="button">상태 다시 확인</button></div>
+  <nav id="reference-group-nav" class="reference-group-nav" aria-label="기준 목소리 묶음 이동" hidden>
+    <button id="reference-group-back" type="button" disabled>이전 묶음</button>
+    <p id="reference-status" class="listen-status" role="status"></p>
+    <button id="reference-group-next" type="button" disabled>다음 묶음</button>
+  </nav>
   <p id="error" class="listen-status" role="alert"></p>
   </div>
   </div>
 </main>
+<!-- List playback remains available for whole-corpus listening and existing projects.
+     Its controls are inert until a validated list-view response needs them. -->
+<template id="reference-listening-template">
+  <div class="reference-listening-view">
+  <div id="reference-voices" class="reference-voices" role="group" aria-label="이 묶음의 기준 목소리 번호" hidden></div>
+  <div class="listen-heading"><select id="voice" class="listen-select" aria-label="들을 목소리" disabled hidden></select><div id="voice-picker" class="voice-picker" hidden><button id="voice-picker-button" class="voice-picker-button" type="button" aria-label="들을 목소리" aria-haspopup="listbox" aria-expanded="false" aria-controls="voice-picker-list" disabled><span id="voice-picker-label" class="voice-picker-label"></span></button><div id="voice-picker-popup" class="voice-picker-popup" hidden><div id="voice-picker-list" class="voice-picker-list" role="listbox" aria-label="들을 목소리" tabindex="-1" hidden></div></div></div><p id="position" class="listen-position" aria-live="polite"></p></div>
+  <div id="reference-playback" class="listen-playback"><div class="controls listen-controls"><button id="continuous" type="button" aria-pressed="false" disabled>재생</button></div></div>
+  <div id="reference-group-actions" class="listen-decisions reference-decisions" role="group" aria-label="이 묶음의 검수 도구" hidden>
+    <button id="reference-replay" type="button" disabled>처음부터 듣기</button>
+    <button id="reference-replace" type="button" aria-pressed="false" title="요청한 성별이나 연령대와 다르거나 다른 목소리와 비슷할 때 표시하세요." disabled>교체 대상 표시</button>
+    <button id="reference-regenerate" type="button" disabled>선택한 목소리 다시 만들기</button>
+  </div>
+  <nav id="listen-page" class="listen-page" aria-label="음원 목록 페이지" hidden>
+    <button id="listen-page-back" type="button" aria-label="이전 목록 페이지">‹</button>
+    <input id="listen-page-number" type="number" min="1" aria-label="목록 페이지 번호">
+    <span id="listen-page-total"></span>
+    <button id="listen-page-forward" type="button" aria-label="다음 목록 페이지">›</button>
+  </nav>
+  </div>
+</template>
+<!--KOWW_PAGE_CONFIG-->
 <script src="/listening_player.js"></script>
 <script>
 'use strict';
 if(window.parent!==window)document.documentElement?.classList?.add('listening-embedded');
-const voice=document.getElementById('voice'), audio=document.getElementById('audio');
-const previous=document.getElementById('previous'), next=document.getElementById('next');
-const continuous=document.getElementById('continuous'), sentence=document.getElementById('sentence');
-const position=document.getElementById('position'), errorMessage=document.getElementById('error');
-const picker=document.getElementById('voice-picker'), pickerButton=document.getElementById('voice-picker-button'), pickerList=document.getElementById('voice-picker-list');
-const pickerPopup=document.getElementById('voice-picker-popup');
-const pickerLabel=document.getElementById('voice-picker-label');
+const audio=document.getElementById('audio'), errorMessage=document.getElementById('error');
+let voice,continuous,position,picker,pickerButton,pickerList,pickerPopup,pickerLabel;
+let voicePicker,listeningPlayer,playbackControls,viewMode;
 const volume=document.getElementById('reference-volume');
-let referenceMute=null;
 const hard=location.pathname.startsWith('/hard-preview/');
-if(hard){document.title='유사어 전체 듣기';voice.setAttribute('aria-label','들을 유사어 음원');}
-else document.documentElement?.classList?.add('reference-listening');
-document.getElementById('listening-sidebar').hidden=!hard;
-voice.hidden=true;sentence.hidden=!hard;picker.hidden=hard;pickerPopup.hidden=true;pickerList.hidden=true;
-let items=[], playing=false, playbackVersion=0, playbackAllowed=true,listPage=0;
-let pickerOpen=false,pickerReady=false,pickerRequest=0,pickerIndex=0,pickerRows=[];
-const playedItems=new Set(),pageSize=5;
-function syncVolume(){
-  if(hard)return;
-  const level=Math.round(Math.max(0,Math.min(1,Number.isFinite(audio.volume)?audio.volume:1))*100),muted=audio.muted||level===0;
-  volume.value=String(level);volume.style.setProperty('--listen-progress',`${level}%`);volume.setAttribute('aria-valuetext',`${level}%${audio.muted?' · 음소거':''}`);volume.setAttribute('title',`음량 ${level}%`);
-  if(referenceMute){referenceMute.setAttribute('data-muted',String(muted));referenceMute.setAttribute('title',audio.muted?'소리 켜기':`음소거 · 음량 ${level}%`);}
+const positive=location.pathname.startsWith('/positive-preview/');
+const corpus=hard||positive;
+const subject=hard?'유사어':'호출어';
+const config=JSON.parse(document.getElementById('koww-page-config')?.textContent||'{}');
+const $=id=>document.getElementById(id);
+const groupHead=$('reference-group-head'), groupName=$('reference-group-name'), groupCount=$('reference-group-count');
+const groupNav=$('reference-group-nav');
+let groupVoices,groupActions,replay,replaceVoice,regenerate;
+const groupBack=$('reference-group-back'), groupNext=$('reference-group-next'), reviewStatus=$('reference-status');
+const candidatePanel=$('candidate-panel'), candidateList=$('candidate-list'), candidateEmpty=$('candidate-empty');
+const candidateDeck=$('candidate-deck');
+const candidateStatusLabel=$('candidate-status-label');
+const candidateActions=$('candidate-actions'), candidateMore=$('candidate-more'), candidateMoreLabel=$('candidate-more-label');
+const candidatePreviousActions=$('candidate-previous-actions'), candidatePrevious=$('candidate-previous');
+const candidateJobIcon=$('candidate-job-icon'), candidateProgressSlot=$('candidate-progress-slot'), candidateProgress=$('candidate-progress'), candidateProgressFill=$('candidate-progress-fill');
+const candidateRetryActions=$('candidate-retry-actions'), candidateStatusRetry=$('candidate-status-retry');
+const referenceWorkspace=$('reference-workspace');
+const previewStartup=$('reference-startup'),previewStartupStatus=$('reference-startup-status'),previewStartupRetry=$('reference-startup-retry');
+let previewReady=false;
+const reviewEnabled=!corpus&&Boolean(config.save_url&&config.token);
+if(corpus)document.title=`${subject} 전체 듣기`;
+document.documentElement?.classList?.add('listen-voice-compact');
+let items=[],currentIndex=0,playing=false,playbackVersion=0,playbackAllowed=true,candidateReady=false;
+const pageSize=100, project=new URL(location.href).searchParams.get('project');
+let page,pageNumber,pageBack,pageForward;
+let pageStart=0, total=0, loading=false;
+let groups=[], groupIndex=0, editable=false, reportedComplete, saving=false, job=null, pollTimer;
+let regeneratedGroup='';
+let voiceButtons=[];
+let candidateMode=false, candidateRows=[], acceptedRows=[], candidateViews=[];
+let candidatePlaybackIntent=null;
+let candidateStarting=false;
+let candidateGenerationView=false;
+const candidateSelectionIntents=new Map();
+let candidateSelectionWriter=null,candidateSelectionBlocked=false,candidateSelectionEpoch=0,candidateSelectionTransport=null;
+let candidateBatches=[],candidateViewBatch=null,candidateCurrentBatch=null,candidateLoadVersion=0;
+let reportedLayout;
+let candidatePollFailures=0, candidatePollPaused=false;
+let reportedCandidateGroup;
+let reportedCandidateHeight=null,candidateHeightFrame=null,candidateHeightForce=false,candidateResizeObserver=null,candidateHeightSuspended=false;
+const initialCandidateRequests=new Set();
+const sessionHeard=new Set();
+function mountListeningView(){
+  if(viewMode==='list')return;
+  if(viewMode)throw Error('검수 방식이 변경되었습니다. 화면을 새로고침해 주세요.');
+  $('reference-listening-mount').append($('reference-listening-template').content.cloneNode(true));
+  voice=$('voice');continuous=$('continuous');position=$('position');
+  picker=$('voice-picker');pickerButton=$('voice-picker-button');pickerList=$('voice-picker-list');
+  pickerPopup=$('voice-picker-popup');pickerLabel=$('voice-picker-label');
+  groupVoices=$('reference-voices');groupActions=$('reference-group-actions');
+  replay=$('reference-replay');replaceVoice=$('reference-replace');regenerate=$('reference-regenerate');
+  page=$('listen-page');pageNumber=$('listen-page-number');pageBack=$('listen-page-back');pageForward=$('listen-page-forward');
+  playbackControls=document.querySelector('.listen-controls');
+  const playback=$('reference-playback');playback.insertBefore(audio,playbackControls);audio.hidden=false;audio.controls=true;
+  if(corpus)for(const control of [voice,pickerButton,pickerList])control.setAttribute('aria-label',`들을 ${subject} 음원`);
+  voicePicker=window.KowwListening?.createPicker?.({
+  container:picker,button:pickerButton,label:pickerLabel,popup:pickerPopup,list:pickerList,
+  optionPrefix:'voice-option',
+  onSelect:index=>{if(!saving&&!regenerationRunning())select(index,playing);},
+  onOpenChange:corpus||window.parent===window?undefined:(open,request)=>{
+    window.parent.postMessage?.({type:'koww:voice-picker',open,request},location.origin);
+  },
+  });
+  voice.hidden=Boolean(voicePicker);picker.hidden=!voicePicker;
+  listeningPlayer=window.KowwListening?.enhance(audio,playbackControls,{play:continuous,volume});
+  if(listeningPlayer?.mute){listeningPlayer.mute.id='reference-mute';listeningPlayer.mute.disabled=true;}
+  voice.addEventListener('change',()=>{if(!saving&&!regenerationRunning())select(Number(voice.value),playing);});
+  continuous.addEventListener('click',()=>{if(playing){stop();return;}playCurrent();});
+  replay.addEventListener('click',()=>{if(!replay.disabled)select(0,true);});
+  replaceVoice.addEventListener('click',()=>{
+    const item=items[currentIndex];
+    if(!replaceVoice.disabled&&item){stop();return saveReview('toggle',{id:item.id,sha256:item.sha256});}
+  });
+  regenerate.addEventListener('click',()=>{if(!regenerate.disabled){stop();return saveReview('regenerate',{group:groups[groupIndex].key});}});
+  pageBack.addEventListener('click',()=>loadPage(pageStart-pageSize));
+  pageForward.addEventListener('click',()=>loadPage(pageStart+pageSize));
+  pageNumber.addEventListener('change',()=>{
+    const start=(Number(pageNumber.value)-1)*pageSize;
+    if(Number.isSafeInteger(start)&&start>=0&&start<total&&start!==pageStart)loadPage(start);else updatePage();
+  });
+  viewMode='list';
 }
-volume.addEventListener('input',()=>{
-  if(hard)return;
-  const level=Number(volume.value);if(!Number.isFinite(level))return;
-  audio.volume=Math.max(0,Math.min(100,level))/100;if(audio.volume>0)audio.muted=false;syncVolume();
-});
-audio.addEventListener('volumechange',syncVolume);
-syncVolume();
-function notifyPicker(open){
-  if(window.parent!==window)window.parent.postMessage?.({type:'koww:voice-picker',open,request:pickerRequest},location.origin);
-}
-function positionPicker(){
-  if(!pickerOpen||!pickerReady)return;
-  const rect=pickerButton.getBoundingClientRect(),margin=8,gap=-1;
-  const below=Math.max(0,window.innerHeight-rect.bottom-gap-margin),above=Math.max(0,rect.top-gap-margin);
-  const height=Math.min(240,pickerRows.length*36+10,Math.max(below,above)),down=below>=above;
-  const side=down?'down':'up';picker.setAttribute('data-side',side);pickerPopup.setAttribute('data-side',side);
-  pickerPopup.style.maxHeight=`${Math.floor(height)}px`;pickerList.style.maxHeight=`${Math.max(0,Math.floor(height)-2)}px`;
-  pickerPopup.style.top=`${Math.floor(down?rect.bottom+gap:Math.max(margin,rect.top-gap-height))}px`;
-  pickerPopup.style.left=`${Math.max(0,Math.min(rect.left,window.innerWidth-rect.width))}px`;
-  pickerPopup.style.width=`${Math.max(0,Math.min(rect.width,window.innerWidth))}px`;
-}
-function highlightPicker(index){
-  pickerIndex=Math.max(0,Math.min(items.length-1,index));
-  pickerRows.forEach((row,i)=>row.setAttribute('data-active',String(i===pickerIndex)));
-  pickerList.setAttribute('aria-activedescendant',`voice-option-${pickerIndex}`);
-  const row=pickerRows[pickerIndex];
-  if(row&&pickerOpen&&pickerReady){
-    if(row.offsetTop<pickerList.scrollTop)pickerList.scrollTop=row.offsetTop;
-    else if(row.offsetTop+row.offsetHeight>pickerList.scrollTop+pickerList.clientHeight)pickerList.scrollTop=row.offsetTop+row.offsetHeight-pickerList.clientHeight;
+function mountCandidateView(){
+  if(viewMode==='candidate')return;
+  if(viewMode)throw Error('검수 방식이 변경되었습니다. 화면을 새로고침해 주세요.');
+  const controls=$('candidate-volume'),mute=document.createElement('button');
+  mute.id='reference-mute';mute.type='button';mute.className='listen-mute listen-inline-mute';mute.disabled=true;
+  mute.innerHTML='<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4z"/><path class="listen-sound-wave" d="M16 8c2 2 2 6 0 8m3-11c4 4 4 10 0 14"/></svg>';
+  function syncMute(){
+    const level=Math.round(Math.max(0,Math.min(1,audio.volume))*100);
+    volume.value=String(level);volume.style.setProperty('--listen-progress',`${level}%`);
+    volume.setAttribute('aria-valuetext',`${level}%${audio.muted?' · 음소거':''}`);volume.setAttribute('title',`음량 ${level}%`);
+    mute.setAttribute('aria-label',audio.muted?'소리 켜기':'음소거');mute.setAttribute('aria-pressed',String(audio.muted));
+    mute.setAttribute('data-muted',String(audio.muted||level===0));mute.setAttribute('title',audio.muted?'소리 켜기':`음소거 · 음량 ${level}%`);
   }
-}
-function closePicker(restoreFocus=false){
-  if(!pickerOpen)return;
-  pickerOpen=false;pickerReady=false;pickerPopup.hidden=true;pickerList.hidden=true;picker.removeAttribute('data-side');pickerPopup.removeAttribute('data-side');pickerButton.setAttribute('aria-expanded','false');notifyPicker(false);
-  if(restoreFocus)pickerButton.focus();
-}
-function openPicker(){
-  if(hard||!items.length||pickerButton.disabled)return;
-  if(pickerOpen){if(pickerReady)pickerList.focus();return;}
-  pickerOpen=true;pickerReady=false;pickerRequest++;pickerPopup.hidden=true;pickerList.hidden=true;pickerButton.setAttribute('aria-expanded','true');highlightPicker(Number(voice.value));
-  if(window.parent===window)revealPicker(pickerRequest);else notifyPicker(true);
-}
-function revealPicker(request){
-  if(!pickerOpen||pickerReady||request!==pickerRequest||!items.length||document.hidden)return;
-  pickerReady=true;positionPicker();pickerPopup.hidden=false;pickerList.hidden=false;highlightPicker(pickerIndex);pickerList.focus();
-}
-function choosePicker(index){select(index,playing);closePicker(true);}
-function renderPicker(){
-  if(hard)return;
-  pickerRows=items.map((item,index)=>{
-    const row=document.createElement('div'),group=document.createElement('span'),number=document.createElement('span');row.id=`voice-option-${index}`;row.className='voice-picker-option';row.setAttribute('role','option');
-    group.className='voice-picker-group';group.textContent=item.groupLabel;number.className='voice-picker-number';number.textContent=String(item.voiceNumber);row.append(group,number);
-    row.setAttribute('aria-label',item.fullLabel||item.label);row.addEventListener('click',()=>choosePicker(index));row.addEventListener('pointermove',()=>highlightPicker(index));return row;
+  volume.classList.add('listen-volume');volume.hidden=false;
+  volume.addEventListener('input',()=>{
+    const level=Number(volume.value);if(!Number.isFinite(level))return;
+    audio.volume=Math.max(0,Math.min(100,level))/100;if(audio.volume>0)audio.muted=false;syncMute();
   });
-  pickerList.replaceChildren(...pickerRows);
-}
-pickerButton.addEventListener('click',()=>{if(pickerOpen)closePicker(true);else openPicker();});
-pickerButton.addEventListener('keydown',event=>{
-  if(pickerOpen&&['Escape','Tab'].includes(event.key)){if(event.key==='Escape')event.preventDefault();closePicker(event.key==='Escape');return;}
-  if(!['ArrowDown','ArrowUp','Home','End','Enter',' '].includes(event.key))return;
-  event.preventDefault();
-  if(['Enter',' '].includes(event.key)){if(pickerOpen)closePicker(true);else openPicker();return;}
-  openPicker();if(event.key==='Home')highlightPicker(0);else if(event.key==='End')highlightPicker(items.length-1);
-});
-pickerList.addEventListener('keydown',event=>{
-  if(!pickerOpen||!pickerReady)return;
-  if(event.key==='Tab'){closePicker();return;}
-  if(!['ArrowDown','ArrowUp','Home','End','Enter',' ','Escape'].includes(event.key))return;
-  event.preventDefault();
-  if(event.key==='Escape'){closePicker(true);return;}
-  if(['Enter',' '].includes(event.key)){choosePicker(pickerIndex);return;}
-  highlightPicker(event.key==='Home'?0:event.key==='End'?items.length-1:pickerIndex+(event.key==='ArrowDown'?1:-1));
-});
-document.addEventListener('pointerdown',event=>{if(pickerOpen&&!picker.contains(event.target))closePicker();});
-window.addEventListener('resize',()=>{if(pickerOpen&&pickerReady&&!pickerList.hidden){positionPicker();highlightPicker(pickerIndex);}});
-function renderList(){
-  if(!hard)return;
-  const list=document.getElementById('listening-list'),pages=Math.max(1,Math.ceil(items.length/pageSize));
-  listPage=Math.min(Math.max(0,listPage),pages-1);list.replaceChildren();
-  items.slice(listPage*pageSize,(listPage+1)*pageSize).forEach((item,offset)=>{
-    const index=listPage*pageSize+offset,row=document.createElement('button'),title=document.createElement('span'),badge=document.createElement('span');
-    row.type='button';row.className='voice-row';row.setAttribute('aria-current',String(index===Number(voice.value)));
-    title.className='listen-row-title';title.textContent=item.label||item.text;badge.className='listen-badge';badge.textContent=playedItems.has(item.id)?'들음':'미청취';
-    row.setAttribute('data-number',String(index+1));row.setAttribute('aria-label',`${title.textContent} · ${badge.textContent}`);
-    row.append(title,badge);row.addEventListener('click',()=>select(index,playing));list.append(row);
-  });
-  document.getElementById('list-prev').disabled=listPage===0;document.getElementById('list-next').disabled=listPage>=pages-1;
-  document.getElementById('list-position').textContent=`${listPage+1} / ${pages}`;
+  mute.addEventListener('click',()=>{audio.muted=!audio.muted;syncMute();});audio.addEventListener('volumechange',syncMute);
+  controls.append(mute,volume);controls.hidden=false;listeningPlayer={mute};syncMute();viewMode='candidate';
 }
 function setPlaying(value){
-  playing=value;continuous.textContent=value?'일시정지':'재생';continuous.setAttribute('aria-pressed',String(value));
+  if(value)regeneratedGroup='';
+  playing=value;
+  if(continuous){continuous.textContent=value?'일시정지':'재생';continuous.setAttribute('aria-pressed',String(value));}
+  if(groups.length)syncReview();
 }
 function stop(release=false){
-  playbackVersion++;setPlaying(false);audio.pause();
-  if(release){closePicker();playbackAllowed=false;audio.removeAttribute('src');audio.load();}
+  candidatePlaybackIntent=null;playbackVersion++;setPlaying(false);audio.pause();
+  if(release){voicePicker?.close();playbackAllowed=false;audio.removeAttribute('src');audio.load();}
 }
 window.addEventListener('message',event=>{
   if(event.origin!==location.origin||event.source!==window.parent)return;
-  if(event.data?.type==='koww:voice-picker-ready'&&Number.isSafeInteger(event.data.request)&&event.data.request>0)revealPicker(event.data.request);
-  else if(event.data?.type==='koww:voice-picker-close')closePicker();
-  else if(event.data?.type==='koww:pause')stop(true);
+  if(event.data?.type==='koww:reference-status'&&event.data.project===project){
+    if(candidateSelectionBlocked&&!saving&&!loading)recoverCandidateSelection();
+    if(candidateMode)syncCandidates(true);
+    scheduleCandidateHeight(true);
+    if(typeof reportedComplete==='boolean')window.parent.postMessage?.({type:'koww:reference-review',project,complete:reportedComplete},location.origin);
+  }else if(event.data?.type==='koww:reference-approve'&&event.data.project===project&&candidateMode){
+    const group=groups[groupIndex];
+    const request=event.data.request;
+    const acknowledge=saved=>{
+      if(Number.isSafeInteger(request)&&request>0)window.parent.postMessage?.({type:'koww:reference-approved',project,
+        group:event.data.group,request,success:saved===true,complete:saved===true&&reportedComplete===true},location.origin);
+    };
+    if(group&&event.data.group===group.key&&candidateReady){stop();void saveReview('approve',{group:group.key}).then(acknowledge);}
+    else acknowledge(false);
+  }else if(event.data?.type==='koww:voice-picker-ready'&&Number.isSafeInteger(event.data.request)&&event.data.request>0)voicePicker?.reveal(event.data.request);
+  else if(event.data?.type==='koww:voice-picker-close')voicePicker?.close();
+  else if(event.data?.type==='koww:pause'){cancelCandidateSelection();stop(true);}
 });
 document.addEventListener('visibilitychange',()=>{if(document.hidden)stop(true);});
-window.addEventListener('pagehide',()=>stop(true));
+window.addEventListener('pagehide',()=>{
+  candidateHeightSuspended=true;
+  cancelCandidateSelection();
+  stop(true);if(pollTimer)clearTimeout(pollTimer);
+  if(candidateHeightFrame!==null&&typeof cancelAnimationFrame==='function')cancelAnimationFrame(candidateHeightFrame);
+  candidateHeightFrame=null;candidateResizeObserver?.disconnect();
+});
 function audioUrl(value){
   if(typeof value!=='string'||!value)throw Error('음원 경로가 올바르지 않습니다.');
   const url=new URL(value,location.href);
@@ -231,66 +345,682 @@ function audioUrl(value){
   return url.pathname+url.search;
 }
 async function playCurrent(){
-  if(!items.length||document.hidden)return;
+  if(!items.length||document.hidden||loading||saving||regenerationRunning())return;
   playbackAllowed=true;
-  if(!audio.getAttribute('src'))audio.src=items[Number(voice.value)].audio;
+  if(!audio.getAttribute('src'))audio.src=items[currentIndex].audio;
   const version=++playbackVersion;
+  if(candidateMode){const item=items[currentIndex];candidatePlaybackIntent={id:item.id,sha256:item.sha256,version};}
   errorMessage.textContent='';setPlaying(true);
   try{await audio.play();}catch(error){
     if(version!==playbackVersion)return;
-    setPlaying(false);errorMessage.textContent='음원을 재생하지 못했습니다. 재생을 다시 눌러주세요.';
+    candidatePlaybackIntent=null;setPlaying(false);errorMessage.textContent='음원을 재생하지 못했습니다. 재생을 다시 눌러주세요.';
   }
 }
 function select(index,play=false){
   if(!items[index])return;
   stop();
-  voice.value=String(index);audio.src=items[index].audio;sentence.textContent=items[index].text;
-  errorMessage.textContent='';position.textContent=`${index+1} / ${items.length}`;
-  if(!hard){pickerLabel.textContent=items[index].label;pickerButton.setAttribute('aria-label',`들을 목소리: ${items[index].fullLabel||items[index].label}`);pickerRows.forEach((row,i)=>row.setAttribute('aria-selected',String(i===index)));}
-  previous.disabled=index===0;next.disabled=index===items.length-1;
-  listPage=Math.floor(index/pageSize);renderList();
+  currentIndex=index;if(voice)voice.value=String(index);audio.src=items[index].audio;
+  errorMessage.textContent='';if(position)position.textContent=`${pageStart+index+1} / ${total}`;
+  voicePicker?.setSelected(index);
+  if(groups.length){syncReview();keepCurrentNumberVisible(index);}
   if(play)playCurrent();
 }
-voice.addEventListener('change',()=>select(Number(voice.value),playing));
-if(hard){previous.addEventListener('click',()=>select(Number(voice.value)-1,playing));next.addEventListener('click',()=>select(Number(voice.value)+1,playing));}
-continuous.addEventListener('click',()=>{if(playing){stop();return;}playCurrent();});
-audio.addEventListener('play',()=>{if(document.hidden||!playbackAllowed){stop(true);return;}setPlaying(true);});
+audio.addEventListener('play',()=>{
+  if(document.hidden||!playbackAllowed){stop(true);return;}
+  if(candidateMode&&!audio.paused&&!candidatePlaybackIntent){const item=items[currentIndex];if(item)candidatePlaybackIntent={id:item.id,sha256:item.sha256,version:playbackVersion};}
+  if(!audio.paused)setPlaying(true);
+});
 audio.addEventListener('pause',()=>{if(!audio.ended&&audio.paused)setPlaying(false);});
 audio.addEventListener('error',()=>{stop();errorMessage.textContent='음원을 재생하지 못했습니다. 재생을 다시 눌러주세요.';});
-audio.addEventListener('ended',()=>{
-  if(!audio.ended||!playing||!items.length||document.hidden)return;
-  playedItems.add(items[Number(voice.value)].id);
-  if(hard)select((Number(voice.value)+1)%items.length,true);
-  else{setPlaying(false);renderList();}
+audio.addEventListener('ended',async()=>{
+  const current=items[currentIndex];
+  const intended=candidateMode?candidatePlaybackIntent?.id===current?.id&&candidatePlaybackIntent?.sha256===current?.sha256&&candidatePlaybackIntent?.version===playbackVersion:playing;
+  if(!audio.ended||!intended||!playbackAllowed||!items.length||document.hidden)return;
+  const index=currentIndex;
+  if(groups.length){
+    const item=items[index],version=playbackVersion;
+    if(!heard(item)){
+      if(!playedWholeClip()){
+        stop();errorMessage.textContent=candidateMode?'처음부터 끝까지 들은 경우에만 청취 완료로 기록합니다.':'처음부터 끝까지 들으면 확인 표시가 생깁니다.';return;
+      }
+      if(editable){
+        if(!await saveReview('hear',{id:item.id,sha256:item.sha256}))return;
+      }else{
+        sessionHeard.add(`${item.id}:${item.sha256}`);syncReview();
+      }
+    }
+    if(version!==playbackVersion||document.hidden)return;
+  }
+  // Listening completion neither selects a candidate nor advances playback.
+  if(candidateMode){candidatePlaybackIntent=null;setPlaying(false);return;}
+  if(hard)voicePicker?.setBadge(index,'들음');
+  if(index+1<items.length)select(index+1,true);
+  else if(positive&&total>items.length)loadPage(pageStart+items.length<total?pageStart+items.length:0,true);
+  else if(corpus)select(0,true);
+  else setPlaying(false);
 });
-document.getElementById('list-prev').addEventListener('click',()=>{listPage--;renderList();});
-document.getElementById('list-next').addEventListener('click',()=>{listPage++;renderList();});
-const playbackControls=document.querySelector?.('.listen-controls');
-const listeningPlayer=window.KowwListening?.enhance(audio,playbackControls,{play:continuous,previous,next});
-if(!hard){
-  previous.remove();next.remove();
-  if(listeningPlayer?.mute){referenceMute=listeningPlayer.mute;referenceMute.id='reference-mute';referenceMute.disabled=true;volume.hidden=false;playbackControls.append(volume);syncVolume();}
+function updatePage(){
+  if(!page)return;
+  const current=Math.floor(pageStart/pageSize)+1, pages=Math.ceil(total/pageSize);
+  page.hidden=!positive||pages<=1;
+  pageNumber.value=String(current);pageNumber.max=pages;
+  document.getElementById('listen-page-total').textContent=`/ ${pages}`;
+  pageNumber.disabled=loading;pageBack.disabled=loading||current<=1;pageForward.disabled=loading||current>=pages;
 }
-(async()=>{
+const designOrder=['gender','timbre','age_group','style','vocal_effort','speed','intonation'];
+function sortReferences(rows){
+  const compareAxis=(a,b,axis)=>{
+    const left=a.voice_design?.[axis]?.value,right=b.voice_design?.[axis]?.value;
+    if(left===right)return 0;
+    if(!left)return 1;
+    if(!right)return -1;
+    return left.localeCompare(right,'en');
+  };
+  return rows.sort((a,b)=>{
+    const leftGroup=a.group||'',rightGroup=b.group||'';
+    if(leftGroup!==rightGroup)return leftGroup==='학습용'?-1:rightGroup==='학습용'?1:leftGroup.localeCompare(rightGroup,'ko');
+    for(const axis of designOrder){const order=compareAxis(a,b,axis);if(order)return order;}
+    return (a.voice_number||0)-(b.voice_number||0);
+  });
+}
+function parseItems(rows){
+  if(!Array.isArray(rows))throw Error('음원 목록이 올바르지 않습니다.');
+  return rows.map(item=>{
+    if(!item||typeof item.text!=='string'||typeof item.id!=='string')throw Error('음원 목록이 올바르지 않습니다.');
+    return {...item,audio:audioUrl(item.audio)};
+  });
+}
+function heard(item){return item.heard===true||(!editable&&sessionHeard.has(`${item.id}:${item.sha256}`));}
+function regenerationRunning(){return job?.status==='running'||candidateMode&&job?.status==='queued';}
+function playedWholeClip(){
+  const ranges=audio.played, tolerance=0.05;
+  if(!Number.isFinite(audio.duration)||!ranges?.length)return false;
+  let covered=0;
+  for(let i=0;i<ranges.length;i++){
+    if(ranges.start(i)>covered+tolerance)return false;
+    covered=Math.max(covered,ranges.end(i));
+  }
+  return covered>=audio.duration-tolerance;
+}
+function keepCurrentNumberVisible(index){
+  const button=voiceButtons[index]?.button;
+  if(!button)return;
+  if(button.offsetTop<groupVoices.scrollTop)groupVoices.scrollTop=button.offsetTop;
+  else if(button.offsetTop+button.offsetHeight>groupVoices.scrollTop+groupVoices.clientHeight){
+    groupVoices.scrollTop=button.offsetTop+button.offsetHeight-groupVoices.clientHeight;
+  }
+}
+function syncReview(){
+  if(candidateMode){syncCandidates();return;}
+  const group=groups[groupIndex];
+  if(!group)return;
+  const current=currentIndex, currentItem=items[current];
+  const busy=loading||saving||regenerationRunning();
+  const canEdit=editable&&!group.approved;
+  const heardCount=items.filter(heard).length;
+  const replacementCount=items.filter(item=>item.decision==='compare').length;
+  const allHeard=heardCount===items.length;
+  groupName.textContent=`생성 요청 · ${group.label}`;
+  groupCount.textContent=`${groupIndex+1} / ${groups.length} 묶음`;
+  reviewStatus.textContent=regenerationRunning()?'목소리를 다시 만드는 중…':group.approved?'검수 완료':
+    regeneratedGroup===group.key?'다시 만든 목소리를 함께 들어보세요.':
+    `${heardCount} / ${items.length} 들음${replacementCount?` · 교체 ${replacementCount}개`:''}`;
+  groupBack.disabled=busy||groupIndex===0;
+  groupNext.textContent=groupIndex===groups.length-1?'검수 완료':'다음 묶음';
+  groupNext.disabled=busy||(canEdit?(!allHeard||replacementCount>0):groupIndex===groups.length-1);
+  replay.disabled=busy||!items.length;
+  replaceVoice.hidden=!canEdit;regenerate.hidden=!canEdit;
+  const marked=currentItem?.decision==='compare';
+  replaceVoice.disabled=busy||!currentItem||!heard(currentItem);
+  replaceVoice.setAttribute('aria-pressed',String(marked));
+  replaceVoice.textContent=marked?'교체 표시 해제':'교체 대상 표시';
+  regenerate.disabled=busy||!allHeard||replacementCount===0;
+  regenerate.textContent=replacementCount?`선택한 ${replacementCount}개 다시 만들기`:'선택한 목소리 다시 만들기';
+  continuous.disabled=loading||regenerationRunning()||!items.length;
+  voice.disabled=busy||!items.length;pickerButton.disabled=voice.disabled;
+  items.forEach((item,index)=>{
+    const view=voiceButtons[index];
+    if(!view)return;
+    const complete=heard(item), needsReplacement=item.decision==='compare';
+    view.button.disabled=busy;
+    view.button.setAttribute('aria-current',String(index===current));
+    view.button.setAttribute('data-playing',String(index===current&&playing));
+    view.button.setAttribute('data-replace',String(needsReplacement));
+    view.button.setAttribute('aria-label',`${item.voice_number}번${index===current&&playing?' 재생 중':''}${complete?', 들음':''}${needsReplacement?', 교체 대상으로 표시됨':''}`);
+    view.check.hidden=!complete;
+    voicePicker?.setBadge(index,needsReplacement?'교체 대상':complete?'들음':'');
+  });
+}
+function mountItems(loaded,start=0,play=false,count=loaded.length){
+  mountListeningView();
+  items=loaded;pageStart=start;total=count;
+  voice.replaceChildren();
+  const groupCounts=new Map();
+  items.forEach((item,index)=>{
+    const option=document.createElement('option'),group=hard?item.text:item.group||'목소리';
+    const providedLabel=positive&&typeof item.label==='string'?item.label.trim():'';
+    const count=positive?item.number:!corpus&&item.voice_number?item.voice_number:(groupCounts.get(group)||0)+1;
+    groupCounts.set(group,count);
+    option.value=String(index);option.textContent=`${group} · ${positive?'음원':'목소리'} ${count}`;
+    item.fullLabel=option.textContent;item.label=hard?option.textContent:`${group} · ${count}`;
+    item.groupLabel=group;item.voiceNumber=count;
+    if(providedLabel){
+      item.fullLabel=item.label=providedLabel;
+      item.groupLabel=[group,item.gender,item.age_group].filter(Boolean).join(' · ');
+      item.voiceNumber=`${count}번`;
+      option.textContent=item.fullLabel;
+    }
+    if(!corpus&&item.voice_number){
+      const traits=['gender','age_group'].map(axis=>item.voice_design?.[axis]?.label).filter(Boolean);
+      item.detailLabel=traits.length?`생성 요청 · ${traits.join(' · ')}`:'생성 설정 정보 없음';
+      item.fullLabel=item.label=`${group} ${count}번 · ${item.detailLabel}`;
+      item.voiceNumber=`${count}번`;
+      option.textContent=item.fullLabel;
+    }
+    voice.append(option);
+  });
+  if(groups.length){
+    voiceButtons=items.map((item,index)=>{
+      const button=document.createElement('button'), number=document.createElement('span'), check=document.createElement('span');
+      button.type='button';number.textContent=String(item.voice_number);
+      check.textContent='✓';check.className='reference-heard';check.setAttribute('aria-hidden','true');
+      button.append(number,check);
+      button.addEventListener('click',()=>{if(!saving&&!regenerationRunning())select(index,playing);});
+      return {button,check};
+    });
+    groupVoices.replaceChildren(...voiceButtons.map(view=>view.button));
+    groupVoices.scrollTop=0;
+  }
+  voice.disabled=false;continuous.disabled=false;volume.disabled=false;
+  if(listeningPlayer?.mute)listeningPlayer.mute.disabled=false;
+  voicePicker?.setItems(items);
+  select(0,play);
+}
+let reviewRows=[];
+function showGroup(index){
+  if(!groups[index])return;
+  groupIndex=index;
+  const next=reviewRows.filter(item=>item.group_key===groups[index].key);
+  if(!next.length)throw Error('이 묶음에 들을 기준 목소리가 없습니다.');
+  mountItems(next);
+}
+function applyReview(payload, nextKey){
+  if(payload.mode!==undefined&&payload.mode!=='candidate_pool_v2')throw Error('검수 화면 형식을 확인하지 못했습니다.');
+  if(payload.mode==='candidate_pool_v2'){applyCandidates(payload);return;}
+  const rows=sortReferences(parseItems(payload.items));
+  if(!Array.isArray(payload.groups)||!payload.groups.length||typeof payload.editable!=='boolean'||typeof payload.review_complete!=='boolean'){
+    throw Error('기준 목소리 검수 정보를 불러오지 못했습니다.');
+  }
+  const keys=new Set(payload.groups.map(group=>group.key));
+  if(keys.size!==payload.groups.length||rows.some(item=>!keys.has(item.group_key)||!item.sha256)||
+    payload.groups.some(group=>typeof group.key!=='string'||typeof group.label!=='string'||typeof group.approved!=='boolean'||
+      !rows.some(item=>item.group_key===group.key))){
+    throw Error('기준 목소리 묶음 정보가 올바르지 않습니다.');
+  }
+  const previousKey=groups[groupIndex]?.key;
+  mountListeningView();
+  if(regenerationRunning()&&!payload.job)regeneratedGroup=job.group;
+  groups=payload.groups;editable=payload.editable;job=payload.job;reviewRows=rows;
+  const activeKey=nextKey||previousKey||job?.group||(editable?groups.find(group=>!group.approved)?.key:undefined);
+  const index=Math.max(0,groups.findIndex(group=>group.key===activeKey));
+  const activeRows=rows.filter(item=>item.group_key===groups[index].key);
+  if(previousKey===groups[index].key&&activeRows.length===items.length&&
+    activeRows.every((item,i)=>item.id===items[i].id&&item.sha256===items[i].sha256&&item.audio===items[i].audio)){
+    groupIndex=index;
+    activeRows.forEach((item,i)=>{items[i].heard=item.heard;items[i].decision=item.decision;});
+  }else showGroup(index);
+  document.documentElement?.classList?.add('reference-grouped');
+  for(const control of [groupHead,groupVoices,groupActions,groupNav])control.hidden=false;
+  if(reportedComplete!==payload.review_complete&&window.parent!==window){
+    window.parent.postMessage?.({type:'koww:reference-review',project,complete:payload.review_complete},location.origin);
+    reportedComplete=payload.review_complete;
+  }
+  if(job?.status==='failed')errorMessage.textContent=job.message||'목소리를 다시 만들지 못했습니다. 다시 시도할 수 있습니다.';
+  syncReview();scheduleReviewPoll();
+  reportReferenceLayout('legacy');
+}
+function reportReferenceLayout(mode){
+  if(reportedLayout!==mode)reportedCandidateHeight=null;
+  if(reportedLayout===mode||corpus||window.parent===window)return;
+  window.parent.postMessage?.({type:'koww:reference-layout',project,mode},location.origin);reportedLayout=mode;
+}
+function scheduleCandidateHeight(force=false){
+  if(!candidateMode||reportedLayout!=='candidate_pool_v2'||window.parent===window||candidateHeightSuspended)return;
+  candidateHeightForce=candidateHeightForce||force===true;
+  if(candidateHeightFrame!==null)return;
+  const measure=()=>{
+    candidateHeightFrame=null;
+    const forced=candidateHeightForce;candidateHeightForce=false;
+    const style=typeof getComputedStyle==='function'&&document.body?getComputedStyle(document.body):null;
+    const padding=(parseFloat(style?.paddingTop)||0)+(parseFloat(style?.paddingBottom)||0);
+    const height=Math.ceil((referenceWorkspace.getBoundingClientRect?.().height||0)+padding);
+    if(!Number.isSafeInteger(height)||height<=0||!forced&&height===reportedCandidateHeight)return;
+    reportedCandidateHeight=height;
+    window.parent.postMessage?.({type:'koww:reference-height',project,mode:'candidate_pool_v2',height},location.origin);
+  };
+  if(typeof requestAnimationFrame==='function')candidateHeightFrame=requestAnimationFrame(measure);else measure();
+}
+function candidateNumber(item){return `후보 ${item.display_number??item.number??item.voice_number??1}`;}
+function candidateView(item){
+  const row=document.createElement('div'),play=document.createElement('button'),number=document.createElement('span');
+  const info=document.createElement('div'),heading=document.createElement('div'),seed=document.createElement('span'),settings=document.createElement('div');
+  const check=document.createElement('span'),choice=document.createElement('label'),checkbox=document.createElement('input'),label=document.createElement('span');
+  row.className='candidate-row candidate-card';play.type='button';play.className='candidate-play';
+  row.setAttribute('role','group');row.setAttribute('aria-label',candidateNumber(item));
+  number.className='candidate-number';number.textContent=candidateNumber(item);
+  info.className='candidate-info';heading.className='candidate-heading';seed.className='candidate-seed';
+  seed.textContent=Number.isSafeInteger(item.seed)&&item.seed>=0?`시드 ${item.seed}`:'시드 정보 없음';
+  settings.className='candidate-settings';
+  const options=Array.isArray(item.voice_settings)?item.voice_settings.filter(option=>
+    typeof option?.label==='string'&&option.label.trim()&&typeof option?.value==='string'&&option.value.trim()):[];
+  if(options.length)for(const option of options){
+    const name={resonance:'울림',pace:'속도'}[option.id]||option.label;
+    const detail=document.createElement('span');detail.className='candidate-setting';detail.textContent=`${name}: ${option.value}`;settings.append(detail);
+  }else settings.textContent='설정 정보 없음';
+  heading.append(number,seed);info.append(heading,settings);
+  check.className='candidate-heard';check.hidden=true;check.setAttribute('aria-hidden','true');
+  choice.className='candidate-choice';checkbox.type='checkbox';label.textContent='선택';
+  choice.append(checkbox,label);row.append(play,info,check,choice);
+  play.addEventListener('click',()=>{
+    if(play.disabled)return;
+    const index=items.findIndex(value=>value.id===item.id&&value.sha256===item.sha256);
+    if(index<0)return;
+    if(currentIndex===index){if(playing)stop();else playCurrent();}else select(index,true);
+  });
+  checkbox.addEventListener('change',()=>{
+    if(checkbox.disabled){syncCandidates();return;}
+    requestCandidateSelection(item,checkbox.checked);
+  });
+  return {row,play,number,check,choice,checkbox,label,id:item.id,sha256:item.sha256};
+}
+function patchCandidateViews(rows, views, container){
+  // Polling only updates state on unchanged rows; keyboard focus stays put.
+  if(rows.length===views.length&&rows.every((item,index)=>item.id===views[index].id&&item.sha256===views[index].sha256))return views;
+  const next=rows.map(item=>candidateView(item));container.replaceChildren(...next.map(view=>view.row));return next;
+}
+const selectionKey=item=>JSON.stringify([item.id,item.sha256]);
+function candidateSelectionScope(group=groups[groupIndex]?.key,batch=candidateViewBatch,rows=candidateRows){
+  return JSON.stringify([group,batch,rows.map(item=>[item.id,item.sha256]).sort((a,b)=>a[0].localeCompare(b[0]))]);
+}
+function projectedCandidateSelection(){
+  const selected=new Set(acceptedRows.map(selectionKey));
+  for(const [key,intent] of candidateSelectionIntents){if(intent.selected)selected.add(key);else selected.delete(key);}
+  return selected;
+}
+function selectionWriterActive(writer){return candidateSelectionWriter===writer&&writer.epoch===candidateSelectionEpoch;}
+function cancelCandidateSelection(authoritative=false){
+  const pending=Boolean(candidateSelectionWriter||candidateSelectionIntents.size);
+  if(!pending&&!authoritative)return;
+  candidateSelectionEpoch++;candidateSelectionIntents.clear();
+  if(candidateSelectionWriter){candidateSelectionWriter=null;saving=false;}
+  candidateSelectionBlocked=authoritative?false:candidateSelectionBlocked||pending;
+  if(pending)errorMessage.textContent=authoritative?'목소리 분류나 후보 목록이 바뀌어 대기 중인 선택을 취소했습니다.':'저장 대기 중인 선택을 취소했습니다. 저장된 선택 상태를 다시 확인합니다.';
+  if(candidateMode&&!authoritative)syncCandidates();
+}
+function startSelectionWriter(){
+  const writer={epoch:++candidateSelectionEpoch,scope:candidateSelectionScope(),queueUrl:candidateBatchUrl(reviewQueueUrl),recovering:false};
+  candidateSelectionWriter=writer;saving=true;candidateLoadVersion++;return writer;
+}
+function requestCandidateSelection(item,selected){
+  const group=groups[groupIndex],key=selectionKey(item),projected=projectedCandidateSelection();
+  if(!candidateMode||!group||!editable||group.approved||loading||regenerationRunning()||candidateSelectionBlocked||
+    saving&&!candidateSelectionWriter||candidateSelectionWriter?.recovering||
+    !candidateRows.some(row=>row.id===item.id&&row.sha256===item.sha256)||
+    selected&&!projected.has(key)&&projected.size>=group.target){syncCandidates();return;}
+  // At most the current five cards have pending desired states. Repeated clicks
+  // replace that card's intent instead of queueing another blind toggle.
+  candidateSelectionIntents.set(key,{id:item.id,sha256:item.sha256,selected:Boolean(selected)});
+  const starting=!candidateSelectionWriter,writer=candidateSelectionWriter||startSelectionWriter();
+  errorMessage.textContent='';stop();syncCandidates();
+  if(starting)drainCandidateSelection(writer);
+}
+async function reloadCandidateSelection(writer){
+  writer.recovering=true;candidateSelectionBlocked=true;candidateSelectionIntents.clear();syncCandidates();
   try{
-    const project=new URL(location.href).searchParams.get('project');
-    const response=await fetch((hard?'/hard-preview/queue':'/reference-preview/queue')+'?project='+encodeURIComponent(project));
+    // A toggle response can be lost after commit. Read the truth; never resend it.
+    // Let an already sent request settle before reading, even after pagehide.
+    await candidateSelectionTransport?.catch(()=>{});
+    if(!selectionWriterActive(writer))return;
+    let response=await fetch(writer.queueUrl),payload=await response.json();
+    if(!selectionWriterActive(writer))return;
+    if(!response.ok&&response.status===400&&writer.queueUrl!==reviewQueueUrl){
+      // Another browser may have advanced the category since this batch opened.
+      response=await fetch(reviewQueueUrl);payload=await response.json();
+    }
+    if(!selectionWriterActive(writer))return;
+    if(!response.ok)throw Error(payload.error||'선택 상태를 확인하지 못했습니다.');
+    applyReview(payload);
+    if(!selectionWriterActive(writer))return;
+    candidateSelectionBlocked=false;
+    errorMessage.textContent='서버에 저장된 선택 상태를 다시 불러왔습니다. 선택 상태를 확인해 주세요.';
+  }catch(error){
+    if(selectionWriterActive(writer)){
+      candidateSelectionBlocked=true;errorMessage.textContent='선택 저장 상태를 확인하지 못했습니다. 상태 다시 확인을 눌러 주세요.';
+    }
+  }
+}
+async function drainCandidateSelection(writer){
+  try{
+    while(selectionWriterActive(writer)&&writer.scope===candidateSelectionScope()){
+      const acknowledged=new Set(acceptedRows.map(selectionKey)),pending=[];
+      for(const [key,intent] of candidateSelectionIntents){
+        if(acknowledged.has(key)===intent.selected)candidateSelectionIntents.delete(key);
+        else pending.push(intent);
+      }
+      if(!pending.length)break;
+      // Release a slot before selecting its replacement when the quota is full.
+      const intent=pending.find(item=>!item.selected)||pending[0];
+      const expected=!acknowledged.has(selectionKey(intent));
+      const transport=(async()=>{
+        const response=await fetch(candidateBatchUrl(config.save_url),{method:'POST',headers:{'Content-Type':'application/json','X-Koww-Token':config.token},
+          body:JSON.stringify({action:'toggle',id:intent.id,sha256:intent.sha256})});
+        return {response,payload:await response.json()};
+      })();
+      candidateSelectionTransport=transport;
+      let response,payload;
+      try{({response,payload}=await transport);}
+      finally{if(candidateSelectionTransport===transport)candidateSelectionTransport=null;}
+      if(!selectionWriterActive(writer))return;
+      if(!response.ok)throw Error(payload.error||'선택을 저장하지 못했습니다.');
+      if(!Array.isArray(payload.accepted)||payload.accepted.some(item=>item.id===intent.id&&item.sha256===intent.sha256)!==expected)
+        throw Error('선택 저장 응답의 상태를 확인하지 못했습니다.');
+      applyReview(payload);
+    }
+  }catch(error){
+    if(selectionWriterActive(writer)){
+      candidateSelectionIntents.clear();candidateSelectionBlocked=true;
+      errorMessage.textContent='선택 저장 응답을 확인하지 못했습니다. 저장된 상태를 다시 확인합니다.';
+      await reloadCandidateSelection(writer);
+    }
+  }finally{
+    if(selectionWriterActive(writer)){candidateSelectionWriter=null;saving=false;syncCandidates();scheduleReviewPoll();}
+  }
+}
+async function recoverCandidateSelection(){
+  if(!candidateMode||!candidateSelectionBlocked||saving||loading)return;
+  const writer=startSelectionWriter();
+  try{await reloadCandidateSelection(writer);}
+  finally{if(selectionWriterActive(writer)){candidateSelectionWriter=null;saving=false;syncCandidates();scheduleReviewPoll();}}
+}
+function syncCandidateGenerationView(creating){
+  if(creating&&!candidateGenerationView){
+    const height=Math.ceil(candidatePanel.getBoundingClientRect?.().height||0);
+    candidatePanel.style.setProperty('--candidate-generation-height',`${height>0?height:232}px`);
+  }
+  candidateGenerationView=creating;
+  candidatePanel.setAttribute('data-generating',String(creating));
+  candidateDeck.hidden=creating;candidateDeck.inert=creating;
+  candidateDeck.setAttribute('aria-hidden',String(creating));
+  // Reserve the real progress bar's space before the generation POST returns.
+  candidateProgressSlot.hidden=!creating;
+  if(!creating)candidatePanel.style.setProperty('--candidate-generation-height','');
+}
+function syncCandidates(forceReport=false){
+  const group=groups[groupIndex];if(!group)return;
+  const busy=loading||saving||regenerationRunning()||candidateSelectionBlocked, canEdit=editable&&!group.approved;
+  const creating=candidateStarting||regenerationRunning();
+  syncCandidateGenerationView(creating);
+  const preparing=regenerationRunning()&&job?.phase==='preparing';
+  const projected=projectedCandidateSelection();
+  const target=group.target, selected=projected.size, current=items[currentIndex];
+  const split=group.split==='train'?'학습용':['validation','eval','evaluation','common'].includes(group.split)?'공통 평가용':'';
+  groupName.textContent=split&&!group.label.includes(split)?`${split} · ${group.label}`:group.label;
+  const countText=`${selected} / ${target} 선택`;
+  if(groupCount.textContent!==countText)groupCount.textContent=countText;
+  const countAttributes={'data-complete':String(selected===target),role:'status','aria-live':'polite','aria-atomic':'true',
+    'aria-label':selected===target?`기준 목소리 ${target}개 중 ${selected}개 선택 완료`:`기준 목소리 ${target}개 중 ${selected}개 선택`};
+  for(const [name,value] of Object.entries(countAttributes))if(groupCount.getAttribute(name)!==value)groupCount.setAttribute(name,value);
+  groupBack.hidden=true;groupBack.disabled=true;
+  groupNext.textContent=group.approved?'검수 완료':'다음';
+  candidateReady=!busy&&canEdit&&selected===target;groupNext.disabled=!candidateReady;
+  reviewStatus.hidden=true;groupNav.hidden=window.parent!==window;
+  const history=candidateHistory();
+  candidatePrevious.hidden=creating;candidatePrevious.disabled=creating||loading||saving||candidateSelectionBlocked||!history.previous;
+  candidateMore.hidden=creating;candidateMore.disabled=creating||(history.next?loading||saving||candidateSelectionBlocked:busy||!canEdit||selected>=target);
+  candidateMoreLabel.textContent=history.next?'›':'+';candidateMoreLabel.hidden=!history.next&&creating;
+  candidateMore.setAttribute('aria-label',history.next?'다음 후보 5개':preparing?'목소리 분류 준비 중':creating?`후보 생성 중 · ${Math.min(5,Number(job?.completed)||0)} / ${Number(job?.total)||5}`:'기준 목소리 후보 더 뽑기');
+  candidateMore.title=history.next?'다음 후보 5개':selected>=target?'필요한 목소리를 선택했습니다. 아래 다음 버튼을 누르세요.':'기준 목소리 후보 5개 더 생성';
+  candidateJobIcon.removeAttribute('data-state');
+  candidateJobIcon.hidden=!creating;
+  if(creating)candidateJobIcon.setAttribute('data-state','running');
+  else if(!history.next&&(candidateRows.length||group.approved))candidateJobIcon.setAttribute('data-state','complete');
+  // Show the bar in the same render as the status, before the POST resolves.
+  // Waiting/preparation has no measured count; never reuse a previous job's value.
+  const progressKnown=!candidateStarting&&regenerationRunning()&&!preparing&&
+    Number.isSafeInteger(job?.completed)&&Number.isSafeInteger(job?.total)&&
+    job.completed>=0&&job.total>0&&job.completed<=job.total;
+  const completed=progressKnown?job.completed:0, maximum=progressKnown?job.total:5;
+  candidateProgress.hidden=!creating;
+  candidateProgress.setAttribute('data-indeterminate',String(creating&&!progressKnown));
+  candidateProgress.setAttribute('aria-valuemax',String(maximum));
+  if(progressKnown){
+    candidateProgress.setAttribute('aria-valuenow',String(Math.min(completed,maximum)));
+    candidateProgress.removeAttribute('aria-valuetext');
+  }else{
+    candidateProgress.removeAttribute('aria-valuenow');
+    if(creating)candidateProgress.setAttribute('aria-valuetext',preparing?'목소리 분류 준비 중':regenerationRunning()?'생성 진행 중':'생성 요청 처리 중');
+    else candidateProgress.removeAttribute('aria-valuetext');
+  }
+  candidateProgressFill.style.width=progressKnown?`${Math.min(100,100*completed/maximum)}%`:creating?'25%':'0%';
+  candidateEmpty.hidden=!creating&&Boolean(candidateRows.length);
+  candidateStatusLabel.textContent=creating?'추가 기준 목소리 후보를 생성하고 있습니다...':group.approved?'선택한 목소리를 확정했습니다.':job?.status==='failed'?'후보 생성을 다시 시도해 주세요.':'기준 목소리 후보를 생성해 주세요.';
+  candidatePanel.setAttribute('aria-busy',String(creating));
+  candidateRetryActions.hidden=!(candidatePollPaused||candidateSelectionBlocked);candidateStatusRetry.disabled=loading||saving;
+  for(const view of candidateViews){
+    const item=items.find(value=>value.id===view.id&&value.sha256===view.sha256);
+    if(!item)continue;
+    const displayLabel=candidateNumber(item);
+    if(view.number.textContent!==displayLabel)view.number.textContent=displayLabel;
+    if(view.row.getAttribute('aria-label')!==displayLabel)view.row.setAttribute('aria-label',displayLabel);
+    const selectedItem=projected.has(selectionKey(item));
+    const listening=current?.id===item.id&&current?.sha256===item.sha256&&playing;
+    view.row.setAttribute('data-playing',String(listening));view.row.setAttribute('data-selected',String(selectedItem));
+    view.play.disabled=busy;view.play.setAttribute('aria-pressed',String(listening));
+    view.play.setAttribute('aria-label',`${candidateNumber(item)} ${listening?'일시정지':'재생'}`);
+    view.check.hidden=true;view.checkbox.checked=selectedItem;
+    // A poll or save does not replace or disable the focused checkbox.
+    view.checkbox.disabled=loading||regenerationRunning()||candidateSelectionBlocked||candidateSelectionWriter?.recovering||saving&&!candidateSelectionWriter||!canEdit||!selectedItem&&selected>=target;
+    view.checkbox.setAttribute('aria-label',`${candidateNumber(item)} ${selectedItem?'선택 해제':'선택'}`);
+    view.choice.title=!selectedItem&&selected>=target?'이 분류의 목표 개수를 모두 선택했습니다.':'';
+  }
+  volume.disabled=!items.length;if(listeningPlayer?.mute)listeningPlayer.mute.disabled=!items.length;
+  const groupStatus=JSON.stringify([group.key,candidateReady]);
+  if(window.parent!==window&&(forceReport||reportedCandidateGroup!==groupStatus)){
+    reportedCandidateGroup=groupStatus;
+    window.parent.postMessage?.({type:'koww:reference-group',project,group:group.key,ready:candidateReady},location.origin);
+  }
+  scheduleCandidateHeight();
+}
+function applyCandidates(payload){
+  const rows=parseItems(payload.items), accepted=parseItems(payload.accepted||[]);
+  if(!Array.isArray(payload.groups)||!payload.groups.length||typeof payload.editable!=='boolean'||typeof payload.review_complete!=='boolean')throw Error('기준 목소리 후보 정보를 불러오지 못했습니다.');
+  const keys=new Set(payload.groups.map(group=>group.key));
+  if(keys.size!==payload.groups.length||payload.groups.some(group=>typeof group.key!=='string'||typeof group.label!=='string'||typeof group.approved!=='boolean'||!Number.isSafeInteger(group.target)||group.target<1))throw Error('기준 목소리 분류 정보가 올바르지 않습니다.');
+  const activeKey=typeof payload.active_group==='object'?payload.active_group?.key:payload.active_group;
+  const activeIndex=payload.groups.findIndex(group=>group.key===activeKey);
+  const index=activeIndex>=0?activeIndex:payload.review_complete?payload.groups.length-1:payload.groups.findIndex(group=>!group.approved);
+  if(index<0||rows.length>5||[...rows,...accepted].some(item=>item.group_key!==payload.groups[index].key||!item.sha256)||
+    new Set(rows.map(item=>item.id)).size!==rows.length||new Set(accepted.map(item=>item.id)).size!==accepted.length||accepted.length>payload.groups[index].target)throw Error('기준 목소리 후보 목록이 올바르지 않습니다.');
+  const previousGroup=groups[groupIndex]?.key, previous=items[currentIndex];
+  const batches=payload.batches??[];
+  if(!Array.isArray(batches)||batches.some(batch=>typeof batch?.id!=='string'||!batch.id||!Number.isSafeInteger(batch.number)||batch.number<1||batch.count!==5)
+    ||new Set(batches.map(batch=>batch.id)).size!==batches.length)throw Error('기준 목소리 후보 이력을 불러오지 못했습니다.');
+  const viewBatch=payload.view_batch??null,currentBatch=payload.current_batch??null;
+  if(viewBatch!==null&&typeof viewBatch!=='string'||currentBatch!==null&&typeof currentBatch!=='string')throw Error('기준 목소리 후보 이력이 올바르지 않습니다.');
+  if(candidateSelectionWriter&&candidateSelectionWriter.scope!==candidateSelectionScope(payload.groups[index].key,viewBatch,rows))cancelCandidateSelection(true);
+  candidateBatches=[...batches].sort((a,b)=>a.number-b.number);candidateViewBatch=viewBatch;candidateCurrentBatch=currentBatch;
+  // Generation numbers reserve failed attempts. The UI counts only completed
+  // batches in this category; IDs, source numbers and review bindings stay intact.
+  const batchRanks=new Map(candidateBatches.map((batch,i)=>[batch.id,i]));
+  const displayNumber=(item,fallback)=>{
+    const rank=batchRanks.get(item.batch_id??viewBatch);
+    const slot=Number.isSafeInteger(item.number)&&item.number>0?(item.number-1)%5+1:fallback;
+    return rank===undefined?fallback:rank*5+slot;
+  };
+  rows.forEach((item,i)=>{item.display_number=displayNumber(item,i+1);});
+  for(const item of accepted){
+    const visible=rows.find(row=>row.id===item.id&&row.sha256===item.sha256);
+    if(visible)item.display_number=visible.display_number;
+    else if(batchRanks.has(item.batch_id))item.display_number=displayNumber(item,item.number??1);
+  }
+  const combined=[...rows,...accepted.filter(item=>!rows.some(value=>value.id===item.id))];
+  mountCandidateView();
+  // Capture the current card area before a queued/running response clears it.
+  if(candidateStarting||['queued','running'].includes(payload.job?.status))syncCandidateGenerationView(true);
+  const samePlayback=previousGroup===payload.groups[index].key&&previous&&combined.some(item=>item.id===previous.id&&item.sha256===previous.sha256&&item.audio===previous.audio);
+  candidateMode=true;groups=payload.groups;groupIndex=index;editable=payload.editable;job=payload.job||null;
+  candidatePollFailures=0;candidatePollPaused=false;
+  candidateRows=rows;acceptedRows=accepted;
+  items=combined;total=combined.length;pageStart=0;
+  candidateViews=patchCandidateViews(rows,candidateViews,candidateList);
+  if(samePlayback)currentIndex=items.findIndex(item=>item.id===previous.id);
+  else{
+    stop();currentIndex=0;
+    if(items.length)audio.src=items[0].audio;else{audio.removeAttribute('src');audio.load();}
+  }
+  voicePicker?.close();
+  document.documentElement?.classList?.add('reference-grouped','reference-candidates');
+  for(const control of [groupHead,candidatePanel,candidateActions,candidatePreviousActions])control.hidden=false;
+  if(reportedComplete!==payload.review_complete&&window.parent!==window){
+    window.parent.postMessage?.({type:'koww:reference-review',project,complete:payload.review_complete},location.origin);
+    reportedComplete=payload.review_complete;
+  }
+  reportReferenceLayout('candidate_pool_v2');
+  if(job?.status==='failed')errorMessage.textContent=job.message||'기준 목소리 후보를 생성하지 못했습니다. 다시 시도해 주세요.';
+  syncCandidates();scheduleReviewPoll();requestInitialCandidates();
+}
+function requestInitialCandidates(){
+  const group=groups[groupIndex];
+  if(!candidateMode||!group||!editable||group.approved||candidateRows.length||acceptedRows.length>=group.target||
+    loading||saving||regenerationRunning()||job?.status==='failed'||initialCandidateRequests.has(group.key))return;
+  initialCandidateRequests.add(group.key);saveReview('more',{group:group.key});
+}
+function candidateHistory(){
+  const index=candidateBatches.findIndex(batch=>batch.id===candidateViewBatch);
+  return {previous:index>0?candidateBatches[index-1]:index<0&&candidateViewBatch===candidateCurrentBatch&&candidateBatches.length?candidateBatches.at(-1):null,
+    next:index>=0?candidateBatches[index+1]||null:null};
+}
+function candidateBatchUrl(base){
+  if(!candidateMode||!candidateBatches.some(batch=>batch.id===candidateViewBatch))return base;
+  const url=new URL(base,location.href);url.searchParams.set('batch',candidateViewBatch);return url.pathname+url.search;
+}
+async function loadCandidateBatch(batch){
+  if(loading||saving||!batch)return;
+  const version=++candidateLoadVersion;stop();loading=true;syncCandidates();
+  try{
+    const url=new URL(reviewQueueUrl,location.href);url.searchParams.set('batch',batch.id);
+    const response=await fetch(url.pathname+url.search),payload=await response.json();
+    if(!response.ok)throw Error(payload.error||'이전 후보를 불러오지 못했습니다.');
+    if(version!==candidateLoadVersion)return;
+    errorMessage.textContent='';applyReview(payload);
+  }catch(error){if(version===candidateLoadVersion)errorMessage.textContent=error.message;}
+  finally{if(version===candidateLoadVersion){loading=false;syncCandidates();scheduleReviewPoll();}}
+}
+candidatePrevious.addEventListener('click',()=>{if(!candidatePrevious.disabled)loadCandidateBatch(candidateHistory().previous);});
+candidateMore.addEventListener('click',()=>{if(!candidateMore.disabled){const next=candidateHistory().next;if(next)loadCandidateBatch(next);else{stop();saveReview('more',{group:groups[groupIndex].key});}}});
+candidateStatusRetry.addEventListener('click',async()=>{
+  if(candidateStatusRetry.disabled)return;
+  if(candidateSelectionBlocked){await recoverCandidateSelection();return;}
+  candidatePollPaused=false;candidatePollFailures=0;loading=true;syncCandidates();
+  try{
+    const response=await fetch(candidateBatchUrl(reviewQueueUrl)),payload=await response.json();
+    if(!response.ok)throw Error(payload.error||'후보 생성 상태를 확인하지 못했습니다.');
+    errorMessage.textContent='';applyReview(payload);
+  }catch(error){candidatePollPaused=true;errorMessage.textContent=error.message;}
+  finally{loading=false;syncCandidates();requestInitialCandidates();}
+});
+const reviewQueueUrl='/reference-preview/queue?project='+encodeURIComponent(project);
+function scheduleReviewPoll(){
+  if(pollTimer||!regenerationRunning()||candidateMode&&candidatePollPaused)return;
+  pollTimer=setTimeout(async()=>{
+    pollTimer=undefined;
+    if(candidateMode&&(loading||saving)){scheduleReviewPoll();return;}
+    const version=candidateLoadVersion;
+    try{
+      const response=await fetch(candidateBatchUrl(reviewQueueUrl)),payload=await response.json();
+      if(candidateMode&&version!==candidateLoadVersion)return;
+      if(!response.ok)throw Error(payload.error||'재생성 상태를 확인하지 못했습니다.');
+      errorMessage.textContent='';applyReview(payload);
+    }catch(error){
+      if(candidateMode&&version!==candidateLoadVersion)return;
+      errorMessage.textContent=error.message;
+      if(candidateMode&&++candidatePollFailures>=3){candidatePollPaused=true;syncCandidates();}
+      else scheduleReviewPoll();
+    }
+  },1200);
+}
+async function saveReview(action,fields,nextKey){
+  if(saving||regenerationRunning()||candidateMode&&candidateSelectionBlocked)return false;
+  candidateStarting=candidateMode&&action==='more';
+  if(candidateStarting)errorMessage.textContent='';
+  saving=true;syncReview();
+  if(candidateMode)candidateLoadVersion++;
+  try{
+    const saveUrl=candidateMode&&['hear','toggle'].includes(action)?candidateBatchUrl(config.save_url):config.save_url;
+    const response=await fetch(saveUrl,{method:'POST',headers:{'Content-Type':'application/json','X-Koww-Token':config.token},
+      body:JSON.stringify({action,...fields})});
+    const payload=await response.json();
+    if(!response.ok)throw Error(payload.error||'검수 상태를 저장하지 못했습니다.');
+    errorMessage.textContent='';applyReview(payload,nextKey);
+    return true;
+  }catch(error){stop();errorMessage.textContent=error.message;return false;}
+  finally{candidateStarting=false;saving=false;syncReview();requestInitialCandidates();}
+}
+groupBack.addEventListener('click',()=>{if(!groupBack.disabled)showGroup(groupIndex-1);});
+groupNext.addEventListener('click',()=>{
+  if(candidateMode?!candidateReady:groupNext.disabled)return;
+  const group=groups[groupIndex];
+  if(candidateMode){stop();return saveReview('approve',{group:group.key});}
+  if(!editable||group.approved){showGroup(groupIndex+1);return;}
+  stop();return saveReview('approve',{group:group.key},groups[groupIndex+1]?.key);
+});
+async function loadPage(start=0,play=false){
+  if(loading)return;
+  stop();const version=playbackVersion;
+  let received=false,initialError='';
+  if(!previewReady){
+    window.KowwChapterReady?.loading();
+    referenceWorkspace.hidden=true;previewStartup.hidden=false;previewStartupRetry.hidden=true;
+    previewStartupStatus.textContent='목소리 목록을 불러오고 있습니다...';previewStartup.setAttribute('role','status');previewStartup.setAttribute('aria-busy','true');
+  }
+  loading=true;if(continuous)continuous.disabled=true;updatePage();
+  try{
+    const endpoint=positive?'/positive-preview/queue':hard?'/hard-preview/queue':'/reference-preview/queue';
+    const response=await fetch(endpoint+'?project='+encodeURIComponent(project)+(positive?`&start=${start}`:''));
     const payload=await response.json();if(!response.ok)throw Error(payload.error||'목록을 불러오지 못했습니다.');
-    if(!Array.isArray(payload.items))throw Error('음원 목록이 올바르지 않습니다.');
-    items=payload.items.map(item=>{
-      if(!item||typeof item.text!=='string'||typeof item.id!=='string')throw Error('음원 목록이 올바르지 않습니다.');
-      return {...item,audio:audioUrl(item.audio)};
-    });
-    const groupCounts=new Map();
-    items.forEach((item,index)=>{
-      const option=document.createElement('option'),group=hard?item.text:item.group||'목소리';
-      const count=(groupCounts.get(group)||0)+1;groupCounts.set(group,count);
-      option.value=String(index);option.textContent=hard?`${item.text} · 목소리 ${count}`:`${group} · 목소리 ${count}`;item.fullLabel=option.textContent;item.label=hard?option.textContent:`${group} · ${count}`;
-      if(!hard){item.groupLabel=group;item.voiceNumber=count;}voice.append(option);
-    });
-    if(!items.length)throw Error(hard?'준비된 유사어 음원이 없습니다.':'준비된 기준 목소리가 없습니다.');
-    voice.disabled=false;continuous.disabled=false;pickerButton.disabled=hard;volume.disabled=hard;if(referenceMute)referenceMute.disabled=false;renderPicker();select(0);
-  }catch(error){errorMessage.textContent=error.message;}
-})();
+    if(!Array.isArray(payload.items)||positive&&(payload.start!==start||!Number.isSafeInteger(payload.count)
+      ||payload.items.length!==Math.min(pageSize,payload.count-start)))throw Error('음원 목록이 올바르지 않습니다.');
+    if(!payload.items.length&&!(reviewEnabled&&payload.mode==='candidate_pool_v2'))throw Error(corpus?`준비된 ${subject} 음원이 없습니다.`:'준비된 기준 목소리가 없습니다.');
+    loading=false;
+    if(reviewEnabled)applyReview(payload);
+    else{
+      const loaded=parseItems(payload.items);
+      mountItems(corpus?loaded:sortReferences(loaded),start,play&&version===playbackVersion,positive?payload.count:loaded.length);
+      reportReferenceLayout('legacy');
+    }
+    received=true;
+  }catch(error){errorMessage.textContent=error.message;initialError=error.message;}
+  finally{
+    loading=false;if(groups.length)syncReview();else if(continuous)continuous.disabled=!items.length;updatePage();requestInitialCandidates();
+    if(!previewReady){
+      previewStartup.setAttribute('aria-busy','false');
+      if(received){
+        previewReady=true;referenceWorkspace.hidden=false;previewStartup.hidden=true;scheduleCandidateHeight(true);
+        window.KowwChapterReady?.ready();
+      }else{
+        previewStartupStatus.textContent=initialError||'목소리 목록을 불러오지 못했습니다.';previewStartup.setAttribute('role','alert');previewStartupRetry.hidden=false;
+        window.KowwChapterReady?.fail(previewStartupStatus.textContent);
+      }
+    }
+  }
+}
+previewStartupRetry.addEventListener('click',()=>loadPage());
+window.addEventListener('resize',()=>scheduleCandidateHeight());
+window.addEventListener('pageshow',()=>{candidateHeightSuspended=false;candidateResizeObserver?.observe(referenceWorkspace);scheduleCandidateHeight(true);if(candidateSelectionBlocked)recoverCandidateSelection();});
+if(typeof ResizeObserver==='function'){
+  candidateResizeObserver=new ResizeObserver(()=>scheduleCandidateHeight());
+  candidateResizeObserver.observe(referenceWorkspace);
+}
+loadPage();
 </script>
 </html>

@@ -13,6 +13,7 @@ from .data import audit_project, rows_for, validate_admission, seek_audio, sourc
 from .streaming import manifest_index
 from .project import load_project
 from .storage import project_storage
+from .task_progress import emit as report_task_progress
 
 MAX_NOISE_OFFSET_ATTEMPTS = 64
 MIN_NOISE_RMS = 1e-8
@@ -159,6 +160,7 @@ def augment(root, row, role, round_id, settings, noises, rirs, noise_index=None)
 
 @project_storage
 def build_features(project, role, output=None, rounds=None, batch_size=32, smoke=False, resume=False, frontend=None):
+    report_task_progress("feature_admission", "특징 추출 원본·승인 자료 확인", eta_eligible=False)
     root, config = load_project(project)
     pool = "positive_train" if role == "positive" else role
     if pool not in ("positive_train", "generic_negative", "korean_negative", "hard_negative"):
@@ -176,18 +178,23 @@ def build_features(project, role, output=None, rounds=None, batch_size=32, smoke
     source_identity, provenances = hashlib.sha256(), set()
 
     def sources_for_admission():
-        for row in iter_rows(manifest):
+        for index, row in enumerate(iter_rows(manifest), 1):
             source_identity.update(json.dumps(row, sort_keys=True, ensure_ascii=False,
                                    separators=(",", ":"), allow_nan=False).encode("utf-8") + b"\n")
             provenances.add(row.get("provenance"))
             yield row
+            if index % 64 == 0 or index == source_count:
+                report_task_progress("feature_admission", "특징 추출 원본 승인 검사", index, source_count,
+                                     "개 원본", eta_eligible=False)
 
     validate_admission(root, sources_for_admission(), config, role, smoke)
+    report_task_progress("feature_source_audit", "특징 추출 자료의 학습·평가 분리 확인", eta_eligible=False)
     audit = audit_project(project)
     if not audit["passed"]:
         raise ValueError("Split/source audit failed: " + str(audit["errors"][:5]))
     materials = {}
     for material in ("noise", "rir"):
+        report_task_progress("feature_material_audit", "소음·잔향 원본 승인 확인", eta_eligible=False)
         _, rows = rows_for(root, config, material)
         if rows:
             validate_admission(root, rows, config, material, smoke)
@@ -211,6 +218,7 @@ def build_features(project, role, output=None, rounds=None, batch_size=32, smoke
                     raise ValueError("Formal Negative requires fixed 2s windows; run koww windows first")
     qualification = None
     if frontend is None:
+        report_task_progress("feature_frontend", "특징 추출 모델 준비·동일성 확인", eta_eligible=False)
         from .frontend import qualified_fast_frontend
         probes = [augment(root, row, role, 0, config["augmentation"], materials["noise"], materials["rir"], noise_index)[0]
                   for row in islice(iter_rows(manifest), 8)]
@@ -275,6 +283,10 @@ def build_features(project, role, output=None, rounds=None, batch_size=32, smoke
                         handle.flush()
                         __import__("os").fsync(handle.fileno())
                     print(f"{role} R{rounds}: {index+1}/{expected}", flush=True)
+                    report_task_progress("feature_extraction", {
+                        "generic_negative": "일반 비호출", "korean_negative": "한국어 비호출",
+                        "positive": "호출어 음성", "hard_negative": "유사어 음성"}[role],
+                        index + 1, expected, "개 특징", eta_eligible=True)
                     pending, rows = [], []
         del array
         if _manifest_inventory(manifest) != (source_count, source_manifest_sha):
@@ -319,6 +331,8 @@ def _verify_feature_payload(feature_path, expected_sha256, feature_rows):
         raise ValueError("Invalid feature shape/dtype")
     hasher = __import__("hashlib").sha256()
     finite, complete, pending = True, True, b""
+    report_task_progress("feature_cache_verification", "기존 특징 배열 무결성·형식 검사", 0, payload_bytes,
+                         "bytes", eta_eligible=False)
     with Path(feature_path).open("rb") as stream:
         remaining = data_offset
         while remaining:
@@ -343,6 +357,8 @@ def _verify_feature_payload(feature_path, expected_sha256, feature_rows):
                 # Check every block even if an earlier block was nonfinite.
                 finite = bool(np.isfinite(values).all()) and finite
             pending = numeric[whole_bytes:]
+            report_task_progress("feature_cache_verification", "기존 특징 배열 무결성·형식 검사",
+                                 payload_bytes - remaining, payload_bytes, "bytes", eta_eligible=False)
         for block in iter(lambda: stream.read(FEATURE_SCAN_BLOCK_BYTES), b""):
             hasher.update(block)
     if hasher.hexdigest() != expected_sha256:
@@ -428,6 +444,7 @@ def verify_cache(directory):
         if meta.get("role") != "generic_negative" or meta["feature_sha256"] != GENERIC_SHA or meta["feature_rows"] != 5625000 or dtype != np.float16:
             raise ValueError("Unsupported imported feature cache")
         return meta
+    report_task_progress("feature_journal_verification", "특징 완료 기록·원본 순서 확인", eta_eligible=False)
     if digest(directory / "augmentation.jsonl") != meta["journal_sha256"] or digest(directory / "contract.json") != meta["contract_sha256"]:
         raise ValueError("Feature journal/contract changed")
     _verify_journal(directory, meta)

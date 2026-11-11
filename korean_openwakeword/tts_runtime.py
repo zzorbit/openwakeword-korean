@@ -7,6 +7,7 @@ import time
 import numpy as np
 from .common import now, write_json, identity
 from .project import load_project
+from .task_progress import emit
 
 
 class CloneRuntime:
@@ -24,6 +25,7 @@ class CloneRuntime:
     def _load(self):
         if self.model is not None:
             return
+        emit("tts_model_loading", "음성 생성 모델 준비", eta_eligible=False)
         import torch
         from .tts import _load_model
         if torch.cuda.is_available() and self.settings["device"] != "cpu":
@@ -37,13 +39,17 @@ class CloneRuntime:
         if devices != {"cuda:0"} or dtypes != {"torch.bfloat16"} or self.settings["attention"] != "sdpa":
             self.disabled = True
         self._save()
+        emit("tts_generation", "호출어 음성 생성", eta_eligible=True)
 
     def _save(self):
         write_json(self.root / "runtime" / "tts_execution.json", self.report)
 
     def create_voice_clone_prompt(self, **kwargs):
         self._load()
-        return self.model.create_voice_clone_prompt(**kwargs)
+        emit("tts_prompt_preparation", "기준 목소리 복제 정보 준비", eta_eligible=False)
+        prompt = self.model.create_voice_clone_prompt(**kwargs)
+        emit("tts_generation", "호출어 음성 생성", eta_eligible=True)
+        return prompt
 
     def _enable(self):
         import torch
@@ -83,14 +89,17 @@ class CloneRuntime:
         self._load()
         import torch
         if self.disabled:
+            emit("tts_generation", "호출어 음성 생성", eta_eligible=True)
             return self._eager(kwargs)
         key = (id(kwargs["voice_clone_prompt"]), identity({k:v for k,v in kwargs.items() if k != "voice_clone_prompt"}))
         if key in self.checked:
+            emit("tts_generation", "호출어 음성 생성", eta_eligible=True)
             with torch.inference_mode():
                 return self.model.generate_voice_clone(**kwargs)
         # Compare each actual reference's first requested utterance at exactly
         # the caller's seed. All qualification repeats are ephemeral; only one
         # result and the RNG progression of one eager call are retained.
+        emit("tts_qualification", "기준 목소리의 GPU 가속 확인", eta_eligible=False)
         cpu_before = torch.get_rng_state().clone()
         cuda_before = torch.cuda.get_rng_state(0).clone()
         with torch.random.fork_rng(devices=[0]):
@@ -161,6 +170,7 @@ class CloneRuntime:
             self.report["qualifications"].append(qualification)
             self.report["actual_backend"] = "eager"
             self._save()
+            emit("tts_generation", "호출어 음성 생성", eta_eligible=True)
             return expected, rate
         # Retain the prompt: Python must not reuse an ID for another reference.
         self.checked[key] = kwargs["voice_clone_prompt"]
@@ -168,6 +178,7 @@ class CloneRuntime:
         self.report["qualifications"].append(qualification)
         self.report["actual_backend"] = "exact_shape_predictor_and_talker_cuda_graph"
         self._save()
+        emit("tts_generation", "호출어 음성 생성", eta_eligible=True)
         return actual, actual_rate
 
 

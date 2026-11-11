@@ -18,6 +18,7 @@ def _fixture(tmp_path, content=b"", *, task="active-evaluation"):
     manager._implementation_id = "fixture-implementation"
     manager._timing_receipts = {}
     manager._rates = {}
+    manager._progress_snapshots = {}
     manager._job_alive = lambda job: True
     manager.review_descriptors = lambda state: []
     state = {"id": "word", "wakeword": "보라야", "preset": "check", "status": "running",

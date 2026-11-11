@@ -7,7 +7,7 @@ import pytest
 import soundfile as sf
 
 from korean_openwakeword.common import digest, identity, read_json, write_json
-from korean_openwakeword.project import create_project, load_project, BATCH, LEGACY_BATCH
+from korean_openwakeword.project import create_project, load_project, BATCH
 from korean_openwakeword.runtime import WakeWordDetector, sample_bundle, verify_bundle
 from korean_openwakeword.features import build_features, compare_rounds, verify_cache
 from korean_openwakeword.train import PoolSampler, train, build_classifier
@@ -68,29 +68,6 @@ def test_new_word_isolation(tmp_path):
         create_project(a.parent, "다솜아", "dasom")
     with pytest.raises(ValueError):
         create_project(tmp_path / "bad", "춘식아 불켜줘", "bad")
-
-
-@pytest.mark.legacy_parity
-def test_sampler_matches_original_and_replays():
-    Original = pytest.importorskip("wakeword_lab.training").PoolSampler
-    sizes = dict(generic_negative=11, korean_negative=13, positive=17)
-    new, old = PoolSampler(sizes, 42), Original(sizes, 42)
-    for _ in range(5):
-        a, b = new.next_indices(), old.next_indices()
-        assert all(np.array_equal(a[r], b[r]) for r in LEGACY_BATCH)
-    state = new.state(); expected = new.next_indices(); new.restore(state)
-    new.restore(state); actual = new.next_indices()
-    assert all(np.array_equal(expected[r], actual[r]) for r in LEGACY_BATCH)
-
-
-@pytest.mark.legacy_parity
-def test_classifier_initialization_matches_selected():
-    import torch
-    classifier = pytest.importorskip("wakeword_lab.temporal_classifier_v1").classifier
-    torch.manual_seed(19); old = classifier()
-    torch.manual_seed(19); new = build_classifier(dropout=0)
-    assert old.state_dict().keys() == new.state_dict().keys()
-    assert all(torch.equal(v, new.state_dict()[k]) for k, v in old.state_dict().items())
 
 
 def test_round_counts_nested_and_immutable(project):
@@ -198,41 +175,6 @@ def test_dev_cache_replay_and_tuning_are_exact(tmp_path):
     write_json(root / "tuned/evaluation/report.json", tampered)
     with pytest.raises(ValueError, match="receipt"):
         freeze(root / "project/project.json", root / "tuned/bundle", root / "tuned/evaluation/report.json")
-
-
-@pytest.mark.legacy_parity
-def test_sample_is_relocatable_and_same_as_original(tmp_path):
-    from korean_openwakeword.assets import export_sample
-    SharedFrontendEnsemblePredictor = pytest.importorskip("wakeword_lab.shared_frontend_ensemble_runtime_v1").SharedFrontendEnsemblePredictor
-    EventDetector = pytest.importorskip("wakeword_lab.stream_eval").EventDetector
-    relocated = tmp_path / "relocated"
-    export_sample(relocated)
-    new = WakeWordDetector(relocated)
-    m = read_json(relocated / "manifest.json")
-    old_runtime = {"vad_enabled": False}
-    members = [{"path": str(relocated / r["path"]), "sha256": r["sha256"]} for r in m["members"]]
-    original = SharedFrontendEnsemblePredictor(members, relocated / "frontend", old_runtime, "mean")
-    audio_rows = read_json(relocated / "audio_manifest.json")
-    compared = 0
-    for row in audio_rows:
-        new.reset(); original.reset()
-        gate = EventDetector(m["runtime"]["threshold"], 2, 1)
-        with sf.SoundFile(relocated / row["path"]) as f:
-            index = 0
-            while True:
-                samples = f.read(1280, dtype="int16")
-                if len(samples) < 1280:
-                    break
-                a, b = new.process(samples), original.score(samples)
-                assert np.float32(a["score"]).view("u4") == np.float32(b).view("u4")
-                old_event = gate.update(b, (index + 1) * .08, index * .08 + 1e-9 >= 2)
-                assert a["event"] == old_event["event"]
-                assert np.array_equal(np.asarray(a["member_scores"], np.float32), original.last["member_scores"])
-                index += 1; compared += 1
-    assert compared > 500
-    (relocated / m["members"][0]["path"]).write_bytes(b"changed")
-    with pytest.raises(ValueError):
-        verify_bundle(relocated)
 
 
 def test_sample_requires_canonical_input():

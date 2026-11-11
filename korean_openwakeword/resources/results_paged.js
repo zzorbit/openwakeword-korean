@@ -1,6 +1,7 @@
 /* Frozen results, loaded in bounded pages. No inference or audio gain. */
 "use strict";
 (() => {
+  const chapter = window.KowwChapterReady;
   const {report, viewer} = window.KOWW_RESULTS;
   const ui = window.KowwResultsUI;
   const $ = id => document.getElementById(id);
@@ -11,13 +12,22 @@
   let metadata = [], queue = [], extras = [], extraPage = 0;
   let index = 0, continuous = false, token = 0, optionPage = -1, currentSource = "main";
   let requestedIndex = null, loadedIndex = null, playing = false, loading = false, listPage = 0, listeningEnhanced = false;
+  let clipPicker;
   const option = (select, value, text) => { const node = document.createElement("option"); node.value = String(value); node.textContent = text; select.append(node); };
-  function renderList() {
+  function pickerLabel(position) {
+    const clip = metadata[queue[position]];
+    return ui.clipLabel({kind: clip[1], category: clip[2], original_order: clip[6]});
+  }
+  function renderList(reset = false, extraLabel = "추가 음원") {
+    if (clipPicker) {
+      clipPicker(queue.length, index, currentSource === "extra" ? extraLabel : "", reset);
+      return;
+    }
     const pages = Math.max(1, Math.ceil(queue.length / 5)); listPage = Math.min(listPage, pages - 1);
     const rows = [];
     for (let position = listPage * 5; position < Math.min(queue.length, (listPage + 1) * 5); position++) {
-      const clip = metadata[queue[position]], button = document.createElement("button"), title = document.createElement("span"), badge = document.createElement("span");
-      const label = ui.clipLabel({kind: clip[1], category: clip[2], original_order: clip[6]});
+      const button = document.createElement("button"), title = document.createElement("span"), badge = document.createElement("span");
+      const label = pickerLabel(position);
       button.type = "button"; button.className = "voice-row"; button.setAttribute("data-number", String(position + 1));
       button.setAttribute("aria-current", String(currentSource === "main" && position === index)); button.setAttribute("aria-label", `${position + 1}. ${label}`);
       title.className = "listen-row-title"; title.textContent = label; badge.className = "listen-badge"; badge.textContent = String(position + 1);
@@ -78,7 +88,7 @@
     $("sample-id").textContent = `파일 이름: ${clip.sample_id}`;
     ui.renderResponses(report, clip);
   }
-  function progress() {
+  function progress(reset = false) {
     $("queue").textContent = queue.length ? `${(index + 1).toLocaleString("ko-KR")} / ${queue.length.toLocaleString("ko-KR")}` : "목록 없음";
     $("prev").disabled = index <= 0; $("next").disabled = index >= queue.length - 1;
     const page = Math.floor(index / OPTION_LIMIT);
@@ -88,7 +98,7 @@
     }
     $("item").value = String(index);
     $("original").value = queue.length ? String(metadata[queue[index]][6] || "") : "";
-    listPage = Math.floor(index / 5); renderList();
+    listPage = Math.floor(index / 5); renderList(reset);
   }
   async function activate(sourceIndex, autoplay = false, source = "main") {
     const mine = ++token; loading = true; playing = false; currentSource = source; requestedIndex = sourceIndex;
@@ -96,16 +106,18 @@
     $("playState").textContent = "오디오 정보를 불러오는 중…";
     try {
       const clip = await detail(sourceIndex);
-      if (mine !== token) return;
+      if (mine !== token) return false;
       show(clip); loadedIndex = sourceIndex;
+      if (source === "extra" && clipPicker) renderList(false, ui.clipLabel(clip));
       $("playState").textContent = source === "extra" ? "추가 자료 · 재생 버튼을 눌러 들으세요." : "재생 버튼을 눌러 들으세요.";
       if (autoplay) {
         await audio.play();
-        if (mine !== token) { if (!continuous) audio.pause(); return; }
+        if (mine !== token) { if (!continuous) audio.pause(); return false; }
         $("playState").textContent = "재생 중";
       }
       loading = false; playing = audio.paused === false; transport();
-    } catch (error) { if (mine === token) { continuous = false; loading = false; playing = false; transport(); $("playState").textContent = error.message + " 다시 선택하거나 재생을 눌러주세요."; } }
+      return true;
+    } catch (error) { if (mine === token) { continuous = false; loading = false; playing = false; transport(); $("playState").textContent = error.message + " 다시 선택하거나 재생을 눌러주세요."; } return false; }
   }
   async function playLoaded() {
     const mine = ++token; loading = true; transport();
@@ -126,9 +138,10 @@
     for (let position = 0; position < metadata.length; position++) { const clip = metadata[position]; if (clip[1] === "positive" && clip[2] !== "clean" && Number(clip[3]) === Number($("snr").value) && ($("category").value === "all" || clip[2] === $("category").value) && (clip[4] || "none") === $("reverb").value) queue.push(position); }
     const categoryOrder = ["environment", "music", "competing_speech"];
     queue.sort((left, right) => { const a = metadata[left], b = metadata[right]; return (a[6] || 0) - (b[6] || 0) || String(a[5]).localeCompare(String(b[5])) || categoryOrder.indexOf(a[2]) - categoryOrder.indexOf(b[2]) || left - right; });
-    index = 0; progress();
+    index = 0; progress(true);
     if (queue.length) return activate(queue[0]);
     audio.removeAttribute("src"); transport(); $("responses").tBodies[0].replaceChildren(); $("clipTitle").textContent = "선택한 조건으로 시험한 오디오가 없습니다."; $("playState").textContent = "";
+    return true;
   }
   function renderExtras() {
     const start = extraPage * EXTRA_LIMIT, end = Math.min(extras.length, start + EXTRA_LIMIT);
@@ -157,8 +170,11 @@
     };
     audio.onerror = () => { continuous = false; token++; loading = false; playing = false; transport(); $("playState").textContent = "오디오를 불러올 수 없습니다. 파일 경로와 서버 상태를 확인하세요."; };
     $("prev").onclick = () => move(index - 1); $("next").onclick = () => move(index + 1);
-    $("clip-list-prev").onclick = () => { if (listPage > 0) { listPage--; renderList(); } };
-    $("clip-list-next").onclick = () => { if ((listPage + 1) * 5 < queue.length) { listPage++; renderList(); } };
+    if (!listeningEnhanced) clipPicker = ui.mountClipPicker?.(move, pickerLabel, OPTION_LIMIT);
+    if (!clipPicker) {
+      $("clip-list-prev").onclick = () => { if (listPage > 0) { listPage--; renderList(); } };
+      $("clip-list-next").onclick = () => { if ((listPage + 1) * 5 < queue.length) { listPage++; renderList(); } };
+    }
     $("item").onchange = () => move(Number($("item").value));
     const original = () => { const value = Number($("original").value), position = queue.findIndex(sourceIndex => metadata[sourceIndex][6] === value); if (position >= 0) return move(position); $("playState").textContent = "이 조건에 해당하는 음성 번호가 없습니다."; };
     $("original-go").onclick = original; $("original").onchange = original;
@@ -167,22 +183,36 @@
     $("extra-next").onclick = () => { if ((extraPage + 1) * EXTRA_LIMIT < extras.length) { extraPage++; renderExtras(); } };
     $("extra").onchange = () => { if ($("extra").value === "") return; const position = Number($("extra").value); if (Number.isInteger(position) && extras[position] !== undefined) { continuous = false; currentSource = "extra"; renderList(); return activate(extras[position], false, "extra"); } };
     if (!listeningEnhanced && window.KowwListening) {
-      window.KowwListening.enhance(audio, $("resume").parentElement, {play: $("resume"), previous: $("prev"), next: $("next")}); listeningEnhanced = true;
+      if (!clipPicker) window.KowwListening.enhance(audio, $("resume").parentElement, {play: $("resume"), previous: $("prev"), next: $("next")});
+      listeningEnhanced = true;
     }
   }
   async function boot() {
-    summary(); bind();
-    if (viewer?.schema_version !== 1 || !Number.isInteger(viewer.page_size) || viewer.page_size < 1 || viewer.page_size > 128) throw new Error("지원하지 않는 평가 화면 형식입니다.");
-    const data = await json(viewer.index_path);
-    if (data.schema_version !== 1 || !Array.isArray(data.clips)) throw new Error("평가 목록 형식이 올바르지 않습니다.");
-    metadata = data.clips;
-    $("scope").textContent = data.scope_text; $("noiseCoverage").textContent = data.noise_coverage_text;
-    const levels = new Set(), reverbGroups = new Set();
-    for (let position = 0; position < metadata.length; position++) { const clip = metadata[position]; if (clip[1] === "positive") { reverbGroups.add(clip[4] || "none"); if (clip[2] !== "clean") levels.add(clip[3]); } if (clip[2] === "clean" || clip[1] === "negative") extras.push(position); }
-    [...levels].sort((a, b) => b - a).forEach(level => option($("snr"), level, ui.snrLabel(level)));
-    if (levels.has(10)) $("snr").value = "10";
-    for (const node of $("reverb").options) node.disabled = !reverbGroups.has(node.value);
-    renderExtras(); await rebuild();
+    chapter?.loading();
+    try {
+      summary(); bind();
+      if (viewer?.schema_version !== 1 || !Number.isInteger(viewer.page_size) || viewer.page_size < 1 || viewer.page_size > 128) throw new Error("지원하지 않는 평가 화면 형식입니다.");
+      const data = await json(viewer.index_path);
+      if (data.schema_version !== 1 || !Array.isArray(data.clips)) throw new Error("평가 목록 형식이 올바르지 않습니다.");
+      metadata = data.clips;
+      $("scope").textContent = data.scope_text; $("noiseCoverage").textContent = data.noise_coverage_text;
+      const levels = new Set(), reverbGroups = new Set();
+      for (let position = 0; position < metadata.length; position++) { const clip = metadata[position]; if (clip[1] === "positive") { reverbGroups.add(clip[4] || "none"); if (clip[2] !== "clean") levels.add(clip[3]); } if (clip[2] === "clean" || clip[1] === "negative") extras.push(position); }
+      [...levels].sort((a, b) => b - a).forEach(level => option($("snr"), level, ui.snrLabel(level)));
+      if (levels.has(10)) $("snr").value = "10";
+      for (const node of $("reverb").options) node.disabled = !reverbGroups.has(node.value);
+      renderExtras();
+      const displayed = await rebuild();
+      if (!displayed) {
+        chapter?.fail($("playState").textContent || "평가 화면 준비가 중단되었습니다. 다시 열어 주세요.");
+        return false;
+      }
+      chapter?.ready();
+      return true;
+    } catch(error) {
+      chapter?.fail(error?.message || "평가 자료를 불러오지 못했습니다.");
+      throw error;
+    }
   }
   window.KowwResults = {boot, detail, rebuild, move, state: () => ({index, queueLength: queue.length, cachePages: [...cache.keys()], pendingPages: [...pending.keys()], source: currentSource, continuous}), OPTION_LIMIT, CACHE_LIMIT};
   if (!window.KOWW_RESULTS_TEST) boot().catch(error => { $("playState").textContent = error.message; });

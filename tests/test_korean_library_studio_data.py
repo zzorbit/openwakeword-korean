@@ -2,10 +2,12 @@
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import stat
 import struct
 import tarfile
+from types import SimpleNamespace
 import zipfile
 
 import numpy as np
@@ -127,6 +129,70 @@ def test_archive_extract_exact_subset_resume_and_tamper_detection(tmp_path):
     (output / "folder/a.wav").write_bytes(b"changed")
     with pytest.raises(ValueError, match="changed"):
         module.extract_archive(archive, output, members=["folder/a.wav"])
+
+
+@pytest.mark.parametrize("algorithm", ["sha256", "md5"])
+def test_archive_reuses_verified_sha256_only_in_material_preparation(tmp_path, monkeypatch, algorithm):
+    from korean_openwakeword.downloads import verify_checksum
+    from korean_openwakeword.material_downloads import MaterialDownloads
+
+    archive, output = tmp_path / "source.zip", tmp_path / "out"
+    _zip(archive, [("folder/a.flac", b"audio")])
+    expected = hashlib.new(algorithm, archive.read_bytes()).hexdigest()
+    with MaterialDownloads(tmp_path) as owner:
+        verified = verify_checksum(archive, algorithm, expected, verification_cache=owner.verification_cache,
+                                   return_sha256=True)
+        events = []
+        with monkeypatch.context() as patch:
+            patch.setattr(module, "hashlib", SimpleNamespace(sha256=lambda: pytest.fail("Rehashed verified archive")))
+            result = module._extract_zeroth_archive(archive, output, events.append)
+        assert result["request"]["archive"]["sha256"] == verified == digest(archive)
+        reuse = [record for record in events if record["phase"] == "extract_hash"]
+        assert len(reuse) == 1 and reuse[0]["verification_reused"] is True
+
+    events.clear()
+    assert module._extract_zeroth_archive(archive, output, events.append)["resumed"]
+    rehash = [record for record in events if record["phase"] == "extract_hash"]
+    assert rehash[0]["done"] == 0 and rehash[-1]["done"] == rehash[-1]["total"] == archive.stat().st_size
+    assert all(record["unit"] == "bytes" and not record.get("verification_reused") for record in rehash)
+
+
+def test_archive_replacement_invalidates_cached_sha256_and_does_not_rebind_receipt(tmp_path):
+    from korean_openwakeword.downloads import verify_checksum
+    from korean_openwakeword.material_downloads import MaterialDownloads
+
+    archive, output = tmp_path / "source.zip", tmp_path / "out"
+    _zip(archive, [("a.wav", b"original")])
+    receipt_path = output / "extraction_receipt.json"
+    module.extract_archive(archive, output)
+    previous = receipt_path.read_bytes()
+    with MaterialDownloads(tmp_path) as owner:
+        verify_checksum(archive, "sha256", digest(archive), verification_cache=owner.verification_cache)
+        replacement = tmp_path / "replacement.zip"
+        _zip(replacement, [("a.wav", b"replaced")])
+        original = archive.stat()
+        assert replacement.stat().st_size == original.st_size
+        os.utime(replacement, ns=(original.st_atime_ns, original.st_mtime_ns))
+        replacement.replace(archive)
+        with pytest.raises(ValueError, match="Archive extraction request changed"):
+            module.extract_archive(archive, output)
+    assert receipt_path.read_bytes() == previous
+    assert (output / "a.wav").read_bytes() == b"original"
+
+
+def test_archive_changed_during_extraction_cannot_publish_a_receipt(tmp_path):
+    archive, output = tmp_path / "source.zip", tmp_path / "out"
+    _zip(archive, [("a.wav", b"audio")])
+
+    def touch_archive(record):
+        if record["phase"] == "extract" and record["done"] == record["total"]:
+            before = archive.stat()
+            os.utime(archive, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+
+    with pytest.raises(ValueError, match="Archive changed during extraction"):
+        module.extract_archive(archive, output, progress=touch_archive)
+    assert not (output / "extraction_receipt.json").exists()
+    assert module.extract_archive(archive, output)["files"][0]["path"] == "a.wav"
 
 
 def _large_declared_zip(path):

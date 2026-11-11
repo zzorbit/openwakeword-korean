@@ -24,6 +24,7 @@ from .common import bound_file, digest
 from .evaluation_workers import score_session
 from .frontend import PINNED_ASSETS
 from .runtime import WakeWordDetector, bundle_candidates
+from .task_progress import activity as report_activity
 
 _CPU_REFERENCE = None
 _CPU_MODEL_IDS = None
@@ -191,6 +192,12 @@ class _GpuBatchScorer:
         mels = [np.ones((76, 32)) for _ in pcms]
         features = [self.initial_features.copy() for _ in pcms]
         results = [[] for _ in pcms]
+        lengths = [len(pcm) // 1280 for pcm in pcms]
+        total_frames, completed_frames = sum(lengths), 0
+        long_batch = max(lengths, default=0) >= 750
+        if long_batch:
+            report_activity("gpu_frames", "긴 음원 GPU 묶음 계산 중", 0, total_frames,
+                            audio_seconds=0, batch_audio_seconds=total_frames * .08, batch_files=len(pcms))
         for t in range(max((len(pcm) // 1280 for pcm in pcms), default=0)):
             end = (t + 1) * 1280
             active = [index for index, pcm in enumerate(pcms) if end <= len(pcm)]
@@ -214,6 +221,11 @@ class _GpuBatchScorer:
             values = np.column_stack((values, mean))
             for slot, index in enumerate(active):
                 results[index].append(values[slot])
+            completed_frames += len(active)
+            if long_batch and (t % 32 == 31 or completed_frames == total_frames):
+                report_activity("gpu_frames", "긴 음원 GPU 묶음 계산 중", completed_frames, total_frames,
+                    audio_seconds=completed_frames * .08, batch_audio_seconds=total_frames * .08,
+                    batch_files=len(pcms))
         return [np.asarray(values, dtype=np.float32).reshape(-1, 4) for values in results]
 
 
@@ -268,14 +280,22 @@ class _CpuRechecker:
     def score(self, cases):
         if not cases:
             return {}
+        report_activity("cpu_recheck", "CPU 경계 재확인 중", 0, len(cases), "개 음원")
         if self.workers == 1:
-            return {position: _score_cached(self.reference, row, wav, self.model_ids)
-                    for position, row, wav in cases}
+            checked = {}
+            for position, row, wav in cases:
+                checked[position] = _score_cached(self.reference, row, wav, self.model_ids)
+                report_activity("cpu_recheck", "CPU 경계 재확인 중", len(checked), len(cases), "개 음원")
+            return checked
         if self.pool is None:
             self.pool = ProcessPoolExecutor(max_workers=self.workers,
                 mp_context=multiprocessing.get_context("spawn"), initializer=_initialize_cpu_recheck,
                 initargs=(self.bundle, self.model_ids))
-        return dict(self.pool.map(_cpu_cached_case, cases, chunksize=1))
+        checked = {}
+        for position, result in self.pool.map(_cpu_cached_case, cases, chunksize=1):
+            checked[position] = result
+            report_activity("cpu_recheck", "CPU 경계 재확인 중", len(checked), len(cases), "개 음원")
+        return checked
 
     def close(self):
         if self.pool is not None:

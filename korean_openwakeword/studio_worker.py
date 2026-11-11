@@ -1,15 +1,85 @@
-"""One bounded Studio stage, launched by StudioManager (not a public CLI)."""
+"""Studio subprocess entry points, launched by StudioManager (not a public CLI)."""
 from pathlib import Path
+from contextlib import nullcontext
+from collections import deque
 import argparse
+import json
+import math
 import os
+import sys
+import time
 import traceback
 
-from .common import digest, now, read_json, write_json, writer_lock
+from .common import bound_file, digest, identity, now, read_json, write_json, writer_lock
 from .storage import storage_environment
 from .project import load_project
 
 
-def execute(request_path):
+def _task_progress_writer(request, directory, request_sha256):
+    """Best-effort display hints; receipt and artifact writes remain strict."""
+    owner_path = directory / "owner.json"
+    owner = read_json(owner_path) if owner_path.is_file() else {}
+    previous_key, previous_time, previous_done = None, None, None
+    phase, phase_started_at = None, None
+    rates = deque(maxlen=24)
+    rate_phase = None
+
+    def report(record):
+        nonlocal previous_key, previous_time, previous_done, phase, phase_started_at, rate_phase
+        stamp = time.monotonic()
+        wall = time.time()
+        new_phase = record["phase"]
+        if new_phase != phase:
+            phase, phase_started_at = new_phase, wall
+        hint = {**record, "phase_started_at": phase_started_at}
+        sample = hint.pop("rate_sample", None)
+        if phase in ("tts_generation", "training"):
+            # A worker may alternate between prompt setup and synthesis; keep
+            # recent completed samples while reporting the current phase.
+            if phase != rate_phase:
+                rates.clear()
+                rate_phase = phase
+            while rates and stamp - rates[0][0] > 120:
+                rates.popleft()
+            if sample is not None:
+                count, seconds = sample
+                if count >= 0 and math.isfinite(seconds) and seconds > 0:
+                    rates.append((stamp, count, seconds))
+            count = sum(row[1] for row in rates)
+            active_seconds = sum(row[2] for row in rates)
+            hint["worker_rate"] = None
+            if count >= 3 and active_seconds >= 1:
+                hint["worker_rate"] = {"per_second": count / active_seconds,
+                                       "measured_at": wall - (stamp - rates[-1][0])}
+        if phase == "model_initialization" and rate_phase == "training":
+            rates.clear()
+        # Before the first timing sample, a new worker's generation/training
+        # phase already owns the estimate. Do not substitute API poll timing.
+        # Throttle ordinary updates; always publish phase transitions promptly.
+        key = ((phase,) if phase == "tts_generation" else
+               tuple(record.get(field) for field in ("phase", "label", "total", "unit")))
+        activity = record.get("activity") or {}
+        key += tuple(activity.get(field) for field in ("phase", "total", "unit", "batch_files"))
+        done = activity.get("done") if activity else record.get("done")
+        reset = (key == previous_key and isinstance(done, (int, float))
+                 and isinstance(previous_done, (int, float)) and done < previous_done)
+        finished = record.get("total") is not None and record.get("done") == record["total"]
+        if key == previous_key and previous_time is not None and stamp - previous_time < 1 and not finished and not reset:
+            return
+        previous_key, previous_time, previous_done = key, stamp, done
+        try:
+            write_json(directory / "progress.json", {**hint, "kind": "studio_task_progress_v1",
+                "task_id": request["task_id"], "request_sha256": request_sha256,
+                "stage": request.get("stage"), "pid": os.getpid(),
+                "creation_identity": owner.get("creation_identity"), "updated_at": now()})
+        except OSError:
+            # Retry with a fresh hint when the worker reports again. This
+            # optional write does not determine whether the task succeeded.
+            return
+    return report
+
+
+def execute(request_path, *, reference_review=False, reference_preparation=False, load_model=None):
     request_path = Path(request_path).resolve()
     request = read_json(request_path)
     from .studio import process_identity
@@ -23,7 +93,132 @@ def execute(request_path):
             raise RuntimeError("This stage already has a live Python worker")
     write_json(prior_path, owner)
     with writer_lock(request_path.parent):
+        if reference_preparation:
+            return _execute_reference_preparation(request_path, load_model=load_model)
+        if reference_review:
+            return _execute_reference_review(request_path, load_model=load_model)
         return _execute(request_path)
+
+
+def _execute_reference_preparation(request_path, *, load_model=None):
+    from .reference_candidates import prepare_initial_candidate_batches
+    from .studio import _implementation
+
+    request = read_json(request_path)
+    result = {"task_id": request["task_id"], "request_sha256": digest(request_path),
+              "config_sha256": request["config_sha256"]}
+    destination = request_path.parent / "result.json"
+    if destination.exists():
+        prior = read_json(destination)
+        if any(prior.get(key) != value for key, value in result.items()):
+            raise ValueError("기준 목소리 준비 결과가 실행 요청과 다릅니다.")
+        return int(bool(prior.get("error")))
+    try:
+        if (request.get("kind") != "reference_initial_candidate_preparation_v1"
+                or _implementation() != request["implementation_id"]
+                or digest(request["project"]) != request["config_sha256"]):
+            raise ValueError("후보 준비 실행 코드 또는 모델 설정이 변경되었습니다.")
+        root = Path(request["project"]).parent.resolve()
+        if Path(request["pause_path"]).resolve() != request_path.parent / "pause.json":
+            raise ValueError("후보 준비 일시정지 요청의 저장 위치가 다릅니다.")
+        ledger_path = root / ".studio/reference-candidates/state.json"
+        ledger = read_json(ledger_path) if ledger_path.exists() else {}
+        previous = ledger.get("job") or {}
+        if previous.get("task_id") and previous.get("request_sha256"):
+            old_path = root / ".studio/reference-candidates/jobs" / previous["task_id"] / "request.json"
+            if digest(old_path) != previous["request_sha256"]:
+                raise ValueError("재개할 기존 후보 요청이 변경되었습니다.")
+            old = read_json(old_path)
+            if old.get("project") != request["project"] or old.get("config_sha256") != request["config_sha256"]:
+                raise ValueError("재개할 기존 후보 요청의 모델 설정이 다릅니다.")
+            if old.get("implementation_id") != request["implementation_id"]:
+                receipts = [read_json(bound_file(root, binding)) for binding in request.get("migrations", [])]
+                reached = {old.get("implementation_id")}
+                for _ in receipts:
+                    for receipt in receipts:
+                        if receipt.get("old_implementation_id") in reached:
+                            reached.add(receipt.get("new_implementation_id"))
+                if request["implementation_id"] not in reached:
+                    raise ValueError("구버전 후보 계획을 재개할 명시적 이관 근거가 없습니다.")
+                envelope = {"kind": "audited_reference_preparation_resume_v1",
+                    "old_request": {"path": old_path.relative_to(root).as_posix(), "sha256": digest(old_path)},
+                    "old_implementation_id": old["implementation_id"], "new_implementation_id": request["implementation_id"],
+                    "new_request_sha256": digest(request_path), "plan_id": identity(old["plan"]),
+                    "migration_receipts": request["migrations"]}
+                envelope_path = request_path.parent / "audited_resume.json"
+                if envelope_path.exists() and read_json(envelope_path) != envelope:
+                    raise ValueError("후보 준비 재개 연결 기록이 변경되었습니다.")
+                write_json(envelope_path, envelope)
+        model_cache = {}
+        def resident_model(model_path, config, root):
+            from .tts import _load_model
+            key = (str(root), model_path, config["device"], config["attention"],
+                   config.get("model_revisions", {}).get(model_path))
+            if key not in model_cache:
+                model_cache[key] = (load_model or _load_model)(model_path, config, root)
+            return model_cache[key]
+        result["result"] = prepare_initial_candidate_batches(request["project"], request["originals"],
+            load_model=resident_model, progress_path=request_path.parent / "progress.json", pause_path=request["pause_path"])
+        if digest(request["project"]) != request["config_sha256"]:
+            raise ValueError("후보 준비 중 모델 설정이 변경되었습니다.")
+    except Exception as error:
+        traceback.print_exc()
+        result["error"] = str(error) if isinstance(error, ValueError) else "기준 목소리 후보 준비를 완료하지 못했습니다. 작업 로그를 확인하세요."
+    write_json(destination, result)
+    return int(bool(result.get("error")))
+
+
+def _execute_reference_review(request_path, *, load_model=None):
+    from .reference_voice_review import generate_replacements
+    from .studio import _implementation
+
+    request = read_json(request_path)
+    destination = request_path.parent / "result.json"
+    result = {"task_id": request["task_id"], "request_sha256": digest(request_path)}
+    if destination.exists():
+        prior = read_json(destination)
+        if any(prior.get(key) != value for key, value in result.items()):
+            raise ValueError("기준 목소리 다시 생성 기록이 실행 요청과 다릅니다.")
+        return int(bool(prior.get("error")))
+    try:
+        if _implementation() != request["implementation_id"] or digest(request["project"]) != request["config_sha256"]:
+            raise ValueError("다시 생성하기 전에 실행 코드 또는 모델 설정이 바뀌었습니다.")
+        options = {"load_model": load_model} if load_model is not None else {}
+        if request.get("kind") == "reference_candidate_batch_v2":
+            from .reference_candidates import generate_candidate_batch
+            result["candidates"] = generate_candidate_batch(request["project"], request_path.parent / "audio",
+                request["task_id"], request["plan"], request["all_hashes"], **options)
+        else:
+            result["replacements"] = generate_replacements(request["project"], request_path.parent / "audio",
+                request["task_id"], request["rows"], request["all_hashes"], **options)
+        if digest(request["project"]) != request["config_sha256"]:
+            raise ValueError("다시 생성하는 동안 모델 설정이 바뀌었습니다.")
+    except Exception as error:
+        traceback.print_exc()
+        result["error"] = str(error) if isinstance(error, ValueError) else "기준 목소리를 다시 생성하지 못했습니다. 작업 로그를 확인하세요."
+    write_json(destination, result)
+    return int(bool(result.get("error")))
+
+
+def _serve_reference_reviews():
+    """Handle one request path per line until the manager closes the pipe."""
+    model = model_key = None
+
+    def load_model(model_path, config, root):
+        from .tts import _load_model
+
+        nonlocal model, model_key
+        key = (root, model_path, config["device"], config["attention"],
+               config.get("model_revisions", {}).get(model_path))
+        if model is None or model_key != key:
+            model = None
+            model = _load_model(model_path, config, root)
+            model_key = key
+        return model
+
+    for line in sys.stdin.buffer:
+        execute(json.loads(line), reference_review=True, load_model=load_model)
+    return 0
 
 
 def _execute(request_path):
@@ -48,7 +243,19 @@ def _execute(request_path):
             if _implementation() != request["implementation_id"]:
                 raise ValueError("Library implementation changed before execution; previous artifacts preserved")
         from .studio_steps import run_stage
-        with storage_environment(Path(request["project"]).parent):
+        if request["stage"] == "results":
+            from .site import studio_result_audio
+            result_audio = studio_result_audio(request["project"])
+        else:
+            result_audio = nullcontext()
+        from .task_progress import task_progress
+        report = _task_progress_writer(request, request_path.parent, request_hash)
+        if request["stage"] == "training":
+            from .train import training_progress
+            preparation = training_progress(report)
+        else:
+            preparation = nullcontext()
+        with storage_environment(Path(request["project"]).parent), result_audio, preparation, task_progress(report):
             result["result"] = run_stage(request["project"], request["workspace"], request["settings"],
                                          request["stage"], request.get("context", {}))
         after = load_project(request["project"])[1]
@@ -79,5 +286,13 @@ def _execute(request_path):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--request", required=True)
-    raise SystemExit(execute(parser.parse_args().request))
+    request = parser.add_mutually_exclusive_group(required=True)
+    request.add_argument("--request")
+    request.add_argument("--reference-review")
+    request.add_argument("--reference-preparation")
+    request.add_argument("--reference-review-worker", action="store_true")
+    args = parser.parse_args()
+    if args.reference_review_worker:
+        raise SystemExit(_serve_reference_reviews())
+    raise SystemExit(execute(args.request or args.reference_review or args.reference_preparation,
+                            reference_review=bool(args.reference_review), reference_preparation=bool(args.reference_preparation)))

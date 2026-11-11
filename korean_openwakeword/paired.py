@@ -412,7 +412,18 @@ def _coverage(pools, selections, entries, recipe, manifest):
 
 
 @project_storage
-def prepare_evaluation(project, output, split="validation", originals=100, noise_sections=5, snrs=(20, 15, 10, 5, 0), noise_selection="legacy", reverb_originals=0, reverb_selection="legacy"):
+def prepare_evaluation(project, output, split="validation", originals=100, noise_sections=5, snrs=(20, 15, 10, 5, 0), noise_selection="legacy", reverb_originals=0, reverb_selection="legacy", *, progress=None):
+    from .task_progress import emit
+    if progress is not None and not callable(progress):
+        raise ValueError("Evaluation preparation progress must be callable or None")
+    def report(phase, label, done=None, total=None):
+        record = {"phase": phase, "label": label, "done": done, "total": total,
+                  "unit": "개 음원", "eta_eligible": phase == "preparation_generation"}
+        if progress is not None:
+            progress(record)
+        else:
+            emit(**record)
+    report("preparation_validation", "평가 자료 원본·분리 기준 확인")
     root, config = load_project(project)
     if type(originals) is not int or originals < 1 or type(noise_sections) is not int or noise_sections < 1 or not snrs or any(not math.isfinite(s) for s in snrs):
         raise ValueError("Declare positive counts and finite SNR conditions")
@@ -457,6 +468,9 @@ def prepare_evaluation(project, output, split="validation", originals=100, noise
     (output / "audio").mkdir(parents=True, exist_ok=True)
     write_json(output / "recipe.json", recipe)
     entries, selections, peak_cache, rir_cache, rir_selections = [], [], {}, {}, []
+    condition_count = 1 + len(CATEGORIES) * noise_sections * len(snrs)
+    expected_files = (min(originals, len(positives)) + 2 * len(chosen_reverb)) * condition_count
+    report("preparation_generation", "평가 자료 음원 생성", 0, expected_files)
     for order, row in enumerate(positives[:originals]):
         source, _ = seek_audio(root, {**row, "start_s": row["call_start_s"], "end_s": row["call_end_s"]}, row["call_end_s"] - row["call_start_s"])
         # An explicit, recorded test construction gain; the same WAV is listened to and scored.
@@ -605,9 +619,13 @@ def prepare_evaluation(project, output, split="validation", originals=100, noise
                             noise_source_group_id=source_group["id"], noise_selection_policy=recipe["noise_selection"],
                             noise_construction=construction)
                     entries.append(entry)
+                    report("preparation_generation", "평가 자료 음원 생성", len(entries), expected_files)
                 rir_selections.append({"original_id": row["sample_id"], "group": group,
                     "source_id": source_key(rir), "sha256": rir["sha256"], "room_id": rir["canonical_room_id"],
                     "acoustic_source_type": rir.get("acoustic_source_type", "unspecified"), "rt60_s": rir["rt60_s"]})
+        # Report completed, hash-bound WAVs, never an in-progress write.
+        report("preparation_generation", "평가 자료 음원 생성", len(entries), expected_files)
+    report("preparation_finalizing", "평가 자료 목록·커버리지 확인", len(entries), expected_files)
     manifest = output / "manifest.jsonl"
     manifest.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in entries), encoding="utf-8")
     result = {"originals": min(originals, len(positives)), "audio_files": len(entries), "manifest": str(manifest),

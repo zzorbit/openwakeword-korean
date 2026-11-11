@@ -530,6 +530,11 @@ def evaluate(project, bundle, output, stage="development", manifest=None, smoke=
         journal = EvaluationJournal(output, binding, offsets, model_ids, resume=resume)
         try:
             execution["resumed_sessions"] = journal.resumed_sessions
+            # Enter scoring before computing a potentially long first batch.
+            # Only the journal's durable prefix is counted, including zero.
+            label = (f"CUDA batch={gpu_batch_size}, CPU rechecked=0" if backend == "cuda"
+                     else f"CPU workers={execution['workers']}")
+            print(f"Evaluate {stage}: {journal.resumed_sessions}/{len(sources)} ({label})", flush=True)
             items = ((index, sources[index], paths[index]) for index in range(journal.resumed_sessions, len(sources)))
             if backend == "cuda":
                 items = _verified_gpu_items(root, sources, paths, offsets, journal.resumed_sessions)

@@ -282,6 +282,40 @@ def test_balancing_never_bypasses_source_split_audit_or_final_lock(project):
 def test_invalid_policy_does_not_materialize_audio(project):
     with pytest.raises(ValueError, match="Noise selection"):
         prepare_evaluation(project, project.parent / "reports/invalid", originals=1, noise_selection="invented")
+
+
+def test_preparation_progress_counts_only_finished_wavs_and_preserves_audio(project, monkeypatch):
+    baseline = prepare_evaluation(project, project.parent / "reports/progress_off", originals=1,
+                                  noise_sections=1, snrs=(10,))
+    output, signals = project.parent / "reports/progress_on", []
+    def progress(record):
+        signals.append(record)
+        if record["phase"] == "preparation_finalizing":
+            assert not (output / "manifest.jsonl").exists()
+    actual = prepare_evaluation(project, output, originals=1, noise_sections=1, snrs=(10,), progress=progress)
+    assert [row["sha256"] for row in read_rows(actual["manifest"])] == [
+        row["sha256"] for row in read_rows(baseline["manifest"])]
+    generating = [r for r in signals if r["phase"] == "preparation_generation"]
+    assert generating[0]["done"] == 0 and generating[-1]["done"] == generating[-1]["total"] == 4
+    assert signals[-1]["phase"] == "preparation_finalizing"
+    from korean_openwakeword import studio_worker
+    from korean_openwakeword.task_progress import task_progress
+    strict_write = studio_worker.write_json
+    denied = []
+    def display_write(path, record):
+        if not denied:
+            denied.append(True)
+            raise PermissionError("transient display sidecar sharing")
+        strict_write(path, record)
+    monkeypatch.setattr(studio_worker, "write_json", display_write)
+    report = studio_worker._task_progress_writer({"task_id": "fixture", "stage": "development"},
+                                                project.parent / "display_job", "fixture-sha")
+    with task_progress(report):
+        recovered = prepare_evaluation(project, project.parent / "reports/progress_locked", originals=1,
+                                       noise_sections=1, snrs=(10,))
+    assert denied and recovered["audio_files"] == baseline["audio_files"]
+    assert [r["sha256"] for r in read_rows(recovered["manifest"])] == [
+        r["sha256"] for r in read_rows(baseline["manifest"])]
     assert not (project.parent / "reports/invalid").exists()
 
 

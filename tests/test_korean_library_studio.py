@@ -362,13 +362,14 @@ def _paused_after_first_stage(manager):
     return view
 
 
-def test_compatible_update_is_explicit_hash_verified_and_preserves_existing_outputs(manager):
+def test_compatible_update_is_explicit_hash_verified_and_preserves_existing_outputs(manager, monkeypatch):
     view = _paused_after_first_stage(manager)
     state = manager._load(view["id"])
     before = manager._path(view["id"]).read_bytes()
     project_before = Path(state["project"]).read_bytes()
     history_before, inputs_before = state["history"], state["inputs"]
     manager._implementation_id = "compatible-ui-patch"
+    monkeypatch.setattr(studio, "_implementation", lambda: manager._implementation_id)  # Simulate a freshly restarted runtime.
     assert manager.describe(state)["migration"]["state"] == "available"
     with pytest.raises(ValueError, match="업데이트 적용 후 이어가기"):
         manager.start(view["id"])
@@ -587,6 +588,11 @@ def test_saved_review_is_explicit_hash_bound_human_disposition_not_blanket_liste
 
 def test_review_hold_and_pilot_rejection_never_start_bulk_generation(manager):
     project = create(manager)
+    # Preserve the legacy review/discard API's approval gate; current PREPOST
+    # autosave and selective retry behavior have their own preflight tests.
+    state = manager._load(project["id"])
+    state["settings"]["pilot_review_policy"] = "one_per_training_voice_v1"
+    manager._save(state)
     reference_queue(manager, project["id"])
     result = manager.save_review(project["id"], "fixture", {"fixture-1": {"decision": "review", "listened": True}})
     assert result["kept"] == 0 and manager._load(project["id"])["status"] == "waiting_review"
@@ -631,6 +637,63 @@ def test_http_static_ui_state_and_bound_random_port_are_usable(manager, http_ser
         assert headers["X-Frame-Options"] == "SAMEORIGIN" and headers["Cache-Control"] == "no-store"
     status, content, _ = http_server("/api/state")
     assert status == 200 and json.loads(content)["token"] == manager.token
+
+
+def test_http_studio_state_reads_only_selected_workflow_and_preserves_full_state_api(manager, http_server, monkeypatch):
+    def get(path):
+        status, content, _ = http_server(path)
+        assert status == 200
+        return json.loads(content)
+
+    empty = get("/api/state?view=studio")
+    assert empty["selected_project_id"] is None and empty["projects"] == []
+    assert empty["token"] == manager.token
+    older = create(manager, wakeword="보라야")
+    current = create(manager, wakeword="소라야")
+    loaded = []
+    original_load = manager._load
+
+    def track_load(project_id):
+        loaded.append(project_id)
+        return original_load(project_id)
+
+    monkeypatch.setattr(manager, "_load", track_load)
+    view = get("/api/state?view=studio")
+    assert loaded == [current["id"]]
+    assert view["selected_project_id"] == view["active_project_id"] == current["id"]
+    assert view["projects"][0] == {key: older[key] for key in ("id", "wakeword", "directory")}
+    assert view["projects"][1]["stages"] == current["stages"]
+
+    loaded.clear()
+    view = get(f"/api/state?view=studio&project={older['id']}")
+    assert loaded == [older["id"]]
+    assert view["selected_project_id"] == older["id"] and view["active_project_id"] == current["id"]
+    assert view["projects"][0]["stages"] == older["stages"]
+    assert view["projects"][1] == {key: current[key] for key in ("id", "wakeword", "directory")}
+    assert get("/api/state?view=studio&project=missing")["selected_project_id"] == current["id"]
+
+    loaded.clear()
+    full = get("/api/state")
+    assert loaded == [older["id"], current["id"]]
+    assert "selected_project_id" not in full
+    assert [project["stages"] for project in full["projects"]] == [older["stages"], current["stages"]]
+
+
+def test_studio_import_leaves_runtime_lazy_and_package_exports_still_work():
+    source = """
+import sys
+import korean_openwakeword as package
+from korean_openwakeword import studio
+
+assert 'korean_openwakeword.runtime' not in sys.modules
+assert 'scipy.stats' not in sys.modules
+assert {'WakeWordDetector', 'sample_bundle'} <= set(dir(package))
+from korean_openwakeword import WakeWordDetector, sample_bundle
+from korean_openwakeword import runtime
+assert WakeWordDetector is runtime.WakeWordDetector is package.WakeWordDetector
+assert sample_bundle is runtime.sample_bundle is package.sample_bundle
+"""
+    subprocess.run([sys.executable, "-c", source], check=True, timeout=120)
 
 
 @pytest.mark.parametrize("name,kind", [
@@ -705,8 +768,9 @@ def test_http_live_progress_access_denial_defers_then_recovers_without_changing_
     for _ in range(2):
         status, content, _ = http_server("/api/state")
         body = json.loads(content)
-        assert status == 503 and body["code"] == "progress_read_pending"
-        assert "진행 정보" in body["error"] and "자동으로 다시 확인" in body["error"]
+        assert status == 200
+        active = next(row for row in body["projects"] if row["id"] == project_id)
+        assert active["progress_pending"] is True and active["error"] is None
         assert manager._load(project_id)["status"] == "running"
         assert manager._load(project_id)["error"] is None
         assert len(manager.workers.items) == 1
@@ -716,7 +780,19 @@ def test_http_live_progress_access_denial_defers_then_recovers_without_changing_
     assert status == 200
     active = next(row for row in json.loads(content)["projects"] if row["id"] == project_id)
     assert active["status"] == "running" and active["error"] is None
-    assert active["progress"]["done"] == 7
+    assert active["progress"]["done"] == 7 and not active.get("progress_pending")
+    # Once a valid sample exists, a subsequent sharing denial keeps that exact
+    # progress visible instead of blanking the screen or failing the request.
+    denied = True
+    status, content, _ = http_server("/api/state")
+    active = next(row for row in json.loads(content)["projects"] if row["id"] == project_id)
+    assert status == 200 and active["progress_pending"] is True
+    assert active["progress"]["done"] == 7 and active["error"] is None
+    denied = False
+    status, content, _ = http_server("/api/state")
+    active = next(row for row in json.loads(content)["projects"] if row["id"] == project_id)
+    assert status == 200 and not active.get("progress_pending")
+    assert active["progress"]["done"] == 7 and active["status"] == "running"
     assert len(manager.workers.items) == 1
     assert all(path.read_bytes() == before for path, before in protected.items())
 
@@ -1333,7 +1409,7 @@ def test_evaluation_catalog_changes_are_part_of_worker_implementation_identity(t
     assert studio._implementation() != before
 
 
-def test_unstarted_workflow_update_preserves_sources_and_records_exact_prior_state(manager):
+def test_unstarted_workflow_update_preserves_sources_and_records_exact_prior_state(manager, monkeypatch):
     project = create(manager)
     workflow = manager._path(project["id"])
     state = manager._load(project["id"])
@@ -1344,6 +1420,7 @@ def test_unstarted_workflow_update_preserves_sources_and_records_exact_prior_sta
     original.write_bytes(b"previously downloaded material is preserved")
     protected = {path: digest(path) for path in root.rglob("*") if path.is_file() and path != workflow}
     manager._implementation_id = "new-tested-implementation"
+    monkeypatch.setattr(studio, "_implementation", lambda: manager._implementation_id)  # Simulate a freshly restarted runtime.
     manager.start(project["id"])
     migrated = manager._load(project["id"])
     assert migrated["implementation_id"] == "new-tested-implementation"
@@ -1370,13 +1447,14 @@ def test_unstarted_workflow_update_preserves_sources_and_records_exact_prior_sta
     {"history": [{"stage": "frontend", "sha256": "old"}]},
     {"last_job": {"task_id": "previous-worker"}}, {"job": {"task_id": "active-worker"}},
     {"status": "running"}, {"status": "paused"}, {"index": 1}])
-def test_started_or_decided_workflow_is_never_silently_rebound(manager, changes):
+def test_started_or_decided_workflow_is_never_silently_rebound(manager, changes, monkeypatch):
     project = create(manager)
     state = put_state(manager, project["id"], **changes)
     workflow = manager._path(project["id"])
     original = workflow.read_bytes()
     project_hash = digest(state["project"])
     manager._implementation_id = "new-tested-implementation"
+    monkeypatch.setattr(studio, "_implementation", lambda: manager._implementation_id)  # Simulate a freshly restarted runtime.
     with pytest.raises(ValueError, match="라이브러리 코드가 변경"):
         manager._guard_config(state)
     assert workflow.read_bytes() == original and digest(state["project"]) == project_hash
@@ -1385,7 +1463,7 @@ def test_started_or_decided_workflow_is_never_silently_rebound(manager, changes)
 
 
 @pytest.mark.parametrize("obstruction", ["lock", "old_job", "config"])
-def test_unstarted_update_refuses_locks_old_job_files_or_changed_config(manager, obstruction):
+def test_unstarted_update_refuses_locks_old_job_files_or_changed_config(manager, obstruction, monkeypatch):
     project = create(manager)
     state = manager._load(project["id"])
     root = Path(state["project"]).parent
@@ -1404,6 +1482,7 @@ def test_unstarted_update_refuses_locks_old_job_files_or_changed_config(manager,
     workflow = manager._path(project["id"])
     previous = workflow.read_bytes()
     manager._implementation_id = "new-tested-implementation"
+    monkeypatch.setattr(studio, "_implementation", lambda: manager._implementation_id)  # Simulate a freshly restarted runtime.
     with pytest.raises(ValueError):
         manager._guard_config(state)
     assert path.read_bytes() == before and workflow.read_bytes() == previous

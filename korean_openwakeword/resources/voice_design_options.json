@@ -1,0 +1,804 @@
+{
+  "version": 1,
+  "fields": [
+    {
+      "id": "pitch",
+      "label": "음높이"
+    },
+    {
+      "id": "resonance",
+      "label": "성대 울림"
+    },
+    {
+      "id": "timbre",
+      "label": "음색"
+    },
+    {
+      "id": "pace",
+      "label": "말하는 속도"
+    },
+    {
+      "id": "intonation",
+      "label": "억양"
+    }
+  ],
+  "ages": {
+    "child": {
+      "label": "어린이",
+      "targetAge": 8,
+      "speakers": {
+        "man": "boy",
+        "woman": "girl"
+      },
+      "basePrompt": "A native Korean-speaking {speaker}, approximately 8 years old, with a naturally youthful, developing child's voice.",
+      "controls": {
+        "pitch": [
+          {
+            "id": "child.pitch.slightly_low",
+            "label": "조금 낮음",
+            "promptEn": "a slightly lower pitch",
+            "isDefault": false
+          },
+          {
+            "id": "child.pitch.normal",
+            "label": "보통",
+            "promptEn": "a typical pitch",
+            "isDefault": true
+          },
+          {
+            "id": "child.pitch.high",
+            "label": "높음",
+            "promptEn": "a higher pitch",
+            "isDefault": false
+          },
+          {
+            "id": "child.pitch.very_high",
+            "label": "매우 높음",
+            "promptEn": "a much higher pitch",
+            "isDefault": false
+          }
+        ],
+        "resonance": [
+          {
+            "id": "child.resonance.very_light",
+            "label": "매우 가벼운 울림",
+            "promptEn": "very light vocal resonance",
+            "isDefault": false
+          },
+          {
+            "id": "child.resonance.light",
+            "label": "가벼운 울림",
+            "promptEn": "light vocal resonance",
+            "isDefault": true
+          },
+          {
+            "id": "child.resonance.clear",
+            "label": "선명한 울림",
+            "promptEn": "clear vocal resonance",
+            "isDefault": false
+          }
+        ],
+        "timbre": [
+          {
+            "id": "child.timbre.clear_fresh",
+            "label": "맑고 청량함",
+            "promptEn": "a clear, fresh timbre",
+            "isDefault": true
+          },
+          {
+            "id": "child.timbre.soft_gentle",
+            "label": "부드럽고 순함",
+            "promptEn": "a soft, gentle timbre",
+            "isDefault": false
+          },
+          {
+            "id": "child.timbre.bright_light",
+            "label": "밝고 가벼움",
+            "promptEn": "a bright, light timbre",
+            "isDefault": false
+          },
+          {
+            "id": "child.timbre.slightly_nasal",
+            "label": "약한 비음",
+            "promptEn": "a slightly nasal timbre",
+            "isDefault": false
+          },
+          {
+            "id": "child.timbre.slightly_breathy",
+            "label": "살짝 숨 섞임",
+            "promptEn": "a lightly breathy timbre",
+            "isDefault": false
+          }
+        ],
+        "pace": [
+          {
+            "id": "child.pace.slow",
+            "label": "느리게",
+            "promptEn": "a slow conversational pace",
+            "isDefault": false
+          },
+          {
+            "id": "child.pace.normal",
+            "label": "보통",
+            "promptEn": "a natural conversational pace",
+            "isDefault": true
+          },
+          {
+            "id": "child.pace.fast",
+            "label": "빠르게",
+            "promptEn": "a fast conversational pace",
+            "isDefault": false
+          }
+        ],
+        "intonation": [
+          {
+            "id": "child.intonation.natural",
+            "label": "자연스러움",
+            "promptEn": "natural conversational intonation",
+            "isDefault": true
+          },
+          {
+            "id": "child.intonation.lively",
+            "label": "발랄함",
+            "promptEn": "lively intonation",
+            "isDefault": false
+          },
+          {
+            "id": "child.intonation.calm",
+            "label": "차분함",
+            "promptEn": "calm, restrained intonation",
+            "isDefault": false
+          },
+          {
+            "id": "child.intonation.varied",
+            "label": "높낮이 변화가 큼",
+            "promptEn": "wide pitch variation within phrases",
+            "isDefault": false
+          },
+          {
+            "id": "child.intonation.emphatic",
+            "label": "또렷한 강조",
+            "promptEn": "clearly articulated emphasis",
+            "isDefault": false
+          }
+        ]
+      }
+    },
+    "teenager": {
+      "label": "청소년",
+      "targetAge": 16,
+      "speakers": {
+        "man": "male teenager",
+        "woman": "female teenager"
+      },
+      "basePrompt": "A native Korean-speaking {speaker}, approximately 16 years old, with a youthful but developing teenage vocal quality.",
+      "controls": {
+        "pitch": [
+          {
+            "id": "teenager.pitch.lower",
+            "label": "낮은 편",
+            "promptEn": "a moderately lower pitch",
+            "isDefault": false
+          },
+          {
+            "id": "teenager.pitch.normal",
+            "label": "보통",
+            "promptEn": "a typical pitch",
+            "isDefault": true
+          },
+          {
+            "id": "teenager.pitch.higher",
+            "label": "높은 편",
+            "promptEn": "a moderately higher pitch",
+            "isDefault": false
+          },
+          {
+            "id": "teenager.pitch.very_high",
+            "label": "매우 높은 편",
+            "promptEn": "a much higher pitch",
+            "isDefault": false
+          }
+        ],
+        "resonance": [
+          {
+            "id": "teenager.resonance.light",
+            "label": "가벼운 울림",
+            "promptEn": "light vocal resonance",
+            "isDefault": false
+          },
+          {
+            "id": "teenager.resonance.balanced",
+            "label": "균형 잡힌 울림",
+            "promptEn": "balanced vocal resonance",
+            "isDefault": true
+          },
+          {
+            "id": "teenager.resonance.firm",
+            "label": "탄탄한 울림",
+            "promptEn": "firm, well-supported vocal resonance",
+            "isDefault": false
+          }
+        ],
+        "timbre": [
+          {
+            "id": "teenager.timbre.clear_crisp",
+            "label": "맑고 또렷함",
+            "promptEn": "a clear, crisp timbre",
+            "isDefault": true
+          },
+          {
+            "id": "teenager.timbre.bright_fresh",
+            "label": "밝고 산뜻함",
+            "promptEn": "a bright, fresh timbre",
+            "isDefault": false
+          },
+          {
+            "id": "teenager.timbre.soft",
+            "label": "부드러움",
+            "promptEn": "a soft timbre",
+            "isDefault": false
+          },
+          {
+            "id": "teenager.timbre.slightly_husky",
+            "label": "약간 허스키함",
+            "promptEn": "a slightly husky timbre",
+            "isDefault": false
+          },
+          {
+            "id": "teenager.timbre.slightly_breathy",
+            "label": "살짝 숨 섞임",
+            "promptEn": "a lightly breathy timbre",
+            "isDefault": false
+          }
+        ],
+        "pace": [
+          {
+            "id": "teenager.pace.slow",
+            "label": "느리게",
+            "promptEn": "a slow conversational pace",
+            "isDefault": false
+          },
+          {
+            "id": "teenager.pace.normal",
+            "label": "보통",
+            "promptEn": "a natural conversational pace",
+            "isDefault": true
+          },
+          {
+            "id": "teenager.pace.fast",
+            "label": "빠르게",
+            "promptEn": "a fast conversational pace",
+            "isDefault": false
+          },
+          {
+            "id": "teenager.pace.very_fast",
+            "label": "매우 빠르게",
+            "promptEn": "a very fast conversational pace",
+            "isDefault": false
+          }
+        ],
+        "intonation": [
+          {
+            "id": "teenager.intonation.plain",
+            "label": "담백함",
+            "promptEn": "plain, unembellished intonation",
+            "isDefault": false
+          },
+          {
+            "id": "teenager.intonation.natural",
+            "label": "자연스러움",
+            "promptEn": "natural conversational intonation",
+            "isDefault": true
+          },
+          {
+            "id": "teenager.intonation.light_rhythmic",
+            "label": "경쾌함",
+            "promptEn": "light, rhythmic intonation",
+            "isDefault": false
+          },
+          {
+            "id": "teenager.intonation.varied",
+            "label": "변화가 풍부함",
+            "promptEn": "varied, expressive intonation",
+            "isDefault": false
+          },
+          {
+            "id": "teenager.intonation.emphatic",
+            "label": "강조가 뚜렷함",
+            "promptEn": "clearly defined emphasis",
+            "isDefault": false
+          }
+        ]
+      }
+    },
+    "young adult": {
+      "label": "청년",
+      "targetAge": 27,
+      "speakers": {
+        "man": "young adult man",
+        "woman": "young adult woman"
+      },
+      "basePrompt": "A native Korean-speaking {speaker}, approximately 27 years old, with a naturally mature, stable and well-developed adult voice.",
+      "controls": {
+        "pitch": [
+          {
+            "id": "young_adult.pitch.very_low",
+            "label": "매우 낮음",
+            "promptEn": "a much lower pitch",
+            "isDefault": false
+          },
+          {
+            "id": "young_adult.pitch.low",
+            "label": "낮음",
+            "promptEn": "a lower pitch",
+            "isDefault": false
+          },
+          {
+            "id": "young_adult.pitch.normal",
+            "label": "보통",
+            "promptEn": "a typical pitch",
+            "isDefault": true
+          },
+          {
+            "id": "young_adult.pitch.high",
+            "label": "높음",
+            "promptEn": "a higher pitch",
+            "isDefault": false
+          },
+          {
+            "id": "young_adult.pitch.very_high",
+            "label": "매우 높음",
+            "promptEn": "a much higher pitch",
+            "isDefault": false
+          }
+        ],
+        "resonance": [
+          {
+            "id": "young_adult.resonance.light",
+            "label": "가벼운 울림",
+            "promptEn": "light vocal resonance",
+            "isDefault": false
+          },
+          {
+            "id": "young_adult.resonance.balanced",
+            "label": "균형 잡힌 울림",
+            "promptEn": "balanced vocal resonance",
+            "isDefault": true
+          },
+          {
+            "id": "young_adult.resonance.rich",
+            "label": "풍부한 울림",
+            "promptEn": "rich vocal resonance",
+            "isDefault": false
+          },
+          {
+            "id": "young_adult.resonance.deep_full",
+            "label": "깊고 묵직한 울림",
+            "promptEn": "deep, full-bodied vocal resonance",
+            "isDefault": false
+          }
+        ],
+        "timbre": [
+          {
+            "id": "young_adult.timbre.natural_clear",
+            "label": "자연스럽고 또렷함",
+            "promptEn": "a natural, clear timbre",
+            "isDefault": true
+          },
+          {
+            "id": "young_adult.timbre.clear_bright",
+            "label": "맑고 밝음",
+            "promptEn": "a clear, bright timbre",
+            "isDefault": false
+          },
+          {
+            "id": "young_adult.timbre.soft_smooth",
+            "label": "부드럽고 매끄러움",
+            "promptEn": "a soft, smooth timbre",
+            "isDefault": false
+          },
+          {
+            "id": "young_adult.timbre.warm",
+            "label": "따뜻함",
+            "promptEn": "a warm timbre",
+            "isDefault": false
+          },
+          {
+            "id": "young_adult.timbre.husky",
+            "label": "허스키함",
+            "promptEn": "a husky timbre",
+            "isDefault": false
+          },
+          {
+            "id": "young_adult.timbre.breathy",
+            "label": "숨 섞임",
+            "promptEn": "a breathy timbre",
+            "isDefault": false
+          }
+        ],
+        "pace": [
+          {
+            "id": "young_adult.pace.very_slow",
+            "label": "매우 느리게",
+            "promptEn": "a very slow conversational pace",
+            "isDefault": false
+          },
+          {
+            "id": "young_adult.pace.slow",
+            "label": "느리게",
+            "promptEn": "a slow conversational pace",
+            "isDefault": false
+          },
+          {
+            "id": "young_adult.pace.normal",
+            "label": "보통",
+            "promptEn": "a natural conversational pace",
+            "isDefault": true
+          },
+          {
+            "id": "young_adult.pace.fast",
+            "label": "빠르게",
+            "promptEn": "a fast conversational pace",
+            "isDefault": false
+          },
+          {
+            "id": "young_adult.pace.very_fast",
+            "label": "매우 빠르게",
+            "promptEn": "a very fast conversational pace",
+            "isDefault": false
+          }
+        ],
+        "intonation": [
+          {
+            "id": "young_adult.intonation.flat",
+            "label": "단조로움",
+            "promptEn": "even intonation with little pitch variation",
+            "isDefault": false
+          },
+          {
+            "id": "young_adult.intonation.calm",
+            "label": "차분함",
+            "promptEn": "calm, restrained intonation",
+            "isDefault": false
+          },
+          {
+            "id": "young_adult.intonation.natural",
+            "label": "자연스러움",
+            "promptEn": "natural conversational intonation",
+            "isDefault": true
+          },
+          {
+            "id": "young_adult.intonation.light_rhythmic",
+            "label": "경쾌함",
+            "promptEn": "light, rhythmic intonation",
+            "isDefault": false
+          },
+          {
+            "id": "young_adult.intonation.expressive",
+            "label": "표현이 풍부함",
+            "promptEn": "richly expressive intonation",
+            "isDefault": false
+          },
+          {
+            "id": "young_adult.intonation.emphatic",
+            "label": "강조가 뚜렷함",
+            "promptEn": "clearly defined emphasis",
+            "isDefault": false
+          }
+        ]
+      }
+    },
+    "middle-aged": {
+      "label": "중년",
+      "targetAge": 47,
+      "speakers": {
+        "man": "middle-aged man",
+        "woman": "middle-aged woman"
+      },
+      "basePrompt": "A native Korean-speaking {speaker}, approximately 47 years old, with a mature, stable and well-supported adult voice.",
+      "controls": {
+        "pitch": [
+          {
+            "id": "middle_aged.pitch.low",
+            "label": "낮음",
+            "promptEn": "a lower pitch",
+            "isDefault": false
+          },
+          {
+            "id": "middle_aged.pitch.slightly_low",
+            "label": "약간 낮음",
+            "promptEn": "a slightly lower pitch",
+            "isDefault": false
+          },
+          {
+            "id": "middle_aged.pitch.normal",
+            "label": "보통",
+            "promptEn": "a typical pitch",
+            "isDefault": true
+          },
+          {
+            "id": "middle_aged.pitch.slightly_high",
+            "label": "약간 높음",
+            "promptEn": "a slightly higher pitch",
+            "isDefault": false
+          }
+        ],
+        "resonance": [
+          {
+            "id": "middle_aged.resonance.light_soft",
+            "label": "가볍고 부드러운 울림",
+            "promptEn": "light, soft vocal resonance",
+            "isDefault": false
+          },
+          {
+            "id": "middle_aged.resonance.balanced",
+            "label": "균형 잡힌 울림",
+            "promptEn": "balanced vocal resonance",
+            "isDefault": false
+          },
+          {
+            "id": "middle_aged.resonance.rich_rounded",
+            "label": "풍부하고 둥근 울림",
+            "promptEn": "rich, rounded vocal resonance",
+            "isDefault": true
+          },
+          {
+            "id": "middle_aged.resonance.deep_full",
+            "label": "깊고 묵직한 울림",
+            "promptEn": "deep, full-bodied vocal resonance",
+            "isDefault": false
+          }
+        ],
+        "timbre": [
+          {
+            "id": "middle_aged.timbre.clear_stable",
+            "label": "맑고 안정적임",
+            "promptEn": "a clear, steady timbre",
+            "isDefault": false
+          },
+          {
+            "id": "middle_aged.timbre.warm_soft",
+            "label": "따뜻하고 부드러움",
+            "promptEn": "a warm, soft timbre",
+            "isDefault": true
+          },
+          {
+            "id": "middle_aged.timbre.firm_clear",
+            "label": "단단하고 선명함",
+            "promptEn": "a firm, clear timbre",
+            "isDefault": false
+          },
+          {
+            "id": "middle_aged.timbre.slightly_husky",
+            "label": "약간 허스키함",
+            "promptEn": "a slightly husky timbre",
+            "isDefault": false
+          },
+          {
+            "id": "middle_aged.timbre.slightly_rough",
+            "label": "살짝 거친 질감",
+            "promptEn": "a lightly textured, rough timbre",
+            "isDefault": false
+          }
+        ],
+        "pace": [
+          {
+            "id": "middle_aged.pace.slow",
+            "label": "느리게",
+            "promptEn": "a slow conversational pace",
+            "isDefault": false
+          },
+          {
+            "id": "middle_aged.pace.slightly_slow",
+            "label": "약간 느리게",
+            "promptEn": "a slightly slower conversational pace",
+            "isDefault": false
+          },
+          {
+            "id": "middle_aged.pace.normal",
+            "label": "보통",
+            "promptEn": "a natural conversational pace",
+            "isDefault": true
+          },
+          {
+            "id": "middle_aged.pace.fast",
+            "label": "빠르게",
+            "promptEn": "a fast conversational pace",
+            "isDefault": false
+          }
+        ],
+        "intonation": [
+          {
+            "id": "middle_aged.intonation.restrained",
+            "label": "절제됨",
+            "promptEn": "restrained intonation",
+            "isDefault": false
+          },
+          {
+            "id": "middle_aged.intonation.calm",
+            "label": "차분함",
+            "promptEn": "calm intonation",
+            "isDefault": false
+          },
+          {
+            "id": "middle_aged.intonation.natural",
+            "label": "자연스러움",
+            "promptEn": "natural conversational intonation",
+            "isDefault": true
+          },
+          {
+            "id": "middle_aged.intonation.flexible",
+            "label": "유연함",
+            "promptEn": "flexible, flowing intonation",
+            "isDefault": false
+          },
+          {
+            "id": "middle_aged.intonation.emphatic",
+            "label": "강조가 뚜렷함",
+            "promptEn": "clearly defined emphasis",
+            "isDefault": false
+          }
+        ]
+      }
+    },
+    "older adult": {
+      "label": "노년",
+      "targetAge": 80,
+      "speakers": {
+        "man": "older man",
+        "woman": "older woman"
+      },
+      "basePrompt": "A native Korean-speaking {speaker}, approximately 80 years old, with distinctly elderly, naturally controlled vocal characteristics.",
+      "controls": {
+        "pitch": [
+          {
+            "id": "older_adult.pitch.low",
+            "label": "낮음",
+            "promptEn": "a lower pitch",
+            "isDefault": false
+          },
+          {
+            "id": "older_adult.pitch.normal",
+            "label": "보통",
+            "promptEn": "a typical pitch",
+            "isDefault": true
+          },
+          {
+            "id": "older_adult.pitch.slightly_high",
+            "label": "약간 높음",
+            "promptEn": "a slightly higher pitch",
+            "isDefault": false
+          },
+          {
+            "id": "older_adult.pitch.high",
+            "label": "높음",
+            "promptEn": "a higher pitch",
+            "isDefault": false
+          }
+        ],
+        "resonance": [
+          {
+            "id": "older_adult.resonance.light_soft",
+            "label": "가볍고 부드러운 울림",
+            "promptEn": "light, soft vocal resonance",
+            "isDefault": false
+          },
+          {
+            "id": "older_adult.resonance.natural_stable",
+            "label": "자연스럽고 안정적인 울림",
+            "promptEn": "natural, stable vocal resonance",
+            "isDefault": true
+          },
+          {
+            "id": "older_adult.resonance.deep_rich",
+            "label": "깊고 풍부한 울림",
+            "promptEn": "deep, rich vocal resonance",
+            "isDefault": false
+          }
+        ],
+        "timbre": [
+          {
+            "id": "older_adult.timbre.clear_stable",
+            "label": "맑고 안정적임",
+            "promptEn": "a clear, steady timbre",
+            "isDefault": false
+          },
+          {
+            "id": "older_adult.timbre.warm_soft",
+            "label": "따뜻하고 부드러움",
+            "promptEn": "a warm, soft timbre",
+            "isDefault": true
+          },
+          {
+            "id": "older_adult.timbre.slightly_hoarse",
+            "label": "약간 쉰 목소리",
+            "promptEn": "a slightly hoarse timbre",
+            "isDefault": false
+          },
+          {
+            "id": "older_adult.timbre.lightly_breathy",
+            "label": "가벼운 숨 섞임",
+            "promptEn": "a lightly breathy timbre",
+            "isDefault": false
+          },
+          {
+            "id": "older_adult.timbre.dry_rough",
+            "label": "건조하고 거친 질감",
+            "promptEn": "a dry, rough timbre",
+            "isDefault": false
+          }
+        ],
+        "pace": [
+          {
+            "id": "older_adult.pace.very_slow",
+            "label": "매우 느리게",
+            "promptEn": "a very slow conversational pace",
+            "isDefault": false
+          },
+          {
+            "id": "older_adult.pace.slow",
+            "label": "느리게",
+            "promptEn": "a slow conversational pace",
+            "isDefault": false
+          },
+          {
+            "id": "older_adult.pace.slightly_slow",
+            "label": "약간 느리게",
+            "promptEn": "a slightly slower conversational pace",
+            "isDefault": true
+          },
+          {
+            "id": "older_adult.pace.normal",
+            "label": "보통",
+            "promptEn": "a natural conversational pace",
+            "isDefault": false
+          },
+          {
+            "id": "older_adult.pace.fast",
+            "label": "빠르게",
+            "promptEn": "a fast conversational pace",
+            "isDefault": false
+          }
+        ],
+        "intonation": [
+          {
+            "id": "older_adult.intonation.calm",
+            "label": "차분함",
+            "promptEn": "calm intonation",
+            "isDefault": false
+          },
+          {
+            "id": "older_adult.intonation.restrained",
+            "label": "절제됨",
+            "promptEn": "restrained intonation",
+            "isDefault": false
+          },
+          {
+            "id": "older_adult.intonation.natural",
+            "label": "자연스러움",
+            "promptEn": "natural conversational intonation",
+            "isDefault": true
+          },
+          {
+            "id": "older_adult.intonation.gently_varied",
+            "label": "부드럽게 변화함",
+            "promptEn": "gently varied intonation",
+            "isDefault": false
+          },
+          {
+            "id": "older_adult.intonation.lively",
+            "label": "생동감 있음",
+            "promptEn": "lively intonation",
+            "isDefault": false
+          },
+          {
+            "id": "older_adult.intonation.emphatic",
+            "label": "강조가 뚜렷함",
+            "promptEn": "clearly defined emphasis",
+            "isDefault": false
+          }
+        ]
+      }
+    }
+  }
+}

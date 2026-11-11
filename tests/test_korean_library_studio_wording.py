@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from korean_openwakeword.common import digest, read_json, write_immutable_rows
+from korean_openwakeword.common import digest, identity, read_json, write_immutable_rows, write_json
 from test_korean_library_studio import create, manager  # noqa: F401
 
 
@@ -20,8 +20,12 @@ def test_positive_progress_separates_training_and_common_evaluation(manager,pres
         rows = [{"qc":{"passed":True},"voice_family_id":split} for _ in range(passes)]
         if split == "validation":
             rows.append({"qc":{"passed":False},"voice_family_id":split})
-        path = root / f"data/generated/{split}/candidates.jsonl"
+        # The default pre/post workflow counts its current staged generation;
+        # canonical generated banks are published only after pronunciation review.
+        path = root / "data/call_pronunciation/wording-production" / split / "candidates.jsonl"
         path.parent.mkdir(parents=True,exist_ok=True)
+        write_json(path.with_name("contract.json"), {"staged_scope": {
+            "kind": "production", "revision": identity(state["inputs"].get("call_pilot_reviews", []))}})
         write_immutable_rows(path,rows)
     before = {path:digest(path) for path in (manager._path(view["id"]),root/"approval.json")}
     described = manager.describe(state)

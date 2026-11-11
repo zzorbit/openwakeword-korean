@@ -22,6 +22,15 @@ _AUTO = {"audioset_unbalanced": {"generic_negative", "noise"},
          "mls": {"generic_negative", "noise"}, "fma_full": {"generic_negative", "noise"},
          "yodas2": {"korean_negative", "noise"}}
 
+# This exact catalog set is retained by existing fixed-source evidence.
+# Register new material catalogs explicitly: unrelated UI/config JSON files
+# must never enter an existing material contract through a directory glob.
+_CATALOG_RESOURCES = (
+    "default_profile.json", "evaluation_backgrounds_v4.json", "evaluation_materials_v1.json",
+    "evaluation_noise_v2.json", "evaluation_noise_v3.json", "evaluation_rirs_v1.json",
+    "faster_qwen3_tts_UPSTREAM.json", "public_datasets.json", "storage_evidence_v1.json",
+)
+
 
 def _require(condition, message):
     if not condition:
@@ -46,10 +55,10 @@ def _catalog_pins(official_noise_acquisition_policy=None):
     from . import studio_data
     from .commercial_sources import _PROVIDERS
     package = Path(__file__).parent
-    # Adding a source policy must not invalidate existing evidence for the
-    # unchanged complete-ZIP policy or unrelated sources.
-    resource_paths = [p for p in sorted((package / "resources").glob("*.json"))
-                      if p.name != "official_fma_small_v1.json" or official_noise_acquisition_policy == "selective_fma_small_v1"]
+    names = list(_CATALOG_RESOURCES)
+    if official_noise_acquisition_policy == "selective_fma_small_v1":
+        names.append("official_fma_small_v1.json")
+    resource_paths = [package / "resources" / name for name in sorted(names)]
     return {"resources": {p.name: digest(p) for p in resource_paths},
             "official_assets": identity(studio_data._official_assets()),
             "official_revisions": {name: getattr(studio_data, name) for name in

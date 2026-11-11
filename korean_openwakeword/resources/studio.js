@@ -1,6 +1,21 @@
 "use strict";
 (() => {
   const $ = id => document.getElementById(id);
+  function bootStatus(state, error) {
+    document.documentElement?.setAttribute("data-studio-boot", state);
+    const panel = $("studio-boot");
+    panel?.setAttribute("role", state === "error" ? "alert" : "status");
+    panel?.setAttribute("aria-busy", String(state === "loading"));
+    if ($("studio-dashboard")) $("studio-dashboard").inert = state !== "ready";
+    if ($("studio-boot-title")) $("studio-boot-title").textContent = state === "error" ? "화면을 불러오지 못했습니다." : "화면을 불러오는 중...";
+    if ($("studio-boot-dots")) $("studio-boot-dots").hidden = state !== "loading";
+    if ($("studio-boot-error")) {
+      $("studio-boot-error").hidden = state !== "error";
+      $("studio-boot-error").textContent = state === "error" ? `${error?.message || "화면을 준비하는 중 문제가 발생했습니다."}\n다시 불러와도 저장된 작업은 유지됩니다.` : "";
+    }
+    if ($("studio-boot-retry")) $("studio-boot-retry").hidden = state !== "error";
+  }
+  $("studio-boot-retry")?.addEventListener("click", () => window.location.reload());
   const names = { check: "동작 확인용", trial: "시험 모델용", production: "상용 모델용" };
   const steps = [
     ["data", "자료 준비"], ["references", "합성 목소리"], ["pilot", "호출어 확인"],
@@ -10,7 +25,7 @@
   const stepGroups = {
     data: ["data", "frontend", "data_download", "data_review", "data_connect"],
     references: ["references", "references_review"], pilot: ["pilot", "pilot_review"],
-    generate: ["generate", "positives"], hard: ["hard_phrases", "hard_generation", "hard_review", "hard_connect"],
+    generate: ["generate", "positives", "positive_review"], hard: ["hard_phrases", "hard_pilot", "hard_review", "hard_generation", "hard_connect"],
     features: ["features"], train: ["train", "training", "package"],
     evaluate: ["evaluate", "development", "evaluation"], test: ["test", "results"]
   };
@@ -150,10 +165,33 @@
     if (!Number.isFinite(done) || !Number.isFinite(total) || done < 0 || total <= 0) return null;
     return { done, total, unit: progress.unit || "개", label: progress.label || "", percent: Math.min(100, Math.max(0, done / total * 100)) };
   }
+  function evaluationActivityText(activity) {
+    if (!activity || typeof activity !== "object" || typeof activity.label !== "string" || !activity.label.trim()) return "";
+    const label = activity.label.trim().slice(0, 160), completedAudio = activity.audio_seconds, totalAudio = activity.batch_audio_seconds;
+    if (Number.isFinite(completedAudio) && completedAudio >= 0 && Number.isFinite(totalAudio) && totalAudio > 0 && completedAudio <= totalAudio) {
+      const clock = value => {
+        const seconds = Math.floor(value), hours = Math.floor(seconds / 3600), minutes = Math.floor(seconds / 60) % 60;
+        return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`
+          : `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+      };
+      return `${label} · 이번 묶음 오디오 ${clock(completedAudio)} / ${clock(totalAudio)}`;
+    }
+    if (activity.unit === "frames" && Number.isFinite(activity.done) && activity.done >= 0 && Number.isFinite(activity.total)
+      && activity.total > 0 && activity.done <= activity.total)
+      return `${label} · ${number(activity.done)} / ${number(activity.total)}프레임`;
+    return label;
+  }
   function evaluating(project) {
     return project && activeStatuses.has(project.status) && (project.stage_id || (typeof project.stage === "object" ? project.stage?.id : project.stage)) === "evaluation";
   }
+  function wakewordError(value) {
+    const word = value.trim();
+    if (!word) return "호출어를 입력해 주세요.";
+    return /^[가-힣]+$/u.test(word) ? "" : "공백이나 특수 문자 없이 한글로 입력해 주세요.";
+  }
   function requestBody(form, preset) {
+    const error = wakewordError(form.wakeword);
+    if (error) throw new Error(error);
     const result = { wakeword: form.wakeword.trim(), preset };
     const advanced = {};
     const integerKeys = new Set(["positive_originals", "augmentation_rounds", "updates"]);
@@ -164,7 +202,6 @@
       advanced[key] = value;
     }
     if (Object.keys(advanced).length) result.advanced = advanced;
-    if (!result.wakeword) throw new Error("학습할 호출어를 입력하세요.");
     return result;
   }
   function localUrl(value) {
@@ -205,8 +242,10 @@
   function replace(node, children) { node.replaceChildren(...children); }
 
   let snapshot = { projects: [] }, recipes = [], selectedId = "", selectedPreset = "check";
-  let newProject = false, busy = false, refreshing = false, pollTimer = null, recipeReady = false;
-  let locationTimer = null, locationRevision = 0, modelLocation = { key: "", directory: "" };
+  let newProject = false, busy = false, refreshTask = null, pollTimer = null, recipeReady = false;
+  let selectionRevision = 0, recipeTask = null;
+  let pageSuspended = false, logRequest = null;
+  let locationTimer = null, locationRevision = 0, modelLocation = { key: "", directory: "", error: "" };
   let reviewIdentity = "", referencePreviewIdentity = "", hardPreviewIdentity = "", inputIdentity = "", resultIdentity = "", resultMode = "results", logProject = "";
   let hardPhraseFields = [];
   const dashboardViews = ["overview", "materials", "review", "results", "mic", "logs"];
@@ -235,7 +274,8 @@
     const reference = project?.reference_preview, hard = project?.hard_preview;
     const available = preview => Boolean(localUrl(preview?.url) && Number.isInteger(preview?.count) && preview.count > 0);
     return { required: Boolean(!activeStatuses.has(project?.status) && (project?.review || project?.input)),
-      reference: available(reference), hard: hard?.available !== false && available(hard) };
+      reference: Boolean(reference?.candidate_selection === true && localUrl(reference?.url)) || available(reference),
+      hard: hard?.available !== false && available(hard) };
   }
   function renderDashboard(project) {
     const available = dashboardAvailability(project);
@@ -324,8 +364,8 @@
     if (available.evaluation) $("material-coverage").open = true;
   }
 
-  async function api(path, method = "GET", payload) {
-    const controller = new AbortController(), timer = setTimeout(() => controller.abort(), method === "GET" ? 15000 : 60000);
+  async function api(path, method = "GET", payload, timeout = method === "GET" ? 15000 : 60000) {
+    const controller = new AbortController(), timer = setTimeout(() => controller.abort(), timeout);
     const headers = { Accept: "application/json" };
     if (payload !== undefined) headers["Content-Type"] = "application/json";
     if (snapshot.token) headers["X-Koww-Token"] = snapshot.token;
@@ -350,6 +390,13 @@
       throw error;
     } finally { clearTimeout(timer); }
   }
+  async function firstViewRead(path) {
+    try { return await api(path, "GET", undefined, 30000); }
+    catch (error) {
+      if (error.code !== "request_timeout" && error.name !== "TypeError" && ![502, 503, 504].includes(error.status)) throw error;
+      return await api(path, "GET", undefined, 30000);
+    }
+  }
   function message(text, error = false) {
     $("message").textContent = text || "";
     $("message").hidden = !text;
@@ -362,14 +409,20 @@
     try { return Boolean(modelLocation.directory) && modelLocation.key === JSON.stringify(body || creationBody()); }
     catch { return false; }
   }
+  function cancelLocationPreview() {
+    clearTimeout(locationTimer);
+    locationTimer = null;
+    locationRevision++;
+  }
   function previewLocation() {
-    clearTimeout(locationTimer); locationTimer = null;
-    const revision = ++locationRevision;
-    modelLocation = { key: "", directory: "" };
+    cancelLocationPreview();
+    const revision = locationRevision;
+    modelLocation = { key: "", directory: "", error: "" };
     let body;
     try { body = creationBody(); }
-    catch {
-      $("storage-directory").textContent = $("wakeword").value.trim() ? "입력한 값을 확인하세요." : "호출어를 입력하면 표시됩니다.";
+    catch (error) {
+      modelLocation.error = error.message;
+      $("storage-directory").textContent = $("wakeword").value.trim() ? error.message : "호출어를 입력하면 표시됩니다.";
       render(); return;
     }
     if (!recipeReady) { render(); return; }
@@ -381,10 +434,11 @@
         const result = await api("/api/model-location", "POST", body);
         if (revision !== locationRevision) return;
         if (typeof result.directory !== "string" || !result.directory.trim()) throw new Error("서버에서 저장 위치를 받지 못했습니다.");
-        modelLocation = { key: JSON.stringify(body), directory: result.directory };
+        modelLocation = { key: JSON.stringify(body), directory: result.directory, error: "" };
         $("storage-directory").textContent = result.directory;
       } catch (error) {
         if (revision !== locationRevision) return;
+        modelLocation.error = error.message;
         $("storage-directory").textContent = "저장 위치 확인 실패: " + error.message;
       }
       render();
@@ -709,16 +763,27 @@
   function renderSelector() {
     const projects = snapshot.projects || [];
     const selector = $("project-select");
-    replace(selector, projects.map(project => {
+    const nameCounts = new Map();
+    for (const { wakeword } of projects) {
+      if (wakeword) nameCounts.set(wakeword, (nameCounts.get(wakeword) || 0) + 1);
+    }
+    const options = projects.map(project => {
       let label = project.wakeword || project.id;
-      if (projects.filter(other => other.wakeword === project.wakeword).length > 1) {
+      if (nameCounts.get(project.wakeword) > 1) {
         const folder = String(project.directory || "").split(/[\\/]/).filter(Boolean).pop();
         label += " · " + (folder || project.id);
       }
-      const option = element("option", label); option.value = project.id; return option;
-    }));
-    if (newProject) { const option = element("option", "새 모델"); option.value = ""; selector.append(option); selector.value = ""; }
-    else selector.value = selectedId;
+      return { label, value: project.id };
+    });
+    if (projects.length) options.push({ label: "새 호출어…", value: "" });
+    if (selector.children.length !== options.length || options.some(({ label, value }, i) =>
+      selector.children[i].textContent !== label || selector.children[i].value !== value)) {
+      replace(selector, options.map(({ label, value }) => {
+        const option = element("option", label); option.value = value; return option;
+      }));
+    }
+    const value = newProject ? "" : selectedId;
+    if (selector.value !== value) selector.value = value;
     $("project-switch").hidden = !projects.length;
     selector.hidden = !projects.length; $("new-project").hidden = !projects.length;
     selector.disabled = busy; $("new-project").disabled = busy;
@@ -821,7 +886,7 @@
   }
   function renderReferencePreview(project) {
     const preview = project?.reference_preview, url = localUrl(preview?.url);
-    const show = Boolean(url && Number.isInteger(preview?.count) && preview.count > 0);
+    const show = Boolean(url && (preview?.candidate_selection === true || Number.isInteger(preview?.count) && preview.count > 0));
     const details = $("reference-preview"), frame = $("reference-preview-frame");
     const identity = show ? project.id + ":" + url : "";
     if (referencePreviewIdentity !== identity) {
@@ -841,7 +906,12 @@
     const url = localUrl(review?.url);
     const show = Boolean(review && url && !activeStatuses.has(project.status));
     $("review-section").hidden = !show;
-    if (!show) { if (reviewIdentity) frameSource($("review-frame"), ""); reviewIdentity = ""; renderVoiceDesign("review-voices", null); $("review-voice-details").hidden = true; return; }
+    if (!show) {
+      // Keep only the current explicit Next request alive until its bound
+      // finalize response arrives; an earlier poll may already hide the review.
+      if (story?.retainReviewFrame?.(project)) return;
+      if (reviewIdentity) frameSource($("review-frame"), ""); reviewIdentity = ""; renderVoiceDesign("review-voices", null); $("review-voice-details").hidden = true; return;
+    }
     const identity = project.id + ":" + (review.queue_id || review.id || url) + ":" + (typeof review.queue_sha256 === "string" ? review.queue_sha256 : "");
     const references = /^references(?:_|$)/.test(review.queue_id || "");
     const counts = project.reference_counts;
@@ -921,18 +991,45 @@
     if ($("hard-phrase-add").disabled !== busy) $("hard-phrase-add").disabled = busy;
     for (const field of hardPhraseFields) { field.input.disabled = busy; field.remove.disabled = busy; }
   }
-  function hardPhraseValues() {
-    return hardPhraseFields.map(field => field.input.value.trim()).filter(Boolean);
+  function validateHardPhrases(project) {
+    const wakeword = project.wakeword || "";
+    const callName = wakeword.length >= 3 && /[아야]$/u.test(wakeword) ? wakeword.slice(0, -1) : "";
+    const accepted = new Set();
+    let invalid = null;
+    for (const field of hardPhraseFields) {
+      if (field.composing) { invalid ||= field.input; continue; }
+      const phrase = field.input.value.trim();
+      let error = "";
+      if (phrase) {
+        if (!/^[가-힣]{1,16}$/u.test(phrase)) error = "공백 없이 한글 1~16자로 입력해 주세요.";
+        else if ((wakeword && phrase.includes(wakeword)) || (callName && phrase.includes(callName))) error = "호출어나 같은 이름이 들어간 문구는 사용할 수 없습니다.";
+        else if (accepted.has(phrase)) error = "앞에 입력한 문구와 중복됩니다.";
+        else accepted.add(phrase);
+      }
+      if (field.feedback.textContent !== error) field.feedback.textContent = error;
+      field.feedback.hidden = !error;
+      if (error) {
+        field.input.setAttribute("aria-invalid", "true");
+        invalid ||= field.input;
+      } else field.input.removeAttribute("aria-invalid");
+    }
+    return { values: [...accepted], invalid };
   }
   function addHardPhraseField(value = "", focus = false) {
-    const row = document.createElement("div"), input = document.createElement("input"), remove = document.createElement("button");
+    const row = document.createElement("div"), input = document.createElement("input"), remove = document.createElement("button"), feedback = document.createElement("p");
     row.className = "hard-phrase-field"; input.type = "text"; input.value = value;
-    input.placeholder = "유사어 입력"; input.maxLength = 16; input.autocomplete = "off";
+    input.placeholder = "유사어 입력"; input.autocomplete = "off";
     remove.type = "button"; remove.className = "hard-phrase-remove"; remove.textContent = "×";
-    const field = { row, input, remove };
-    input.addEventListener("input", () => renderHardGenerationCounts(selectedProject()));
+    feedback.className = "hard-phrase-error"; feedback.hidden = true; feedback.setAttribute("aria-live", "polite");
+    const field = { row, input, remove, feedback, composing: false };
+    const validate = () => renderHardGenerationCounts(selectedProject());
+    input.addEventListener("compositionstart", () => {
+      field.composing = true; feedback.textContent = ""; feedback.hidden = true; input.removeAttribute("aria-invalid");
+    });
+    input.addEventListener("compositionend", () => { field.composing = false; validate(); });
+    input.addEventListener("input", event => { if (!field.composing && !event?.isComposing) validate(); });
     input.addEventListener("keydown", event => {
-      if (event.key === "Enter" && !event.isComposing) { event.preventDefault(); if (!busy) addHardPhraseField("", true); }
+      if (event.key === "Enter" && !field.composing && !event.isComposing) { event.preventDefault(); if (!busy) addHardPhraseField("", true); }
     });
     remove.addEventListener("click", () => {
       if (busy) return;
@@ -942,27 +1039,31 @@
       if (!hardPhraseFields.length) addHardPhraseField();
       labelHardPhraseFields();
       hardPhraseFields[Math.min(position, hardPhraseFields.length - 1)].input.focus();
-      renderHardGenerationCounts(selectedProject());
+      validate();
     });
-    row.append(input, remove); hardPhraseFields.push(field); $("hard-phrase-fields").append(row);
-    labelHardPhraseFields(); renderHardGenerationCounts(selectedProject());
-    if (focus) input.focus();
+    row.append(input, remove, feedback); hardPhraseFields.push(field); $("hard-phrase-fields").append(row);
+    labelHardPhraseFields();
+    if (focus) { validate(); input.focus(); }
   }
   function labelHardPhraseFields() {
     hardPhraseFields.forEach((field, index) => {
       field.input.id = `hard-phrase-${index + 1}`;
+      field.feedback.id = `hard-phrase-error-${index + 1}`;
       field.input.setAttribute("aria-label", `유사어 ${index + 1}`);
+      field.input.setAttribute("aria-describedby", field.feedback.id);
       field.remove.setAttribute("aria-label", `유사어 ${index + 1} 삭제`);
     });
   }
   function renderHardGenerationCounts(project) {
     const input = project?.input, perPhrase = input?.samples_per_phrase;
-    const show = input?.kind === "hard_phrases" && Number.isInteger(perPhrase) && perPhrase > 0;
+    const hard = input?.kind === "hard_phrases";
+    const phrases = hard ? validateHardPhrases(project).values.length : 0;
+    const show = hard && Number.isInteger(perPhrase) && perPhrase > 0;
     const counts = $("hard-generation-counts");
     counts.hidden = !show;
     if (!show) { counts.textContent = ""; return; }
-    const phrases = new Set(hardPhraseValues());
-    counts.textContent = `유사어 ${number(phrases.size)}종 · 문구당 ${number(perPhrase)}개 · 총 ${number(phrases.size * perPhrase)}개`;
+    const summary = `유사어 ${number(phrases)}종 · 문구당 ${number(perPhrase)}개 · 총 ${number(phrases * perPhrase)}개`;
+    if (counts.textContent !== summary) counts.textContent = summary;
   }
   function renderInputMode(project) {
     const material = project?.input?.kind === "material_admissions";
@@ -1114,7 +1215,7 @@
     renderStages(project);
     const stageLabel = project.stage && typeof project.stage === "object" ? project.stage.label : steps.find(([id]) => id === project.stage)?.[1];
     $("current-category").textContent = waiting ? "사용자 확인 대기" : complete ? "완료" : "현재 작업";
-    const stageId = typeof project.stage === "object" ? project.stage?.id : project.stage;
+    const stageId = project.stage_id || (typeof project.stage === "object" ? project.stage?.id : project.stage);
     const voiceTitle = stageId === "references" ? "합성 목소리 만들기"
       : stageId === "references_review" ? project.stage?.kind === "task" ? stageLabel : "합성 목소리 확인" : "";
     $("current-title").textContent = voiceTitle || project.stage_label || project.title || stageLabel || (complete ? "학습과 평가를 마쳤습니다" : waiting ? "안내를 확인해주세요" : "시작할 준비가 되었습니다");
@@ -1126,20 +1227,22 @@
     $("migration-reason").textContent = migration?.reason || "";
     $("migrate").hidden = migration?.state !== "available";
     $("migrate").disabled = busy || running;
-    if (evaluating(project) && ["summary", "finalizing"].includes(project.progress?.phase)) $("current-description").textContent = "채점을 마쳤습니다. 통계와 결과 파일을 정리하고 있습니다.";
+    const evaluationActive = evaluating(project);
+    const evaluationFinalizing = evaluationActive && ["summary", "finalizing"].includes(project.progress?.phase);
+    if (evaluationFinalizing) $("current-description").textContent = "채점을 마쳤습니다. 통계와 결과 파일을 정리하고 있습니다.";
     $("start").hidden = Boolean(migration) || running || complete || waiting || project.status === "paused" || project.status === "failed" || project.status === "error";
     $("resume").hidden = Boolean(migration) || running || complete || waiting || !["paused", "failed", "error", "interrupted"].includes(project.status);
     $("pause").hidden = !running;
     for (const id of ["start", "resume", "pause"]) $(id).disabled = busy || project.status === "pausing";
     const progress = progressValue(project);
-    $("progress-section").hidden = !progress;
-    if (progress) {
-      const stageCount = /단계/.test(progress.unit);
+    const stageCount = progress && /단계/.test(progress.unit);
+    $("progress-section").hidden = !progress || stageCount;
+    if (progress && !stageCount) {
       const unit = { items: "개", samples: "개", files: "개 파일", datasets: "개 자료 묶음", updates: "회 학습", rows: "행", hours: "시간", audio_hours: "시간" }[progress.unit] || progress.unit;
       const quantity = ["bytes", "B", "바이트"].includes(unit) ? `${bytes(progress.done)} / ${bytes(progress.total)}` : `${number(progress.done)} / ${number(progress.total)}${unit}`;
-      $("progress-label").textContent = stageCount ? `전체 절차 ${number(progress.done)} / ${number(progress.total)}단계 완료` : `${progress.label ? progress.label + " · " : ""}${quantity}`;
-      $("progress-percent").textContent = stageCount ? "" : `${progress.percent.toFixed(1)}%`;
-      $("progress").hidden = stageCount; $("progress").value = progress.percent;
+      $("progress-label").textContent = `${progress.label ? progress.label + " · " : ""}${quantity}`;
+      $("progress-percent").textContent = `${progress.percent.toFixed(1)}%`;
+      $("progress").value = progress.percent;
     }
     const currentElapsed = duration(project.current_stage_elapsed_seconds), elapsed = duration(project.elapsed_seconds), remaining = eta(project.eta_seconds);
     $("elapsed").textContent = currentElapsed ? `이 작업 경과 ${currentElapsed}${elapsed ? " · 전체 경과 " + elapsed : ""}` : elapsed ? `전체 경과 ${elapsed}` : "";
@@ -1151,22 +1254,36 @@
       if (measured.paused_seconds > 0) parts.push(`일시정지 ${duration(measured.paused_seconds)}`);
       if (measured.unclassified_seconds > 0) parts.push(`기타 경과 ${duration(measured.unclassified_seconds)}`);
       $("elapsed").textContent = parts.join(" · ");
-      if (measured.legacy_estimate) $("elapsed").title = "과거 기록에서 확인 가능한 구간만 분리했습니다.";
     }
-    $("eta").textContent = remaining ? `이 작업 예상 남은 시간 ${remaining}` : running ? "예상 시간: 처리 속도를 측정한 뒤 표시합니다" : "";
+    $("elapsed").title = project.timing?.legacy_estimate ? "과거 기록에서 확인 가능한 구간만 분리했습니다." : "";
+    let timingText = remaining ? `이 작업 예상 남은 시간 ${remaining}` : running ? "예상 시간: 처리 속도를 측정한 뒤 표시합니다" : "";
     const transfer = project.progress || {};
     if (transfer.bytes_per_second > 0 && Number.isFinite(transfer.bytes_per_second)) {
       const speed = `${bytes(transfer.bytes_per_second)}/초`;
-      $("eta").textContent = remaining ? `${speed} · 이 작업 예상 남은 시간 ${remaining}` : speed;
+      timingText = remaining ? `${speed} · 이 작업 예상 남은 시간 ${remaining}` : speed;
     }
-    if (transfer.phase === "retry") $("eta").textContent = `연결 재시도 ${number(transfer.attempt)} / ${number(transfer.retry_limit)}`;
-    if (evaluating(project)) $("eta").textContent = transfer.phase === "runtime_recommendation"
+    if (transfer.phase === "retry") timingText = `연결 재시도 ${number(transfer.attempt)} / ${number(transfer.retry_limit)}`;
+    if (project.status === "pausing") timingText = "현재 작업을 마친 뒤 일시정지합니다.";
+    else if (running && stageId === "package") timingText = "학습을 마쳤습니다. 시험할 모델 묶음을 준비하고 있습니다.";
+    else if (evaluationFinalizing) timingText = $("current-description").textContent;
+    else if (evaluationActive) timingText = transfer.phase === "runtime_recommendation"
       ? "저장 점수에서 모델별 감지 설정을 비교하고 있습니다."
-      : progress && !/단계/.test(progress.unit) ? "음원 수 기준 · 긴 비호출 음원은 더 오래 걸립니다." : "평가 음원의 무결성과 형식을 확인하고 있습니다.";
+      : progress && !stageCount ? "음원 수 기준 · 긴 비호출 음원은 더 오래 걸립니다." : "평가 음원의 무결성과 형식을 확인하고 있습니다.";
+    const activityText = running && project.status !== "pausing" && stageId === "evaluation" && transfer.phase === "scoring" ? evaluationActivityText(transfer.activity) : "";
+    if (activityText) timingText = activityText;
+    if (running && project.status !== "pausing" && stageId === "development") timingText = transfer.phase === "preparation_finalizing"
+      ? "음원 생성을 마쳤습니다. 자료 목록과 연결 상태를 검증하고 있습니다."
+      : transfer.phase === "preparation_generation" ? "평가용 음원을 생성하고 있습니다. 최종 검증 후 다음 작업으로 이어집니다."
+        : "평가 자료의 원본과 생성 조건을 확인하고 있습니다.";
+    Object.assign($("eta").style, { whiteSpace: activityText ? "nowrap" : "", overflow: activityText ? "hidden" : "", textOverflow: activityText ? "ellipsis" : "" });
+    $("eta").title = activityText;
+    if ($("eta").textContent !== timingText) $("eta").textContent = timingText;
     $("project-error").hidden = !project.error;
     $("project-error").textContent = project.error && typeof project.error === "object" ? project.error.message || JSON.stringify(project.error) : project.error || "";
     renderDashboard(project);
-    renderDownloads(project); renderCounts(project); renderReferencePreview(project); renderHardPreview(project); renderReview(project); renderInput(project); renderResultFrame(project);
+    // The chapter view builds its own download list from project state.
+    if (story?.ownsDownloadRows !== true) renderDownloads(project);
+    renderCounts(project); renderReferencePreview(project); renderHardPreview(project); renderReview(project); renderInput(project); renderResultFrame(project);
     if (logProject !== project.id) { logProject = project.id; $("log").textContent = "작업 기록 보기를 열면 최신 기록을 불러옵니다."; if ($("log-details").open) loadLog(); }
   }
   function render() {
@@ -1189,16 +1306,34 @@
     }
     story?.render();
   }
-  async function refresh() {
-    if (refreshing) return;
-    refreshing = true;
+  function refresh({ initial = false, projectId = selectedId, select = false, fresh = false } = {}) {
+    if (refreshTask) {
+      if (!initial && !fresh) return refreshTask;
+      const retry = () => refresh({ initial, projectId, select, fresh });
+      return refreshTask.then(retry, retry);
+    }
+    const pending = readState({ initial, projectId, select, revision: selectionRevision });
+    refreshTask = pending;
+    const clear = () => { if (refreshTask === pending) refreshTask = null; };
+    pending.then(clear, clear);
+    return pending;
+  }
+  async function readState({ initial, projectId, select, revision }) {
     let receivedState = false;
     try {
-      const state = await api("/api/state"); receivedState = true; snapshot = state;
+      const path = "/api/state?view=studio" + (projectId ? "&project=" + encodeURIComponent(projectId) : "");
+      const state = await (initial ? firstViewRead(path) : api(path));
+      if (revision !== selectionRevision) return;
+      receivedState = true; snapshot = state;
       if (!Array.isArray(snapshot.projects)) snapshot.projects = [];
-      if (!newProject && !snapshot.projects.some(project => project.id === selectedId)) selectedId = snapshot.active_project_id || snapshot.projects[0]?.id || "";
+      if (select) newProject = false;
+      if (!newProject) {
+        const requested = snapshot.projects.find(project => project.id === projectId);
+        selectedId = snapshot.selected_project_id || requested?.id || snapshot.active_project_id || snapshot.projects[0]?.id || "";
+      }
       $("connection").hidden = true; render();
     } catch (error) {
+      if (revision !== selectionRevision) return;
       const progressPending = error.status === 503 && error.code === "progress_read_pending";
       const delayed = progressPending || error.code === "request_timeout";
       $("connection").hidden = false;
@@ -1211,13 +1346,14 @@
         : (receivedState
         ? "진행 상태를 화면에 표시하지 못했습니다. 페이지를 새로고침하세요. 저장된 작업은 사라지지 않습니다.\n"
         : "서버에 연결하지 못했습니다. 서버를 실행한 창이 열려 있는지 확인하세요. 저장된 작업은 사라지지 않습니다.\n") + error.message;
-    } finally { refreshing = false; }
+      if (initial) throw error;
+    }
   }
   async function runAction(action) {
-    if (busy || !selectedId) return;
+    if (busy || !selectedId) return false;
     const id = selectedId; busy = true; message(""); render();
-    try { await api(`/api/projects/${encodeURIComponent(id)}/${action}`, "POST", {}); await refresh(); }
-    catch (error) { message(error.message, true); await refresh(); }
+    try { await api(`/api/projects/${encodeURIComponent(id)}/${action}`, "POST", {}); await refresh({ fresh: true }); return true; }
+    catch (error) { message(error.message, true); await refresh(); return false; }
     finally { busy = false; render(); }
   }
   async function create(event, { downloadCheckpoint = false, navigationCheckpoints = false } = {}) {
@@ -1226,54 +1362,117 @@
     try { body = creationBody(); }
     catch (error) { message(error.message, true); return; }
     if (!recipeReady || !locationReady(body)) { previewLocation(); return; }
-    if (navigationCheckpoints === true) body.navigation_checkpoints = true;
-    else if (downloadCheckpoint === true) body.download_checkpoint = true;
+    if (navigationCheckpoints === true) {
+      body.navigation_checkpoints = true;
+      body.reference_voice_review = true;
+    } else if (downloadCheckpoint === true) body.download_checkpoint = true;
     busy = true; message("모델 학습 폴더를 만들고 있습니다."); render();
     try {
       const result = await api("/api/projects", "POST", body), project = result.project || result;
       if (!project.id) throw new Error("모델 생성 결과에 식별자가 없습니다. 중복 생성 전에 목록을 확인하세요.");
+      selectionRevision++;
       selectedId = project.id; newProject = false;
-      await refresh();
-      if (!downloadCheckpoint && !navigationCheckpoints && !activeStatuses.has(project.status)) await api(`/api/projects/${encodeURIComponent(selectedId)}/start`, "POST", {});
-      message(""); await refresh();
-    } catch (error) { message(error.message, true); await refresh(); }
+      if (!downloadCheckpoint && !navigationCheckpoints && !activeStatuses.has(project.status)) await api(`/api/projects/${encodeURIComponent(project.id)}/start`, "POST", {});
+      message(""); await refresh({ fresh: true });
+    } catch (error) { message(error.message, true); await refresh({ fresh: true }); }
     finally { busy = false; render(); }
   }
   async function submitInput(event) {
-    event.preventDefault(); if (busy) return;
-    const project = selectedProject(); if (!project?.input) return;
-    if (!["dependency_setup", "hard_phrases", "material_admissions"].includes(project.input.kind)) return;
-    const values = project.input.kind === "hard_phrases" ? hardPhraseValues() : $("input-value").value.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+    event.preventDefault(); if (busy) return false;
+    const project = selectedProject(); if (!project?.input) return false;
+    if (!["dependency_setup", "hard_phrases", "material_admissions"].includes(project.input.kind)) return false;
+    const hard = project.input.kind === "hard_phrases";
+    const phrases = hard ? validateHardPhrases(project) : null;
+    if (phrases?.invalid) { phrases.invalid.focus(); return false; }
+    const values = hard ? phrases.values : $("input-value").value.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
     const dependencies = project.input.kind === "dependency_setup";
     const sourceMode = project.input.kind === "material_admissions" && $("material-mode").value === "source";
-    if (!dependencies && !sourceMode && !values.length) { message("안내에 맞게 한 항목 이상 입력하세요.", true); return; }
-    let body = dependencies ? { dependency_backend: $("dependency-backend").value } : project.input.kind === "hard_phrases" ? { phrases: values } : { admissions: values };
+    if (!dependencies && !sourceMode && !values.length) {
+      message(hard ? "유사어를 한 개 이상 입력해 주세요." : "안내에 맞게 한 항목 이상 입력하세요.", true);
+      if (hard) hardPhraseFields[0]?.input.focus();
+      return false;
+    }
+    let body = dependencies ? { dependency_backend: $("dependency-backend").value } : hard ? { phrases: values } : { admissions: values };
     if (sourceMode) {
       const source = { directory: $("source-directory").value.trim(), dataset: $("source-dataset").value, pool: $("source-pool").value };
-      if (!source.directory) { message("음원 폴더를 입력하세요.", true); return; }
+      if (!source.directory) { message("음원 폴더를 입력하세요.", true); return false; }
       if (source.pool !== "rir") {
         source.hours = Number($("source-hours").value);
-        if (!Number.isFinite(source.hours) || source.hours <= 0) { message("준비할 시간을 확인하세요.", true); return; }
+        if (!Number.isFinite(source.hours) || source.hours <= 0) { message("준비할 시간을 확인하세요.", true); return false; }
       }
       for (const [id, key] of [["source-metadata", "metadata"], ["source-url", "source_url"], ["source-license", "license"]]) { const value = $(id).value.trim(); if (value) source[key] = value; }
-      if (["mls", "yodas2"].includes(source.dataset) && !source.metadata) { message("메타데이터에 download_receipt.json 경로를 입력하세요.", true); return; }
+      if (["mls", "yodas2"].includes(source.dataset) && !source.metadata) { message("메타데이터에 download_receipt.json 경로를 입력하세요.", true); return false; }
       body = { source };
     }
     busy = true; message(""); render();
-    try { await api(`/api/projects/${encodeURIComponent(project.id)}/input`, "POST", body); await refresh(); }
-    catch (error) { message(error.message, true); }
+    try { await api(`/api/projects/${encodeURIComponent(project.id)}/input`, "POST", body); await refresh({ fresh: true }); return true; }
+    catch (error) { message(error.message, true); return false; }
     finally { busy = false; render(); }
   }
-  async function loadLog() {
-    const id = selectedId; if (!id || !$("log-details").open) return;
+  async function readLog(request) {
+    const { id } = request;
+    const current = () => logRequest === request && id === selectedId && !newProject;
     try {
       const result = await api(`/api/projects/${encodeURIComponent(id)}/log`);
-      if (id === selectedId) $("log").textContent = typeof result === "string" ? result : result.text || result.log || (Array.isArray(result.lines) ? result.lines.join("\n") : "아직 작업 기록이 없습니다.");
-    } catch (error) { if (id === selectedId) $("log").textContent = error.message; }
+      if (current()) $("log").textContent = typeof result === "string" ? result : result.text || result.log || (Array.isArray(result.lines) ? result.lines.join("\n") : "아직 작업 기록이 없습니다.");
+    } catch (error) {
+      if (current()) $("log").textContent = error.message;
+    } finally {
+      if (logRequest === request) logRequest = null;
+    }
   }
-  async function boot() {
+  function loadLog() {
+    const id = selectedId;
+    if (!id || newProject || !$("log-details").open) return;
+    if (logRequest?.id === id) return logRequest.pending;
+    const request = { id };
+    logRequest = request;
+    request.pending = readLog(request);
+    return request.pending;
+  }
+  async function pollVisible() {
+    if (pageSuspended || document.hidden) return;
+    await refresh();
+    if (!pageSuspended && !document.hidden) await loadLog();
+  }
+  function startPolling() {
+    if (!pageSuspended && pollTimer === null) pollTimer = setInterval(pollVisible, 3000);
+  }
+  function stopPolling() {
+    if (pollTimer !== null) clearInterval(pollTimer);
+    pollTimer = null;
+  }
+  function loadRecipes() {
+    if (recipeReady) return;
+    if (!recipeTask) {
+      recipeTask = firstViewRead("/api/recipes").then(result => {
+        recipes = Array.isArray(result.presets) ? result.presets : [];
+        if (!recipes.length) throw new Error("작업 규모 설정이 비어 있습니다. 다시 불러오세요.");
+        if (!recipes.some(recipe => recipe.id === selectedPreset)) selectedPreset = recipes[0].id;
+        recipeReady = true; renderPresets(); renderRecipe(); render();
+      }).finally(() => { recipeTask = null; });
+    }
+    return recipeTask;
+  }
+  async function prepareCurrentView() {
+    if (!story || typeof story.prepareInitialView !== "function" || await story.prepareInitialView() !== true)
+      throw new Error("첫 화면의 준비 상태를 확인하지 못했습니다. 다시 불러오세요.");
+  }
+  async function openView(load, focus) {
+    if (busy) return;
+    busy = true; bootStatus("loading"); message("");
+    try {
+      await load(); await prepareCurrentView(); bootStatus("ready");
+      focus?.();
+    } catch (error) {
+      bootStatus("error", error);
+    } finally { busy = false; render(); }
+  }
+  async function initializeStudio() {
     if (window.KowwStory) story = window.KowwStory.create({
-      state: () => ({ project: newProject ? null : selectedProject(), recipes, selectedPreset, busy, recipeReady }),
+      state: () => ({ project: newProject ? null : selectedProject(), recipes, selectedPreset, busy, recipeReady, locationError: modelLocation.error }),
+      wakewordError,
+      retryLocation: previewLocation,
       materials: materialGroups,
       formatBytes: bytes,
       mediaUrl: localUrl,
@@ -1293,6 +1492,7 @@
       preview: kind => selectAudioView(kind),
       logs: loadLog,
       refresh,
+      prepareRecipes: loadRecipes,
       message,
     });
     $("create-form").addEventListener("invalid", event => {
@@ -1321,7 +1521,8 @@
     }
     $("create-form").addEventListener("submit", create);
     for (const id of ["adv-originals", "adv-rounds", "adv-updates", "adv-generic", "adv-korean"]) $(id).addEventListener("input", () => { renderRecipe(); previewLocation(); });
-    $("wakeword").addEventListener("input", previewLocation);
+    $("wakeword").addEventListener("input", event => { if (!event?.isComposing) previewLocation(); });
+    $("wakeword").addEventListener("compositionend", previewLocation);
     $("input-form").addEventListener("submit", submitInput);
     $("hard-phrase-add").addEventListener("click", () => { if (!busy) addHardPhraseField("", true); });
     $("material-mode").addEventListener("change", () => renderInputMode(selectedProject()));
@@ -1333,8 +1534,22 @@
       renderInputMode(selectedProject());
     });
     $("source-pool").addEventListener("change", () => renderInputMode(selectedProject()));
-    $("project-select").addEventListener("change", () => { selectedId = $("project-select").value; newProject = !selectedId; if (newProject) setupView = "basic"; message(""); render(); if (newProject) previewLocation(); });
-    $("new-project").addEventListener("click", () => { newProject = true; setupView = "basic"; message(""); render(); previewLocation(); $("wakeword").focus(); });
+    function beginNewProject() {
+      return openView(async () => {
+        await loadRecipes();
+        newProject = true; setupView = "basic"; previewLocation();
+      }, () => $("wakeword").focus());
+    }
+    $("project-select").addEventListener("change", async () => {
+      const value = $("project-select").value;
+      if (!value) return beginNewProject();
+      if (value === selectedId && !newProject) return;
+      return openView(async () => {
+        selectionRevision++;
+        await refresh({ initial: true, projectId: value, select: true });
+      });
+    });
+    $("new-project").addEventListener("click", beginNewProject);
     for (const action of ["start", "pause", "resume", "migrate"]) $(action).addEventListener("click", () => runAction(action));
     $("refresh-log").addEventListener("click", loadLog);
     $("log-details").addEventListener("toggle", loadLog);
@@ -1342,16 +1557,42 @@
     $("hard-preview").addEventListener("toggle", () => { if ($("hard-preview").open) { dashboardView = "review"; audioView = "hard"; if (selectedProject()) renderDashboard(selectedProject()); } renderHardPreview(newProject ? null : selectedProject()); });
     $("result-tab").addEventListener("click", () => selectDashboardView("results"));
     $("mic-tab").addEventListener("click", () => selectDashboardView("mic"));
-    document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
-    await refresh();
-    try {
-      const result = await api("/api/recipes"); recipes = Array.isArray(result.presets) ? result.presets : [];
-      if (!recipes.some(recipe => recipe.id === selectedPreset)) selectedPreset = recipes[0]?.id || "check";
-      recipeReady = recipes.length > 0; renderPresets(); renderRecipe(); previewLocation();
-    } catch (error) { message("작업 규모를 불러오지 못했습니다. " + error.message, true); }
-    pollTimer = setInterval(async () => { if (!document.hidden) { await refresh(); if ($("log-details").open) await loadLog(); } }, 3000);
-    window.addEventListener("pagehide", () => { clearInterval(pollTimer); clearTimeout(locationTimer); locationRevision++; }, { once: true });
+    document.addEventListener("visibilitychange", () => {
+      if (!pageSuspended && !document.hidden) refresh();
+    });
+    window.addEventListener("pagehide", () => {
+      pageSuspended = true;
+      stopPolling();
+      cancelLocationPreview();
+    });
+    window.addEventListener("pageshow", event => {
+      // Back/forward cache restores the same document without running boot again.
+      if (!event.persisted) return;
+      pageSuspended = false;
+      if (document.documentElement.getAttribute("data-studio-boot") !== "ready") return;
+      startPolling();
+      if ((newProject || !selectedProject()) && !locationReady()) previewLocation();
+      void pollVisible();
+    });
+    await refresh({ initial: true });
+    if (!selectedProject()) { await loadRecipes(); previewLocation(); }
+    render();
+    startPolling();
   }
-  window.KowwStudio = Object.freeze({ duration, bytes, storageEstimate, storageBudget, eta, progressValue, requestBody, localUrl, webUrl });
+  async function boot() {
+    bootStatus("loading");
+    try {
+      await initializeStudio();
+      await prepareCurrentView();
+      bootStatus("ready");
+    } catch (error) {
+      stopPolling();
+      cancelLocationPreview();
+      recipeReady = false;
+      message("화면을 불러오지 못했습니다. " + error.message, true);
+      bootStatus("error", error);
+    }
+  }
+  window.KowwStudio = Object.freeze({ duration, bytes, storageEstimate, storageBudget, eta, progressValue, requestBody, wakewordError, localUrl, webUrl });
   if (!window.KOWW_STUDIO_TEST) boot();
 })();

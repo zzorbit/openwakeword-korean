@@ -18,6 +18,7 @@ from .data import coverage_interval, source_key
 from .project import load_project
 from .source_identity import component_lineage
 from .storage import project_storage
+from .task_progress import emit as report_task_progress
 
 
 def negative_scoring_budget(rows, seconds=600, warmup_s=2, frame_samples=1280):
@@ -65,7 +66,13 @@ def negative_scoring_budget(rows, seconds=600, warmup_s=2, frame_samples=1280):
 def _inventory(root, rows, wakeword):
     buckets, passthrough, hashes, intervals = defaultdict(lambda: defaultdict(list)), [], {}, defaultdict(list)
     admissions, seen_audio, recording_buckets = {}, set(), {}
-    for row in rows:
+    total = len(rows) if hasattr(rows, "__len__") else None
+    report_task_progress("material_stream_inventory", "비호출 평가 원본·승인 검사", 0, total, "개 원본", eta_eligible=False)
+    count = 0
+    for count, row in enumerate(rows, 1):
+        if count % 32 == 1:
+            report_task_progress("material_stream_inventory", "비호출 평가 원본·승인 검사",
+                                 count - 1, total, "개 원본", eta_eligible=False)
         if (row.get("split") != "validation" or row.get("category") == "rir" or row.get("calls")
                 or row.get("kind") not in (None, "negative")):
             raise ValueError("Continuous evaluation streams accept held-out non-call recordings, never RIRs or calls")
@@ -127,6 +134,8 @@ def _inventory(root, rows, wakeword):
             if start < previous - 1 / 32000:
                 raise ValueError("Repeated or overlapping original recording intervals cannot inflate evaluation streams")
             previous = end
+    report_task_progress("material_stream_inventory", "비호출 평가 원본·승인 검사",
+                         count, total, "개 원본", eta_eligible=False)
     passthrough.sort(key=identity)
     return buckets, passthrough
 
@@ -174,6 +183,8 @@ def _render(root, output, recipe_sha, number, bucket, sources):
     path.parent.mkdir(parents=True, exist_ok=True)
     partial = path.with_name(path.name + ".part")
     pcm_hash, written = hashlib.sha256(), 0
+    report_task_progress("material_stream_write", f"비호출 평가 스트림 {number} 저장", 0, offset,
+                         "개 프레임", eta_eligible=False)
     with sf.SoundFile(partial, "w", samplerate=16000, channels=1, subtype="PCM_16", format="WAV") as destination:
         for item in sources:
             before = item["path"].stat()
@@ -189,15 +200,21 @@ def _render(root, output, recipe_sha, number, bucket, sources):
                     destination.write(block)
                     pcm_hash.update(block.astype("<i2", copy=False).tobytes())
                     written += len(block); remaining -= len(block)
+                    report_task_progress("material_stream_write", f"비호출 평가 스트림 {number} 저장",
+                                         written, offset, "개 프레임", eta_eligible=False)
             after = item["path"].stat()
             if (after.st_size, after.st_mtime_ns) != item["file_signature"]:
                 raise ValueError("An original evaluation source changed during stream construction")
     verified, actual = hashlib.sha256(), 0
+    report_task_progress("material_stream_verify", f"비호출 평가 스트림 {number} 원본 일치 검사", 0, offset,
+                         "개 프레임", eta_eligible=False)
     with sf.SoundFile(partial) as stream:
         if (stream.samplerate, stream.channels, stream.subtype) != (16000, 1, "PCM_16"):
             raise ValueError("Persisted evaluation stream changed PCM format")
         for block in stream.blocks(blocksize=65536, dtype="int16"):
             verified.update(block.astype("<i2", copy=False).tobytes()); actual += len(block)
+            report_task_progress("material_stream_verify", f"비호출 평가 스트림 {number} 원본 일치 검사",
+                                 actual, offset, "개 프레임", eta_eligible=False)
     if actual != written or written != offset or verified.hexdigest() != pcm_hash.hexdigest():
         raise ValueError("Persisted evaluation stream differs from the exact original PCM sequence")
     checksum = digest(partial)
@@ -272,8 +289,13 @@ def pack_negative_streams(project, rows, output, seconds=600, strict_common_pool
                      if not list((output / "streams").glob(f"negative_stream_{index+1:04d}_*.json")))
         if shutil.disk_usage(output).free < needed:
             raise ValueError("Insufficient selected-workspace space for exact continuous evaluation WAVs")
-        result_rows = [_render(root, output, identity(recipe), index + 1, bucket, sources)
-                       for index, (bucket, sources) in enumerate(plans)] + passthrough
+        result_rows = []
+        report_task_progress("material_stream_completion", "비호출 평가 스트림 연결", 0, len(plans), "개 스트림", eta_eligible=False)
+        for index, (bucket, sources) in enumerate(plans):
+            result_rows.append(_render(root, output, identity(recipe), index + 1, bucket, sources))
+            report_task_progress("material_stream_completion", "비호출 평가 스트림 연결", index + 1,
+                                 len(plans), "개 스트림", eta_eligible=False)
+        result_rows += passthrough
         value = "".join(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n" for row in result_rows)
         manifest = output / "manifest.jsonl"
         if manifest.exists() and manifest.read_text(encoding="utf-8") != value:

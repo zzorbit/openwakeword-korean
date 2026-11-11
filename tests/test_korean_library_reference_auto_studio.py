@@ -106,7 +106,8 @@ def test_legacy_reference_policy_still_requires_saved_human_review(project, monk
 def test_technical_reference_success_does_not_skip_pilot_pronunciation_gate(project):
     queue = publish_queue(project, "pilot_queue.jsonl")
     result = run(project, "pilot_review", context={"results": {
-        "pilot": {"result": {"queue": str(queue)}},
+        "pilot": {"result": {"queue": str(queue), "bindings": {"review_queue": {
+            "path": str(queue.relative_to(project.parent)), "sha256": digest(queue)}}}},
         "references_review": {"state": "completed", "result": {"state": "accepted", "passed": 50}}}})
     assert result["state"] == "waiting_review" and result["reviews"][0]["kind"] == "pilot"
     assert read_json(project.parent / "approval.json")["generation_policy_approved"] is False
@@ -135,7 +136,7 @@ def populate_preview(manager, project_id):
 
 
 def test_optional_preview_http_reads_audio_without_decisions_or_workflow_writes(manager, http_server):
-    view = create(manager)
+    view = create(manager, reference_voice_review=False)
     state, root, rows = populate_preview(manager, view["id"])
     before = {str(path): digest(path) for path in root.rglob("*") if path.is_file()}
     preview = manager.describe(state)["reference_preview"]
@@ -143,14 +144,16 @@ def test_optional_preview_http_reads_audio_without_decisions_or_workflow_writes(
     status, body, _ = http_server(preview["url"])
     assert status == 200
     html = body.decode()
-    assert "기준 목소리 듣기" in html and 'preload="none"' in html
-    assert "/review/save" not in html and "POST" not in html
+    assert "기준 목소리 검수" in html and 'preload="none"' in html
+    # The shared page also supports editable review, but this legacy preview
+    # must remain read-only; the requests and file hashes below verify that.
+    assert "/review/save" not in html
     query = f"?project={view['id']}"
     status, body, _ = http_server("/reference-preview/queue" + query)
     assert status == 200
     items = json.loads(body)["items"]
     assert [item["group"] for item in items] == ["학습용", "공통 평가용"]
-    assert not any("decision" in item or "listened" in item for item in items)
+    assert not any(item.get("decision") or item.get("listened") for item in items)
     for item, row in zip(items, rows):
         status, audio, _ = http_server(item["audio"])
         assert status == 200 and audio == (root / row["path"]).read_bytes()

@@ -1,6 +1,5 @@
 """CPU-only display scope; scoring metadata and audio paths stay unchanged."""
 import json
-import importlib.util
 from pathlib import Path
 import shutil
 import subprocess
@@ -151,57 +150,3 @@ def test_export_adds_scope_asset_without_changing_scores_or_scored_audio(tmp_pat
     assert exported["clips"][0]["results"] == clips[0]["results"]
     assert digest(site / exported["clips"][0]["path"]) == clips[0]["sha256"]
     assert read_json(site / "provenance.json")["same_scored_WAVs"] is True
-
-
-def _post_export_fixture(tmp_path):
-    evaluation, site = tmp_path / "evaluation", tmp_path / "site"
-    evaluation.mkdir()
-    source = evaluation / "fixture.wav"
-    sf.write(source, np.zeros(1600), 16000, subtype="PCM_16")
-    clips = [{"sample_id": "clean", "kind": "positive", "category": "clean", "original_id": "original",
-              "path": str(source), "sha256": digest(source), "results": {"single": {"success": True}}}]
-    report = {"stage": "development", "models": [{"id": "single", "negative": {"hours": 0}}]}
-    write_json(evaluation / "clips.json", clips)
-    write_json(evaluation / "report.json", report)
-    write_json(evaluation / "receipt.json", {"clips_sha256": digest(evaluation / "clips.json"),
-               "report_sha256": digest(evaluation / "report.json")})
-    export_site(evaluation, site)
-    (site / "index.html").write_text("<html>Old display</html>", encoding="utf-8")
-    (site / "results.js").write_text("// old display script\n", encoding="utf-8")
-    (site / "results_scope.js").unlink()
-    helper_path = Path(__file__).resolve().parents[1] / "reports/bora_independent_20261013/patch_result_scope_ui.py"
-    spec = importlib.util.spec_from_file_location("scope_patch_helper_test", helper_path)
-    helper = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(helper)
-    return helper, evaluation, site, source
-
-
-@pytest.mark.legacy_parity
-def test_post_export_scope_helper_preserves_metadata_scores_and_audio(tmp_path):
-    helper, evaluation, site, source = _post_export_fixture(tmp_path)
-    protected = [source, evaluation / "report.json", evaluation / "clips.json", evaluation / "receipt.json",
-                 site / "results-data.js", site / "provenance.json"]
-    before = {path: digest(path) for path in protected}
-    result = helper.patch_scope_ui(evaluation / "report.json", site, SCOPE_SCRIPT.parent)
-    assert result["state"] == "completed"
-    assert {path: digest(path) for path in protected} == before
-    evidence = read_json(result["receipt"])
-    assert evidence["protected_metadata_sha256_before"] == evidence["protected_metadata_sha256_after"]
-    assert evidence["audio_files_read_or_modified"] == 0
-    assert evidence["new_inference_or_training"] is False
-    assert (Path(evidence["old_ui_preserved_at"]) / "index.html").read_text(encoding="utf-8") == "<html>Old display</html>"
-    assert helper.patch_scope_ui(evaluation / "report.json", site, SCOPE_SCRIPT.parent)["state"] == "already_current"
-
-
-@pytest.mark.legacy_parity
-def test_post_export_scope_helper_refuses_site_scores_changed_since_export(tmp_path):
-    helper, evaluation, site, _ = _post_export_fixture(tmp_path)
-    data = site / "results-data.js"
-    wrapper = data.read_text(encoding="utf-8")
-    payload = json.loads(wrapper.removeprefix("window.KOWW_RESULTS=").removesuffix(";\n"))
-    payload["clips"][0]["results"]["single"]["success"] = False
-    data.write_text("window.KOWW_RESULTS=" + json.dumps(payload) + ";\n", encoding="utf-8")
-    before = digest(site / "index.html")
-    with pytest.raises(ValueError, match="scores or scored clip metadata changed"):
-        helper.patch_scope_ui(evaluation / "report.json", site, SCOPE_SCRIPT.parent)
-    assert digest(site / "index.html") == before
