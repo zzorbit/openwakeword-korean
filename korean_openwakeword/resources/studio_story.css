@@ -131,7 +131,7 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-history-rows{display:grid;gap:18px;width:100%}
 .story-history[data-kind="downloads"] .story-history-rows{grid-template-columns:1fr 1fr;gap:4px 40px}
 .story-history-row{display:flex;flex-direction:column;gap:9px;width:100%;min-width:0;padding:12px 0;border-bottom:1px solid #343c47;text-align:left}
-.story-history-row:last-child{border-bottom:0}
+:where(.story-history:not([data-kind="downloads"])) .story-history-row:last-child{border-bottom:0}
 .story-history-line{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:baseline;gap:8px 16px;width:100%;font-size:16px;line-height:24px}
 .story-history-line strong{font-weight:500;overflow-wrap:anywhere}
 .story-history-line>span{font-variant-numeric:tabular-nums}
