@@ -447,13 +447,12 @@
   }
   function renderPresets() {
     const nodes = recipes.map(recipe => {
-      const label = element("label", undefined, "preset");
+      const label = element("label", undefined, "preset story-choice-card");
       const radio = element("input"); radio.type = "radio"; radio.name = "preset"; radio.value = recipe.id; radio.checked = selectedPreset === recipe.id;
       radio.addEventListener("change", () => { selectedPreset = recipe.id; renderRecipe(); previewLocation(); });
-      const title = element("span", recipe.label || names[recipe.id] || recipe.id, "preset-title");
-      const heading = element("div"); heading.append(radio, title);
+      const title = element("strong", recipe.label || names[recipe.id] || recipe.id, "preset-title");
       const detail = element("p", recipe.description || "", "preset-description");
-      label.append(heading, detail); return label;
+      label.append(radio, title, detail); return label;
     });
     replace($("presets"), nodes.length ? nodes : [element("p", "사용 가능한 작업 규모가 없습니다. 서버 설정을 확인하세요.", "muted")]);
   }

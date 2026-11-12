@@ -740,6 +740,7 @@ function pendingHardStorageRecipe() {
     const b = browser({ recipeList: recipes }); await flush();
     for (const [index, recipe] of recipes.entries()) {
       const preset = b.elements.get("presets").children[index];
+      assert.equal(preset.children[0].type, "radio");
       assert.equal(withClass(preset, "preset-summary").length, 0);
       assert.doesNotMatch(textOf(preset), /\d[\d,]*\s*(?:개|회)|증강 R\d/);
       descendants(preset).find(node => node.tagName === "input").handlers.change();

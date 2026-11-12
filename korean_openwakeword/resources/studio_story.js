@@ -239,7 +239,7 @@
     toolPicker.id = "story-tool-picker"; toolPicker.append(node("legend", "연산 장치", "sr-only"));
     const toolInputs = new Map();
     for (const [backend, [label, description]] of Object.entries(toolBackends)) {
-      const card = node("label", undefined, "dependency-option"), radio = node("input");
+      const card = node("label", undefined, "dependency-option story-choice-card"), radio = node("input");
       radio.id = `story-tool-${backend}`; radio.type = "radio"; radio.name = "setup-backend"; radio.value = backend;
       radio.addEventListener("change", () => { if (radio.checked) setupBackend = backend; });
       card.append(radio, node("strong", label), node("span", description));
@@ -250,15 +250,15 @@
     const savedPresets = node("div", undefined, "preset-grid"); savedPresets.id = "story-saved-presets";
     savedPresets.setAttribute("role", "group"); savedPresets.setAttribute("aria-label", "저장된 학습 규모"); savedScale.append(savedPresets);
     for (const [id, title] of Object.entries(titles)) {
-      const card = node("label", undefined, "preset"), radio = node("input");
+      const card = node("label", undefined, "preset story-choice-card"), radio = node("input");
       radio.type = "radio"; radio.name = "saved-preset"; radio.value = id; radio.disabled = true;
-      const line = node("div"); line.append(radio, node("span", title, "preset-title"));
-      card.append(line, node("p", shortDescriptions[id], "preset-description"));
+      card.append(radio, node("strong", title, "preset-title"), node("p", shortDescriptions[id], "preset-description"));
       savedPresets.append(card);
     }
     const materials = node("div", undefined, "story-materials");
     const materialsTabs = node("div", undefined, "story-material-tabs"); materialsTabs.setAttribute("role", "tablist"); materialsTabs.setAttribute("aria-label", "자료 구분");
-    const materialColumns = node("div", undefined, "story-material-columns"); materialColumns.tabIndex = 0; materialColumns.setAttribute("aria-label", "준비 자료 목록");
+    const materialColumns = node("div", undefined, "story-material-columns"); materialColumns.setAttribute("role", "group");
+    materialColumns.setAttribute("aria-label", "준비 자료 목록");
     const toolMaterials = node("section", undefined, "story-tool-materials"); toolMaterials.id = "story-tool-materials"; toolMaterials.hidden = true;
     toolMaterials.setAttribute("aria-labelledby", "story-tool-materials-title");
     const locationStatus = node("div", undefined, "story-location-status"); locationStatus.hidden = true;
@@ -1335,7 +1335,7 @@
     }
     function renderMaterials() {
       if (!materialData) return;
-      const small = matchMedia("(max-width:760px), (max-height:700px)").matches;
+      const small = matchMedia("(max-width:760px)").matches;
       const sections = [];
       for (const [key, label] of [["training", "학습용 자료"], ["evaluation", "성능 평가용 자료"]]) {
         const section = node("section", undefined, "story-material-section"); section.hidden = small && key !== materialTab;
@@ -2040,6 +2040,7 @@
       const position = screens.indexOf(current), historical = Boolean(!preparationPending && project && (position < maximum && !liveTools || done(project.status)
         || (current === "downloads" && checkpoint?.state === "awaiting_next" && completedStep(project, "downloads"))
         || (navigation?.state === "awaiting_next" && current === navigation.step && completedNavigationStep(project, current))));
+      if (shell.dataset.step !== current && (current === "materials" || shell.dataset.step === "materials")) stage.scrollTop = 0;
       shell.dataset.step = current; shell.dataset.model = project ? "existing" : "new";
       shell.dataset.layout = standardLayoutSteps.has(current) ? "standard" : "";
       shell.dataset.history = String(historical);

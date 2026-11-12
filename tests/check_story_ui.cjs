@@ -369,7 +369,9 @@ async function main() {
   });
   await test("small material screens switch groups without slicing rows or starting work", async () => {
     const rows = (prefix, length) => Array.from({ length }, (_, index) => ({ name: `${prefix} ${index + 1}`, amount: "1시간", downloadLabel: index ? "다운로드 약 1GiB" : "다운로드 용량 미확정", description: "직접 준비할 자료", sources: index ? [{ name: "선정 자료" }] : [] }));
-    const p = page(null, { width: 319, height: 420, matchMedia: query => query.includes("max-width:760px"), materials: () => ({ training: rows("학습", 6), evaluation: rows("평가", 5) }) });
+    let narrow = true;
+    const p = page(null, { width: 319, height: 420, matchMedia: query => query.includes("max-height:700px") || narrow && query.includes("max-width:760px"),
+      materials: () => ({ training: rows("학습", 6), evaluation: rows("평가", 5) }) });
     p.state.recipes = [{ id: "check" }];
     await advanceSetup(p, "tools", "scale", "materials");
     const columns = p.shell.querySelector(".story-material-columns"), tabs = p.shell.querySelectorAll(".story-material-tab");
@@ -384,6 +386,8 @@ async function main() {
     assert.equal(tabs[1].getAttribute("aria-selected"), "true");
     await tabs[1].fire("keydown", { key: "Home", preventDefault() {} }); await p.windowEvent("resize");
     assert.equal(columns.children[0].hidden, false); assert.equal(columns.children[0].querySelectorAll(".story-material-row").length, 6);
+    narrow = false; await p.windowEvent("resize");
+    assert.ok(columns.children.every(section => !section.hidden), "both columns remain visible in a wide, short window");
     assert.equal(p.calls.some(call => ["create", "start", "resume", "pause", "input"].includes(call)), false);
   });
   await test("new setup advances locally and creates only once after material confirmation", async () => {
@@ -1172,6 +1176,7 @@ async function main() {
     await visit(p, "scale");
     const group = p.get("story-saved-presets"), radios = group.querySelectorAll("input");
     assert.equal(group.parentElement.hidden, false); assert.equal(radios.length, 3);
+    assert.ok(group.children.every(card => card.classList.contains("story-choice-card") && card.children[0].type === "radio"));
     assert.equal(radios.filter(radio => radio.checked).length, 1);
     assert.equal(radios.find(radio => radio.checked).value, "production");
     assert.ok(radios.every(radio => radio.disabled)); assert.equal(p.state.selectedPreset, "trial");

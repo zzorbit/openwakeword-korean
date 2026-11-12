@@ -108,11 +108,11 @@
         <label id="input-label" for="input-value"></label><textarea id="input-value" rows="6" required></textarea><div id="hard-phrase-editor" hidden><p id="hard-phrase-rules" class="hint hard-phrase-rules">공백 없이 한글 1~16자로 입력하세요. 호출어나 같은 이름이 들어간 문구와 중복 문구는 사용할 수 없습니다.</p><div id="hard-phrase-fields" class="hard-phrase-fields" role="group" aria-labelledby="input-label" aria-describedby="hard-phrase-rules"></div><div class="hard-tools"><button id="hard-phrase-add" class="quiet hard-phrase-add" type="button">+ 문구 추가</button><p id="hard-generation-counts" class="hint" aria-live="polite" hidden></p></div></div>
         <fieldset id="dependency-backend" class="story-tool-options" hidden>
           <legend class="sr-only">연산 장치</legend>
-          <label class="dependency-option">
+          <label class="dependency-option story-choice-card">
             <input id="dependency-cpu" type="radio" name="dependency_backend" value="cpu" checked>
             <strong>CPU</strong><span>NVIDIA GPU 없이 실행</span>
           </label>
-          <label class="dependency-option">
+          <label class="dependency-option story-choice-card">
             <input id="dependency-cu128" type="radio" name="dependency_backend" value="cu128">
             <strong>NVIDIA GPU</strong><span>CUDA 12.8 사용</span>
           </label>
