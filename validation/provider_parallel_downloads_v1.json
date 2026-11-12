@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "kind": "audited_provider_parallel_download_update",
+  "source_computation_sha256": "0002ac6e810f3656cd0ba4400a9f434b088e936c1f7f69ffb1311e251ca79a3e",
+  "source_stages_sha256": "ba58808e7fa0de597f6a97b8b60800272b403d0887259b6b63ddbacdc691dfdf",
+  "target_computation_sha256": "4c6fdddc4349ac998869657de3066a4c143a36369275583ae6dd4fe1fd8b6978",
+  "target_stages_sha256": "56910287134bf8f3688743b6f11c54f6bf3dc5c14b1778e84f3dd6357f79d4dd",
+  "changed_files": [
+    "downloads.py"
+  ],
+  "verification": [
+    "All other execution-contract file digests, including source catalog and checksum pins, match the prior contract.",
+    "The only existing definition changed in downloads.py is download_many. Whole-file transfer, resume, file locking, and verification definitions are AST-identical.",
+    "Local scheduling fixtures verify dataset admission order, provider retry isolation, output order, and the configured worker bound."
+  ],
+  "scope": "Task scheduling and progress only. Validation uses local fixtures; production transfer rates are not measured."
+}

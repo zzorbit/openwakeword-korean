@@ -523,6 +523,14 @@ _LEGACY_COMPATIBLE_CONTRACTS = {
 # Final release fingerprints and the preserved-input equivalence receipt are
 # filled only after the complete source tree has been frozen and tested.
 _AUDITED_ACQUISITION_UPDATES = {
+    # Provider scheduling changes admission order only; file pins and transfer code are unchanged.
+    "0002ac6e810f3656cd0ba4400a9f434b088e936c1f7f69ffb1311e251ca79a3e": {
+        "source_stages_sha256": "ba58808e7fa0de597f6a97b8b60800272b403d0887259b6b63ddbacdc691dfdf",
+        "target_computation_sha256": "4c6fdddc4349ac998869657de3066a4c143a36369275583ae6dd4fe1fd8b6978",
+        "target_stages_sha256": "56910287134bf8f3688743b6f11c54f6bf3dc5c14b1778e84f3dd6357f79d4dd",
+        "changed_files": ("downloads.py",),
+        "evidence_sha256": "57a2a7ee41da05c8791863cccc3331ea2b1e6665fbb5fba765349639ac58bb54",
+    },
     # Exact non-material VoiceDesign option pin exclusion; all source evidence stays frozen.
     '8ec72f66469ab1ebbc7a58202bc39e68d75d0d8dcae4a1fbdd9e16dc220b9012': {'source_stages_sha256': '37e5396812e3c28715d2818a51fa120c17834bcbdd4ef7f3fd2400601ae29c34', 'target_computation_sha256': '1770934c2cf9b6e4e84edd532d1591991836f69604a7930cb6da6f3c199917f6', 'target_stages_sha256': '0e766b081f2651106fcb613fcbfd0208c4527a2974714e25068c6e25350e3a8d', 'changed_files': ['material_policy.py'], 'evidence_sha256': '807cb103d36fd144d7834ca803c0e1d3d3d8e89d941f3496723fa60ac54ef26f'},
     "04d4bd5dcfa9667ff2a650e4163007181fafe9b0cdd2e8cc72ad3e9526380d04": {

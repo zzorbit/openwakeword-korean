@@ -1,7 +1,9 @@
 """Checksum-pinned public assets with resumable downloads and no silent approval."""
+from collections import Counter, deque
 from importlib.resources import files
 from pathlib import Path
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from urllib.parse import urlsplit
 import hashlib
 import math
 import os
@@ -51,8 +53,40 @@ class VerificationCache:
             self._verified[(str(path), algorithm)] = (expected, observed_identity)
 
 
+def _download_host(item):
+    url = item.get("source_url")
+    request = item.get("request")
+    if not url and isinstance(request, (list, tuple)) and request:
+        url = request[0]
+    if isinstance(url, str):
+        try:
+            return urlsplit(url).hostname
+        except ValueError:
+            pass
+    return None
+
+
+def _dataset_order(items):
+    """Give each dataset a turn before admitting more files from the same dataset."""
+    groups = {}
+    for index, item in enumerate(items):
+        group = item.get("group")
+        key = group if isinstance(group, str) and group else item["id"]
+        groups.setdefault(key, deque()).append(index)
+    remaining = deque(groups.values())
+    while remaining:
+        group = remaining.popleft()
+        yield group.popleft()
+        if group:
+            remaining.append(group)
+
+
 def download_many(items, worker, *, progress=None, max_workers=None):
-    """Run independent whole-file downloads in order, with bounded concurrency.
+    """Run independent whole-file downloads with bounded concurrency.
+
+    Automatic admission is fair across datasets and adapts per source host.
+    Explicit worker counts retain fixed concurrency and input admission order.
+    Results are returned in input order in both modes.
 
     ``worker(item, report)`` retains the existing per-file lock, resume and hash
     checks. Only this caller invokes ``progress``; workers enqueue their events.
@@ -70,7 +104,6 @@ def download_many(items, worker, *, progress=None, max_workers=None):
         max_workers = int(setting)
     if type(max_workers) is not int or not 1 <= max_workers <= 32:
         raise ValueError("Download workers must be an integer from 1 to 32")
-    controller = AdaptiveConcurrency(ceiling=max_workers) if automatic else None
     items = list(items)
     identifiers = [item["id"] for item in items]
     if any(not isinstance(key, str) or not key for key in identifiers) or len(set(identifiers)) != len(items):
@@ -90,17 +123,58 @@ def download_many(items, worker, *, progress=None, max_workers=None):
                    "network_bytes": 0, "bytes_per_second": None, "eta_seconds": None}
                   for item, size in zip(items, sizes)]
     events, failed = queue.SimpleQueue(), threading.Event()
-    pending, verified, next_index, first_error = {}, 0, 0, None
+    pending, verified, first_error = {}, 0, None
     last_emit, last_signature = -float("inf"), None
 
-    def target():
-        return controller.limit if controller else max_workers
+    hosts = [_download_host(item) if automatic else None for item in items]
+    waiting = {}
+    order = _dataset_order(items) if automatic else range(len(items))
+    for priority, index in enumerate(order):
+        waiting.setdefault(hosts[index], deque()).append((priority, index))
+    active_by_host = Counter()
+    controllers = {host: AdaptiveConcurrency(ceiling=max_workers) for host in waiting} if automatic else {}
+    indexes_by_host = {host: [index for _, index in entries] for host, entries in waiting.items()}
+    reason = "initial" if automatic else "fixed"
 
-    def update_control(timestamp=None, *, retry=False):
-        if controller:
-            controller.update(time.monotonic() if timestamp is None else timestamp, sum(received),
-                network_active=sum(networking), read_seconds=sum(reading), write_seconds=sum(writing),
-                retry=retry, backlog=next_index < len(items))
+    def target():
+        if not automatic:
+            return max_workers
+        remaining_capacity = sum(controller.limit for host, controller in controllers.items()
+                                 if host in waiting or active_by_host[host])
+        return max(1, min(max_workers, remaining_capacity))
+
+    def next_ready():
+        # Skip a saturated host without delaying the next eligible dataset.
+        eligible = (entries[0] for host, entries in waiting.items()
+                    if not automatic or active_by_host[host] < controllers[host].limit)
+        chosen = min(eligible, default=None)
+        if chosen is None:
+            return None
+        _, index = chosen
+        host = hosts[index]
+        waiting[host].popleft()
+        if not waiting[host]:
+            del waiting[host]
+        return index
+
+    def update_control(host, timestamp=None, *, retry=False):
+        nonlocal reason
+        controller = controllers.get(host)
+        if controller is None:
+            return
+        previous = controller.limit, controller.reason
+        indexes = indexes_by_host[host]
+        controller.update(
+            time.monotonic() if timestamp is None else timestamp,
+            sum(received[index] for index in indexes),
+            network_active=sum(networking[index] for index in indexes),
+            read_seconds=sum(reading[index] for index in indexes),
+            write_seconds=sum(writing[index] for index in indexes),
+            retry=retry,
+            backlog=host in waiting,
+        )
+        if retry or (controller.limit, controller.reason) != previous:
+            reason = controller.reason
 
     def emit(index=None, event=None, *, completed=False):
         nonlocal last_emit, last_signature
@@ -118,7 +192,7 @@ def download_many(items, worker, *, progress=None, max_workers=None):
                       "verified_count": verified, "asset_count": len(items), "active_count": len(pending),
                       "max_workers": max_workers, "completed": completed, "eta_seconds": None,
                       "download_mode": "auto" if automatic else "fixed", "target_workers": target(),
-                      "adjustment_reason": controller.reason if controller else "fixed",
+                      "adjustment_reason": reason,
                       "network_bytes": sum(received), "active_network": sum(networking),
                       "files": [dict(view) for view in file_views],
                       "current_asset": identifiers[index] if index is not None else None,
@@ -168,7 +242,7 @@ def download_many(items, worker, *, progress=None, max_workers=None):
                     if (isinstance(value, (int, float)) and not isinstance(value, bool)
                             and math.isfinite(value) and value >= 0):
                         view[key] = value
-            update_control(event.get("observed_at"), retry=event.get("phase") == "retry")
+            update_control(hosts[index], event.get("observed_at"), retry=event.get("phase") == "retry")
             emit(index, event)
 
     def run(index):
@@ -183,18 +257,24 @@ def download_many(items, worker, *, progress=None, max_workers=None):
     emit()
     with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="koww-download") as executor:
         try:
-            while next_index < len(items) or pending:
-                while next_index < len(items) and len(pending) < target() and not failed.is_set():
-                    file_views[next_index]["state"] = "downloading"
-                    pending[executor.submit(run, next_index)] = next_index
-                    next_index += 1
+            while waiting or pending:
+                while waiting and len(pending) < max_workers and not failed.is_set():
+                    index = next_ready()
+                    if index is None:
+                        break
+                    file_views[index]["state"] = "downloading"
+                    pending[executor.submit(run, index)] = index
+                    active_by_host[hosts[index]] += 1
                 if not pending:
                     break
                 done, _ = wait(pending, timeout=.05, return_when=FIRST_COMPLETED)
                 drain()
                 for future in done:
                     index = pending.pop(future)
+                    host = hosts[index]
+                    active_by_host[host] -= 1
                     networking[index] = False
+                    update_control(host)
                     try:
                         results[index] = future.result()
                     except BaseException as error:
@@ -212,7 +292,6 @@ def download_many(items, worker, *, progress=None, max_workers=None):
                                    else not downloaded[index]))
                         file_views[index].update(state="reused" if reused else "complete",
                                                  done=available[index], bytes_per_second=None, eta_seconds=None)
-                update_control()
                 if done:
                     emit()
             drain()

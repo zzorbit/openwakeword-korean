@@ -70,6 +70,74 @@ def test_manual_workers_above_the_previous_limit_are_fixed(monkeypatch, kind):
     assert all(record["download_mode"] == "fixed" and record["target_workers"] == 5 for record in records)
 
 
+def test_auto_starts_distinct_groups_before_admitting_more_of_one_group(monkeypatch):
+    monkeypatch.setenv("KOWW_DOWNLOAD_WORKERS", "auto")
+    monkeypatch.setenv("KOWW_DOWNLOAD_MAX_WORKERS", "3")
+    items = [
+        {"id": "a1", "group": "a", "source_url": "https://one.example/a1"},
+        {"id": "a2", "group": "a", "source_url": "https://one.example/a2"},
+        {"id": "a3", "group": "a", "source_url": "https://one.example/a3"},
+        {"id": "b1", "group": "b", "source_url": "https://one.example/b1"},
+        {"id": "c1", "group": "c", "source_url": "https://two.example/c1"},
+    ]
+    first_wave, lock = threading.Barrier(3), threading.Lock()
+    started = []
+
+    def worker(item, _report):
+        with lock:
+            started.append(item["id"])
+            in_first_wave = len(started) <= 3
+        if in_first_wave:
+            first_wave.wait(timeout=5)
+        return item["id"]
+
+    assert download_many(items, worker) == [item["id"] for item in items]
+    assert set(started[:3]) == {"a1", "b1", "c1"}
+
+
+def test_retry_does_not_hold_open_slots_for_unrelated_origins(monkeypatch):
+    monkeypatch.setenv("KOWW_DOWNLOAD_WORKERS", "auto")
+    monkeypatch.setenv("KOWW_DOWNLOAD_MAX_WORKERS", "3")
+    items = [
+        {"id": "retry0", "group": "first", "source_url": "https://retry.example/0"},
+        {"id": "retry1", "group": "second", "source_url": "https://retry.example/1"},
+        {"id": "healthy0", "group": "healthy", "source_url": "https://healthy.example/0"},
+        {"id": "retry2", "group": "third", "source_url": "https://retry.example/2"},
+        {"id": "healthy1", "group": "healthy", "source_url": "https://healthy.example/1"},
+    ]
+    first_wave, lock = threading.Barrier(3), threading.Lock()
+    retry_observed, replacement_started = threading.Event(), threading.Event()
+    started, records = [], []
+
+    def worker(item, report):
+        name = item["id"]
+        with lock:
+            started.append(name)
+            in_first_wave = len(started) <= 3
+        if in_first_wave:
+            first_wave.wait(timeout=5)
+        if name == "retry0":
+            report({"phase": "retry"})
+            assert replacement_started.wait(timeout=5), "An unrelated origin should keep filling available slots"
+        elif name.startswith("healthy"):
+            assert retry_observed.wait(timeout=5)
+            if not in_first_wave:
+                replacement_started.set()
+        else:
+            assert replacement_started.wait(timeout=5), "A retrying origin must not block an unrelated origin"
+        return name
+
+    def progress(record):
+        records.append(record)
+        if (record.get("current_event") or {}).get("phase") == "retry":
+            retry_observed.set()
+
+    assert download_many(items, worker, progress=progress) == [item["id"] for item in items]
+    assert replacement_started.is_set()
+    assert all(record["active_count"] <= 3 for record in records)
+    assert records[-1]["verified_count"] == len(items)
+
+
 def test_scheduler_changes_admission_without_interrupting_an_active_file(monkeypatch):
     monkeypatch.setenv("KOWW_DOWNLOAD_WORKERS", "auto")
     monkeypatch.delenv("KOWW_DOWNLOAD_MAX_WORKERS", raising=False)
