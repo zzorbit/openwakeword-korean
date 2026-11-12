@@ -38,6 +38,18 @@
   };
   const activeStatuses = new Set(["running", "starting", "queued", "pausing"]);
   const completeStatuses = new Set(["complete", "completed", "finished"]);
+  function projectErrorText(error) {
+    if (typeof error === "string") return error;
+    if (!error || typeof error !== "object") return "";
+    const detail = typeof error.message === "string" ? error.message.trim() : "";
+    if (error.type === "MemoryError") {
+      const message = error.stage === "frontend" ? "메모리가 부족해 학습·평가 환경 준비를 마치지 못했습니다." : "메모리가 부족해 작업을 마치지 못했습니다.";
+      return [message, detail, "메모리를 확보한 뒤 재개하세요."].filter(Boolean).join(" ");
+    }
+    const code = error.code || error.type;
+    return detail || [typeof code === "string" ? `작업 오류 (${code})` : "작업을 마치지 못했습니다.",
+      typeof error.resolution === "string" ? error.resolution : ""].filter(Boolean).join(" ");
+  }
   const number = value => Number.isFinite(Number(value)) ? Number(value).toLocaleString("ko-KR") : "—";
   function duration(value) {
     if (value === null || value === undefined || value === "" || !Number.isFinite(Number(value)) || Number(value) < 0) return "";
@@ -1277,8 +1289,9 @@
     Object.assign($("eta").style, { whiteSpace: activityText ? "nowrap" : "", overflow: activityText ? "hidden" : "", textOverflow: activityText ? "ellipsis" : "" });
     $("eta").title = activityText;
     if ($("eta").textContent !== timingText) $("eta").textContent = timingText;
-    $("project-error").hidden = !project.error;
-    $("project-error").textContent = project.error && typeof project.error === "object" ? project.error.message || JSON.stringify(project.error) : project.error || "";
+    const errorText = projectErrorText(project.error);
+    $("project-error").hidden = !errorText;
+    $("project-error").textContent = errorText;
     renderDashboard(project);
     // The chapter view builds its own download list from project state.
     if (story?.ownsDownloadRows !== true) renderDownloads(project);
@@ -1496,6 +1509,7 @@
       preview: kind => selectAudioView(kind),
       logs: loadLog,
       installLog: id => api(`/api/projects/${encodeURIComponent(id)}/log`),
+      projectErrorText,
       refresh,
       prepareRecipes: loadRecipes,
       message,

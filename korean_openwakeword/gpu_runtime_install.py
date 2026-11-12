@@ -5,7 +5,10 @@ can use a separately supplied CUDA provider; this installer does not guess their
 native dependencies. Native validation runs in a fresh subprocess, so an already
 imported CPU onnxruntime in the caller stays intact.
 """
+import base64
 from contextlib import contextmanager
+import csv
+import hashlib
 import importlib.metadata
 import importlib.util
 import json
@@ -13,14 +16,16 @@ import marshal
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
+import stat
 import subprocess
 import sys
 import sysconfig
 from types import CodeType
 import uuid
 
-from .common import digest, now, read_json, write_json
+from .common import now, read_json, write_json
 from .storage import storage_environment, storage_paths
 
 
@@ -33,6 +38,7 @@ RUNTIME_NAME = "onnxruntime_1_31_cuda13"
 # This is not a claim about every pip version's cache/temporary peak.
 REFERENCE_PAYLOAD_BYTES = 1429256019
 MINIMUM_FREE_BYTES = REFERENCE_PAYLOAD_BYTES * 2
+_FILE_BUFFER_BYTES = 256 * 1024
 _REQUIRED_NATIVE = {"onnxruntime_pybind11_state.pyd", "onnxruntime_providers_cuda.dll",
                     "cublas64_13.dll", "cublaslt64_13.dll", "cudart64_13.dll", "cudnn64_9.dll"}
 _PROBE = r'''
@@ -180,35 +186,142 @@ def _probe_runtime(target, environment):
     return probe
 
 
+def _file_buffer():
+    return memoryview(bytearray(_FILE_BUFFER_BYTES))
+
+
+def _file_digest(path, buffer):
+    checksum = hashlib.sha256()
+    with path.open("rb", buffering=0) as stream:
+        while size := stream.readinto(buffer):
+            checksum.update(buffer[:size])
+    return checksum.hexdigest()
+
+
+def _copy_payload_file(source, destination, buffer):
+    with source.open("rb", buffering=0) as stream, destination.open("xb") as output:
+        while size := stream.readinto(buffer):
+            output.write(buffer[:size])
+
+
+def _payload_files(root):
+    """Inventory only ordinary files without traversing Windows reparse points."""
+    pending = [root]
+    files = {}
+    while pending:
+        path = pending.pop()
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+            raise ValueError("GPU runtime staging contains a linked path")
+        if stat.S_ISDIR(info.st_mode):
+            pending.extend(path.iterdir())
+        elif stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and path != root:
+            files[path.relative_to(root).as_posix()] = (path, info.st_size)
+        else:
+            raise ValueError("GPU runtime staging contains an unexpected file type")
+    return files
+
+
 def _artifacts(target):
-    return [{"path": path.relative_to(target).as_posix(), "sha256": digest(path), "bytes": path.stat().st_size}
-            for path in sorted(target.rglob("*")) if path.is_file() and path != target / "receipt.json"]
+    buffer = _file_buffer()
+    return [{"path": relative, "sha256": _file_digest(path, buffer), "bytes": size}
+            for relative, (path, size) in sorted(_payload_files(target).items()) if relative != "receipt.json"]
 
 
-def _publication_copy(incoming, target, artifacts):
+def _staging_candidates(target, kind):
+    prefix = target.name + f".{kind}_"
+    return sorted(path for path in target.parent.glob(prefix + "*")
+                  if re.fullmatch(r"[0-9a-f]{32}", path.name[len(prefix):]))
+
+
+def _verified_staging_artifacts(staging):
+    """Recover only complete pinned wheels with their original pip inventories."""
+    files = _payload_files(staging)
+    _validate_layout(staging)
+    expected = {}
+    for name, version in PINS.items():
+        record = f"{name.replace('-', '_')}-{version}.dist-info/RECORD"
+        with (staging / record).open(encoding="utf-8", newline="") as stream:
+            for relative, checksum, size in csv.reader(stream, strict=True):
+                # pip --target moves wheel scripts from its install scheme
+                # into the staging root without rewriting their RECORD path.
+                if name == "onnxruntime-gpu" and relative == "../../bin/onnxruntime_test.exe":
+                    relative = "bin/onnxruntime_test.exe"
+                if relative not in files or relative in expected:
+                    raise ValueError("GPU runtime staging has an inconsistent wheel inventory")
+                if relative == record and not checksum and not size:
+                    expected[relative] = None
+                elif not checksum.startswith("sha256=") or int(size) != files[relative][1]:
+                    raise ValueError("GPU runtime staging has an invalid wheel record")
+                else:
+                    expected[relative] = checksum.removeprefix("sha256=")
+    if expected.keys() != files.keys():
+        raise ValueError("GPU runtime staging has files outside the pinned wheel inventories")
+    buffer = _file_buffer()
+    artifacts = []
+    for relative, (path, size) in sorted(files.items()):
+        checksum = _file_digest(path, buffer)
+        wheel_checksum = base64.urlsafe_b64encode(bytes.fromhex(checksum)).decode("ascii").rstrip("=")
+        if expected[relative] is not None and expected[relative] != wheel_checksum:
+            raise ValueError("GPU runtime staging differs from the wheel record")
+        artifacts.append({"path": relative, "sha256": checksum, "bytes": size})
+    return artifacts
+
+
+def _recover_staging(target):
+    for candidate in _staging_candidates(target, "installing"):
+        try:
+            return candidate, _verified_staging_artifacts(candidate)
+        except (OSError, ValueError, csv.Error):
+            # Preserve invalid or interrupted pip installs for diagnosis.
+            continue
+    return None, None
+
+
+def _recover_publication(target, expected, buffer):
+    for candidate in _staging_candidates(target, "publishing"):
+        try:
+            files = _payload_files(candidate)
+            if files and files.keys() <= expected.keys() and all(
+                size == expected[relative]["bytes"] and _file_digest(path, buffer) == expected[relative]["sha256"]
+                for relative, (path, size) in files.items()
+            ):
+                return candidate, files.keys()
+        except (OSError, ValueError):
+            continue
+    return None, set()
+
+
+def _publication_copy(incoming, target, artifacts, *, resume=False):
     """Fresh Windows files inherit the project cache ACL, not pip's Temp ACL.
 
     pip can move private temporary directories into --target. Renaming that
     tree again retains their access rules, including an elevated-only owner.
     Copy content into freshly created siblings without copying file metadata.
     """
-    required = sum(entry["bytes"] for entry in artifacts)
-    if shutil.disk_usage(target.parent).free < required:
-        raise ValueError("Insufficient project-cache space for the verified GPU publication copy; the installation was preserved")
-    publication = target.with_name(target.name + ".publishing_" + uuid.uuid4().hex)
-    publication.mkdir(exist_ok=False)
-    expected = set()
+    expected = {}
     for entry in artifacts:
         relative = Path(entry["path"])
-        if relative.is_absolute() or ".." in relative.parts:
+        if relative.is_absolute() or relative.drive or ".." in relative.parts:
             raise ValueError("GPU runtime publication has an unsafe payload path")
+        expected[relative.as_posix()] = entry
+    buffer = _file_buffer()
+    publication, present = _recover_publication(target, expected, buffer) if resume else (None, set())
+    missing = [name for name in expected if name not in present]
+    required = sum(expected[name]["bytes"] for name in missing)
+    if shutil.disk_usage(target.parent).free < required:
+        raise ValueError("Insufficient project-cache space for the verified GPU publication copy; the installation was preserved")
+    if publication is None:
+        publication = target.with_name(target.name + ".publishing_" + uuid.uuid4().hex)
+        publication.mkdir(exist_ok=False)
+    for relative in missing:
+        entry = expected[relative]
         source, destination = incoming / relative, publication / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, destination)
-        if destination.stat().st_size != entry["bytes"] or digest(destination) != entry["sha256"]:
+        _copy_payload_file(source, destination, buffer)
+        if destination.stat().st_size != entry["bytes"] or _file_digest(destination, buffer) != entry["sha256"]:
             raise ValueError("GPU runtime publication copy differs from its verified installation; both copies were preserved")
-        expected.add(relative.as_posix())
-    if {path.relative_to(publication).as_posix() for path in publication.rglob("*") if path.is_file()} != expected:
+    if _payload_files(publication).keys() != expected.keys():
         raise ValueError("GPU runtime publication inventory differs; both copies were preserved")
     return publication
 
@@ -274,9 +387,10 @@ def _verify_receipt(target):
     recorded_files = {entry["path"] for entry in artifacts}
     if not recorded_files <= actual_files:
         raise ValueError("Existing isolated GPU runtime inventory changed; it was preserved")
+    buffer = _file_buffer()
     for entry in artifacts:
         path = (target / entry["path"]).resolve()
-        if not path.is_relative_to(target.resolve()) or not path.is_file() or path.stat().st_size != entry["bytes"] or digest(path) != entry["sha256"]:
+        if not path.is_relative_to(target.resolve()) or not path.is_file() or path.stat().st_size != entry["bytes"] or _file_digest(path, buffer) != entry["sha256"]:
             raise ValueError("Existing isolated GPU runtime bytes changed; it was preserved")
     if any(not _generated_bytecode(target, relative, recorded_files) for relative in actual_files - recorded_files):
         raise ValueError("Existing isolated GPU runtime has unverified extra files; it was preserved")
@@ -303,27 +417,35 @@ def setup_gpu_runtime(project_root):
             receipt = _verify_receipt(target)
             probe = _probe_runtime(target, _environment(target))
             return {**receipt, "reused": True, "current_probe": probe}
-        free = shutil.disk_usage(target.parent).free
-        if free < MINIMUM_FREE_BYTES:
-            raise ValueError(f"Insufficient selected-cache space for isolated GPU runtime setup: {free} free, {MINIMUM_FREE_BYTES} bytes required by the measured payload plus pip temporary allowance")
-        staging = target.with_name(target.name + ".installing_" + uuid.uuid4().hex)
-        staging.mkdir(exist_ok=False)
-        command = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--no-input",
-                   "--only-binary=:all:", "--no-deps", "--no-compile", "--target", str(staging),
-                   "--index-url", "https://pypi.org/simple", *[name + "==" + version for name, version in PINS.items()]]
-        print("별도 GPU 실행 환경을 프로젝트 캐시에 설치합니다. 기본 CPU onnxruntime은 유지합니다.", flush=True)
-        subprocess.run(command, cwd=str(root), check=True)
-        versions = _validate_layout(staging)
+        staging, artifacts = _recover_staging(target) if sys.platform == "win32" else (None, None)
+        recovered = staging is not None
+        commands = []
+        if recovered:
+            print("검증한 GPU 실행 환경의 이전 임시 설치를 이어서 마무리합니다.", flush=True)
+        else:
+            free = shutil.disk_usage(target.parent).free
+            if free < MINIMUM_FREE_BYTES:
+                raise ValueError(f"Insufficient selected-cache space for isolated GPU runtime setup: {free} free, {MINIMUM_FREE_BYTES} bytes required by the measured payload plus pip temporary allowance")
+            staging = target.with_name(target.name + ".installing_" + uuid.uuid4().hex)
+            staging.mkdir(exist_ok=False)
+            command = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--no-input",
+                       "--only-binary=:all:", "--no-deps", "--no-compile", "--target", str(staging),
+                       "--index-url", "https://pypi.org/simple", *[name + "==" + version for name, version in PINS.items()]]
+            print("별도 GPU 실행 환경을 프로젝트 캐시에 설치합니다. 기본 CPU onnxruntime은 유지합니다.", flush=True)
+            subprocess.run(command, cwd=str(root), check=True)
+            commands.append(command)
+        versions = dict(PINS) if recovered else _validate_layout(staging)
         probe = _probe_runtime(staging, _environment(staging))
-        artifacts = _artifacts(staging)
+        if artifacts is None:
+            artifacts = _artifacts(staging)
         incoming = staging
         if sys.platform == "win32":
-            staging = _publication_copy(incoming, target, artifacts)
+            staging = _publication_copy(incoming, target, artifacts, resume=recovered)
         # Staging can work while publication changes the effective path or
         # access. A completed receipt must describe a successful final-path
         # probe, not only the temporary installation directory.
         receipt = {"kind": "project_isolated_cuda_runtime_v1", "state": "publishing", "created_at": now(),
-            "path": str(target), "versions": versions, "commands": [command], "reused": False,
+                   "path": str(target), "versions": versions, "commands": commands, "reused": False,
             "platform": "win_amd64_cp312", "cuda_session_probe": probe, "artifacts": artifacts,
             "publication_policy": "fresh_files_inherit_project_cache_acl" if incoming != staging else "atomic_staging_rename",
             "probe_path_scope": "Staging has passed its session probe; the published path still requires validation before completion.",
@@ -343,7 +465,7 @@ def setup_gpu_runtime(project_root):
         receipt.update(state="completed", cuda_session_probe=published_probe,
                        staging_cuda_session_probe=probe,
                        probe_path_scope="CUDA session verified at the final published path; artifact hashes bind the same staged payload.")
-        if incoming != staging:
+        if incoming != staging and not recovered:
             try:
                 _remove_new_staging(incoming, target)
             except (OSError, ValueError) as error:

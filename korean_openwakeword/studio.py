@@ -534,6 +534,14 @@ _AUDITED_ACQUISITION_UPDATES = {
     },
     # Exact 0.24.0 -> 0.24.1 original-owner validation repair.
     "41e7cbd1606ebbed420f5b07f971296207d263ed878acbab3d26a7b388f9edec": {'source_stages_sha256': 'f13dad4d451cefc5269ff1f1bad5e9f4a740bbd97cc7b25298b51c67fa5dca7e', 'target_computation_sha256': '190472c48c47978effa8a0360fd56287ca72c8c250e321619bbe00984f518ccb', 'target_stages_sha256': '24b984a10bd10d23663ef9e463286730fbd51ea0f658235b363e0a09b2cdf966', 'changed_files': ('material_policy.py',), 'evidence_sha256': '30765776c7006abc7630249662f36039bbf2f7080d520dc412d43b2a9e98e0b6'},
+    # Bounded-memory Windows GPU publication and verified staging recovery.
+    "1098e002acf28cfa8d863b0dd6701a1b3c366de19f3267ef7c3eaf380bef402f": {
+        "source_stages_sha256": "5bb03ab00820d47d6d0bd4bd6cb20aa107c88533c0b543b567aefe672536a8c3",
+        "target_computation_sha256": "0002ac6e810f3656cd0ba4400a9f434b088e936c1f7f69ffb1311e251ca79a3e",
+        "target_stages_sha256": "ba58808e7fa0de597f6a97b8b60800272b403d0887259b6b63ddbacdc691dfdf",
+        "changed_files": ("gpu_runtime_install.py",),
+        "evidence_sha256": "002f80afe978e87b39c16094bd8ad18d9179427fd5435a9593de3474388e6d5d",
+    },
     # Exact GPU-required evaluation / Windows publication repair.
     "190472c48c47978effa8a0360fd56287ca72c8c250e321619bbe00984f518ccb": {'source_stages_sha256': '24b984a10bd10d23663ef9e463286730fbd51ea0f658235b363e0a09b2cdf966', 'target_computation_sha256': '93eb771702f0dce745787f0e1493d0150118ea652896d22521c649f08e03f0a1', 'target_stages_sha256': '8f4ca49e07e13b564543574f39649dd0ea725267152bb5fd017bcc35dffa82d3', 'changed_files': ('evaluation_backend.py', 'gpu_runtime_install.py', 'studio_steps.py'), 'evidence_sha256': '9010a49f2879a605120a816d6e6847ec97428da7439856ad3f2fe8278b10afd4'},
 }
@@ -1300,6 +1308,8 @@ class StudioManager:
                            if reference_update else
                            "재사용한 공개 자료를 원래 준비 기록에 맞춰 검증하도록 수정한 업데이트입니다. 기존 음원·검수 결과·설정은 보존됩니다."
                            if audited_update and audited_update.get("changed_files") == ["material_policy.py"] else
+                           "GPU 평가 도구 설치를 복구합니다. 검증을 통과한 설치 파일과 기존 학습 기록을 재사용합니다."
+                           if audited_update and audited_update.get("changed_files") == ["gpu_runtime_install.py"] else
                            "GPU 평가에 실패하면 CPU로 전환하지 않고 멈춥니다. 기존 CPU 점수는 보존하고 별도의 GPU 평가로 진행합니다."
                            if audited_update and audited_update.get("changed_files") == ["evaluation_backend.py", "gpu_runtime_install.py", "studio_steps.py"] else
                            "다운로드 순서·진행 표시 변경의 자료 동일성을 확인한 업데이트입니다. 기존 설정과 완료 결과를 검증한 뒤 적용할 수 있습니다."

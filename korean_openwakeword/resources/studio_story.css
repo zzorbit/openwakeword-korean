@@ -184,6 +184,7 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
   color:var(--fg);
 }
 .story-download-item[data-current="true"] .story-download-item-label{font-weight:600}
+.story-download-item[data-current="true"][data-state="failed"]{box-shadow:inset 3px 0 #edb9be;background:#382b31}
 .story-download-item[data-state="failed"] .story-download-item-detail{color:#edb9be}
 .story-download-item[data-placeholder="true"]{border-block-end-color:transparent}
 .story-download-item-label,.story-download-item-detail{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}

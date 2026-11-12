@@ -159,7 +159,7 @@ function page(initialProject = null, options = {}) {
     pause: frame => calls.push("pause:" + frame.id), preview: kind => calls.push("preview:" + kind),
     refresh: () => { calls.push("refresh"); return options.refresh?.(state); },
     prepareRecipes: () => options.prepareRecipes?.(state),
-    logs: () => calls.push("logs"), message: text => calls.push("message:" + text),
+    logs: () => calls.push("logs"), installLog: options.installLog, message: text => calls.push("message:" + text),
   });
   const shell = get("story-shell"), actions = shell.querySelector(".story-actions");
   const next = actions.children[2], operation = actions.children[1], back = actions.children[0];
@@ -827,6 +827,34 @@ async function main() {
     assert.equal(p.calls.some(call => ["start", "pause", "resume"].includes(call)), false);
     p.state.project = null; p.ui.render();
     assert.equal(p.shell.querySelector(".story-live").hidden, true, "new setup does not expose the retained download contents");
+  });
+  await test("failed environment setup restores completed packages from the log without showing them as active", async () => {
+    for (const hasSetupRows of [false, true]) {
+      const project = checkpointProject("running", "error");
+      project.stage_id = "frontend";
+      project.error = { message: "", type: "MemoryError", stage: "frontend" };
+      project.dependency_packages = ["torch==2.8.0+cu128", "qwen-tts==0.1.1"];
+      project.evaluation_runtime_packages = ["onnxruntime-gpu==1.31.0"];
+      if (hasSetupRows) project.download_setup_items = [
+        { id: "environment-check", label: "학습·평가 실행 환경 확인", state: "waiting" },
+        ...[...project.dependency_packages, ...project.evaluation_runtime_packages]
+          .map(label => ({ id: label.split("==")[0], label, state: label.startsWith("torch==") ? "installing" : "waiting" })),
+      ];
+      let requests = 0;
+      const p = page(project, { installLog: async () => {
+        requests++;
+        return { log: "Requirement already satisfied: torch>=2.0.0 in site-packages (2.8.0+cu128)\nSuccessfully installed onnxruntime-gpu-1.31.0\nMemoryError\n" };
+      } });
+      await p.flush(); p.ui.render();
+      const history = p.shell.querySelector(".story-history"), failed = currentDownloadRow(history);
+      assert.equal(failed.dataset.state, "failed");
+      assert.match(textOf(failed), /오류/);
+      assert.equal(failed.querySelector("i").hidden, true);
+      assert.deepEqual(downloadRows(history).filter(row => row.dataset.state === "complete").map(downloadRowLabel),
+        ["torch==2.8.0+cu128", "onnxruntime-gpu==1.31.0"]);
+      assert.equal(history.querySelector("progress").value, 2);
+      assert.equal(requests, 1);
+    }
   });
   await test("download checkpoint holds a completed data phase until next explicitly releases it and follows a busy response once", async () => {
     const project = checkpointProject("awaiting_next", "paused"); project.stage_id = "references";

@@ -1,4 +1,7 @@
 """Isolated CUDA installation safety, using tiny fake wheels and no downloads."""
+import base64
+import csv
+import hashlib
 import json
 import importlib.util
 import os
@@ -266,12 +269,12 @@ def test_windows_publication_creates_fresh_verified_files_without_temp_metadata(
 
 def test_corrupted_publication_copy_is_not_published_and_preserves_incoming(managed, monkeypatch):
     monkeypatch.setattr(runtime.sys, "platform", "win32")
-    original_copy = runtime.shutil.copyfile
+    original_copy = runtime._copy_payload_file
 
-    def corrupt(source, destination):
-        original_copy(source, destination)
-        Path(destination).write_bytes(b"corrupted publication")
-    monkeypatch.setattr(runtime.shutil, "copyfile", corrupt)
+    def corrupt(source, destination, buffer):
+        original_copy(source, destination, buffer)
+        destination.write_bytes(b"\x00" * destination.stat().st_size)
+    monkeypatch.setattr(runtime, "_copy_payload_file", corrupt)
     with pytest.raises(ValueError, match="copy differs"):
         runtime.setup_gpu_runtime(managed.root)
     target = runtime._target(managed.root)
@@ -279,6 +282,70 @@ def test_corrupted_publication_copy_is_not_published_and_preserves_incoming(mana
     incoming, = target.parent.glob(target.name + ".installing_*")
     assert (incoming / "onnxruntime/__init__.py").read_bytes() == b"# fake isolated GPU package\n"
     assert len(list(target.parent.glob(target.name + ".publishing_*"))) == 1
+
+
+def _fake_wheel_records(staging):
+    script = staging / "bin/onnxruntime_test.exe"
+    script.parent.mkdir()
+    script.write_bytes(b"fake tool")
+    records = sorted(staging.glob("*.dist-info/METADATA"))
+    common = sorted(path for path in staging.rglob("*") if path.is_file() and path not in records)
+    for metadata in records:
+        record = metadata.with_name("RECORD")
+        package_files = [metadata]
+        if metadata.parent.name.startswith("onnxruntime_gpu-"):
+            package_files.extend(common)
+        with record.open("w", encoding="utf-8", newline="") as stream:
+            writer = csv.writer(stream)
+            for path in package_files:
+                relative = "../../bin/onnxruntime_test.exe" if path == script else path.relative_to(staging).as_posix()
+                checksum = base64.urlsafe_b64encode(hashlib.sha256(path.read_bytes()).digest()).decode("ascii").rstrip("=")
+                writer.writerow([relative, "sha256=" + checksum, path.stat().st_size])
+            writer.writerow([record.relative_to(staging).as_posix(), "", ""])
+
+
+@pytest.mark.parametrize("partial_is_valid", [True, False])
+def test_windows_resumes_only_a_verified_prior_install_and_publication(managed, monkeypatch, partial_is_valid):
+    monkeypatch.setattr(runtime.sys, "platform", "win32")
+    target = runtime._target(managed.root)
+    original = target.with_name(target.name + ".installing_" + "1" * 32)
+    _fake_payload(original)
+    _fake_wheel_records(original)
+    partial = target.with_name(target.name + ".publishing_" + "2" * 32)
+    reused_path = "onnxruntime/__init__.py"
+    published = partial / reused_path
+    published.parent.mkdir(parents=True)
+    content = (original / reused_path).read_bytes()
+    published.write_bytes(content if partial_is_valid else b"\x00" * len(content))
+    source_snapshot = {path.relative_to(original): path.read_bytes() for path in original.rglob("*") if path.is_file()}
+    original_copy = runtime._copy_payload_file
+    copied = []
+
+    def copy(source, destination, buffer):
+        copied.append(source.relative_to(original).as_posix())
+        original_copy(source, destination, buffer)
+
+    monkeypatch.setattr(runtime, "_copy_payload_file", copy)
+    receipt = runtime.setup_gpu_runtime(managed.root)
+    assert receipt["state"] == "completed" and not receipt["commands"]
+    assert not managed.pip and [path for path, _ in managed.probes] == [original, target]
+    assert (reused_path not in copied) is partial_is_valid
+    assert partial.exists() is not partial_is_valid
+    assert {path.relative_to(original): path.read_bytes() for path in original.rglob("*") if path.is_file()} == source_snapshot
+    assert (target / reused_path).read_bytes() == content
+
+
+def test_modified_prior_wheel_is_preserved_and_never_probed(managed, monkeypatch):
+    monkeypatch.setattr(runtime.sys, "platform", "win32")
+    target = runtime._target(managed.root)
+    original = target.with_name(target.name + ".installing_" + "3" * 32)
+    _fake_payload(original)
+    _fake_wheel_records(original)
+    module = original / "onnxruntime/__init__.py"
+    module.write_bytes(b"\x00" * module.stat().st_size)
+    assert runtime.setup_gpu_runtime(managed.root)["state"] == "completed"
+    assert len(managed.pip) == 1 and all(path != original for path, _ in managed.probes)
+    assert module.read_bytes() == b"\x00" * module.stat().st_size
 
 
 def test_windows_publication_checks_remaining_space_before_creating_copy(managed, monkeypatch):

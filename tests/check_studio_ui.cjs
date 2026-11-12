@@ -1899,7 +1899,9 @@ function pendingHardStorageRecipe() {
       { value: undefined, visible: false, text: "" },
       { value: "설치 실패", visible: true, text: "설치 실패" },
       { value: { message: "도구 설치 실패", code: "setup_failed" }, visible: true, text: "도구 설치 실패" },
-      { value: { code: "setup_failed" }, visible: true, text: '{"code":"setup_failed"}' },
+      { value: { code: "setup_failed" }, visible: true, text: "작업 오류 (setup_failed)" },
+      { value: { message: "", type: "MemoryError", stage: "frontend", resolution: "아래 실행 로그를 확인하세요." },
+        visible: true, text: "메모리가 부족해 학습·평가 환경 준비를 마치지 못했습니다. 메모리를 확보한 뒤 재개하세요." },
     ];
     for (const entry of cases) {
       const project = { id: "bora", wakeword: "보라야", status: "waiting_input", stage: "frontend", error: entry.value, input: { kind: "dependency_setup", recommended_backend: "cu128" } };

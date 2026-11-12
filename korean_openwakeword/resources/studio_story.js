@@ -1628,12 +1628,16 @@
     downloadReel.append(downloadItems); downloadQueue.append(downloadMeter, downloadReel);
     let downloadRowViews = new Map(), downloadFocus = "", downloadQueueProject = "";
     let legacyInstallLog = null;
-    function legacyInstallStatus(project) {
-      if (!bridge.installLog || document.hidden || !["environment_install", "evaluation_environment"].includes(project.progress?.phase)) return null;
-      const key = `${project.id}:${project.progress.phase_started_at ?? project.progress.phase}`;
+    function frontendSetupFailed(project) {
+      return stageId(project) === "frontend" && ["error", "failed"].includes(project.status) && Boolean(project.error);
+    }
+    function legacyInstallStatus(project, failed) {
+      const progress = project.progress || {};
+      if (!bridge.installLog || document.hidden || !failed && !["environment_install", "evaluation_environment"].includes(progress.phase)) return null;
+      const key = `${project.id}:${failed ? `failed:${project.timing?.active_seconds ?? ""}` : progress.phase_started_at ?? progress.phase}`;
       if (legacyInstallLog?.key !== key) legacyInstallLog = { key, checkedAt: 0, pending: false, status: null };
       const log = legacyInstallLog;
-      if (!log.pending && Date.now() - log.checkedAt >= 8000) {
+      if (!log.pending && !(failed && log.status) && Date.now() - log.checkedAt >= 8000) {
         log.pending = true; log.checkedAt = Date.now();
         bridge.installLog(project.id).then(result => {
           const output = result?.log || "";
@@ -1646,7 +1650,12 @@
           const succeeded = latest?.[0].startsWith("Successfully installed ");
           const active = succeeded ? [] : commands.at(-1) || [];
           const completed = (succeeded ? commands : commands.slice(0, -1)).flat();
-          const status = { filename, active, completed };
+          const installed = Array.from(output.matchAll(/^Successfully installed ([^\r\n]+)/gm),
+            match => match[1].trim().toLowerCase().split(/\s+/)).flat();
+          for (const [, name, version] of output.matchAll(/^Requirement already satisfied: ([\w.-]+)[^\r\n]* \(([\w.+-]+)\)[ \t]*\r?$/gm)) {
+            installed.push(`${name}-${version}`.toLowerCase());
+          }
+          const status = { filename, active, completed, installed };
           if (legacyInstallLog === log && JSON.stringify(status) !== JSON.stringify(log.status)) {
             log.status = status;
             if (current === "downloads" && bridge.state().project?.id === project.id) render();
@@ -1654,6 +1663,10 @@
         }).catch(() => {}).finally(() => { log.pending = false; });
       }
       return log.status;
+    }
+    function setupPackageCompleted(spec, legacy) {
+      const [name, version] = spec.toLowerCase().split("==");
+      return legacy?.completed.includes(spec) || Boolean(version && legacy?.installed.includes(`${name}-${version}`));
     }
     function renderDownloadActivity(project, active, toolsComplete) {
       downloadActivity.hidden = !active && !toolsComplete;
@@ -1685,6 +1698,7 @@
     function downloadSetupRows(project, active, legacy) {
       const progress = project.progress || {};
       const setup = project.download_setup_items || progress.setup_items;
+      const failed = frontendSetupFailed(project);
       if (!setup?.length) {
         const label = stageId(project) === "frontend" && progress.label || "학습·평가 실행환경 준비";
         const environment = downloadStageItem(project, "frontend", label, active, phaseElapsed(progress).replace(/^ · /, ""));
@@ -1693,7 +1707,7 @@
         const activeName = legacy?.filename.split("-")[0].toLowerCase().replaceAll("_", "-");
         let identified = false;
         const items = Array.from(packages, spec => {
-          const item = { id: `package:${spec}`, label: spec, state: legacy?.completed.includes(spec) ? "complete" : state };
+          const item = { id: `package:${spec}`, label: spec, state: setupPackageCompleted(spec, legacy) ? "complete" : state };
           const matchesWheel = activeName && spec.split(/==|>=/)[0].toLowerCase().replaceAll("_", "-") === activeName;
           if (active && (matchesWheel || !activeName && legacy?.active.includes(spec))) {
             identified = true;
@@ -1702,12 +1716,16 @@
           return item;
         });
         const preparation = identified ? { ...environment, label: "설치 환경 최종 확인", state: "waiting", detail: "" }
-          : { ...environment, filename: legacy?.filename };
+          : { ...environment, filename: failed ? "" : legacy?.filename };
         return [...items, preparation];
       }
+      const failedItem = failed && (setup.find(item => item.state === "failed")
+        || setup.find(item => item.state === "installing" && !setupPackageCompleted(item.label, legacy))
+        || setup.find(item => item.id === "environment-check" && item.state === "waiting"));
       return setup.map(item => ({
         ...item, id: `setup:${item.id}`,
-        state: item.state === "installing" ? active ? "active" : "paused" : item.state,
+        state: item === failedItem ? "failed" : setupPackageCompleted(item.label, legacy) ? "complete"
+          : item.state === "installing" ? active ? "active" : failed ? "waiting" : "paused" : item.state,
       }));
     }
     function downloadFileRow(file, active, verification) {
@@ -1780,7 +1798,8 @@
         else item.removeAttribute("aria-current");
         label.textContent = row.label;
         label.title = row.filename || row.label;
-        detail.textContent = [row.filename, row.detail, row.state === "paused" ? "일시정지" : ""].filter(Boolean).join(" · ");
+        const status = row.state === "paused" ? "일시정지" : row.state === "failed" && !row.detail ? "오류" : "";
+        detail.textContent = [row.filename, row.detail, status].filter(Boolean).join(" · ");
         detail.title = detail.textContent;
         updateProgressIndicator(indicator, progressStatus(row.state === "active", row.state === "complete"));
         nextViews.set(row.id, view);
@@ -1943,8 +1962,10 @@
         ? view.progress?.files || view.files || project.download_files || savedDownloadRows
         : project.download_files || project.progress?.files : null;
       const downloadActive = current === "downloads" && chapterWorkActive(project, shell.dataset.history === "true");
-      const legacy = downloadActive && stageId(project) === "frontend"
-        && !project.download_setup_items?.length && !project.progress?.setup_items?.length ? legacyInstallStatus(project) : null;
+      const setupFailed = current === "downloads" && frontendSetupFailed(project);
+      const needsLegacyStatus = downloadActive && stageId(project) === "frontend"
+        && !project.download_setup_items?.length && !project.progress?.setup_items?.length;
+      const legacy = setupFailed || needsLegacyStatus ? legacyInstallStatus(project, setupFailed) : null;
       const event = !valid && downloadFiles?.length ? project.progress?.current_event : null;
       const verification = event?.phase === "hash" && Number.isFinite(event.done) && event.done >= 0
         && Number.isFinite(event.total) && event.total > 0
@@ -2270,7 +2291,7 @@
           ? project.reference_preparation.error : "";
         const repairError = repairProgressVisible(project) && typeof repair?.error === "string" ? repair.error : "";
         if (preparationError || repairError || preparationErrorShown) {
-          const errorText = preparationError || repairError || project.error || "";
+          const errorText = preparationError || repairError || bridge.projectErrorText?.(project.error) || "";
           $("project-error").textContent = errorText; $("project-error").hidden = !errorText;
           preparationErrorShown = Boolean(preparationError || repairError);
         }
