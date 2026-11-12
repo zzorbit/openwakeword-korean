@@ -402,14 +402,6 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-history[data-kind="downloads"] .story-history-rows[data-density="tight"] .story-history-note{font-size:12px;line-height:17px}
 .story-history[data-kind="downloads"] .story-history-rows[data-density="tight"] .story-history-percent{font-size:12px;line-height:18px}
 .story-history[data-kind="downloads"] .story-history-rows[data-density="tight"] progress{height:4px}
-@media(min-width:1080px){
-  .story-history[data-kind="downloads"] .story-history-rows{grid-template-columns:repeat(4,minmax(0,1fr))}
-  .story-history[data-kind="downloads"] .story-history-row[data-setup="false"]{grid-column:span 2}
-  .story-history[data-kind="downloads"] .story-history-row[data-setup="false"]+.story-history-row[data-setup="true"]{grid-column:1}
-  .story-history[data-kind="downloads"] .story-history-row[data-setup="true"] .story-history-line{gap:4px 6px;font-size:13px;line-height:19px}
-  .story-history[data-kind="downloads"] .story-history-row[data-setup="true"] .story-history-percent{min-width:0;font-size:12px;line-height:19px}
-  .story-history[data-kind="downloads"] .story-history-row[data-setup="true"]>.story-history-note{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-}
 @media(max-width:600px){.story-history[data-kind="downloads"] .story-history-line{grid-template-columns:minmax(0,1fr) auto auto}.story-history[data-kind="downloads"] .story-history-line>strong{grid-column:auto}.story-history[data-kind="downloads"] .story-history-rows{gap:2px}.story-history[data-kind="downloads"] .story-history-line>span{font-size:12px}}
 @media(prefers-reduced-motion:reduce){.story-panel,.story-index,.story-index-tick,.story-shell .story-index-step,:is(.story-shell,#input-form) .story-choice-card,.story-shell .story-button{transition:none}.story-loader:not([hidden]){animation-duration:0s}.story-loading-dots i{animation:none;opacity:.7}}
 @media(prefers-reduced-motion:reduce){.story-progress-indicator[data-status="active"],.story-live #progress-label[data-status="active"]::after{animation:none}}

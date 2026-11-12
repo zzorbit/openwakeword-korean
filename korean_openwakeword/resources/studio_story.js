@@ -1590,14 +1590,14 @@
       const totalKnown = Number.isFinite(row.total) && row.total > 0, doneKnown = Number.isFinite(row.done) && row.done >= 0;
       const label = row.label || "자료";
       if (title.textContent !== label) title.textContent = label;
-      amount.textContent = row.statusText || (totalKnown ? `${doneKnown ? row.unit === "bytes" ? quantity(row.done, row.unit) : count(row.done) : "—"} / ${quantity(row.total, row.unit)}` : doneKnown ? quantity(row.done, row.unit) : "수량 기록 없음");
+      amount.textContent = totalKnown ? `${doneKnown ? row.unit === "bytes" ? quantity(row.done, row.unit) : count(row.done) : "—"} / ${quantity(row.total, row.unit)}` : doneKnown ? quantity(row.done, row.unit) : "수량 기록 없음";
       const byBytes = Number.isFinite(row.bytes) && Number.isFinite(row.totalBytes) && row.totalBytes > 0;
       const fraction = row.verification ? Number.isFinite(row.verificationPercent) ? row.verificationPercent / 100 : null
         : byBytes ? row.bytes / row.totalBytes : totalKnown && doneKnown ? row.done / row.total : null;
       const checking = row.quality === "checking";
       const awaitingResult = row.quality === "waiting" || (checking && fraction >= 1);
       const percentage = checking ? Math.floor(fraction * 1000) / 10 : Math.min(100, fraction * 100);
-      percent.textContent = fraction === null || awaitingResult || row.hidePercent ? ""
+      percent.textContent = fraction === null || awaitingResult || row.indeterminate ? ""
         : `${percentage.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}%`;
       bar.hidden = fraction === null && !row.verification;
       bar.dataset.quality = row.quality || "";
@@ -1668,45 +1668,33 @@
       downloadActivityLabel.textContent = text + " "; downloadActivity.title = text;
       updateProgressIndicator(downloadActivityIndicator, toolsComplete ? "complete" : "active");
     }
-    function downloadStageItem(project, id, label, active, detail = "") {
-      const status = project.stages?.find(stage => stage.id === id)?.status;
-      const here = stageId(project) === id;
-      const state = done(status) ? "complete" : here && project.error ? "failed" : here && active ? "active"
-        : here && project.status === "paused" ? "paused" : "waiting";
-      return { id, label, state, detail };
-    }
-    function downloadSetupRows(project, active, legacy) {
-      const progress = project.progress || {};
-      const setup = project.download_setup_items || progress.setup_items;
-      const failed = frontendSetupFailed(project);
-      if (!setup?.length) {
-        const label = stageId(project) === "frontend" && progress.label || "학습·평가 실행환경 준비";
-        const environment = downloadStageItem(project, "frontend", label, active, phaseElapsed(progress).replace(/^ · /, ""));
-        const packages = new Set([...(project.dependency_packages || []), ...(project.evaluation_runtime_packages || [])]);
-        const state = environment.state === "complete" ? "complete" : "waiting";
-        const activeName = legacy?.filename.split("-")[0].toLowerCase().replaceAll("_", "-");
-        let identified = false;
-        const items = Array.from(packages, spec => {
-          const item = { id: `package:${spec}`, label: spec, state: setupPackageCompleted(spec, legacy) ? "complete" : state };
-          const matchesWheel = activeName && spec.split(/==|>=/)[0].toLowerCase().replaceAll("_", "-") === activeName;
-          if (active && (matchesWheel || !activeName && legacy?.active.includes(spec))) {
-            identified = true;
-            return { ...item, state: "active", filename: legacy.filename, detail: environment.detail };
-          }
-          return item;
-        });
-        const preparation = identified ? { ...environment, label: "설치 환경 최종 확인", state: "waiting", detail: "" }
-          : { ...environment, filename: failed ? "" : legacy?.filename };
-        return [...items, preparation];
+    function computeDownloadRow(project, active, legacy) {
+      const names = new Map([["torch", "PyTorch"], ["torchaudio", "TorchAudio"]]);
+      const setup = project.download_setup_items?.length ? project.download_setup_items : project.progress?.setup_items || [];
+      const packages = new Map();
+      for (const item of setup) {
+        if (names.has(item.id)) packages.set(item.id, item);
       }
-      const failedItem = failed && (setup.find(item => item.state === "failed")
-        || setup.find(item => item.state === "installing" && !setupPackageCompleted(item.label, legacy))
-        || setup.find(item => item.id === "environment-check" && item.state === "waiting"));
-      return setup.map(item => ({
-        ...item, id: `setup:${item.id}`,
-        state: item === failedItem ? "failed" : setupPackageCompleted(item.label, legacy) ? "complete"
-          : item.state === "installing" ? active ? "active" : failed ? "waiting" : "paused" : item.state,
-      }));
+      for (const label of project.dependency_packages || []) {
+        const name = label.split(/==|>=/, 1)[0];
+        if (names.has(name) && !packages.has(name)) packages.set(name, { label, state: "waiting" });
+      }
+      if (!packages.size) return null;
+
+      const prepared = done(project.stages?.find(stage => stage.id === "frontend")?.status);
+      const pending = [...packages.values()].filter(item =>
+        !prepared && item.state !== "complete" && !setupPackageCompleted(item.label, legacy));
+      const installing = pending.some(item => item.state === "installing" || legacy?.active.includes(item.label));
+      const failed = pending.some(item => item.state === "failed") || installing && frontendSetupFailed(project);
+      const countInstalled = packages.size - pending.length;
+      const working = active && installing && !failed;
+      const backend = project.dependency_backend;
+      const device = backend === "cu128" ? "NVIDIA GPU · CUDA 12.8" : toolBackends[backend]?.[0];
+      const status = failed ? "설치 실패" : installing && project.status === "paused" ? "일시정지" : "";
+      const detail = [device, [...names].filter(([id]) => packages.has(id)).map(([, label]) => label).join(" · "), status]
+        .filter(Boolean).join(" · ");
+      return { key: "compute-tools", label: "연산 도구", detail, done: countInstalled, total: packages.size, unit: "items",
+        active: working, completed: !pending.length, failed, indeterminate: working && countInstalled === 0 };
     }
     function renderStoryDownloads(project, files, verification, quality, active, legacy) {
       const stage = stageId(project);
@@ -1737,19 +1725,8 @@
           reused: group.filter(file => file.state === "reused").length,
           cacheCandidate: group.some(file => file.cache_candidate && file.state === "waiting") }];
       });
-      if (stage === "frontend" || project.download_setup_items?.length || project.progress?.setup_items?.length
-          || project.dependency_packages?.length || project.evaluation_runtime_packages?.length) {
-        for (const item of downloadSetupRows(project, active && stage === "frontend", legacy)) {
-          const complete = item.state === "complete";
-          const measured = Number.isFinite(item.done) && item.done >= 0 && Number.isFinite(item.total) && item.total > 0;
-          const done = complete ? item.total || 1 : measured ? item.done : 0;
-          rows.push({ ...item, key: item.id, setup: true, completed: complete, failed: item.state === "failed",
-            active: item.state === "active", done, total: measured ? item.total : 1, unit: measured ? item.unit || "items" : "items",
-            indeterminate: !measured && item.state === "active",
-            statusText: measured ? "" : ({ complete: "완료", active: "설치·확인 중", paused: "일시정지", failed: "설치·확인 실패" }[item.state] || "대기 중"),
-            hidePercent: !measured && !complete });
-        }
-      }
+      const compute = computeDownloadRow(project, active && stage === "frontend", legacy);
+      if (compute) rows.push(compute);
       const nextViews = new Map(), items = rows.map(row => {
         let view = downloadList.dataset.project === project.id ? downloadRowViews.get(row.key) : null;
         if (!view) {
@@ -1772,11 +1749,9 @@
         const rowActive = row.active && !row.failed;
         updateHistoryRow(view, { ...gauge, active: inspection ? inspectionActive : rowActive, quality: inspection?.state });
         view.item.dataset.failed = String(Boolean(row.failed));
-        view.item.dataset.setup = String(Boolean(row.setup));
-        view.title.title = row.filename || "";
         if (view.titleIndicator.parentElement !== view.title) view.title.append(view.titleIndicator);
         updateProgressIndicator(view.titleIndicator, inspection ? "" : progressStatus(rowActive, row.completed));
-        const sizeNote = !row.setup && row.failed ? "다운로드 실패"
+        const sizeNote = row.failed ? "다운로드 실패"
           : Number.isFinite(row.totalBytes) ? `${quantity(row.bytes, "bytes")} / ${quantity(row.totalBytes, "bytes")}`
             : row.unit === "files" && Object.hasOwn(row, "totalBytes")
               ? Number.isFinite(row.bytes) && row.bytes > 0 ? `${quantity(row.bytes, "bytes")} / —` : "전체 용량 확인 전"
@@ -1785,7 +1760,7 @@
         const reuseNote = row.verifying || row.state === "verifying" ? "파일 무결성 확인 중" + checkPercent
           : row.state === "reused" || (row.reused > 0 && row.reused === row.total) ? "기존 자료 재사용"
           : row.reused > 0 ? `기존 자료 ${count(row.reused)}개 재사용` : row.cacheCandidate ? "기존 파일 확인 대기" : "";
-        const detail = (row.setup ? [row.filename, row.detail] : [sizeNote, reuseNote]).filter(Boolean).join(" · ");
+        const detail = row.detail || [sizeNote, reuseNote].filter(Boolean).join(" · ");
         view.noteDetail.textContent = detail && inspection ? detail + " · " : detail;
         view.inspectionStatus.hidden = !inspection;
         updateProgressIndicator(view.inspectionIndicator, progressStatus(inspectionActive, inspection?.state === "complete"));
@@ -1964,7 +1939,7 @@
       }
       const downloadState = current === "downloads"
         ? [project.status, stageId(project), project.stages, project.error, project.download_setup_items, progress?.setup_items,
-          project.dependency_packages, project.evaluation_runtime_packages, legacy,
+          project.dependency_backend, project.dependency_packages, legacy,
           progress?.phase, progress?.label, progress?.done, progress?.total, progress?.unit,
           stageId(project) === "frontend" ? phaseElapsed(progress) : ""]
         : null;
@@ -2060,10 +2035,7 @@
     }
     function paginateHistoryRows(list, allItems, columns = 1) {
       if (current === "downloads") {
-        const available = historyHeight();
-        const tools = allItems.filter(item => item.dataset.setup === "true").length;
-        const toolColumns = innerWidth >= 1080 ? 4 : columns;
-        const rowCount = Math.ceil((allItems.length - tools) / columns) + Math.ceil(tools / toolColumns);
+        const available = historyHeight(), rowCount = Math.ceil(allItems.length / columns);
         const budget = rowCount ? available / rowCount : available;
         const densities = budget >= 82 ? ["normal", "compact", "tight"] : budget >= 64 ? ["compact", "tight"] : ["tight"];
         historyPage = 0; historyPages.hidden = true;

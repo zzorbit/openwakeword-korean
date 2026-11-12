@@ -830,11 +830,11 @@ async function main() {
       assert.equal(p.shell.querySelector(".story-live").hidden, true, "new setup does not expose the retained download contents");
     }
   });
-  await test("parallel download gauges show independent progress and retain completed setup rows", () => {
+  await test("parallel download gauges retain one completed compute-tools row", () => {
     const project = checkpointProject("running", "running");
     project.stage_id = "data_download";
     project.stages[0].status = "completed";
-    project.download_setup_items = [{ id: "torch", label: "PyTorch", state: "complete" }];
+    project.download_setup_items = ["torch", "torchaudio", "openwakeword"].map(id => ({ id, label: id, state: "complete" }));
     project.download_files = [
       { id: "a", label: "자료 A", state: "downloading", done: 2500, total: 10000, unit: "bytes" },
       { id: "b", label: "자료 B", state: "downloading", done: 750, total: 1000, unit: "bytes" },
@@ -843,7 +843,8 @@ async function main() {
     const p = page(project);
     const history = p.shell.querySelector(".story-history"), list = history.querySelector(".story-history-rows");
     const rows = ["자료 A", "자료 B", "자료 C"].map(label => historyRowByLabel(list, label));
-    const setup = historyRowByLabel(list, "PyTorch");
+    assert.equal(list.children.length, 4);
+    const setup = historyRowByLabel(list, "연산 도구");
     assert.equal(setup.querySelector(".story-history-percent").textContent, "100%");
     assert.equal(setup.querySelector(".story-progress-indicator").dataset.status, "complete");
     assert.deepEqual(rows.map(row => row.querySelector(".story-history-percent").textContent), ["25%", "75%", "0%"]);
@@ -854,35 +855,40 @@ async function main() {
     assert.deepEqual(["자료 A", "자료 B", "자료 C"].map(label => historyRowByLabel(list, label)), rows);
     assert.deepEqual(rows.map(row => row.querySelector(".story-history-percent").textContent), ["50%", "75%", "0%"]);
   });
-  await test("CPU and GPU setup gauges use an indeterminate state until real progress or completion is known", () => {
+  await test("CPU and GPU packages share one gauge based on verified install counts", () => {
     for (const build of ["cpu", "cu128"]) {
       const project = checkpointProject("running", "running");
       project.stage_id = "frontend";
+      project.dependency_backend = build;
       const torch = { id: "torch", label: "torch==2.8.0+" + build, state: "installing" };
-      project.download_setup_items = [torch, { id: "torchaudio", label: "TorchAudio", state: "waiting" }];
+      const audio = { id: "torchaudio", label: "TorchAudio", state: "waiting" };
+      project.download_setup_items = [torch, audio, { id: "openwakeword", label: "openwakeword==0.6.0", state: "waiting" }];
       project.download_files = [{ id: "a", label: "자료 A", state: "waiting", done: 0, total: 500, unit: "bytes" }];
       const p = page(project), list = p.shell.querySelector(".story-history-rows");
-      const row = historyRowByLabel(list, torch.label), bar = row.querySelector("progress");
+      assert.equal(list.children.length, 2);
+      const row = historyRowByLabel(list, "연산 도구"), bar = row.querySelector("progress");
+      assert.match(textOf(row), build === "cpu" ? /CPU · PyTorch · TorchAudio/ : /NVIDIA GPU · CUDA 12\.8 · PyTorch · TorchAudio/);
       assert.equal(bar.hidden, false);
       assert.equal(bar.getAttribute("value"), null);
       assert.equal(row.querySelector(".story-history-percent").textContent, "");
       assert.equal(row.querySelector(".story-progress-indicator").dataset.status, "active");
       assert.equal(historyRowByLabel(list, "자료 A").querySelector("progress").value, 0);
-      Object.assign(torch, { done: 25, total: 100, unit: "bytes" }); p.ui.render();
-      assert.equal(historyRowByLabel(list, torch.label), row);
-      assert.equal(bar.value, 25);
-      assert.equal(row.querySelector(".story-history-percent").textContent, "25%");
-      torch.state = "complete"; p.ui.render();
-      assert.equal(bar.value, 100);
+      torch.state = "complete"; audio.state = "installing"; p.ui.render();
+      assert.equal(historyRowByLabel(list, "연산 도구"), row);
+      assert.equal(bar.max, 2);
+      assert.equal(bar.value, 1);
+      assert.equal(row.querySelector(".story-history-percent").textContent, "50%");
+      audio.state = "complete"; p.ui.render();
+      assert.equal(bar.value, 2);
       assert.equal(row.querySelector(".story-history-percent").textContent, "100%");
     }
   });
-  await test("failed environment setup retains proven package completions without a running spinner", async () => {
+  await test("a shared package failure preserves verified compute installs without a running spinner", async () => {
     for (const hasSetupRows of [false, true]) {
       const project = checkpointProject("running", "error");
       project.stage_id = "frontend";
       project.error = { message: "", type: "MemoryError", stage: "frontend" };
-      project.dependency_packages = ["torch==2.8.0+cu128", "qwen-tts==0.1.1"];
+      project.dependency_packages = ["torch==2.8.0+cu128", "torchaudio==2.8.0+cu128", "qwen-tts==0.1.1"];
       project.evaluation_runtime_packages = ["onnxruntime-gpu==1.31.0"];
       if (hasSetupRows) project.download_setup_items = [
         { id: "environment-check", label: "학습·평가 실행 환경 확인", state: "waiting" },
@@ -897,11 +903,10 @@ async function main() {
       await p.flush(); p.ui.render();
       const history = p.shell.querySelector(".story-history");
       assert.equal(history.hidden, false);
-      for (const label of ["torch==2.8.0+cu128", "onnxruntime-gpu==1.31.0"]) {
-        assert.equal(historyRowByLabel(history, label).querySelector(".story-progress-indicator").dataset.status, "complete");
-      }
-      const pending = historyRowByLabel(history, "qwen-tts==0.1.1");
-      assert.equal(pending.querySelector(".story-progress-indicator").hidden, true);
+      const row = historyRowByLabel(history, "연산 도구");
+      assert.match(textOf(row), /1 \/ 2개/);
+      assert.equal(row.dataset.failed, "false");
+      assert.equal(history.querySelectorAll(".story-history-row").length, 1);
       assert.equal(hasActiveDownloadSpinner(history), false);
       assert.equal(requests, 1);
     }
