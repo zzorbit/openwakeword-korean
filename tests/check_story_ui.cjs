@@ -39,7 +39,7 @@ function assertToolPreview(installs, device, capacityLabel) {
 // A DOM adapter exercises navigation and real-state gates without audio,
 // network, an installed browser, or changes to a stored workflow.
 function page(initialProject = null, options = {}) {
-  const registry = new Map(), timers = [], calls = [], creationOptions = [], viewModes = [];
+  const registry = new Map(), timers = [], frames = [], calls = [], creationOptions = [], viewModes = [];
   let clock = 0;
   const flush = () => new Promise(resolve => setImmediate(resolve));
   function matches(element, selector) {
@@ -123,7 +123,8 @@ function page(initialProject = null, options = {}) {
     setTimeout: (callback, delay) => { const timer = { callback, delay, at: clock + delay }; timers.push(timer); return timer; },
     clearTimeout: timer => { if (timer) timer.canceled = true; } });
   context.window = context; context.addEventListener = (name, fn) => { (windowHandlers[name] ||= []).push(fn); };
-  if (options.paintFrames) context.requestAnimationFrame = callback => setImmediate(callback);
+  if (options.paintFrames === "manual") context.requestAnimationFrame = callback => frames.push(callback);
+  else if (options.paintFrames) context.requestAnimationFrame = callback => setImmediate(callback);
   context.getComputedStyle = element => ({ animationDuration: "0s", animationDelay: "0s", transitionDuration: "0s", transitionDelay: "0s", ...options.getComputedStyle?.(element) });
   for (const id of ["reference-preview-frame", "review-frame", "result-frame"]) {
     const frame = get(id);
@@ -165,10 +166,16 @@ function page(initialProject = null, options = {}) {
   });
   const shell = get("story-shell"), actions = shell.querySelector(".story-actions");
   const next = actions.children[2], operation = actions.children[1], back = actions.children[0];
+  async function advanceFrame() {
+    const pending = frames.splice(0);
+    for (const callback of pending) callback(clock);
+    await flush();
+    return pending.length > 0;
+  }
   function advanceTimer() { const timer = timers.filter(timer => !timer.canceled && !timer.ran).sort((a, b) => a.at - b.at)[0]; if (!timer) return false; clock = Math.max(clock, timer.at); timer.ran = true; timer.callback(); return true; }
   async function settle() { let advanced = false; await flush(); while (advanceTimer()) { advanced = true; await flush(); } return advanced; }
   ui.render();
-  return { api: context.KowwStory, ui, shell, get, state, calls, timers, chapterRequests, creationOptions, viewModes, next, operation, back, settle, advanceTimer, flush, now: () => clock, elapse: value => { clock += value; }, windowEvent: async (name, event) => { for (const fn of windowHandlers[name] || []) fn(event); await flush(); }, documentEvent: async (name, event) => { for (const fn of documentHandlers[name] || []) fn(event); await flush(); }, element: tag => new Element(tag), visibility: async hidden => { document.hidden = hidden; await Promise.all((documentHandlers.visibilitychange || []).map(fn => fn())); }, ticks: shell.querySelectorAll(".story-index-step") };
+  return { api: context.KowwStory, ui, shell, get, state, calls, timers, chapterRequests, creationOptions, viewModes, next, operation, back, settle, advanceTimer, advanceFrame, flush, now: () => clock, elapse: value => { clock += value; }, windowEvent: async (name, event) => { for (const fn of windowHandlers[name] || []) fn(event); await flush(); }, documentEvent: async (name, event) => { for (const fn of documentHandlers[name] || []) fn(event); await flush(); }, element: tag => new Element(tag), visibility: async hidden => { document.hidden = hidden; await Promise.all((documentHandlers.visibilitychange || []).map(fn => fn())); }, ticks: shell.querySelectorAll(".story-index-step") };
 }
 
 async function main() {
@@ -419,15 +426,17 @@ async function main() {
     assert.equal(p.calls.includes("start"), false, "model creation does not start downloads");
     assert.equal(p.timers.at(-1).delay, 800); await p.settle(); await creation;
   });
-  await test("fast creation starts immediately while the visible notice keeps its full 800 ms hold", async () => {
+  await test("fast creation runs behind the visible notice and keeps its full 800 ms hold", async () => {
     const p = page(null, { create: state => {
+      assert.equal(p.shell.querySelector(".story-loader").hidden, false);
       state.project = { id: "new-model", wakeword: "보라야", status: "running", stage_id: "data_download", progress: {} };
       state.busy = false;
     } });
     await advanceSetup(p, "tools", "scale", "materials");
     const creation = p.next.fire("click");
-    assert.equal(p.calls.filter(call => call === "create").length, 1);
+    assert.equal(p.shell.querySelector(".story-loader").hidden, false);
     await p.flush();
+    assert.equal(p.calls.filter(call => call === "create").length, 1);
     p.ui.render(); assert.equal(p.shell.dataset.step, "downloads", "the destination is prepared behind the notice");
     assert.equal(p.get("story-panel").inert, true, "preparing the destination cannot reveal it early");
     assert.equal(p.shell.querySelector(".story-loader").hidden, false);
@@ -456,6 +465,24 @@ async function main() {
     await p.next.fire("click"); await p.settle(); await p.back.fire("click");
     assert.equal(p.timers[1].delay, 800); await p.settle(); assert.equal(p.shell.dataset.step, "entry");
   });
+  await test("Next and Previous display the notice before painting a destination chapter", async () => {
+    const p = page(null, { paintFrames: "manual" }), loader = p.shell.querySelector(".story-loader");
+    for (const [control, source, destination] of [[p.next, "entry", "tools"], [p.back, "tools", "entry"]]) {
+      await control.fire("click");
+      assert.equal(loader.hidden, false);
+      assert.equal(p.shell.dataset.step, source);
+      assert.equal(p.get("story-panel").inert, true);
+      assert.equal(await p.advanceFrame(), true);
+      assert.equal(p.shell.dataset.step, source, "a frame callback alone has not painted the notice");
+      assert.equal(await p.advanceFrame(), true);
+      assert.equal(p.shell.dataset.step, destination, "the destination can be laid out after the notice has painted");
+      assert.equal(loader.hidden, false);
+      while (await p.advanceFrame()) {}
+      await p.settle();
+      assert.equal(loader.hidden, true);
+      assert.equal(p.get("story-panel").inert, false);
+    }
+  });
   function motion(element, duration) {
     let resolve, reject;
     const animation = { effect: { target: element, getComputedTiming: () => ({ endTime: duration }) },
@@ -464,37 +491,35 @@ async function main() {
       cancel() { this.playState = "idle"; reject(new Error("Animation canceled")); } };
     return animation;
   }
-  await test("both directions hold the fully visible notice for 800 ms after real reveal completion", async () => {
+  await test("both directions hold the visible notice for 800 ms and wait for its conceal animation", async () => {
     const phases = [];
     const p = page(null, { getComputedStyle: () => ({ animationDuration: "240ms" }), animations: element => {
-      const animation = motion(element, element.id === "story-panel" ? 200 : 240); phases.push(animation);
+      const animation = motion(element, 240); phases.push(animation);
       return [animation, motion({}, Infinity)]; // An infinite child effect cannot hold the parent transition.
     } });
     const loader = p.shell.querySelector(".story-loader"), panel = p.get("story-panel");
-    for (const [control, before, after] of [[p.next, "entry", "tools"], [p.back, "tools", "entry"]]) {
+    for (const [control, after] of [[p.next, "tools"], [p.back, "entry"]]) {
       const start = p.now();
       await control.fire("click");
-      assert.equal(loader.hidden, true, "the loader is not shown before the panel actually finishes");
+      assert.equal(loader.hidden, false, "the loader opens without waiting for the source panel");
       assert.equal(panel.inert, true); assert.equal(panel.className.includes("is-leaving"), true);
-      p.elapse(200); phases.at(-1).finish(); await p.flush();
-      assert.equal(loader.hidden, false); assert.equal(phases.length % 3, 2);
-      p.elapse(240); phases.at(-1).finish(); await p.flush();
       assert.equal(loader.className.includes("is-finishing"), false);
       const hold = p.timers.filter(timer => !timer.canceled && !timer.ran).at(-1);
-      assert.equal(hold.delay, 800, "the full hold starts only after the reveal finishes");
-      assert.equal(hold.at - start, 1240);
+      assert.equal(hold.delay, 800);
+      assert.equal(hold.at - start, 800);
       p.elapse(799); await p.flush();
       assert.equal(loader.className.includes("is-finishing"), false, "the notice remains fully visible for the whole hold");
       p.advanceTimer(); await p.flush();
-      assert.equal(p.now() - start, 1240);
+      assert.equal(p.now() - start, 800);
       assert.equal(loader.className.includes("is-finishing"), true);
+      assert.equal(phases.at(-1).effect.target, loader);
       assert.equal(p.shell.dataset.step, after, "the destination is already laid out behind the loader fade-out");
       assert.equal(panel.inert, true);
       await control.fire("click");
       p.elapse(240); phases.at(-1).finish(); await p.flush();
       assert.equal(p.shell.dataset.step, after); assert.equal(loader.hidden, true);
       assert.equal(loader.className.includes("is-finishing"), false); assert.equal(panel.inert, false);
-      assert.equal(p.now() - start, 1480);
+      assert.equal(p.now() - start, 1040);
     }
   });
   await test("slow animation completion is never replaced by the nominal CSS duration", async () => {
@@ -502,16 +527,14 @@ async function main() {
     const p = page(null, { getComputedStyle: () => ({ animationDuration: "240ms" }), animations: element => {
       const animation = motion(element, 800); phases.push(animation); return [animation];
     } });
-    await p.next.fire("click"); p.elapse(700);
-    assert.equal(p.shell.querySelector(".story-loader").hidden, true);
-    phases[0].finish(); await p.flush(); p.elapse(700);
+    await p.next.fire("click");
+    assert.equal(p.shell.querySelector(".story-loader").hidden, false);
     assert.equal(p.get("story-panel").inert, true);
-    phases[1].finish(); await p.flush();
     assert.equal(p.timers.filter(timer => !timer.canceled && !timer.ran).at(-1).delay, 800);
     p.advanceTimer(); await p.flush(); p.elapse(700);
     assert.equal(p.get("story-panel").inert, true, "the prepared destination stays concealed until exit completion");
-    phases[2].finish(); await p.flush();
-    assert.equal(p.shell.dataset.step, "tools"); assert.equal(p.now(), 2900);
+    phases[0].finish(); await p.flush();
+    assert.equal(p.shell.dataset.step, "tools"); assert.equal(p.now(), 1500);
   });
   await test("no-motion and reduced-motion paths keep the full notice hold without a completion event", async () => {
     const p = page(null, { getComputedStyle: () => ({ animationDuration: "0s", transitionDuration: "0s" }) });
@@ -519,15 +542,16 @@ async function main() {
     assert.equal(p.timers.at(-1).delay, 800);
     await p.settle(); assert.equal(p.now(), 800); assert.equal(p.shell.dataset.step, "tools");
   });
-  await test("a missing finite completion signal is recovered by finishing that motion before advancing", async () => {
+  await test("a missing finite completion signal is recovered by finishing the notice exit", async () => {
     const phases = [];
     const p = page(null, { animations: element => { const animation = motion(element, 200); phases.push(animation); return [animation]; } });
     await p.next.fire("click");
-    assert.equal(p.shell.querySelector(".story-loader").hidden, true);
+    assert.equal(p.shell.querySelector(".story-loader").hidden, false);
+    p.advanceTimer(); await p.flush();
+    assert.equal(p.shell.querySelector(".story-loader").hidden, false);
     p.advanceTimer(); await p.flush();
     assert.equal(phases[0].playState, "finished", "watchdog recovery reaches the actual final animation state first");
-    assert.equal(p.shell.querySelector(".story-loader").hidden, false);
-    await p.windowEvent("pagehide");
+    assert.equal(p.shell.querySelector(".story-loader").hidden, true);
   });
   await test("a slow model response holds the loader and never repeats model creation", async () => {
     let resolveCreate;
@@ -545,7 +569,7 @@ async function main() {
     for (const cancel of ["model", "pagehide"]) {
       const phases = [];
       const p = page(null, { animations: element => { const animation = motion(element, 200); phases.push(animation); return [animation]; } });
-      await p.next.fire("click"); const staleWatchdog = p.timers[0].callback;
+      await p.next.fire("click"); p.advanceTimer(); await p.flush(); const staleWatchdog = p.timers.at(-1).callback;
       if (cancel === "model") { p.state.project = { id: "different-model", status: "running", stage_id: "features" }; p.ui.render(); }
       else await p.windowEvent("pagehide");
       const expected = p.shell.dataset.step;
@@ -559,8 +583,8 @@ async function main() {
   await test("a canceled motion restores controls without an unhandled finished rejection", async () => {
     const phases = [];
     const p = page(null, { animations: element => { const animation = motion(element, 200); phases.push(animation); return [animation]; } });
-    await p.next.fire("click"); phases[0].cancel(); await p.flush();
-    assert.equal(p.shell.dataset.step, "entry"); assert.equal(p.get("story-panel").inert, false);
+    await p.next.fire("click"); p.advanceTimer(); await p.flush(); phases[0].cancel(); await p.flush();
+    assert.equal(p.shell.dataset.step, "tools"); assert.equal(p.get("story-panel").inert, false);
     assert.equal(p.shell.querySelector(".story-loader").hidden, true);
   });
   await test("page hiding releases a pending model-creation transition without waiting for its network response", async () => {
@@ -619,7 +643,8 @@ async function main() {
       const p = page(project, { action: (_action, state) => {
         state.project.navigation_checkpoint = { policy: "explicit_story_v1", state: "running", step: target };
         state.project.status = "running"; p.ui.render();
-        assert.equal(p.timers.length, 0, "a busy release response cannot reveal the next screen early");
+        assert.equal(p.shell.dataset.step, step, "a busy release response cannot commit the next screen early");
+        assert.equal(p.shell.querySelector(".story-loader").hidden, false);
         state.busy = false; p.ui.render();
       } });
       assert.equal(p.shell.dataset.step, step); assert.equal(p.next.textContent, "다음"); assert.equal(p.next.disabled, false);
@@ -628,6 +653,55 @@ async function main() {
       assert.equal(p.calls.filter(call => call === "resume").length, 1); assert.equal(p.timers.length, 1);
       assert.equal(p.timers[0].delay, 800); await p.settle(); assert.equal(p.shell.dataset.step, target);
       assert.equal(p.next.textContent, "다음"); assert.equal(p.next.disabled, true);
+    }
+  });
+  await test("a slow Next request starts after notice paint and remains covered until the destination is ready", async () => {
+    for (const failed of [false, true]) {
+      const project = navigationProject("downloads");
+      let finish;
+      const p = page(project, { paintFrames: "manual", action: (action, state) => {
+        assert.equal(action, "resume");
+        assert.equal(p.shell.querySelector(".story-loader").hidden, false);
+        return new Promise(resolve => {
+          finish = () => {
+            state.busy = false;
+            if (!failed) {
+              project.navigation_checkpoint = { policy: "explicit_story_v1", state: "running", step: "voices" };
+              project.status = "running";
+              p.ui.render();
+            }
+            resolve(!failed);
+          };
+        });
+      } });
+      const loader = p.shell.querySelector(".story-loader"), panel = p.get("story-panel");
+      await p.next.fire("click");
+      assert.equal(loader.hidden, false);
+      assert.equal(p.calls.includes("resume"), false);
+      assert.equal(await p.advanceFrame(), true);
+      assert.equal(p.calls.includes("resume"), false);
+      assert.equal(await p.advanceFrame(), true);
+      await p.next.fire("click");
+      assert.equal(p.calls.filter(call => call === "resume").length, 1);
+      assert.equal(p.advanceTimer(), true);
+      await p.flush();
+      assert.equal(p.shell.dataset.step, "downloads");
+      assert.equal(loader.hidden, false, "the display minimum cannot uncover an unfinished request");
+      assert.equal(panel.inert, true);
+      finish();
+      await p.flush();
+      if (!failed) {
+        assert.equal(p.shell.dataset.step, "voices");
+        assert.equal(loader.hidden, false, "the response alone cannot uncover the destination before paint");
+        assert.equal(await p.advanceFrame(), true);
+        assert.equal(loader.hidden, false);
+        assert.equal(await p.advanceFrame(), true);
+      }
+      await p.settle();
+      assert.equal(p.shell.dataset.step, failed ? "downloads" : "voices");
+      assert.equal(loader.hidden, true);
+      assert.equal(panel.inert, false);
+      assert.equal(p.next.disabled, !failed);
     }
   });
   await test("voice preparation and optional listening are separate pages and only listening next starts pilot generation", async () => {
@@ -948,7 +1022,8 @@ async function main() {
     for (const record of project.stages) if (record.id !== "references") record.status = "completed";
     const p = page(project, { action: (_action, state) => {
       state.project.download_checkpoint.state = "released"; state.project.status = "running";
-      p.ui.render(); assert.equal(p.timers.length, 0, "busy state cannot start a transition early");
+      p.ui.render(); assert.equal(p.shell.dataset.step, "downloads");
+      assert.equal(p.shell.querySelector(".story-loader").hidden, false);
       state.busy = false; p.ui.render();
     } });
     const primary = p.operation;
@@ -1011,15 +1086,23 @@ async function main() {
   });
   await test("phrase input footer next submits only the current live form and waits once without an extra resume", async () => {
     const project = editablePhrasesProject(); let finish;
-    const p = page(project, { input: () => new Promise(resolve => { finish = resolve; }) });
+    const p = page(project, { paintFrames: "manual", input: () => new Promise(resolve => { finish = resolve; }) });
     const draft = p.element("input"); draft.value = "직접수정한문구"; p.get("hard-phrase-fields").append(draft);
     assert.equal(p.next.disabled, false);
     const pending = p.next.fire("click"); await p.flush();
-    assert.equal(p.next.disabled, true); await p.next.fire("click");
+    assert.equal(p.shell.querySelector(".story-loader").hidden, false);
+    assert.equal(p.get("story-panel").inert, true);
+    assert.equal(p.calls.includes("input"), false);
+    assert.equal(await p.advanceFrame(), true);
+    assert.equal(p.calls.includes("input"), false);
+    assert.equal(await p.advanceFrame(), true);
+    await p.next.fire("click");
     assert.equal(p.calls.filter(call => call === "input").length, 1);
     assert.equal(p.shell.dataset.step, "phrases"); assert.equal(draft.value, "직접수정한문구");
     project.status = "running"; project.process_alive = true; delete project.input;
-    finish(); await pending;
+    finish(); await pending; await p.flush();
+    while (await p.advanceFrame()) {}
+    await p.settle();
     assert.equal(p.calls.some(call => ["start", "resume"].includes(call)), false);
     assert.equal(p.get("hard-phrase-fields").children[0], draft);
   });
@@ -1027,9 +1110,9 @@ async function main() {
     let fail = false;
     const p = page(editablePhrasesProject(), { input: () => { if (fail) throw new Error("저장 연결 오류"); } });
     const draft = p.element("input"); draft.value = "직접수정"; draft.focus(); p.get("hard-phrase-fields").append(draft);
-    await p.next.fire("click"); // Validation can return without a POST or state change.
+    await p.next.fire("click"); await p.settle(); // Validation can return without a POST or state change.
     assert.equal(p.shell.dataset.step, "phrases"); assert.equal(p.next.disabled, false);
-    fail = true; await p.next.fire("click");
+    fail = true; await p.next.fire("click"); await p.settle();
     assert.ok(p.calls.includes("message:저장 연결 오류")); assert.equal(p.next.disabled, false);
     assert.equal(p.get("hard-phrase-fields").children[0], draft); assert.equal(draft.value, "직접수정"); assert.equal(draft.focused, true);
     assert.equal(p.calls.some(call => ["start", "resume"].includes(call)), false);
@@ -2222,13 +2305,14 @@ async function main() {
     const project=navigationProject("voices");
     project.reference_preview={...project.reference_preview,candidate_selection:true,review_required:true,review_complete:false};
     let p;
-    p=page(project,{action:(_action,state)=>{
+    p=page(project,{paintFrames:"manual",action:(_action,state)=>{
       state.project.navigation_checkpoint={policy:"explicit_story_v1",step:"pronunciation",state:"running"};
       state.project.status="running";state.project.process_alive=true;state.busy=false;p.ui.render();return true;
     }});
     const frame=p.get("reference-preview-frame"),posted=[];
     const source={postMessage:(data,origin)=>posted.push({data:JSON.parse(JSON.stringify(data)),origin})};
-    frame.contentWindow=source;frame.setAttribute("src","/reference-preview/?project="+project.id);p.ui.render();
+    frame.contentWindow=source;frame.setAttribute("src",project.reference_preview.url);
+    frame.fakeLoadedUrl=project.reference_preview.url;p.ui.render();
     const send=data=>p.windowEvent("message",{origin:"http://studio.local",source,data:{project:project.id,...data}});
     assert.equal(p.next.disabled,true);assert.equal(p.shell.dataset.step,"voice-listening");
     await send({type:"koww:reference-layout",mode:"candidate_pool_v2"});
@@ -2251,15 +2335,21 @@ async function main() {
     assert.equal(p.next.disabled,false,"a failed save can restore explicit retry");
     await p.next.fire("click");assert.equal(posted.length,2);
     await send({type:"koww:reference-group",group:"train:man:teenager",ready:false});assert.equal(p.next.disabled,true);
-    await send({type:"koww:reference-group",group:"train:man:teenager",ready:true});
+    await send({type:"koww:reference-group",group:"train:man:teenager",ready:true,completes_review:true});
     await send({type:"koww:reference-approved",group:"train:man:child",request:2,success:true,complete:false});
     await p.next.fire("click");
+    const loader=p.shell.querySelector(".story-loader");
+    assert.equal(loader.hidden,false);
+    assert.equal(posted.length,2,"the final approval waits until the notice has painted");
+    assert.equal(await p.advanceFrame(),true);assert.equal(posted.length,2);
+    assert.equal(await p.advanceFrame(),true);
     assert.equal(posted.at(-1).data.group,"train:man:teenager");assert.equal(p.calls.includes("resume"),false,"changing categories never resumes model generation");
-    await send({type:"koww:reference-review",complete:true});assert.equal(p.next.disabled,true);
+    await send({type:"koww:reference-review",complete:true});assert.equal(p.get("story-panel").inert,true);
     assert.equal(p.calls.includes("resume"),false,"an unrelated completion broadcast never releases the boundary");
     await send({type:"koww:reference-approved",group:"train:man:teenager",request:2,success:true,complete:true});
     assert.equal(p.calls.includes("resume"),false,"an old approval acknowledgement is ignored");
     await send({type:"koww:reference-approved",group:"train:man:teenager",request:3,success:true,complete:true});
+    while(await p.advanceFrame()){}
     await p.settle();assert.equal(p.calls.filter(call=>call==="resume").length,1);
     assert.equal(p.shell.dataset.step,"pronunciation","the same final Next both approves and releases its completed source boundary");
   });
@@ -2620,19 +2710,21 @@ async function main() {
   });
   await test("chapter readiness waits for fonts and paint on ordinary chapters without starting work", async () => {
     let release;
-    const p = page(null, { fonts: { ready: new Promise(resolve => { release = resolve; }) }, paintFrames: true });
-    await p.next.fire("click"); p.advanceTimer(); await p.flush();
+    const p = page(null, { fonts: { ready: new Promise(resolve => { release = resolve; }) }, paintFrames: "manual" });
+    await p.next.fire("click"); await p.advanceFrame(); await p.advanceFrame(); p.advanceTimer(); await p.flush();
     assert.equal(p.shell.dataset.step, "tools"); assert.equal(p.shell.querySelector(".story-loader").hidden, false);
     assert.equal(p.get("story-panel").inert, true);
-    release(); for (let i = 0; i < 8; i++) await p.flush();
+    release(); await p.flush(); while (await p.advanceFrame()) {}
     assert.equal(p.shell.querySelector(".story-loader").hidden, true); assert.equal(p.get("story-panel").inert, false);
     await p.back.fire("click"); await p.flush(); assert.equal(p.get("story-panel").inert, true);
-    for (let i = 0; i < 8; i++) await p.flush(); await p.settle();
+    while (await p.advanceFrame()) {}
+    await p.settle();
     assert.equal(p.shell.dataset.step, "entry"); assert.equal(p.calls.includes("create"), false);
   });
   await test("chapter readiness font timeout restores controls without waiting on the failed font again", async () => {
-    const p = page(null, { fonts: { ready: new Promise(() => {}) }, paintFrames: true });
-    await p.next.fire("click"); await p.flush(); p.advanceTimer(); await p.flush(); p.advanceTimer();
+    const p = page(null, { fonts: { ready: new Promise(() => {}) }, paintFrames: "manual" });
+    await p.next.fire("click"); await p.advanceFrame(); await p.advanceFrame();
+    p.advanceTimer(); await p.flush(); p.advanceTimer();
     for (let i = 0; i < 8; i++) await p.flush();
     assert.equal(p.shell.querySelector(".story-loader").hidden, true); assert.equal(p.get("story-panel").inert, false);
     assert.equal(p.shell.dataset.step, "entry"); assert.ok(p.calls.some(call => call.startsWith("message:")));

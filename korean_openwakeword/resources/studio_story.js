@@ -280,7 +280,6 @@
     liveSummary.append(statusCard, $("counts"));
     const downloads = $("downloads-section"), review = $("review-section"), input = $("input-section"), results = $("results-section");
     $("hard-phrase-fields").classList.add("story-phrase-grid");
-    let phraseInputPending = false;
     const voiceCounts = node("div", undefined, "story-voice-counts");
     let workRowsKey = "", workRowViews = [];
     const voiceListening = node("div", undefined, "story-voice-listening");
@@ -440,22 +439,24 @@
     function revealRepairReview(project, reload = false) {
       const queue = repairQueueKey(project); if (!queue || transitioning) return;
       repairReviewStaged = queue; repairReviewConcealed = queue; repairRevealFailed = "";
-      if (reload) { const frame = $("review-frame"); frame.setAttribute("src", frame.getAttribute("src")); }
       const session = beginTransition(false); session.repairQueue = queue;
-      void runTransition(session, Promise.resolve(true), () => { repairReviewConcealed = ""; });
+      void runTransition(session, () => {
+        if (reload) { const frame = $("review-frame"); frame.setAttribute("src", frame.getAttribute("src")); }
+      }, () => { repairReviewConcealed = ""; });
     }
     function revealHardReview(reload = false) {
       const session = beginTransition(false);
       session.hardReviewArrival = true;
       hardReviewRevealFailed = false;
-      if (reload) {
-        const frame = $("review-frame"), url = frame.getAttribute("src");
-        if (url) {
-          chapterFrameStates.delete("review-frame");
-          frame.setAttribute("src", url);
+      void runTransition(session, () => {
+        if (reload) {
+          const frame = $("review-frame"), url = frame.getAttribute("src");
+          if (url) {
+            chapterFrameStates.delete("review-frame");
+            frame.setAttribute("src", url);
+          }
         }
-      }
-      void runTransition(session);
+      });
     }
     function clearPreflightPicker() {
       preflightPickerRequest = null; shell.classList.remove("preflight-picker-open"); shell.style.setProperty("--preflight-picker-height", "");
@@ -468,14 +469,20 @@
       const intent = boundaryNextIntent; boundaryNextIntent = null;
       if (intent) intent.reject(Error(message || "저장 후 다음 단계 상태를 확인하지 못했습니다. 다시 진행하세요."));
     }
-    function beginBoundaryNext(project, route) {
-      const session = beginTransition(false), intent = { project: project.id, route, session, saved: false, issued: false, inFlight: false };
+    function beginBoundaryNext(project, route, save, session = beginTransition(false)) {
+      const intent = { project: project.id, route, session, saved: false, issued: false, inFlight: false };
       const preparation = new Promise((resolve, reject) => { intent.resolve = resolve; intent.reject = reject; });
+      void preparation.catch(() => {}); // A project refresh may cancel before the notice paints.
       boundaryNextIntent = intent; following = true;
       const watchdog = setTimeout(() => { if (boundaryNextIntent === intent) cancelBoundaryNext(); }, 90000);
       session.timers.add(watchdog);
-      void runTransition(session, preparation, () => { current = intent.target; historyPage = 0; historyKey = ""; });
-      return intent;
+      void runTransition(session, async () => {
+        if (boundaryNextIntent !== intent) return preparation;
+        if (save && !await Promise.race([save(), preparation])) return false;
+        if (!activeTransition(session)) return false;
+        intent.saved = true; resumeSavedBoundary();
+        return preparation;
+      }, () => { current = intent.target; historyPage = 0; historyKey = ""; });
     }
     function resumeSavedBoundary() {
       const intent = boundaryNextIntent; if (!intent) return;
@@ -710,7 +717,10 @@
         callReviewLayoutReady);
     }
     function cancelReferenceApproval() {
-      if (referenceApprovalContext) clearTimeout(referenceApprovalContext.watchdog);
+      if (referenceApprovalContext) {
+        clearTimeout(referenceApprovalContext.watchdog);
+        referenceApprovalContext.resolve?.(false);
+      }
       referenceApprovalContext = null; referenceApprovalPending = false;
     }
     function clearReferenceGroup() { referenceGroup = null; cancelReferenceApproval(); }
@@ -820,7 +830,6 @@
     function activeTransition(session) { return transitionSession === session; }
     function beginTransition(backwards, initial = false) {
       cancelReferenceApproval();
-      if (!initial) pauseMedia();
       const session = { timers: new Set(), sourceStep: current, sourceFollowing: following, project: bridge.state().project?.id || "", waiters: new Map() };
       session.aborted = new Promise(resolve => { session.cancel = () => resolve(false); });
       transitionSession = session; transitioning = true;
@@ -828,7 +837,22 @@
       clearIndexMagnification();
       panel.inert = true; panel.setAttribute("aria-busy", "true"); if (!initial) panel.classList.add("is-leaving");
       loaderText.textContent = backwards ? "전 단계로 이동 중" : "다음 단계로 이동 중";
+      if (!initial) loader.hidden = false;
       return session;
+    }
+    async function waitForTransitionPaint(session) {
+      if (!activeTransition(session) || document.hidden || typeof requestAnimationFrame !== "function") return activeTransition(session);
+      let frame, onVisibility;
+      const painted = new Promise(resolve => {
+        onVisibility = () => { if (document.hidden) resolve(true); };
+        document.addEventListener?.("visibilitychange", onVisibility);
+        // The first frame can paint the notice before the second starts work.
+        frame = requestAnimationFrame(() => { frame = requestAnimationFrame(() => resolve(true)); });
+      });
+      const ready = await Promise.race([painted, session.aborted]);
+      document.removeEventListener?.("visibilitychange", onVisibility);
+      if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(frame);
+      return ready && activeTransition(session);
     }
     function cssMilliseconds(value) {
       return String(value || "0s").split(",").map(part => {
@@ -958,17 +982,18 @@
     }
     async function waitForChapter(session) {
       let timer;
+      const recipePending = Boolean(bridge.state().project && ["scale", "materials"].includes(current) && bridge.prepareRecipes);
       const reviewQueuePending = preparingReviewQueue(bridge.state().project);
       const timeout = new Promise((_, reject) => {
-        if (!reviewQueuePending && !destinationFrames().some(Boolean) && !document.fonts?.ready) return;
+        if (!recipePending && !reviewQueuePending && !destinationFrames().some(Boolean) && !document.fonts?.ready) return;
         timer = setTimeout(() => reject(Error("화면을 불러오는 시간이 길어지고 있습니다. 다시 이동해 주세요.")), current === "microphone" ? 45000 : 20000);
         session.timers.add(timer);
       });
       try {
         const ready = (async () => {
           const project = bridge.state().project?.id || "";
-          if (project && ["scale", "materials"].includes(current)) {
-            await bridge.prepareRecipes?.();
+          if (recipePending) {
+            await bridge.prepareRecipes();
             if (!activeTransition(session)) return false;
           }
           if (reviewQueuePending) {
@@ -1016,30 +1041,25 @@
         if (activeTransition(session)) { stopTransition(); render(); }
       }
     }
-    async function runTransition(session, preparation, commit) {
-      const prepared = Promise.resolve(preparation).then(value => ({ ok: true, value }), error => ({ ok: false, error }));
+    async function runTransition(session, prepare, commit) {
       try {
-        if (!await waitForMotion(panel, session)) return;
-        loader.hidden = false;
-        // Build the destination behind the opaque notice. Embedded documents
-        // can load and measure here, before the notice starts disappearing.
+        if (!await waitForTransitionPaint(session)) return;
+        const hold = waitForDuration(session, 800);
         const content = (async () => {
-          const result = await Promise.race([prepared, session.aborted]);
-          if (!activeTransition(session) || !result) return false;
-          if (!result.ok) throw result.error;
+          pauseMedia();
+          if (!activeTransition(session)) return { ok: false };
+          if (await prepare?.() === false) return { ok: false, cancelled: true };
+          if (!activeTransition(session)) return { ok: false };
           if (creationPending) { creationPending = false; session.createdProject = bridge.state().project?.id || ""; }
           commit?.(); session.staged = true; render();
-          if (!activeTransition(session)) return false;
-          return waitForChapter(session);
-        })().then(ok => ({ ok }), error => ({ ok: false, error }));
-        if (!await waitForMotion(loader, session)) return;
-        // Hold the fully visible notice for at least 0.8 seconds. Server
-        // preparation runs concurrently and can keep it visible for longer.
+          if (!activeTransition(session)) return { ok: false };
+          return { ok: await waitForChapter(session) };
+        })().catch(error => ({ ok: false, error }));
         const [result, held] = await Promise.all([
-          Promise.race([content, session.aborted]), waitForDuration(session, 800),
+          Promise.race([content, session.aborted]), hold,
         ]);
         if (!held || !activeTransition(session)) return;
-        if (!result?.ok) {
+        if (!result?.ok && !result?.cancelled) {
           if (session.hardReviewArrival) hardReviewRevealFailed = true;
           if (session.repairQueue === repairQueueKey(bridge.state().project)) { repairReviewConcealed = session.repairQueue; repairRevealFailed = session.repairQueue; }
           if (session.staged) { current = session.sourceStep; following = session.sourceFollowing; historyKey = ""; render(); }
@@ -1122,6 +1142,36 @@
         && completedStep(project, "downloads")) return "downloads";
       return "";
     }
+    function releaseChapter(project) {
+      const session = beginTransition(false);
+      const failed = next => Boolean(next?.error || next?.migration && !next.process_alive
+        || ["failed", "error", "interrupted", "cancelled", "stopped"].includes(next?.status));
+      const advanced = next => next?.id === project.id
+        && screens.indexOf(stageStep(next)) > screens.indexOf(session.sourceStep);
+      let target;
+      void runTransition(session, async () => {
+        const before = bridge.state();
+        if (before.project?.id !== project.id || !releaseStep(before.project)
+          || await bridge.action("resume") === false)
+          throw Error("다음 단계가 시작되지 않았습니다. 상태를 확인한 뒤 다시 진행하세요.");
+        if (!activeTransition(session)) return;
+        const responseReady = next => failed(next) || advanced(next);
+        if (!responseReady(bridge.state().project)) {
+          const ready = await Promise.race([
+            waitForReviewState(session, () => true, responseReady),
+            waitForDuration(session, 20000).then(ended => {
+              if (ended) throw Error("다음 단계의 상태를 확인하지 못했습니다. 다시 진행하세요.");
+              return false;
+            }),
+          ]);
+          if (!ready || !activeTransition(session)) return;
+        }
+        const latest = bridge.state().project;
+        if (failed(latest) || !advanced(latest))
+          throw Error("다음 단계가 시작되지 않았습니다. 상태를 확인한 뒤 다시 진행하세요.");
+        target = stageStep(latest);
+      }, () => { current = lastFrontier = target; following = true; historyPage = 0; historyKey = ""; });
+    }
     function reviewingReferenceGroup(project) {
       return Boolean(project && current === "voice-listening" && referenceMode === "candidate_pool_v2"
         && project.reference_preview?.review_required && !(project.reference_preview.review_complete || referenceReviewComplete));
@@ -1197,7 +1247,7 @@
     }
     async function advance() {
       const state = bridge.state(), project = state.project, position = screens.indexOf(current);
-      if (transitioning || state.busy || phraseInputPending || referenceApprovalContext) return;
+      if (transitioning || state.busy || referenceApprovalContext) return;
       if (!project) {
         if (current === "materials") {
           if ($("create").disabled) return;
@@ -1206,9 +1256,9 @@
           // Polls may receive the created model meanwhile, but must not reveal
           // it early or allow another creation request.
           const session = beginTransition(false); creationPending = true;
-          await runTransition(session, (async () => bridge.create({
+          await runTransition(session, () => bridge.create({
             navigationCheckpoints: true, dependencyBackend: draftBackend(state),
-          }))());
+          }));
           return;
         }
         navigate(position + 1); return;
@@ -1220,28 +1270,38 @@
       if (current === "materials" && waitingToolChoice(project)) {
         const session = beginTransition(false);
         following = true;
-        await runTransition(session, (async () => {
+        await runTransition(session, async () => {
           const saved = await bridge.input();
           const latest = bridge.state().project;
           if (saved !== true || latest?.id !== project.id || latest.dependency_install_pending !== true)
             throw new Error("학습 도구 선택을 저장하지 못했습니다. 다시 진행해 주세요.");
-        })(), () => { current = "downloads"; historyPage = 0; historyKey = ""; });
+        }, () => { current = "downloads"; historyPage = 0; historyKey = ""; });
         return;
       }
       if (reviewingReferenceGroup(project)) {
         syncReferenceFrame();
         if (!referenceGroupReady(project)) return;
+        const session = referenceGroup.completesReview ? beginTransition(false) : null;
         referenceApprovalContext = { project: project.id, group: referenceGroup.group, frame: referenceFrameElement,
-          source: referenceFrameWindow, url: referenceFrameUrl, request: ++referenceApprovalRequest };
+          source: referenceFrameWindow, url: referenceFrameUrl, request: ++referenceApprovalRequest, session };
         const approval = referenceApprovalContext;
-        approval.watchdog = setTimeout(() => {
+        referenceApprovalPending = true;
+        const approve = () => {
           if (referenceApprovalContext !== approval) return;
-          referenceApprovalContext = null; referenceApprovalPending = false;
-          bridge.message?.("목소리 승인 응답을 확인하지 못했습니다. 저장 상태를 확인한 뒤 다시 진행하세요.", true); render();
-        }, 45000);
-        referenceApprovalPending = true; render();
-        $("reference-preview-frame").contentWindow.postMessage({ type: "koww:reference-approve", project: project.id,
-          group: referenceGroup.group, request: referenceApprovalContext.request }, window.location.origin);
+          approval.watchdog = setTimeout(() => {
+            if (referenceApprovalContext !== approval) return;
+            cancelReferenceApproval();
+            bridge.message?.("목소리 승인 응답을 확인하지 못했습니다. 저장 상태를 확인한 뒤 다시 진행하세요.", true); render();
+          }, 45000);
+          render();
+          if (referenceApprovalContext === approval) approval.source.postMessage({ type: "koww:reference-approve",
+            project: approval.project, group: approval.group, request: approval.request }, window.location.origin);
+        };
+        if (session) {
+          const saved = new Promise(resolve => { approval.resolve = resolve; });
+          beginBoundaryNext(project, { step: "voices", sourceStage: stageId(project),
+            target: screens[position + 1], destinationStages: ["pilot", "pilot_review"] }, () => { approve(); return saved; }, session);
+        } else approve();
         return;
       }
       if (reviewingPreflight(project)) {
@@ -1251,34 +1311,33 @@
           frame: $("review-frame"), source: $("review-frame").contentWindow, url: $("review-frame").getAttribute("src") || "",
           request: preflightRequest, phase: "finalizing", route: callReviewRoute(project), session };
         const preparation = new Promise((resolve, reject) => { intent.resolve = resolve; intent.reject = reject; });
+        void preparation.catch(() => {});
         preflightResumeIntent = intent; following = true;
         if (intent.route.phase === "post") loaderText.textContent = "검수 결과를 저장하고 있습니다...";
         const watchdog = setTimeout(() => { if (preflightResumeIntent === intent) cancelPreflightNext("다음 단계 준비 상태를 확인하지 못했습니다. 다시 진행하세요."); }, intent.route.phase === "post" ? 90000 : 45000);
         intent.watchdog = watchdog; session.timers.add(watchdog);
-        void runTransition(session, preparation, () => { current = intent.target; historyPage = 0; historyKey = ""; });
-        render();
-        $("review-frame").contentWindow.postMessage({ type: "koww:preflight-finalize", ...reviewWirePhase(project), project: project.id,
-          queue_sha256: project.review.queue_sha256, request: preflightRequest }, window.location.origin); return;
+        void runTransition(session, () => {
+          render();
+          if (preflightResumeIntent === intent) intent.source.postMessage({ type: "koww:preflight-finalize", ...reviewWirePhase(project),
+            project: intent.project, queue_sha256: intent.queue, request: intent.request }, window.location.origin);
+          return preparation;
+        }, () => { current = intent.target; historyPage = 0; historyKey = ""; });
+        return;
       }
       if (editingPhrases(project)) {
         const inputKey = JSON.stringify(project.input);
-        phraseInputPending = true; render();
-        try {
+        beginBoundaryNext(project, { step: "phrases", sourceStage: "hard_phrases", inputKey,
+          target: sampleFirstHardReview(project) ? "hard-review" : "hard-generation", destinationStages: ["hard_pilot", "hard_generation", "hard_review"] }, async () => {
           const saved = await bridge.input();
           const latest = bridge.state().project;
-          if (saved === false || latest?.id !== project.id || document.hidden || current !== "phrases"
-            || saved !== true && latest.status === "waiting_input" && JSON.stringify(latest.input) === inputKey) return;
-          const intent = beginBoundaryNext(latest, { step: "phrases", sourceStage: "hard_phrases", inputKey,
-            target: sampleFirstHardReview(project) ? "hard-review" : "hard-generation", destinationStages: ["hard_pilot", "hard_generation", "hard_review"] });
-          intent.saved = true; resumeSavedBoundary();
-        }
-        catch (error) { bridge.message?.(error?.message || "유사어를 저장하지 못했습니다. 다시 진행하세요."); }
-        finally { phraseInputPending = false; render(); }
+          return saved !== false && latest?.id === project.id && !document.hidden && current === "phrases"
+            && (saved === true || latest.status !== "waiting_input" || JSON.stringify(latest.input) !== inputKey);
+        });
         return;
       }
       if (current === stageStep(project) && humanGate(project)) return;
       if (position < maximum) { navigate(position + 1); return; }
-      if (releaseStep(project)) await bridge.action("resume");
+      if (releaseStep(project)) releaseChapter(project);
     }
     function openHardListening() {
       if (!lastProject || transitioning) return;
@@ -2132,7 +2191,7 @@
           && navigationCheckpoint(project)?.step === "hard-review" && navigationCheckpoint(project)?.state === "awaiting_next"
           && !project.process_alive && completedNavigationStep(project, "hard-review")) {
           hardConnectionIntent = null; following = true;
-          void Promise.resolve().then(() => bridge.action("resume")).catch(error => bridge.message?.(error.message, true));
+          releaseChapter(project);
         }
       }
       shell.classList.toggle("merged-reference-review", mergedReferenceReview(project));
@@ -2214,7 +2273,7 @@
         if (reviewingReferenceGroup(project)) nextDisabled = Boolean(state.busy || !referenceGroupReady(project));
         if (reviewingPreflight(project)) nextDisabled = Boolean(state.busy || !preflightReady(project));
         if (current === "hard-review" && hardReviewRevealFailed) nextDisabled = true;
-        if (editingPhrases(project)) nextDisabled = Boolean(state.busy || phraseInputPending);
+        if (editingPhrases(project)) nextDisabled = Boolean(state.busy);
         if (needsToolChoice && (current === "tools" || current === "materials")) nextDisabled = Boolean(state.busy);
         nextDisabled = nextDisabled || Boolean(referenceApprovalContext);
         if (next.disabled !== nextDisabled) next.disabled = nextDisabled;
@@ -2525,7 +2584,8 @@
         && event.data.group === event.data.group.trim() && !/[\u0000-\u001f]/.test(event.data.group)
         && typeof event.data.ready === "boolean") {
         referenceMode = "candidate_pool_v2";
-        referenceGroup = { group: event.data.group, ready: event.data.ready }; referenceApprovalPending = false;
+        referenceGroup = { group: event.data.group, ready: event.data.ready, completesReview: event.data.completes_review === true };
+        if (!referenceApprovalContext) referenceApprovalPending = false;
         if (current === "voice-listening") render();
         return;
       }
@@ -2535,14 +2595,16 @@
           || approval.url !== (frame.getAttribute("src") || "") || message.request !== approval.request || message.group !== approval.group
           || typeof message.success !== "boolean" || typeof message.complete !== "boolean") return;
         clearTimeout(approval.watchdog); referenceApprovalContext = null; referenceApprovalPending = false;
-        if (current !== "voice-listening" || document.hidden || !message.success) { render(); return; }
+        if (current !== "voice-listening" || document.hidden || !message.success) { approval.resolve?.(false); render(); return; }
         if (message.complete) {
           referenceReviewComplete = true; referenceGroup = null;
-          const project = bridge.state().project;
-          const intent = beginBoundaryNext(project, { step: "voices", sourceStage: stageId(project),
-            target: screens[screens.indexOf(current) + 1], destinationStages: ["pilot", "pilot_review"] });
-          intent.saved = true; resumeSavedBoundary();
+          if (!approval.session) {
+            const project = bridge.state().project;
+            beginBoundaryNext(project, { step: "voices", sourceStage: stageId(project),
+              target: screens[screens.indexOf(current) + 1], destinationStages: ["pilot", "pilot_review"] });
+          }
         }
+        approval.resolve?.(message.complete);
         render(); return;
       }
       if (event.data?.type === "koww:reference-review" && matchingProject

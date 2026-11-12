@@ -824,10 +824,11 @@ function syncCandidates(forceReport=false){
     view.choice.title=!selectedItem&&selected>=target?'이 분류의 목표 개수를 모두 선택했습니다.':'';
   }
   volume.disabled=!items.length;if(listeningPlayer?.mute)listeningPlayer.mute.disabled=!items.length;
-  const groupStatus=JSON.stringify([group.key,candidateReady]);
+  const completesReview=groups.every(value=>value.approved||value.key===group.key);
+  const groupStatus=JSON.stringify([group.key,candidateReady,completesReview]);
   if(window.parent!==window&&(forceReport||reportedCandidateGroup!==groupStatus)){
     reportedCandidateGroup=groupStatus;
-    window.parent.postMessage?.({type:'koww:reference-group',project,group:group.key,ready:candidateReady},location.origin);
+    window.parent.postMessage?.({type:'koww:reference-group',project,group:group.key,ready:candidateReady,completes_review:completesReview},location.origin);
   }
   scheduleCandidateHeight();
 }
