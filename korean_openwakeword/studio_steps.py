@@ -915,9 +915,12 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         if policy == POSTGEN_PILOT_POLICY:
             raise ValueError("The generation-first workflow takes its review clips from the completed call corpus")
         if policy == PREPOST_PILOT_POLICY:
-            from .pilot import prepare_prepost_pilot
-            prior_rounds = context.get("inputs", {}).get("call_pilot_reviews", [])
-            summary = prepare_prepost_pilot(project, settings, prior_rounds=prior_rounds)
+            from .pilot import prepare_prepost_pilot, preflight_quality_retry_rounds
+            inputs = context.get("inputs", {})
+            prior_rounds = inputs.get("call_pilot_reviews", [])
+            retry_rounds = preflight_quality_retry_rounds(inputs)
+            retry = {"quality_retry_rounds": retry_rounds} if retry_rounds else {}
+            summary = prepare_prepost_pilot(project, settings, prior_rounds=prior_rounds, **retry)
             incomplete = _generation_complete(summary)
             if incomplete:
                 return incomplete

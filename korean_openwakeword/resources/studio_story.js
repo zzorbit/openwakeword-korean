@@ -1213,7 +1213,14 @@
         && frame === referenceFrameElement && frame.contentWindow === referenceFrameWindow
         && (frame.getAttribute("src") || "") === referenceFrameUrl && typeof frame.contentWindow?.postMessage === "function");
     }
+    function pilotGenerationRetry(project) {
+      const input = project?.input;
+      return current === "call-pilot-generation" && stageStep(project) === current && stageId(project) === "pilot"
+        && project?.status === "waiting_input" && !project.review && !(project.migration && !project.process_alive)
+        && input?.kind === "generation_policy" && input.retry_action === "retry_generation" ? input : null;
+    }
     function operationAction(project) {
+      if (pilotGenerationRetry(project)) return "retry_generation";
       if (hardReviewRevealFailed && current === "hard-review" && stageId(project) === "hard_review"
           && (preparingReviewQueue(project) || reviewingPreflight(project)) && !project.error) return "load_hard_review";
       if (repairRevealFailed && repairReviewConcealed === repairQueueKey(project) && current === "pronunciation") return "load_review";
@@ -1239,6 +1246,7 @@
     async function controlJob() {
       const state = bridge.state(), action = operationAction(state.project);
       if (!action || transitioning || state.busy || state.project.status === "pausing"
+        || action === "retry_generation" && state.project.process_alive === true
         || current === "voices" && referencePreparationNeeded(state.project) && state.project.reference_preparation.status === "pausing") return;
       hardConnectionIntent = null;
       if (action === "load_hard_review") { revealHardReview(true); return; }
@@ -1492,6 +1500,14 @@
         const view = project.completed_stage_views?.[current];
         return view?.completed && completed && Array.isArray(view.rows)
           ? view.rows.map(row => ({ ...row, completed: true })) : [];
+      }
+      const retry = pilotGenerationRetry(project);
+      if (retry) {
+        const { accepted_count: accepted, target_count: target } = retry;
+        if (Number.isSafeInteger(accepted) && Number.isSafeInteger(target) && accepted >= 0 && accepted < target) {
+          return [{ label, done: accepted, total: target, statusText: `${count(accepted)} / ${count(target)}개 통과` }];
+        }
+        return [{ label, statusText: "기술 검사 미통과" }];
       }
       // Only an explicit, task-scoped backend preparation record identifies
       // startup. A genuine 0-update training snapshot remains numeric.
@@ -2282,11 +2298,14 @@
       }
       const action = operationAction(project);
       operation.hidden = !action;
+      const retryGeneration = action === "retry_generation";
       const preparationPausing = current === "voices" && referencePreparationNeeded(project) && project.reference_preparation.status === "pausing";
-      const operationDisabled = Boolean(!action || state.busy || transitioning || project?.status === "pausing" || preparationPausing);
+      const operationDisabled = Boolean(!action || state.busy || transitioning || project?.status === "pausing" || preparationPausing
+        || retryGeneration && project.process_alive === true);
       if (operation.disabled !== operationDisabled) operation.disabled = operationDisabled;
       const startsToolsAndDownloads = preparingTools && action === "start";
       const operationText = project?.status === "pausing" || preparationPausing ? "정지 대기" : ["pause", "prepare_pause"].includes(action) ? "일시정지" : ["resume", "prepare_resume"].includes(action) ? "재개"
+        : retryGeneration ? "실패한 샘플 다시 생성"
         : action === "prepare_start" ? "생성 시작"
         : ["load_review", "load_hard_review"].includes(action) ? "다시 열기"
         : startsToolsAndDownloads ? "설치·다운로드 시작"
@@ -2296,6 +2315,7 @@
       if (operation.title !== operationTitle) operation.title = operationTitle;
       footer.classList.toggle("has-operation", !operation.hidden);
       footer.classList.toggle("has-tool-start", startsToolsAndDownloads);
+      footer.classList.toggle("has-generation-retry", retryGeneration);
       migrationNote.hidden = !project?.migration || project.process_alive === true;
       // Hidden panels stay connected; polling never rebuilds their inputs or
       // embedded documents, and never resets a review's listening position.

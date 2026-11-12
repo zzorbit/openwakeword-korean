@@ -465,7 +465,27 @@ def _audited_reference_candidate_update(previous, current):
             "evidence_sha256": audit["evidence_sha256"]}
 
 
+_PREFLIGHT_QUALITY_RETRY_UPDATE = "audited_preflight_quality_retry_update"
 _AUDITED_CALL_GENERATION_RECOVERY_UPDATES = {
+    # CRLF and LF releases. Evidence is the normalized pilot regression test file.
+    "1a55d55a872bc02d08feb6709c24157c2f6ef8fd197502dd10e643469aed1db1": {
+        "kind": _PREFLIGHT_QUALITY_RETRY_UPDATE,
+        "source_stages_sha256": "05c07d33e0264ba7ef697e90dfc1a273c134efc065008a4bdbc65b44f14affb2",
+        "target_computation_sha256": "013c7ca9e78aecb2a4568930341f3ea2d75c4257d0241bea1ccab1d3b2a5a0db",
+        "target_stages_sha256": "2a6cce7e0c31a69d72e8b95b5f9db9bba28f9756a2c9fb630a8c64e063a3660f",
+        "changed_files": ("pilot.py", "studio_steps.py"),
+        "evidence_sha256": "efa74df63701653a7ac0fd149d03e3c4e706e48503d713f6398d3f4858cb59f1",
+        "reason": "통과한 호출어 샘플을 보존하고 실패한 샘플을 같은 기준으로 다시 생성할 수 있습니다.",
+    },
+    "fe8a0de0868bed40f830651a07146a5bbc58cc7b77c2f245c8b4ecb3ebafb78b": {
+        "kind": _PREFLIGHT_QUALITY_RETRY_UPDATE,
+        "source_stages_sha256": "aecacf85cf420f3c5e946b49b2670415576e52d1d3cbfbd23269400e61b45216",
+        "target_computation_sha256": "8c37266b4ba45b9e407aeca3d078be3d0a216936b1c1fd4d1f0573208a69fc51",
+        "target_stages_sha256": "47f7319a980a8fbe42a973fd05dc463bbb12e5f219094db9040f1c80c54ac7ea",
+        "changed_files": ("pilot.py", "studio_steps.py"),
+        "evidence_sha256": "efa74df63701653a7ac0fd149d03e3c4e706e48503d713f6398d3f4858cb59f1",
+        "reason": "통과한 호출어 샘플을 보존하고 실패한 샘플을 같은 기준으로 다시 생성할 수 있습니다.",
+    },
     "6db73e2aedb147470d1f386e2482bfaa6aa4d5af63f25ef314864e0b2ee75d2e": {
         "kind": "audited_postgeneration_voice_repair_update",
         "source_stages_sha256": "5c757fbab706cf6ebb0126efa5d1d2ae374debd67590daa502e6782b78401b18",
@@ -489,6 +509,17 @@ _AUDITED_CALL_GENERATION_RECOVERY_UPDATES = {
 def _audited_call_generation_recovery_update(previous, current):
     source = previous.get("computation_sha256")
     audit = _AUDITED_CALL_GENERATION_RECOVERY_UPDATES.get(source)
+    acquisition = None
+    if audit is None:
+        prior = _AUDITED_ACQUISITION_UPDATES.get(source)
+        if prior:
+            retry = _AUDITED_CALL_GENERATION_RECOVERY_UPDATES.get(prior["target_computation_sha256"])
+            # Keep earlier download upgrades available through the exact shared release.
+            if (retry and retry.get("kind") == _PREFLIGHT_QUALITY_RETRY_UPDATE
+                    and retry["source_stages_sha256"] == prior["target_stages_sha256"]):
+                audit = {**retry, "source_stages_sha256": prior["source_stages_sha256"],
+                         "changed_files": set(retry["changed_files"]) | set(prior["changed_files"])}
+                acquisition = prior["evidence_sha256"]
     if not isinstance(audit, dict):
         return None
     old_files, new_files = previous.get("files"), current.get("files")
@@ -507,6 +538,7 @@ def _audited_call_generation_recovery_update(previous, current):
             "source_computation_sha256": source,
             "target_computation_sha256": current["computation_sha256"],
             "evidence_sha256": audit["evidence_sha256"],
+            **({"preceding_acquisition_evidence_sha256": acquisition} if acquisition else {}),
             **({"reason": audit["reason"]} if audit.get("reason") else {})}
 
 
@@ -1326,9 +1358,9 @@ class StudioManager:
                 hard_review_update = _audited_hard_review_update(previous, comparison) if changed else None
                 candidate_update = _audited_reference_candidate_update(previous, comparison) if changed else None
                 call_recovery_update = _audited_call_generation_recovery_update(previous, comparison) if changed else None
-                if call_recovery_update and not self._can_update_call_generation_recovery(state):
-                    return blocked("호출어 자동 복구 업데이트는 실행 중인 작업과 학습 결과를 보존하기 위해 특징 추출 전 작업에만 적용할 수 있습니다.")
-                if call_recovery_update:
+                if call_recovery_update and call_recovery_update.get("kind") != _PREFLIGHT_QUALITY_RETRY_UPDATE:
+                    if not self._can_update_call_generation_recovery(state):
+                        return blocked("호출어 자동 복구 업데이트는 실행 중인 작업과 학습 결과를 보존하기 위해 특징 추출 전 작업에만 적용할 수 있습니다.")
                     generic_binding = self._call_recovery_generic_import(state)
                     if generic_binding:
                         call_recovery_update["preserved_precomputed_generic_metadata"] = generic_binding
@@ -1586,7 +1618,8 @@ class StudioManager:
                    if compatibility.get("reference_budget_change") else {}),
                 "preserved": compatibility["preserves"]})
             budget_change = compatibility.get("reference_budget_change")
-            if compatibility.get("audited_call_generation_recovery_update"):
+            recovery_update = compatibility.get("audited_call_generation_recovery_update") or {}
+            if recovery_update and recovery_update.get("kind") != _PREFLIGHT_QUALITY_RETRY_UPDATE:
                 stage = state["plan"][state["index"]]["id"]
                 result = state.get("results", {}).get(stage, {})
                 if (state.get("status") == "waiting_input" and stage in ("pilot", "positives")
@@ -1913,9 +1946,37 @@ class StudioManager:
         self._save(state)
         return True
 
-    def start(self, project_id):
+    def _pilot_generation_retry(self, state):
+        index = state["index"]
+        if (state["status"] != "waiting_input" or index >= len(state["plan"])
+                or state["plan"][index]["id"] != "pilot"
+                or state["settings"].get("pilot_review_policy") != PREPOST_PILOT_POLICY):
+            return None
+        output = state["results"].get("pilot", {})
+        result = output.get("result", {})
+        if output.get("input_kind") != "generation_policy" or result.get("full_target_reached") is not False:
+            return None
+        accepted, target = result.get("technical_pass"), result.get("target")
+        failures = result.get("exhausted_slots") or output.get("exhausted_slots")
+        if (type(accepted) is not int or type(target) is not int or not 0 <= accepted < target
+                or not isinstance(failures, list) or not 0 < len(failures) <= target - accepted):
+            return None
+        from .pilot import MAX_PREFLIGHT_QUALITY_RETRY_ROUNDS, preflight_quality_retry_rounds
+        rounds = preflight_quality_retry_rounds(state["inputs"])
+        if rounds >= MAX_PREFLIGHT_QUALITY_RETRY_ROUNDS:
+            return None
+        return {"accepted_count": accepted, "target_count": target, "failed_count": len(failures),
+                "retry_rounds": rounds}
+
+    def retry_generation(self, project_id):
+        return self.start(project_id, retry_pilot=True)
+
+    def start(self, project_id, *, retry_pilot=False):
         with self._lock:
             state = self._load(project_id)
+            retry = self._pilot_generation_retry(state) if retry_pilot else None
+            if retry_pilot and (not retry or self._job_alive(state.get("job") or {})):
+                raise ValueError("다시 생성할 호출어 샘플이 없습니다. 현재 작업 상태를 확인하세요.")
             if state["status"] == "completed":
                 return self.describe(state)
             self._guard_config(state)
@@ -1948,7 +2009,7 @@ class StudioManager:
                 return self.describe(state)
             if state["status"] == "waiting_review":
                 return self.describe(state)
-            if state["status"] == "waiting_input" and not state.get("input_submitted"):
+            if state["status"] == "waiting_input" and not state.get("input_submitted") and not retry:
                 return self.describe(state)
             state.update(auto_continue=True, input_submitted=False)
             self._verify_history(state)
@@ -1963,6 +2024,11 @@ class StudioManager:
             if navigation_step:
                 state["navigation_checkpoint"].update(step=navigation_step, state="running")
             self._recover_dead_locks(state)
+            if retry:
+                state["inputs"]["call_pilot_quality_retry"] = {
+                    "review_round": len(state["inputs"].get("call_pilot_reviews", [])),
+                    "rounds": retry["retry_rounds"] + 1,
+                }
             self._launch(state)
             return self.describe(state)
 
@@ -4470,6 +4536,8 @@ class StudioManager:
                     total = state["settings"]["originals"] + state["settings"]["validation_originals"]
                 counters = [self._journal_counts(p) if p is not None else {"passed": 0, "attempts": 0} for p in paths]
                 done = sum(c["passed"] for c in counters)
+                if job["stage"] == "pilot" and state["settings"].get("pilot_review_policy") == PREPOST_PILOT_POLICY:
+                    done = len(set().union(*(c.get("passed_families", ()) for c in counters)))
                 if pilot_targets:
                     done = sum(min(target, len(counter.get("passed_families", ())))
                                for target, counter in zip(pilot_targets, counters))
@@ -4591,6 +4659,10 @@ class StudioManager:
                                                    "description": result.get("message", "자료 준비가 필요합니다."),
                                                    "suggestions": result.get("suggestions", [])})
             input_kind = (view.get("input") or {}).get("kind")
+            retry = self._pilot_generation_retry(state)
+            if retry and not view["migration"]:
+                view["input"] = {**view["input"], "retry_action": "retry_generation",
+                                 **{key: retry[key] for key in ("accepted_count", "target_count", "failed_count")}}
             if input_kind == "dependency_setup":
                 recommended = view["input"].get("recommended_backend", result.get("recommended_backend"))
                 view["dependency_setup"] = _dependency_setup_options(recommended)
@@ -4658,10 +4730,21 @@ class StudioManager:
         revision = identity(rounds)
         kind = "preflight" if stage == "pilot" else "production"
         journals = {}
+        preflight_journals = []
+        if stage == "pilot":
+            from .pilot import preflight_quality_retry_rounds
+            retry_rounds = preflight_quality_retry_rounds(state["inputs"])
         for contract in (folder / "call_pronunciation").glob("*/*/contract.json"):
             scope = self._history_read(state, contract, max_bytes=16 * 1024**2).get("staged_scope", {})
-            if scope.get("kind") == kind and scope.get("revision") == revision:
-                journals[contract.parent.name] = contract.with_name("candidates.jsonl")
+            if scope.get("kind") != kind or scope.get("revision") != revision or contract.parent.name not in ("train", "validation"):
+                continue
+            journal = contract.with_name("candidates.jsonl")
+            if stage == "pilot":
+                retry_round = scope.get("quality_retry_round", 0)
+                if type(retry_round) is int and 0 <= retry_round <= retry_rounds:
+                    preflight_journals.append(journal)
+            else:
+                journals[contract.parent.name] = journal
         settings = state["settings"]
         if stage == "positives":
             total = settings["originals"] + settings["validation_originals"]
@@ -4671,7 +4754,7 @@ class StudioManager:
             total = sum(answer["decision"] == "discard" for answer in reviewed["decisions"].values())
         else:
             total = settings["train_references"] + settings["validation_references"]
-        return [journals.get(split) for split in ("train", "validation")], total
+        return (preflight_journals if stage == "pilot" else [journals.get(split) for split in ("train", "validation")]), total
 
     def _journal_counts(self, path):
         """Incremental line scanning; UI polling never re-reads the full pool."""
@@ -5160,6 +5243,7 @@ def make_studio_server(manager, port=8793):
                     if action == "retry_postgeneration":
                         return self.respond(manager.retry_postgeneration(project_id, payload))
                     methods = {"start": manager.start, "resume": manager.start, "pause": manager.pause,
+                               "retry_generation": manager.retry_generation,
                                "prepare_start": manager.prepare_start, "prepare_pause": manager.prepare_pause,
                                "prepare_resume": manager.prepare_resume,
                                "migrate": manager.migrate}

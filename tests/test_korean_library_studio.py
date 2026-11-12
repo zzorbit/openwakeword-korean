@@ -819,6 +819,45 @@ def test_http_static_ui_state_and_bound_random_port_are_usable(manager, http_ser
     assert status == 200 and json.loads(content)["token"] == manager.token
 
 
+def test_http_retry_generation_requires_a_failed_pilot_and_runs_only_on_explicit_request(manager, http_server):
+    project = create(manager, navigation_checkpoints=True)
+    state = manager._load(project["id"])
+    state["index"] = next(i for i, stage in enumerate(state["plan"]) if stage["id"] == "pilot")
+    state["navigation_checkpoint"].update(step="call-pilot-generation", state="running")
+    state["status"] = "waiting_input"
+    failure = {"state": "waiting_input", "input_kind": "generation_policy", "message": "음성 길이 기준 이탈",
+               "result": {"full_target_reached": False, "target": 50, "technical_pass": 19,
+                          "exhausted_slots": [{"split": "train", "slot": 9}]}}
+    state["results"]["pilot"] = failure
+    manager._save(state)
+    headers = {"X-Koww-Token": manager.token}
+    prefix = f"/api/projects/{project['id']}"
+    assert manager.describe(state)["input"] == {
+        "kind": "generation_policy", "description": "음성 길이 기준 이탈", "suggestions": [],
+        "retry_action": "retry_generation", "accepted_count": 19, "target_count": 50, "failed_count": 1,
+    }
+    assert http_server(prefix + "/resume", "POST", {}, headers=headers)[0] == 200
+    assert not manager.workers.items
+
+    status, content, _ = http_server(prefix + "/retry_generation", "POST", {}, headers=headers)
+    assert status == 200 and json.loads(content)["status"] == "running"
+    assert len(manager.workers.items) == 1
+    request = read_json(manager.workers.items[0].request_path)
+    assert request["stage"] == "pilot"
+    assert request["context"]["inputs"]["call_pilot_quality_retry"] == {"review_round": 0, "rounds": 1}
+    assert request["context"]["results"]["pilot"] == failure
+    assert http_server(prefix + "/retry_generation", "POST", {}, headers=headers)[0] == 400
+    assert len(manager.workers.items) == 1
+
+    manager.workers.items[0].finish(failure)
+    manager.tick()
+    assert manager._load(project["id"])["status"] == "waiting_input"
+    assert len(manager.workers.items) == 1
+    assert http_server(prefix + "/retry_generation", "POST", {}, headers=headers)[0] == 200
+    request = read_json(manager.workers.items[1].request_path)
+    assert request["context"]["inputs"]["call_pilot_quality_retry"] == {"review_round": 0, "rounds": 2}
+
+
 def test_http_studio_state_reads_only_selected_workflow_and_preserves_full_state_api(manager, http_server, monkeypatch):
     def get(path):
         status, content, _ = http_server(path)

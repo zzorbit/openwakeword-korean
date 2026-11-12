@@ -3032,6 +3032,34 @@ async function main() {
       assert.equal(p.shell.querySelector('.story-voice-counts').children[0],row);
     }
   });
+  await test('pilot quality hold preserves accepted progress and retries only on an explicit click', async () => {
+    const input = { kind: "generation_policy", retry_action: "retry_generation", accepted_count: 19, target_count: 50, failed_count: 1 };
+    const project = { id: "retry-pilot", status: "waiting_input", process_alive: true, stage_id: "pilot", input,
+      settings: { pilot_review_policy: "one_per_voice_before_and_after_generation_v4" } };
+    const p = page(project);
+    const row = p.shell.querySelector(".story-voice-counts").children[0], bar = row.querySelector("progress");
+    assert.equal(row.children[1].textContent, "19 / 50개 통과");
+    assert.equal(bar.value, 19); assert.equal(bar.max, 50);
+    assert.equal(row.querySelector(".story-progress-indicator").hidden, true);
+    assert.equal(p.next.disabled, true);
+    assert.equal(p.operation.hidden, false);
+    assert.equal(p.operation.textContent, "실패한 샘플 다시 생성");
+    assert.equal(p.operation.disabled, true, "a still-exiting worker cannot be retried");
+    await p.operation.fire("click");
+    project.process_alive = false; p.ui.render();
+    assert.equal(p.operation.disabled, false);
+    assert.ok(!p.calls.includes("retry_generation"), "polling and rendering never submit a retry");
+    await p.next.fire("click");
+    assert.ok(!p.calls.includes("resume") && !p.calls.includes("retry_generation"), "Next does not bypass the quality hold");
+    await p.operation.fire("click"); await p.operation.fire("click");
+    assert.equal(p.calls.filter(action => action === "retry_generation").length, 1);
+    for (const unsupported of [{ ...project, input: { kind: "generation_policy" } }, { ...project, stage_id: "positives" }]) {
+      const other = page(unsupported);
+      assert.equal(other.operation.hidden, true, "other generation-policy holds do not advertise the pilot action");
+      await other.operation.fire("click");
+      assert.ok(!other.calls.includes("retry_generation"));
+    }
+  });
   await test('training preparation rejects unsupported records and old download toggles have no dead callback',async()=>{
     const project={id:'training-records',status:'paused',process_alive:false,stage_id:'training',progress:{done:0,total:30000,unit:'학습 업데이트'},
       training_preparation:{kind:'unrelated',phase:'gpu_cache_loading',label:'잘못된 준비'}};

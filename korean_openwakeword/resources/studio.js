@@ -961,10 +961,17 @@
     const identity = project.id + ":" + (input.id || input.kind);
     const hard = input.kind === "hard_phrases";
     const dependencies = input.kind === "dependency_setup";
+    const retryGeneration = input.kind === "generation_policy" && input.retry_action === "retry_generation";
     const editable = dependencies || hard || input.kind === "material_admissions";
     $("input-form").hidden = !editable;
-    $("input-title").textContent = input.title || (!editable ? "작업을 확인해주세요" : dependencies ? "학습 도구를 준비해주세요" : hard ? "유사어 후보를 정해주세요" : "추가 자료를 연결해주세요");
-    $("input-description").textContent = input.description || (!editable ? "자동으로 해결할 수 없는 문제가 있어 멈췄습니다. 아래 작업 기록에서 원인과 필요한 조치를 확인하세요." : dependencies ? "이 가상 환경에 필요한 음성 생성·학습 도구를 설치합니다. 사용할 연산 환경을 선택하세요." : hard ? "호출어와 헷갈릴 수 있는 표현을 입력하세요." : "자동으로 준비할 수 없는 자료가 있습니다. 안내에 맞는 검수·승인 기록을 연결하면 이어서 진행합니다.");
+    if (retryGeneration) {
+      $("input-title").textContent = "호출어 샘플 생성 실패";
+      const details = input.description || "필요한 수의 샘플이 기술 검사를 통과하지 못했습니다.";
+      $("input-description").textContent = `${details}\n\n‘실패한 샘플 다시 생성’을 누르세요. 검사에 통과한 음성은 재사용하고, 실패한 샘플과 아직 생성하지 못한 샘플만 만듭니다.`;
+    } else {
+      $("input-title").textContent = input.title || (!editable ? "작업을 확인해주세요" : dependencies ? "학습 도구를 준비해주세요" : hard ? "유사어 후보를 정해주세요" : "추가 자료를 연결해주세요");
+      $("input-description").textContent = input.description || (!editable ? "자동으로 해결할 수 없는 문제가 있어 멈췄습니다. 아래 작업 기록에서 원인과 필요한 조치를 확인하세요." : dependencies ? "이 가상 환경에 필요한 음성 생성·학습 도구를 설치합니다. 사용할 연산 환경을 선택하세요." : hard ? "호출어와 헷갈릴 수 있는 표현을 입력하세요." : "자동으로 준비할 수 없는 자료가 있습니다. 안내에 맞는 검수·승인 기록을 연결하면 이어서 진행합니다.");
+    }
     $("input-label").textContent = input.label || (hard ? "유사어 문구" : "자료 승인 기록 · 한 줄에 경로 하나씩");
     $("input-label").hidden = dependencies; $("input-hint").hidden = dependencies;
     $("input-label").htmlFor = hard ? "hard-phrase-1" : "input-value";

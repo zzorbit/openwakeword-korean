@@ -123,6 +123,83 @@ def test_incomplete_voice_coverage_cannot_publish_or_approve_a_pilot(tmp_path, m
     assert (project.parent / "approval.json").read_bytes() == before
 
 
+def test_explicit_pilot_retry_reuses_passed_clips_and_spends_one_round_per_failed_bank(tmp_path, monkeypatch):
+    import numpy as np
+    import soundfile as sf
+
+    from korean_openwakeword import tts, tts_runtime
+    from test_call_generation_recovery import RecoveryModel, legacy_run
+    from test_korean_library_tts_journal import cpu_seed
+
+    project, _, train, _, base = legacy_run(tmp_path, count=3, references_count=3,
+                                            scope_kind="preflight", revision=identity([]))
+    root = project.parent
+    validation = []
+    for number in range(2):
+        audio = root / f"eval_{number}.wav"
+        sf.write(audio, .11 * np.sin(np.arange(8000) / (25 + number)), 16000, subtype="FLOAT")
+        validation.append(dict(train[0], voice_family_id=f"eval_{number}", split="validation", text="평가 기준 음성입니다.",
+                               path=str(audio.relative_to(root)), sha256=digest(audio)))
+
+    class SelectiveModel(RecoveryModel):
+        fail_validation = False
+
+        def generate_voice_clone(self, **options):
+            if self.fail_validation and options["voice_clone_prompt"]["ref_text"] == validation[0]["text"]:
+                self.calls += 1
+                return [np.zeros(9600)], 16000
+            return super().generate_voice_clone(**options)
+
+    model = SelectiveModel(fail=True)
+    monkeypatch.setattr(tts, "_seed", cpu_seed)
+    monkeypatch.setattr(tts_runtime, "CloneRuntime", lambda *args: model)
+    monkeypatch.setattr(pilot, "_preflight_banks", lambda *_: {"train": train, "validation": validation})
+    settings = {"train_references": 3, "validation_references": 2}
+    first = pilot.prepare_prepost_pilot(project, settings)
+    assert first["technical_pass"] == 2 and first["target"] == 5
+    base_journal = base / "candidates.jsonl"
+    original_wavs = {row["voice_family_id"]: row["sha256"] for row in read_rows(base_journal) if row["qc"]["passed"]}
+    base_bytes = {path: path.read_bytes() for path in base.iterdir() if path.is_file()}
+    approval = (root / "approval.json").read_bytes()
+
+    retry = pilot.prepare_prepost_pilot(project, settings, quality_retry_rounds=1)
+    assert retry["technical_pass"] == 2 and "review_queue" not in retry
+    assert retry["exhausted_slots"][0]["label"] == first["exhausted_slots"][0]["label"]
+    assert retry["exhausted_slots"][0]["slot"] == 2
+    contracts = list((root / "data/call_pronunciation").glob("*/train/contract.json"))
+    retry_path, = (path for path in contracts if path.parent != base)
+    retry_scope = read_json(retry_path)["staged_scope"]
+    assert retry_scope["quality_retry_round"] == 1 and retry_scope["references"] == [train[2]]
+    assert retry_scope["excluded_sha256"] == sorted(original_wavs.values())
+    retry_bytes = (retry_path.parent / "candidates.jsonl").read_bytes()
+    calls = model.calls
+    assert pilot.prepare_prepost_pilot(project, settings, quality_retry_rounds=1) == retry
+    assert model.calls == calls
+
+    model.fail = False
+    model.fail_validation = True
+    evaluation_failed = pilot.prepare_prepost_pilot(project, settings, quality_retry_rounds=2)
+    assert evaluation_failed["technical_pass"] == 3
+    assert {row["split"] for row in evaluation_failed["exhausted_slots"]} == {"validation"}
+    validation_scopes = [read_json(path)["staged_scope"] for path in (root / "data/call_pronunciation").glob("*/validation/contract.json")]
+    assert len(validation_scopes) == 1 and "quality_retry_round" not in validation_scopes[0]
+
+    model.fail_validation = False
+    complete = pilot.prepare_prepost_pilot(project, settings, quality_retry_rounds=3)
+    assert complete["full_target_reached"] is True and not complete["exhausted_slots"]
+    queue = read_rows(complete["review_queue"])
+    assert [row["preflight_reference"] for row in queue] == train + validation
+    assert [row["voice_number"] for row in queue] == [1, 2, 3, 1, 2]
+    assert {row["voice_family_id"]: row["sha256"] for row in queue[:2]} == original_wavs
+    assert len({row["sha256"] for row in queue}) == 5
+    assert all(path.read_bytes() == content for path, content in base_bytes.items())
+    assert (retry_path.parent / "candidates.jsonl").read_bytes() == retry_bytes
+    assert (root / "approval.json").read_bytes() == approval
+    calls = model.calls
+    assert pilot.prepare_prepost_pilot(project, settings, quality_retry_rounds=3) == complete
+    assert model.calls == calls
+
+
 @pytest.mark.parametrize("preset,expected", [("check", 20), ("trial", 100), ("production", 500)])
 def test_legacy_per_training_voice_progress_does_not_count_duplicate_candidates_as_extra_voices(manager, preset, expected):
     view = create(manager, preset=preset)

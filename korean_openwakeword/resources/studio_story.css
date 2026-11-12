@@ -52,8 +52,10 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-actions{position:relative;z-index:3;display:flex;align-items:center;justify-content:center;gap:8px;flex:none;width:100%;height:44px;margin-block-start:auto}
 .story-actions.has-operation{width:304px;max-width:calc(100vw - 48px)}
 .story-actions.has-tool-start{width:368px}
+.story-actions.has-generation-retry{width:376px}
 .story-shell .story-actions>.story-button{flex:0 1 96px;min-width:0;white-space:nowrap}
 .story-shell .story-actions.has-tool-start>.story-operation{flex:0 0 160px}
+.story-shell .story-actions.has-generation-retry>.story-operation{flex:0 0 168px;font-size:15px}
 .story-shell .story-button{display:flex;align-items:center;justify-content:center;flex:none;width:96px;height:44px;min-height:44px;padding:0 4px;margin:0;border:0;border-radius:8px;background:#292d33;color:#e9edf2;box-shadow:none;font:500 16px/22px system-ui,"Malgun Gothic",sans-serif;cursor:pointer;transition:background-color .2s ease}
 .story-shell .story-button:hover:not(:disabled){background:#363d47;color:#e9edf2}
 .story-shell .story-button:disabled{opacity:.55;cursor:default}
@@ -216,6 +218,7 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-live #input-section .input-heading{display:block;flex:none;margin:0 0 12px}
 .story-live #input-section .input-heading h2{font-size:18px;line-height:26px;font-weight:500;margin:0}
 .story-live #input-section #input-description{font-size:15px;line-height:22px;margin:6px 0 0}
+.story-live #input-section[data-input-kind="generation_policy"] #input-description{white-space:pre-line}
 .story-live #input-section[data-input-kind="hard_phrases"] .input-heading{display:none}
 .story-live #input-form{display:flex;flex-direction:column;gap:12px;min-height:0;margin:0}
 .story-live #input-form .input-content{min-height:0;overflow:auto;padding:0 2px 2px}

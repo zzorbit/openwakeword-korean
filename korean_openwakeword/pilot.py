@@ -16,6 +16,20 @@ COMBINED_PILOT_POLICY = "one_per_training_and_validation_voice_v2"
 POSTGEN_PILOT_POLICY = "one_per_voice_after_generation_v3"
 PREPOST_PILOT_POLICY = "one_per_voice_before_and_after_generation_v4"
 REVIEW_GROUPS = {"train": "학습용", "validation": "공통 평가용"}
+MAX_PREFLIGHT_QUALITY_RETRY_ROUNDS = 100
+
+
+def preflight_quality_retry_rounds(inputs):
+    """Read the retry budget for the current pronunciation review round."""
+    if "call_pilot_quality_retry" not in inputs:
+        return 0
+    record = inputs["call_pilot_quality_retry"]
+    current = len(inputs.get("call_pilot_reviews", []))
+    if (not isinstance(record, dict) or set(record) != {"review_round", "rounds"}
+            or type(record["review_round"]) is not int or not 0 <= record["review_round"] <= current
+            or type(record["rounds"]) is not int or not 1 <= record["rounds"] <= MAX_PREFLIGHT_QUALITY_RETRY_ROUNDS):
+        raise ValueError("저장된 호출어 샘플 재시도 기록이 올바르지 않습니다.")
+    return record["rounds"] if record["review_round"] == current else 0
 
 
 def _passing_slots(root, config, split, references, directory, scope=None):
@@ -312,12 +326,28 @@ def _alternate_reference(root, config, original, round_key, load_design_model, r
     raise ValueError("교체 기준 목소리의 기술 검사를 통과하지 못했습니다.")
 
 
+def _preflight_scope_samples(project, root, config, split, scope, model):
+    from .tts import CLONE_ATTEMPTS, _exhausted_slots, call_generation_location, generate
+
+    references = scope["references"]
+    output, _ = call_generation_location(root, split, scope)
+    rows, passing = _passing_slots(root, config, split, references, output, scope)
+    counts = Counter(row["slot"] for row in rows)
+    if any(slot not in passing and counts[slot] < CLONE_ATTEMPTS for slot in range(len(references))):
+        generate(project, split, len(references), True, "clone", model=model, staged_scope=scope)
+        rows, passing = _passing_slots(root, config, split, references, output, scope)
+    failures = _exhausted_slots(rows, references, len(references), passing, CLONE_ATTEMPTS, split)
+    return len(rows), passing, failures
+
+
 @project_storage
-def prepare_prepost_pilot(project, settings, *, prior_rounds=()):
+def prepare_prepost_pilot(project, settings, *, prior_rounds=(), quality_retry_rounds=0):
     """Prepare only pending voices; each reviewed round is immutable evidence."""
-    from .tts import _load_model, call_generation_location, generate
+    from .tts import _load_model
     from .tts_runtime import CloneRuntime
 
+    if type(quality_retry_rounds) is not int or not 0 <= quality_retry_rounds <= MAX_PREFLIGHT_QUALITY_RETRY_ROUNDS:
+        raise ValueError("호출어 샘플 재시도 횟수가 올바르지 않습니다.")
     root, config = load_project(project)
     directory = root / "data/call_pronunciation"
     with writer_lock(directory):
@@ -346,6 +376,7 @@ def prepare_prepost_pilot(project, settings, *, prior_rounds=()):
         model = CloneRuntime(config["tts"]["clone_model"], config["tts"], root, "auto", config["training"]["cpu_threads"])
         selected, split_counts, attempts, exhausted = [], {}, 0, []
         previous_split_complete = True
+        next_retry = 1
         for split, group in REVIEW_GROUPS.items():
             voice_numbers = {row["voice_family_id"]: index for index, row in enumerate(banks[split], 1)}
             references = [row for row in banks[split] if row["voice_family_id"] in pending]
@@ -356,18 +387,40 @@ def prepare_prepost_pilot(project, settings, *, prior_rounds=()):
                 continue
             scope = {"kind": "preflight", "revision": round_key, "references": references,
                      "excluded_sha256": sorted(heard_hashes)}
-            output, _ = call_generation_location(root, split, scope)
-            summary = generate(project, split, len(references), True, "clone", model=model, staged_scope=scope)
-            attempts += summary["attempts"]
-            exhausted.extend(summary.get("exhausted_slots", []))
-            _, passing = _passing_slots(root, config, split, references, output, scope)
+            passing, failures, original_failures = {}, [], {}
+            while True:
+                count, scope_passing, failures = _preflight_scope_samples(project, root, config, split, scope, model)
+                attempts += count
+                for row in scope_passing.values():
+                    family = row["voice_family_id"]
+                    if family in passing or row["sha256"] in heard_hashes:
+                        raise ValueError("호출어 샘플 생성 차수 사이에서 동일한 음원이 발견됐습니다.")
+                    passing[family] = row
+                    heard_hashes.add(row["sha256"])
+                missing = [reference for reference in references if reference["voice_family_id"] not in passing]
+                if "quality_retry_round" not in scope:
+                    original_failures = {failure["voice_family_id"]: failure for failure in failures}
+                if not missing or len(failures) != len(missing) or next_retry > quality_retry_rounds:
+                    break
+                # Each user-authorized round serves the first incomplete bank.
+                # Reconstruction from the earlier journals gives the same scope
+                # if a worker was interrupted during one of these attempts.
+                scope = {**scope, "quality_retry_round": next_retry, "references": missing,
+                         "excluded_sha256": sorted(heard_hashes)}
+                next_retry += 1
+            for failure in failures:
+                original = original_failures[failure["voice_family_id"]]
+                exhausted.append({**failure, "slot": original["slot"], "label": original["label"]})
             split_counts[split] = {"target": len(references), "technical_pass": len(passing)}
             previous_split_complete = len(passing) == len(references)
-            for slot, row in sorted(passing.items()):
+            for reference in references:
+                family = reference["voice_family_id"]
+                if family not in passing:
+                    continue
+                row = passing[family]
                 selected.append({**row, "review_group": group, "pronunciation_policy": PREPOST_PILOT_POLICY,
-                                 "voice_number": voice_numbers[row["voice_family_id"]],
-                                 "preflight_round": round_index, "preflight_reference": references[slot]})
-                heard_hashes.add(row["sha256"])
+                                 "voice_number": voice_numbers[family],
+                                 "preflight_round": round_index, "preflight_reference": reference})
         result = {"attempts": attempts, "target": len(pending), "technical_pass": len(selected), "pilot": True,
                   "independent_STT_runs": 0, "full_target_reached": len(selected) == len(pending),
                   "split_counts": split_counts, "exhausted_slots": exhausted}

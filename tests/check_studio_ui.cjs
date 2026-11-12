@@ -2042,6 +2042,19 @@ function pendingHardStorageRecipe() {
       await b.submit("input-form"); assert.equal(b.calls.some(call => call.url.endsWith("/input")), false);
     }
   });
+  await test("retryable pilot failures explain the cause and direct users to the retry action", async () => {
+    const detail = "학습용 · 여성 · 청년 · 1번 (6회): 음성 길이 기준 이탈, 호출어 음성 구간 초과";
+    const project = { id: "bora", wakeword: "보라야", status: "waiting_input", stage: "pilot",
+      input: { kind: "generation_policy", retry_action: "retry_generation", description: detail } };
+    const b = browser({ initialState: { projects: [project] } }); await flush();
+    assert.equal(b.elements.get("input-title").textContent, "호출어 샘플 생성 실패");
+    assert.equal(b.elements.get("input-form").hidden, true);
+    const description = b.elements.get("input-description").textContent;
+    assert.ok(description.startsWith(detail + "\n\n"));
+    assert.match(description, /‘실패한 샘플 다시 생성’을 누르세요/);
+    assert.match(description, /통과한 음성은 재사용하고, 실패한 샘플과 아직 생성하지 못한 샘플만 만듭니다/);
+    assert.ok(!b.calls.some(call => call.url.endsWith("/retry_generation")));
+  });
   await test("additional raw sources are submitted for preparation; existing receipt connection stays optional", async () => {
     const project = { id: "bora", wakeword: "보라야", status: "waiting_input", input: { kind: "material_admissions", remaining_hours: 12 } };
     const b = browser({ initialState: { projects: [project] } }); await flush();
