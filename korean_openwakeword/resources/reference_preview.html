@@ -105,10 +105,8 @@ html.reference-candidates .listen-player{gap:8px}
 .candidate-actions button:disabled{opacity:1;color:#a5b0bd}
 .candidate-deck{display:grid;grid-template-columns:42px minmax(0,1fr) 42px;gap:8px;align-items:stretch}
 .candidate-deck[hidden]{display:none}
-.candidate-panel[data-generating="true"]:not([hidden]){display:flex;flex-direction:column;justify-content:center;min-height:var(--candidate-generation-height,232px)}
-.candidate-panel[data-generating="true"] .candidate-empty{padding:0}
-.candidate-panel[data-generating="true"] .candidate-empty,.candidate-deck:not([hidden]){animation:candidate-view-in .16s ease-out}
-@keyframes candidate-view-in{from{opacity:0}to{opacity:1}}
+.candidate-panel[aria-busy="true"]:not([hidden]){display:flex;flex-direction:column;justify-content:center;min-height:var(--candidate-work-height,232px)}
+.candidate-panel[aria-busy="true"] .candidate-empty{padding:0}
 .candidate-add:not([hidden]){display:flex;align-items:stretch;justify-content:stretch}
 .candidate-add :is(#candidate-more,#candidate-previous){display:flex;align-items:center;justify-content:center;width:100%;height:100%;min-height:44px;padding:0;border:1px dashed #536171;border-radius:12px;background:transparent;color:#c9d3df}
 .candidate-add :is(#candidate-more,#candidate-previous):hover:not(:disabled){background:#2b3542;border-color:#9aacc2}
@@ -135,7 +133,7 @@ html.reference-candidates .reference-group-nav{justify-content:space-between;fle
 html.reference-candidates .reference-group-nav button{height:34px;min-height:34px;padding:4px 12px;font-size:14px}
 html.reference-candidates .reference-group-head p{white-space:nowrap}
 @keyframes candidate-spin{to{transform:rotate(1turn)}}
-@media(prefers-reduced-motion:reduce){.candidate-job-icon[data-state="running"]::before{animation:none}.candidate-progress span{transition:none}.candidate-progress[data-indeterminate="true"] span{animation:none}.candidate-panel[data-generating="true"] .candidate-empty,.candidate-deck:not([hidden]){animation:none}}
+@media(prefers-reduced-motion:reduce){.candidate-job-icon[data-state="running"]::before{animation:none}.candidate-progress span{transition:none}.candidate-progress[data-indeterminate="true"] span{animation:none}}
 @media(max-width:400px){.candidate-row{gap:7px;padding-inline:7px}.candidate-actions button{padding-inline:10px}.candidate-number{font-size:13px}}
 @media(max-width:679px){.candidate-list{grid-template-columns:repeat(2,minmax(0,1fr))}.candidate-card{padding:9px 10px}.candidate-card .candidate-settings{gap:4px}}
 @media(max-width:400px){.candidate-list{grid-template-columns:minmax(0,1fr)}.candidate-card{grid-template-columns:34px minmax(0,1fr);padding:10px}.candidate-card .candidate-settings{grid-template-columns:repeat(2,minmax(0,1fr));gap:5px 12px}.candidate-card .candidate-number{font-size:14px}}
@@ -228,8 +226,7 @@ let regeneratedGroup='';
 let voiceButtons=[];
 let candidateMode=false, candidateRows=[], acceptedRows=[], candidateViews=[];
 let candidatePlaybackIntent=null;
-let candidateStarting=false;
-let candidateGenerationView=false;
+let candidateSaveAction=null;
 const candidateSelectionIntents=new Map();
 let candidateSelectionWriter=null,candidateSelectionBlocked=false,candidateSelectionEpoch=0,candidateSelectionTransport=null;
 let candidateBatches=[],candidateViewBatch=null,candidateCurrentBatch=null,candidateLoadVersion=0;
@@ -325,7 +322,7 @@ window.addEventListener('message',event=>{
       if(Number.isSafeInteger(request)&&request>0)window.parent.postMessage?.({type:'koww:reference-approved',project,
         group:event.data.group,request,success:saved===true,complete:saved===true&&reportedComplete===true},location.origin);
     };
-    if(group&&event.data.group===group.key&&candidateReady){stop();void saveReview('approve',{group:group.key}).then(acknowledge);}
+    if(group&&event.data.group===group.key&&candidateReady)void saveReview('approve',{group:group.key}).then(acknowledge);
     else acknowledge(false);
   }else if(event.data?.type==='koww:voice-picker-ready'&&Number.isSafeInteger(event.data.request)&&event.data.request>0)voicePicker?.reveal(event.data.request);
   else if(event.data?.type==='koww:voice-picker-close')voicePicker?.close();
@@ -757,25 +754,28 @@ async function recoverCandidateSelection(){
   try{await reloadCandidateSelection(writer);}
   finally{finishCandidateSelection(writer);}
 }
-function syncCandidateGenerationView(creating){
-  if(creating&&!candidateGenerationView){
+function syncCandidateWorkView(working){
+  const busy=String(working);
+  if(candidatePanel.getAttribute('aria-busy')===busy)return;
+  if(working){
     const height=Math.ceil(candidatePanel.getBoundingClientRect?.().height||0);
-    candidatePanel.style.setProperty('--candidate-generation-height',`${height>0?height:232}px`);
+    candidatePanel.style.setProperty('--candidate-work-height',`${height>0?height:232}px`);
+  }else{
+    candidatePanel.style.setProperty('--candidate-work-height','');
   }
-  candidateGenerationView=creating;
-  candidatePanel.setAttribute('data-generating',String(creating));
-  candidateDeck.hidden=creating;candidateDeck.inert=creating;
-  candidateDeck.setAttribute('aria-hidden',String(creating));
-  // Reserve the real progress bar's space before the generation POST returns.
-  candidateProgressSlot.hidden=!creating;
-  if(!creating)candidatePanel.style.setProperty('--candidate-generation-height','');
+  candidatePanel.setAttribute('aria-busy',busy);
+  candidateDeck.hidden=working;candidateDeck.inert=working;
+  candidateDeck.setAttribute('aria-hidden',busy);
+  // Keep space for the bar when approval leads straight to generation.
+  candidateProgressSlot.hidden=!working;
 }
 function syncCandidates(forceReport=false){
   const group=groups[groupIndex];if(!group)return;
   const locked=candidateControlsLocked(), canEdit=editable&&!group.approved;
-  const creating=candidateStarting||regenerationRunning();
-  syncCandidateGenerationView(creating);
-  const preparing=regenerationRunning()&&job?.phase==='preparing';
+  const approving=candidateSaveAction==='approve', starting=candidateSaveAction==='more';
+  const running=regenerationRunning(), creating=starting||running, working=approving||creating;
+  syncCandidateWorkView(working);
+  const preparing=running&&job?.phase==='preparing';
   const projected=projectedCandidateSelection();
   const target=group.target, selected=projected.size, current=items[currentIndex];
   const split=group.split==='train'?'학습용':['validation','eval','evaluation','common'].includes(group.split)?'공통 평가용':'';
@@ -790,18 +790,20 @@ function syncCandidates(forceReport=false){
   candidateReady=!locked&&!candidateSelectionWriter&&canEdit&&selected===target;groupNext.disabled=!candidateReady;
   reviewStatus.hidden=true;groupNav.hidden=window.parent!==window;
   const history=candidateHistory();
-  candidatePrevious.hidden=creating;candidatePrevious.disabled=locked||!history.previous;
-  candidateMore.hidden=creating;candidateMore.disabled=locked||!candidateDeckAction('next',history,selected);
+  candidatePrevious.hidden=working;candidatePrevious.disabled=locked||!history.previous;
+  candidateMore.hidden=working;candidateMore.disabled=locked||!candidateDeckAction('next',history,selected);
   candidateMoreLabel.textContent=history.next?'›':'+';candidateMoreLabel.hidden=!history.next&&creating;
   candidateMore.setAttribute('aria-label',history.next?'다음 후보 5개':preparing?'목소리 분류 준비 중':creating?`후보 생성 중 · ${Math.min(5,Number(job?.completed)||0)} / ${Number(job?.total)||5}`:'기준 목소리 후보 더 뽑기');
   candidateMore.title=history.next?'다음 후보 5개':selected>=target?'필요한 목소리를 선택했습니다. 아래 다음 버튼을 누르세요.':'기준 목소리 후보 5개 더 생성';
-  candidateJobIcon.removeAttribute('data-state');
-  candidateJobIcon.hidden=!creating;
-  if(creating)candidateJobIcon.setAttribute('data-state','running');
-  else if(!history.next&&(candidateRows.length||group.approved))candidateJobIcon.setAttribute('data-state','complete');
+  candidateJobIcon.hidden=!working;
+  const iconState=working?'running':!history.next&&(candidateRows.length||group.approved)?'complete':null;
+  if(candidateJobIcon.getAttribute('data-state')!==iconState){
+    if(iconState)candidateJobIcon.setAttribute('data-state',iconState);
+    else candidateJobIcon.removeAttribute('data-state');
+  }
   // Show the bar in the same render as the status, before the POST resolves.
   // Waiting/preparation has no measured count; never reuse a previous job's value.
-  const progressKnown=!candidateStarting&&regenerationRunning()&&!preparing&&
+  const progressKnown=!starting&&running&&!preparing&&
     Number.isSafeInteger(job?.completed)&&Number.isSafeInteger(job?.total)&&
     job.completed>=0&&job.total>0&&job.completed<=job.total;
   const completed=progressKnown?job.completed:0, maximum=progressKnown?job.total:5;
@@ -813,13 +815,14 @@ function syncCandidates(forceReport=false){
     candidateProgress.removeAttribute('aria-valuetext');
   }else{
     candidateProgress.removeAttribute('aria-valuenow');
-    if(creating)candidateProgress.setAttribute('aria-valuetext',preparing?'목소리 분류 준비 중':regenerationRunning()?'생성 진행 중':'생성 요청 처리 중');
+    if(creating)candidateProgress.setAttribute('aria-valuetext',preparing?'목소리 분류 준비 중':running?'생성 진행 중':'생성 요청 처리 중');
     else candidateProgress.removeAttribute('aria-valuetext');
   }
   candidateProgressFill.style.width=progressKnown?`${Math.min(100,100*completed/maximum)}%`:creating?'25%':'0%';
-  candidateEmpty.hidden=!creating&&Boolean(candidateRows.length);
-  candidateStatusLabel.textContent=creating?'추가 기준 목소리 후보를 생성하고 있습니다...':group.approved?'선택한 목소리를 확정했습니다.':job?.status==='failed'?'후보 생성을 다시 시도해 주세요.':'기준 목소리 후보를 생성해 주세요.';
-  candidatePanel.setAttribute('aria-busy',String(creating));
+  candidateEmpty.hidden=!working&&Boolean(candidateRows.length);
+  const statusText=approving?'선택한 기준 목소리를 확정하고 있습니다...':creating?'추가 기준 목소리 후보를 생성하고 있습니다...':
+    group.approved?'선택한 목소리를 확정했습니다.':job?.status==='failed'?'후보 생성을 다시 시도해 주세요.':'기준 목소리 후보를 생성해 주세요.';
+  if(candidateStatusLabel.textContent!==statusText)candidateStatusLabel.textContent=statusText;
   candidateRetryActions.hidden=!(candidatePollPaused||candidateSelectionBlocked);candidateStatusRetry.disabled=loading||saving||Boolean(candidateSelectionWriter);
   for(const view of candidateViews){
     const item=items.find(value=>value.id===view.id&&value.sha256===view.sha256);
@@ -882,7 +885,7 @@ function applyCandidates(payload){
   const combined=[...rows,...accepted.filter(item=>!rows.some(value=>value.id===item.id))];
   mountCandidateView();
   // Capture the current card area before a queued/running response clears it.
-  if(candidateStarting||['queued','running'].includes(payload.job?.status))syncCandidateGenerationView(true);
+  if(['queued','running'].includes(payload.job?.status))syncCandidateWorkView(true);
   const samePlayback=previousGroup===payload.groups[index].key&&previous&&combined.some(item=>item.id===previous.id&&item.sha256===previous.sha256&&item.audio===previous.audio);
   candidateMode=true;groups=payload.groups;groupIndex=index;editable=payload.editable;job=payload.job||null;
   candidatePollFailures=0;candidatePollPaused=false;
@@ -903,13 +906,16 @@ function applyCandidates(payload){
   }
   reportReferenceLayout('candidate_pool_v2');
   if(job?.status==='failed')errorMessage.textContent=job.message||'기준 목소리 후보를 생성하지 못했습니다. 다시 시도해 주세요.';
-  syncCandidates();scheduleReviewPoll();requestInitialCandidates();
+  if(!requestInitialCandidates())syncCandidates();
+  scheduleReviewPoll();
 }
 function requestInitialCandidates(){
   const group=groups[groupIndex];
   if(!candidateMode||!group||!editable||group.approved||candidateRows.length||acceptedRows.length>=group.target||
-    candidateControlsLocked()||candidateSelectionWriter||job?.status==='failed'||initialCandidateRequests.has(group.key))return;
-  initialCandidateRequests.add(group.key);saveReview('more',{group:group.key});
+    candidateControlsLocked()||candidateSelectionWriter||job?.status==='failed'||initialCandidateRequests.has(group.key))return false;
+  initialCandidateRequests.add(group.key);
+  void saveReview('more',{group:group.key});
+  return true;
 }
 function candidateHistory(){
   const index=candidateBatches.findIndex(batch=>batch.id===candidateViewBatch);
@@ -963,7 +969,7 @@ candidateStatusRetry.addEventListener('click',async()=>{
     if(!response.ok)throw Error(payload.error||'후보 생성 상태를 확인하지 못했습니다.');
     errorMessage.textContent='';applyReview(payload);
   }catch(error){candidatePollPaused=true;errorMessage.textContent=error.message;}
-  finally{loading=false;syncCandidates();requestInitialCandidates();}
+  finally{loading=false;if(!requestInitialCandidates())syncCandidates();}
 });
 const reviewQueueUrl='/reference-preview/queue?project='+encodeURIComponent(project);
 function scheduleReviewPoll(){
@@ -1006,9 +1012,10 @@ function recordCandidateHearing(item){
 }
 async function saveReview(action,fields,nextKey){
   if(saving||regenerationRunning()||candidateMode&&(candidateSelectionWriter||candidateSelectionBlocked))return false;
-  candidateStarting=candidateMode&&action==='more';
-  if(candidateStarting)errorMessage.textContent='';
-  saving=true;syncReview();
+  candidateSaveAction=candidateMode?action:null;
+  if(candidateSaveAction)errorMessage.textContent='';
+  saving=true;
+  if(candidateSaveAction==='approve')stop();else syncReview();
   if(candidateMode)candidateLoadVersion++;
   try{
     if(candidateMode&&candidateHearWrites.size)await Promise.all(candidateHearWrites.values());
@@ -1020,13 +1027,18 @@ async function saveReview(action,fields,nextKey){
     errorMessage.textContent='';applyReview(payload,nextKey);
     return true;
   }catch(error){stop();errorMessage.textContent=error.message;return false;}
-  finally{candidateStarting=false;saving=false;syncReview();requestInitialCandidates();}
+  finally{
+    candidateSaveAction=null;
+    saving=false;
+    // Start the next group's first batch before revealing any empty controls.
+    if(!requestInitialCandidates())syncReview();
+  }
 }
 groupBack.addEventListener('click',()=>{if(!groupBack.disabled)showGroup(groupIndex-1);});
 groupNext.addEventListener('click',()=>{
   if(candidateMode?!candidateReady:groupNext.disabled)return;
   const group=groups[groupIndex];
-  if(candidateMode){stop();return saveReview('approve',{group:group.key});}
+  if(candidateMode)return saveReview('approve',{group:group.key});
   if(!editable||group.approved){showGroup(groupIndex+1);return;}
   stop();return saveReview('approve',{group:group.key},groups[groupIndex+1]?.key);
 });
@@ -1057,7 +1069,11 @@ async function loadPage(start=0,play=false){
     received=true;
   }catch(error){errorMessage.textContent=error.message;initialError=error.message;}
   finally{
-    loading=false;if(groups.length)syncReview();else if(continuous)continuous.disabled=!items.length;updatePage();requestInitialCandidates();
+    loading=false;
+    if(!requestInitialCandidates()){
+      if(groups.length)syncReview();else if(continuous)continuous.disabled=!items.length;
+    }
+    updatePage();
     if(!previewReady){
       previewStartup.setAttribute('aria-busy','false');
       if(received){

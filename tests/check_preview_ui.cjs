@@ -739,6 +739,7 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
     assert.equal(f.writes().length,1,'old-group intents cannot write into a new category');
     assert.equal(f.ui.nodes.get('reference-group-count').textContent,'0 / 2 선택');assert.ok(f.cards().every(card=>!card.children[3].children[0].checked));
   }
+  let finishApproval,finishNextGeneration;
   const candidateRespond=async(url,options)=>{
     if(options){
       assert.equal(options.headers['X-Koww-Token'],'test-token');
@@ -750,15 +751,20 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
         else state.accepted.push({...row,selected:true});
         row.selected=state.accepted.some(item=>item.id===row.id);
       }
-      if(action.action==='more')state.job={status:'running',group:state.active_group,completed:0,total:5};
+      if(action.action==='more'){
+        if(state.active_group===categories[1].key)await new Promise(resolve=>{finishNextGeneration=resolve;});
+        state.job={status:'running',group:state.active_group,completed:0,total:5};
+      }
       if(action.action==='approve'){
         const group=state.groups.find(item=>item.key===state.active_group);assert.equal(state.accepted.length,group.target);
+        await new Promise(resolve=>{finishApproval=resolve;});
         group.approved=true;state.active_group=state.groups[state.groups.indexOf(group)+1].key;state.accepted=[];state.items=[];state.job=null;
       }
     }
     return {payload:state};
   };
-  const candidate=await screen('reference-preview',[],{config:candidateConfig,respond:candidateRespond});
+  const candidate=await screen('reference-preview',[],{config:candidateConfig,respond:candidateRespond,
+    candidateAreaHeight:nodes=>nodes.get('candidate-list').children.length?246:0});
   const rowList=candidate.nodes.get('candidate-list'),audioCandidate=candidate.nodes.get('audio');
   const candidateRequests=()=>candidate.calls.filter(call=>call.options).map(call=>JSON.parse(call.options.body));
   const headerVolume=candidate.nodes.get('candidate-volume'),candidateVolume=candidate.nodes.get('reference-volume'),candidateMute=candidate.document.getElementById('reference-mute');
@@ -858,15 +864,42 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
   ])sendApproval(invalid);
   await candidate.flush();assert.equal(candidateRequests().length,writesBeforeApproval,'only the exact parent, project and active group can approve');
   const approvedCandidateGroup=state.active_group;
+  const deckDuringApproval=candidate.nodes.get('candidate-deck'),panelDuringApproval=candidate.nodes.get('candidate-panel');
+  const deckVisibilityChanges=[];
+  let deckHidden=deckDuringApproval.hidden;
+  Object.defineProperty(deckDuringApproval,'hidden',{
+    get:()=>deckHidden,
+    set:hidden=>{if(hidden!==deckHidden)deckVisibilityChanges.push(hidden);deckHidden=hidden;},
+  });
   sendApproval({data:{type:'koww:reference-approve',project:'bora',group:approvedCandidateGroup,request:17}});await candidate.flush();
+  assert.equal(state.groups[0].approved,false,'the approval response is still pending');
+  assert.equal(deckDuringApproval.hidden,true,'approving replaces the old cards instead of dimming their controls');
+  assert.equal(deckDuringApproval.inert,true,'the hidden controls cannot accept keyboard input during approval');
+  assert.equal(candidate.nodes.get('candidate-empty').hidden,false,'the approval shows a status while the server saves');
+  assert.equal(candidate.nodes.get('candidate-status-label').textContent,'선택한 기준 목소리를 확정하고 있습니다...');
+  assert.equal(candidate.nodes.get('candidate-job-icon').attributes['data-state'],'running');
+  assert.equal(candidate.nodes.get('candidate-progress-slot').hidden,false,'approval reserves the progress row for a stable handoff');
+  assert.equal(candidate.nodes.get('candidate-progress').hidden,true,'approval does not show invented progress');
+  assert.equal(panelDuringApproval.style.getPropertyValue('--candidate-work-height'),'246px');
+  finishApproval();await candidate.flush();
   assert.equal(state.groups[0].approved,true);assert.equal(state.active_group,categories[1].key);
   assert.equal(candidate.nodes.get('reference-group-name').textContent,'학습용 · 남성 청소년');
   assert.equal(candidateRequests().at(-1).action,'more','the newly confirmed next category starts its first batch once');
   assert.equal(candidateRequests().filter(action=>action.action==='approve').length,1);
+  assertGeneratingStatus(candidate);
+  assert.deepEqual(deckVisibilityChanges,[true],'the empty category never shows its deck between approval and generation');
+  assert.equal(panelDuringApproval.style.getPropertyValue('--candidate-work-height'),'246px','the handoff retains the old deck height');
   assert.deepEqual(candidate.parentMessages.filter(({message})=>message.type==='koww:reference-approved').at(-1).message,
     {type:'koww:reference-approved',project:'bora',group:approvedCandidateGroup,request:17,success:true,complete:false},
     'approval acknowledgement is bound to its original group and request after the next group is rendered');
   assert.equal(groupReports().at(-1).group,categories[1].key);assert.equal(groupReports().at(-1).ready,false);
+  finishNextGeneration();await candidate.flush();
+  assert.deepEqual(deckVisibilityChanges,[true],'the deck stays hidden while the first batch is running');
+  state.items=candidates(state.active_group);state.job=null;await candidate.poll();
+  assert.deepEqual(deckVisibilityChanges,[true,false],'the deck returns once with the next group’s actual cards');
+  assert.equal(deckDuringApproval.inert,false);
+  assert.equal(rowList.children.length,5);
+  assert.equal(candidate.nodes.get('candidate-empty').hidden,true);
   const emptyState={...structuredClone(state),items:[],accepted:[],job:null};
   let initialMore=0;
   const initial=await screen('reference-preview',[],{config:candidateConfig,respond:async(url,options)=>{
@@ -991,10 +1024,13 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
   approvalState.items.slice(0,2).forEach(item=>{item.heard=true;item.selected=true;});approvalState.accepted=approvalState.items.slice(0,2);
   const failedApproval=await screen('reference-preview',[],{config:candidateConfig,respond:async(url,options)=>options?
     {ok:false,payload:{error:'검수 저장 실패'}}:{payload:approvalState}});
+  const cardsBeforeFailure=[...failedApproval.nodes.get('candidate-list').children];
   failedApproval.messages.message({origin:'http://127.0.0.1:8793',source:failedApproval.parent,
     data:{type:'koww:reference-approve',project:'bora',group:approvalState.active_group,request:19}});await failedApproval.flush();
   const failureReports=failedApproval.parentMessages.filter(({message})=>message.type==='koww:reference-group').map(({message})=>message.ready);
   assert.deepEqual(failureReports.slice(-2),[false,true],'a rejected approval restores explicit next-button retry instead of leaving it pending');
+  assert.equal(failedApproval.nodes.get('candidate-deck').hidden,false);
+  assert.deepEqual(failedApproval.nodes.get('candidate-list').children,cardsBeforeFailure,'a rejected approval restores the same selected cards');
   assert.equal(failedApproval.nodes.get('error').textContent,'검수 저장 실패');
   assert.deepEqual(failedApproval.parentMessages.filter(({message})=>message.type==='koww:reference-approved').at(-1).message,
     {type:'koww:reference-approved',project:'bora',group:approvalState.active_group,request:19,success:false,complete:false});
@@ -1109,7 +1145,7 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
     failedMore.nodes.get('candidate-more').handlers.click();assert.equal(previous.hidden,true);assert.equal(previous.disabled,true);
     assert.equal(failedMore.nodes.get('candidate-deck').hidden,true,'pending POST atomically replaces cards instead of adding a status row below them');
     assert.equal(failedMore.nodes.get('candidate-deck').inert,true);assert.equal(failedMore.nodes.get('candidate-deck').attributes['aria-hidden'],'true');
-    assert.equal(failedMore.nodes.get('candidate-panel').style.getPropertyValue('--candidate-generation-height'),'246px');
+    assert.equal(failedMore.nodes.get('candidate-panel').style.getPropertyValue('--candidate-work-height'),'246px');
     assert.equal(failedMore.nodes.get('candidate-progress-slot').hidden,false,'the progress row is reserved synchronously before the More request returns');
     assert.equal(failedMore.nodes.get('candidate-progress').hidden,false,'the gauge is visible before the delayed POST has returned');
     assert.equal(failedMore.nodes.get('candidate-progress').attributes['data-indeterminate'],'true');
@@ -1125,7 +1161,7 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
     assert.equal(failedMore.nodes.get('candidate-progress').hidden,true);
     assert.equal(failedMore.nodes.get('candidate-deck').hidden,false);assert.equal(failedMore.nodes.get('candidate-deck').inert,false);
     assert.deepEqual(failedMore.nodes.get('candidate-list').children,originalCards,'a rejected POST restores the original card instances and their selection state');
-    assert.equal(failedMore.nodes.get('candidate-panel').style.getPropertyValue('--candidate-generation-height'),'');
+    assert.equal(failedMore.nodes.get('candidate-panel').style.getPropertyValue('--candidate-work-height'),'');
   }
   {
     const atomic=structuredClone(initialCandidateState);atomic.items[0].heard=true;atomic.accepted=[{...atomic.items[0],selected:true}];
@@ -1135,8 +1171,8 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
     const atomicScreen=await screen('reference-preview',[],{config:candidateConfig,
       candidateAreaHeight:nodes=>nodes.get('candidate-list').children.length?246:0,
       workspaceHeight:nodes=>{
-        const panel=nodes.get('candidate-panel'),generating=panel.attributes['data-generating']==='true';
-        const content=generating?parseFloat(panel.style.getPropertyValue('--candidate-generation-height'))||232:
+        const panel=nodes.get('candidate-panel'),busy=panel.attributes['aria-busy']==='true';
+        const content=busy?parseFloat(panel.style.getPropertyValue('--candidate-work-height'))||232:
           (nodes.get('candidate-list').children.length?246:0)+(nodes.get('candidate-empty').hidden?0:46);
         return 40+content;
       },respond:async(url,options)=>{
@@ -1154,39 +1190,40 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
     assert.equal(bar.getAttribute('aria-valuenow'),null);assert.equal(bar.attributes['aria-valuetext'],'생성 요청 처리 중');
     assert.equal(atomicScreen.nodes.get('candidate-progress-fill').style.width,'25%');
     await atomicScreen.flush();
-    assert.equal(deck.hidden,true);assert.equal(panel.attributes['data-generating'],'true');assertGeneratingStatus(atomicScreen);
+    assert.equal(deck.hidden,true);assert.equal(panel.attributes['aria-busy'],'true');assertGeneratingStatus(atomicScreen);
     assert.equal(slot.hidden,false);assert.equal(bar.hidden,false,'pending POST shows the same gauge while its measured progress is unknown');
     assert.equal(atomicScreen.nodes.get('candidate-list').children.length,5,'pending POST keeps existing cards intact for failure recovery');
     assert.equal(atomicScreen.nodes.get('candidate-list').children[0].children[3].children[0].checked,true);
-    assert.equal(panel.style.getPropertyValue('--candidate-generation-height'),'246px');
+    assert.equal(panel.style.getPropertyValue('--candidate-work-height'),'246px');
     finishPost();await atomicScreen.flush();
     assert.equal(deck.hidden,true);assert.equal(atomicScreen.nodes.get('candidate-list').children.length,0);
     assert.equal(slot.hidden,false);assert.equal(bar.hidden,false,'queued progress appears inside the row already reserved by the pending POST');
     assert.equal(bar.attributes['data-indeterminate'],'false');assert.equal(bar.getAttribute('aria-valuenow'),'0');
     assert.equal(bar.getAttribute('aria-valuetext'),null);assert.equal(atomicScreen.nodes.get('candidate-progress-fill').style.width,'0%');
-    assert.equal(panel.style.getPropertyValue('--candidate-generation-height'),'246px','queued empty state retains the same card-area height');
+    assert.equal(panel.style.getPropertyValue('--candidate-work-height'),'246px','queued empty state retains the same card-area height');
     phase='preparing';await atomicScreen.poll();await atomicScreen.flush();
     assert.equal(slot.hidden,false);assert.equal(bar.hidden,false,'a metadata-preparation phase keeps the visible gauge while withholding candidate percentages');
     assert.equal(bar.attributes['data-indeterminate'],'true');assert.equal(bar.getAttribute('aria-valuenow'),null);
     assert.equal(bar.attributes['aria-valuetext'],'목소리 분류 준비 중');assert.equal(atomicScreen.nodes.get('candidate-progress-fill').style.width,'25%');
-    assert.equal(panel.style.getPropertyValue('--candidate-generation-height'),'246px');
+    assert.equal(panel.style.getPropertyValue('--candidate-work-height'),'246px');
     phase='running';await atomicScreen.poll();await atomicScreen.flush();
     assert.equal(slot.hidden,false);assert.equal(bar.hidden,false,'actual generation progress reuses the same row again');
     assert.equal(bar.attributes['data-indeterminate'],'false');assert.equal(bar.getAttribute('aria-valuetext'),null);
     assert.equal(atomicScreen.nodes.get('candidate-progress-fill').style.width,'40%');
     assert.equal(deck.hidden,true);assert.equal(atomicScreen.nodes.get('candidate-progress').attributes['aria-valuenow'],'2');
-    assert.equal(panel.style.getPropertyValue('--candidate-generation-height'),'246px');
+    assert.equal(panel.style.getPropertyValue('--candidate-work-height'),'246px');
     assert.ok(atomicScreen.heightMessages.every(entry=>entry.message.height===286),'pending, queued and running states never report a transient cards-plus-status height');
     phase='done';await atomicScreen.poll();await atomicScreen.flush();
-    assert.equal(deck.hidden,false);assert.equal(panel.attributes['data-generating'],'false');
+    assert.equal(deck.hidden,false);assert.equal(panel.attributes['aria-busy'],'false');
     assert.equal(slot.hidden,true);assert.equal(bar.hidden,true,'completion removes the generation-only row');
     assert.equal(atomicScreen.nodes.get('candidate-empty').hidden,true);assert.equal(atomicScreen.nodes.get('candidate-list').children.length,5);
-    assert.equal(panel.style.getPropertyValue('--candidate-generation-height'),'');
+    assert.equal(panel.style.getPropertyValue('--candidate-work-height'),'');
     assert.equal(atomicScreen.nodes.get('reference-group-count').textContent,'1 / 2 선택','generation never changes the accepted quota');
     assert.ok(atomicScreen.heightMessages.every(entry=>entry.message.height===286));
     assert.equal(atomicScreen.calls.filter(call=>call.options).length,1);assert.equal(atomicScreen.nodes.get('audio').playCalls,undefined);
   }
   assert.match(html,/\.candidate-deck\[hidden\]\{display:none\}/);
+  assert.doesNotMatch(html,/\.candidate-deck:not\(\[hidden\]\)[^{]*\{[^}]*animation\s*:\s*(?!none\b)[\w-]+/,'revealing the next deck does not fade its controls in from transparent');
   assert.match(html,/<div id="candidate-progress-slot" class="candidate-progress-slot" hidden>\s*<div id="candidate-progress"[^>]*hidden><span id="candidate-progress-fill"[^>]*><\/span><\/div>\s*<\/div>/,'the optional progress bar lives inside one initially hidden reservation row');
   const progressSlotCss=html.match(/\.candidate-progress-slot\{([^}]*)\}/)?.[1];
   assert.ok(progressSlotCss);assert.match(progressSlotCss,/height:9px/);assert.match(progressSlotCss,/padding-top:6px/);assert.match(progressSlotCss,/flex:none/);
@@ -1204,7 +1241,7 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
     assert.equal(bar.getAttribute('aria-valuenow'),null);assert.equal(unknown.nodes.get('candidate-progress-fill').style.width,'25%');
     assert.ok(bar.getAttribute('aria-valuetext'));assert.equal(unknown.calls.filter(call=>call.options).length,0,'showing an existing unmeasured job never starts another generation');
   }
-  assert.match(html,/\.candidate-panel\[data-generating="true"\]:not\(\[hidden\]\)\{[^}]*justify-content:center[^}]*min-height:var\(--candidate-generation-height,232px\)/,'the progress message replaces the deck inside its reserved height');
+  assert.match(html,/\.candidate-panel\[aria-busy="true"\]:not\(\[hidden\]\)\{[^}]*justify-content:center[^}]*min-height:var\(--candidate-work-height,232px\)/,'the progress message replaces the deck inside its reserved height');
   const queuedGeneration=await screen('reference-preview',[],{config:candidateConfig,payload:{...initialCandidateState,
     batches:[{id:'old',number:1,count:5},{id:'current',number:2,count:5}],current_batch:'current',view_batch:'current',
     job:{status:'queued',group:initialCandidateState.active_group,completed:0,total:5}}});
