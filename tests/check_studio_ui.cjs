@@ -1949,7 +1949,7 @@ function pendingHardStorageRecipe() {
     assert.equal(await b.storyBridge.action('resume'),true);assert.equal(await b.storyBridge.action('unknown-review-action'),false);
     assert.equal(b.calls.filter(call=>call.url.startsWith('/api/state?')).length,3);
   });
-  await test("a timed-out state poll keeps the last project and iframe while automatic polling recovers", async () => {
+  await test("a timed-out state poll quietly keeps the last project and iframe while polling recovers", async () => {
     const project = { id: "bora", wakeword: "보라야", status: "waiting_review", stage: "pilot", error: null,
       progress: { done: 2, total: 24, unit: "files" },
       review: { queue_id: "pilot1", url: "/review/?project=bora&queue=pilot1" } };
@@ -1959,12 +1959,7 @@ function pendingHardStorageRecipe() {
     const frame = b.elements.get("review-frame"), source = frame.getAttribute("src"), writes = frame.srcWrites;
     const aborted = new Error("The operation was aborted"); aborted.name = "AbortError";
     b.state.fetchError = aborted; await b.tick(); await b.tick();
-    assert.equal(b.elements.get("connection").hidden, false);
-    assert.equal(b.elements.get("connection").className, "notice");
-    assert.equal(b.elements.get("connection").getAttribute("role"), "status");
-    assert.match(b.elements.get("connection").textContent, /진행 상태 확인이 늦어지고 있습니다/);
-    assert.match(b.elements.get("connection").textContent, /마지막으로 받은 상태.*자동으로 다시 확인/);
-    assert.doesNotMatch(b.elements.get("connection").textContent, /서버에 연결하지 못했습니다|서버를 실행한 창/);
+    assert.equal(b.elements.get("connection").hidden, true);
     assert.equal(b.elements.get("project").hidden, false);
     assert.equal(b.elements.get("project-title").textContent, title);
     assert.equal(b.elements.get("progress-label").textContent, progress);
@@ -1978,7 +1973,7 @@ function pendingHardStorageRecipe() {
     assert.equal(frame.getAttribute("src"), source); assert.equal(frame.srcWrites, writes);
     assert.equal(b.calls.some(call => call.options.method === "POST"), false);
   });
-  await test("HTTP 503 progress-read failures preserve the last snapshot, gauge and iframe until polling recovers", async () => {
+  await test("HTTP 503 progress-read delays quietly preserve the last snapshot, gauge and iframe", async () => {
     const project = { id: "bora", wakeword: "보라야", status: "waiting_review", stage: "pilot", error: null,
       progress: { done: 2, total: 24, unit: "files" },
       review: { queue_id: "pilot1", url: "/review/?project=bora&queue=pilot1" } };
@@ -1989,10 +1984,7 @@ function pendingHardStorageRecipe() {
     b.state.httpError = { status: 503, body: { error: "진행 상태를 읽는 중입니다.", code: "progress_read_pending" } };
     for (let attempt = 0; attempt < 4; attempt++) {
       await b.tick();
-      assert.equal(b.elements.get("connection").hidden, false);
-      assert.equal(b.elements.get("connection").className, "notice");
-      assert.equal(b.elements.get("connection").getAttribute("role"), "status");
-      assert.equal(b.elements.get("connection").textContent, "진행 상태 파일을 읽지 못했습니다. 마지막으로 받은 상태를 표시하며 자동으로 다시 확인합니다.");
+      assert.equal(b.elements.get("connection").hidden, true);
       assert.equal(b.elements.get("project").hidden, false);
       assert.equal(b.elements.get("project-title").textContent, title);
       assert.equal(b.elements.get("progress-label").textContent, label);

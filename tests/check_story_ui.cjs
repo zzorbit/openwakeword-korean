@@ -1098,6 +1098,8 @@ async function main() {
     assert.match(textOf(row),/0 \/ 2개/);assert.equal(p.calls.includes("resume"),false);
   });
   await test("download rows retain one stable current-work caption through extraction and connection",()=>{
+    const css = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources/studio_story.css"), "utf8");
+    assert.match(css, /#story-download-activity\{text-align:center\}/);
     const project=checkpointProject("running","running");project.stage_id="data_download";
     project.download_files=[{id:"a",label:"파일",state:"waiting",unit:"bytes",done:0,total:100}];
     const p=page(project),caption=p.get("story-download-activity");

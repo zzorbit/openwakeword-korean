@@ -1335,6 +1335,7 @@
       if (revision !== selectionRevision) return;
       const progressPending = error.status === 503 && error.code === "progress_read_pending";
       const delayed = progressPending || error.code === "request_timeout";
+      if (!initial && !receivedState && delayed && selectedProject()) return;
       $("connection").hidden = false;
       $("connection").className = "notice" + (delayed ? "" : " error");
       $("connection").setAttribute("role", delayed ? "status" : "alert");
