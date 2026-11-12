@@ -23,7 +23,7 @@
     ["microphone", "마이크 시험", "마이크로 호출어를 말하고 모델의 반응을 확인해 주세요."],
   ];
   const mapping = {
-    frontend: "tools", data: "downloads", data_download: "downloads", data_review: "downloads", data_connect: "downloads",
+    frontend: "downloads", data: "downloads", data_download: "downloads", data_review: "downloads", data_connect: "downloads",
     references: "voices", references_review: "voices", pilot: "pronunciation", pilot_review: "pronunciation",
     generate: "positive-generation", positives: "positive-generation", positive_review: "pronunciation", hard_phrases: "phrases",
     hard_pilot: "hard-review", hard_generation: "hard-generation", hard_review: "hard-review", hard_connect: "hard-review",
@@ -76,7 +76,7 @@
     return mergedReferenceReview(project) ? screens.filter(id => id !== "voices") : screens;
   }
   function stageScreen(project, id) {
-    if (id === "frontend" && project?.dependency_setup_selected === true && project.input?.kind !== "dependency_setup") return "downloads";
+    if (id === "frontend" && project?.status === "waiting_input" && project.input?.kind === "dependency_setup") return "tools";
     if (mergedReferenceReview(project) && ["references", "references_review"].includes(id)) return "voice-listening";
     if (id === "hard_connect" && sampleFirstHardReview(project)) return "hard-generation";
     if (twoPhasePositiveReview(project)) {
@@ -105,6 +105,7 @@
       : downloadCheckpoint(project)?.state === "awaiting_next" ? "downloads" : stageScreen(project, stageId(project)) || "downloads";
   };
   function completedStep(project, step) {
+    if (step === "tools") return project?.stages?.some(record => record.id === "frontend" && done(record.status)) === true;
     if (step === "voices" && separateReferencePreparation(project)) return project.reference_preparation?.ready === true;
     if (step === "voice-listening" && !mergedReferenceReview(project)) step = "voices";
     const records = Array.isArray(project?.stages) ? project.stages.filter(record => stageScreen(project, record.id) === step) : [];
@@ -1091,8 +1092,8 @@
     function draftBackend(state) {
       return setupBackend || (state.dependencySetup?.recommended_backend === "cu128" ? "cu128" : "cpu");
     }
-    function selectingTools(project) {
-      return current === "tools" && project?.status === "waiting_input" && stageStep(project) === current
+    function waitingToolChoice(project) {
+      return project?.status === "waiting_input" && stageStep(project) === "tools"
         && project.input?.kind === "dependency_setup" && typeof bridge.input === "function";
     }
     function editingPhrases(project) {
@@ -1179,8 +1180,9 @@
         || ["entry", "scale", "materials", "microphone"].includes(current)
         || current === "voice-listening" && !(mergedReferenceReview(project) && ["references", "references_review"].includes(stageId(project)))) return "";
       if (running(project.status)) return "pause";
+      if (current === "downloads" && project.dependency_install_pending === true) return "start";
       if (["paused", "failed", "error", "interrupted"].includes(project.status)) return "resume";
-      if (current === "tools" || current === "downloads") return canStartDataPreparation(project) ? "start" : "";
+      if (current === "downloads") return canStartDataPreparation(project) ? "start" : "";
       if (["ready", "idle", "pending", "created"].includes(project.status)) return "start";
       return "";
     }
@@ -1211,9 +1213,19 @@
         }
         navigate(position + 1); return;
       }
-      if (selectingTools(project)) {
+      if (current === "tools" && waitingToolChoice(project)) {
+        navigate(screens.indexOf("scale"));
+        return;
+      }
+      if (current === "materials" && waitingToolChoice(project)) {
+        const session = beginTransition(false);
         following = true;
-        await bridge.input();
+        await runTransition(session, (async () => {
+          const saved = await bridge.input();
+          const latest = bridge.state().project;
+          if (saved !== true || latest?.id !== project.id || latest.dependency_install_pending !== true)
+            throw new Error("학습 도구 선택을 저장하지 못했습니다. 다시 진행해 주세요.");
+        })(), () => { current = "downloads"; historyPage = 0; historyKey = ""; });
         return;
       }
       if (reviewingReferenceGroup(project)) {
@@ -2023,12 +2035,12 @@
       shell.classList.toggle("preparing-results", preparingResults);
       const definition = definitions.find(([id]) => id === current);
       const [, title = "학습 상태", description = "현재 작업 상태를 확인해 주세요."] = definition || [];
-      const toolsSelection = selectingTools(project);
+      const needsToolChoice = waitingToolChoice(project);
       heading.textContent = title;
       hardGenerationSummary.hidden = true; hardGenerationSummary.textContent = "";
       const savedReviewDescription = historical && pronunciationSteps.has(current);
       subtitle.textContent = savedReviewDescription ? "대표 음원과 저장된 판정을 확인합니다." : description;
-      if (toolsSelection || current === "tools" && !project) subtitle.textContent = "음성 생성과 모델 학습에 사용할 연산 장치를 선택하세요.";
+      if (current === "tools" && (needsToolChoice || !project)) subtitle.textContent = "음성 생성과 모델 학습에 사용할 연산 장치를 선택하세요.";
       if (current === "voices" && separateReferencePreparation(project)) subtitle.textContent = "성별·연령별로 검수할 기준 목소리 후보를 미리 생성합니다.";
       if (current === "voice-listening" && !project?.reference_preview?.review_required) {
         subtitle.textContent = "생성 설정이 비슷한 목소리를 묶음별로 들어보세요.";
@@ -2069,11 +2081,10 @@
         if (reviewingPreflight(project)) nextDisabled = Boolean(state.busy || !preflightReady(project));
         if (current === "hard-review" && hardReviewRevealFailed) nextDisabled = true;
         if (editingPhrases(project)) nextDisabled = Boolean(state.busy || phraseInputPending);
-        if (toolsSelection) nextDisabled = Boolean(state.busy);
+        if (needsToolChoice && (current === "tools" || current === "materials")) nextDisabled = Boolean(state.busy);
         nextDisabled = nextDisabled || Boolean(referenceApprovalContext);
         if (next.disabled !== nextDisabled) next.disabled = nextDisabled;
-        const nextText = toolsSelection ? "설치하고 계속" : "다음";
-        if (next.textContent !== nextText) next.textContent = nextText;
+        if (next.textContent !== "다음") next.textContent = "다음";
         if (next.title) next.title = "";
       }
       const action = operationAction(project);
@@ -2086,17 +2097,17 @@
         : action === "prepare_start" ? "생성 시작"
         : ["load_review", "load_hard_review"].includes(action) ? "다시 열기"
         : startsToolsAndDownloads ? "설치·다운로드 시작"
-        : current === "tools" ? "학습 도구 확인 시작" : current === "downloads" ? "다운로드 시작" : "시작";
+        : current === "downloads" ? "다운로드 시작" : "시작";
       if (operation.textContent !== operationText) operation.textContent = operationText;
       const operationTitle = action === "pause" ? "현재 단계가 끝난 뒤 멈춥니다." : action === "prepare_pause" ? "진행 중인 후보 생성 작업을 일시정지합니다." : "";
       if (operation.title !== operationTitle) operation.title = operationTitle;
       footer.classList.toggle("has-operation", !operation.hidden);
-      footer.classList.toggle("has-tool-choice", toolsSelection);
       footer.classList.toggle("has-tool-start", startsToolsAndDownloads);
       migrationNote.hidden = !project?.migration || project.process_alive === true;
       // Hidden panels stay connected; polling never rebuilds their inputs or
       // embedded documents, and never resets a review's listening position.
-      const pickerBackend = project ? project.dependency_backend : draftBackend(state);
+      const pickerBackend = needsToolChoice ? ($("dependency-cu128").checked ? "cu128" : "cpu")
+        : project ? project.dependency_backend : draftBackend(state);
       const showToolPicker = current === "tools" && !liveTools && toolInputs.has(pickerBackend);
       const wanted = showToolPicker ? toolPicker : current === "entry" ? (project ? savedEntry : entry) : current === "scale" ? (project ? savedScale : scale)
         : current === "materials" ? materials : current === "voice-listening" ? voiceListening : live;
@@ -2210,8 +2221,10 @@
         locationRetry.hidden = !error;
         const recipe = state.recipes.find(recipe => recipe.id === (project?.preset || state.selectedPreset));
         const values = project ? { ...recipe, ...project.settings, evaluation_policy: project.evaluation_policy || recipe?.evaluation_policy } : recipe;
-        const toolPackages = project?.dependency_packages ?? state.dependencySetup?.packages?.[pickerBackend];
-        const evaluationPackages = project?.evaluation_runtime_packages ?? state.dependencySetup?.evaluation_runtime_packages;
+        const toolPlan = project?.dependency_setup ?? state.dependencySetup;
+        const toolPackages = needsToolChoice ? toolPlan?.packages?.[pickerBackend]
+          : project?.dependency_packages ?? toolPlan?.packages?.[pickerBackend];
+        const evaluationPackages = project?.evaluation_runtime_packages ?? toolPlan?.evaluation_runtime_packages;
         const fingerprint = JSON.stringify([values, pickerBackend, toolPackages, evaluationPackages,
           !project ? [$("adv-originals").value, $("adv-generic").value, $("adv-korean").value] : null]);
         if (fingerprint !== materialKey) {

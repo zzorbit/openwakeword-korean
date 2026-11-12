@@ -142,6 +142,12 @@ def _dependency_package_requirements():
     return packages, evaluation_runtime
 
 
+def _dependency_setup_options(recommended_backend):
+    packages, evaluation_runtime = _dependency_package_requirements()
+    return {"recommended_backend": "cu128" if recommended_backend == "cu128" else "cpu",
+            "packages": packages, "evaluation_runtime_packages": evaluation_runtime}
+
+
 def _elapsed(start):
     try:
         return max(0, time.time() - datetime.fromisoformat(start).timestamp())
@@ -893,10 +899,8 @@ class StudioManager:
                                     policy=settings["voice_design_policy"])
             presets.append({**settings, **recipe, "id": key, "label": label,
                             "reference_design": self._voice_design(bank, settings)})
-        packages, evaluation_runtime = _dependency_package_requirements()
         return {"presets": presets, "default_directory": str(self.workspace / "models"),
-                "dependency_setup": {"recommended_backend": _recommended_dependency_backend(),
-                                     "packages": packages, "evaluation_runtime_packages": evaluation_runtime},
+                "dependency_setup": _dependency_setup_options(_recommended_dependency_backend()),
                 "storage_note": "호출어별 학습 자료와 결과를 models 폴더에 자동으로 저장합니다. 공통 자료와 캐시는 작업 폴더 안에서 공유합니다."}
 
     def _model_request(self, payload):
@@ -1902,6 +1906,22 @@ class StudioManager:
             state = self._load(project_id)
             if state["status"] != "waiting_input":
                 raise ValueError("현재 입력을 기다리는 단계가 아닙니다.")
+            defer_dependency_install = payload.get("defer_dependency_install", False)
+            if type(defer_dependency_install) is not bool:
+                raise ValueError("학습 도구 설치 연기 설정은 참 또는 거짓으로 지정하세요.")
+            if defer_dependency_install:
+                stage = state["plan"][state["index"]]["id"]
+                result = state["results"].get(stage, {})
+                input_kind = (result.get("input") or {}).get("kind", result.get("input_kind"))
+                backend = payload.get("dependency_backend")
+                if (stage != "frontend" or input_kind != "dependency_setup" or backend not in ("cpu", "cu128")
+                        or set(payload) - {"dependency_backend", "defer_dependency_install"}):
+                    raise ValueError("학습 도구를 선택하는 단계에서만 설치를 미룰 수 있습니다.")
+                state["inputs"]["dependency_backend"] = backend
+                state.update(status="paused", input_submitted=True, auto_continue=False,
+                             dependency_setup_selected=True, next_action="설치·다운로드 시작을 누르세요.")
+                self._save(state)
+                return self.describe(state)
             if "phrases" in payload:
                 phrases = payload["phrases"]
                 if not isinstance(phrases, list) or not phrases or any(not isinstance(p, str) for p in phrases):
@@ -4127,6 +4147,8 @@ class StudioManager:
         dependency_backend = state.get("inputs", {}).get("dependency_backend")
         view["dependency_backend"] = dependency_backend
         view["dependency_setup_selected"] = state.get("dependency_setup_selected") is True
+        view["dependency_install_pending"] = (view["dependency_setup_selected"] and stage["id"] == "frontend"
+                                              and state["status"] == "paused" and state.get("input_submitted") is True)
         if dependency_backend in ("cpu", "cu128"):
             packages, evaluation_runtime = _dependency_package_requirements()
             view["dependency_packages"] = packages[dependency_backend]
@@ -4398,7 +4420,12 @@ class StudioManager:
             view["input"] = result.get("input", {"kind": result.get("input_kind", "diagnostic"),
                                                    "description": result.get("message", "자료 준비가 필요합니다."),
                                                    "suggestions": result.get("suggestions", [])})
-            if (view.get("input") or {}).get("kind") == "hard_phrases":
+            input_kind = (view.get("input") or {}).get("kind")
+            if input_kind == "dependency_setup":
+                recommended = view["input"].get("recommended_backend", result.get("recommended_backend"))
+                view["dependency_setup"] = _dependency_setup_options(recommended)
+                view["input"] = {**view["input"], "recommended_backend": view["dependency_setup"]["recommended_backend"]}
+            if input_kind == "hard_phrases":
                 per_phrase = state["settings"].get("hard_samples_per_phrase")
                 view["next_action"] = "유사어 문구를 입력하고 저장하세요."
                 view["input"] = {**view["input"], "title": "유사어 문구 선택",

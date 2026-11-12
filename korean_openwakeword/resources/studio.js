@@ -961,7 +961,7 @@
     $("hard-phrase-editor").hidden = !hard;
     $("dependency-backend").hidden = !dependencies;
     if (input.kind !== "material_admissions") {
-      const submitText = dependencies ? "설치하고 계속" : "저장하고 이어서 진행";
+      const submitText = dependencies ? "선택 저장" : "저장하고 이어서 진행";
       if ($("input-submit").textContent !== submitText) $("input-submit").textContent = submitText;
     }
     $("input-hint").textContent = dependencies ? "" : input.hint || (hard ? "확인한 후보로 소수의 검수용 음성을 먼저 만듭니다." : "직접 준비한 자료의 승인 기록이 필요합니다. 원본 음원 경로만 입력하면 승인된 것으로 처리하지 않습니다.");
@@ -1393,7 +1393,8 @@
       if (hard) hardPhraseFields[0]?.input.focus();
       return false;
     }
-    let body = dependencies ? { dependency_backend: $("dependency-cu128").checked ? "cu128" : "cpu" } : hard ? { phrases: values } : { admissions: values };
+    let body = dependencies ? { dependency_backend: $("dependency-cu128").checked ? "cu128" : "cpu", defer_dependency_install: true }
+      : hard ? { phrases: values } : { admissions: values };
     if (sourceMode) {
       const source = { directory: $("source-directory").value.trim(), dataset: $("source-dataset").value, pool: $("source-pool").value };
       if (!source.directory) { message("음원 폴더를 입력하세요.", true); return false; }

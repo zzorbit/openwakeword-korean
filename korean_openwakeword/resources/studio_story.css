@@ -53,7 +53,6 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-actions.has-operation{width:304px;max-width:calc(100vw - 48px)}
 .story-actions.has-tool-start{width:368px}
 .story-shell .story-actions>.story-button{flex:0 1 96px;min-width:0;white-space:nowrap}
-.story-shell .story-actions.has-tool-choice>.story-button:last-child{flex-basis:144px}
 .story-shell .story-actions.has-tool-start>.story-operation{flex:0 0 160px}
 .story-shell .story-button{display:flex;align-items:center;justify-content:center;flex:none;width:96px;height:44px;min-height:44px;padding:0 4px;margin:0;border:0;border-radius:8px;background:#292d33;color:#e9edf2;box-shadow:none;font:500 16px/22px system-ui,"Malgun Gothic",sans-serif;cursor:pointer;transition:background-color .2s ease}
 .story-shell .story-button:hover:not(:disabled){background:#363d47;color:#e9edf2}

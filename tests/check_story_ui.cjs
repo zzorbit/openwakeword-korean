@@ -201,8 +201,8 @@ async function main() {
   });
   await test("backend current stage determines unlocked frontier; pending later stages unlock nothing", () => {
     const p = page();
-    assert.equal(p.api.frontier({ status: "running", stage_id: "frontend" }), 3);
-    assert.equal(p.api.stageStep({ status: "running", stage_id: "frontend" }), "tools");
+    assert.equal(p.api.frontier({ status: "running", stage_id: "frontend" }), 4);
+    assert.equal(p.api.stageStep({ status: "running", stage_id: "frontend" }), "downloads");
     assert.equal(p.api.stageStep({ status: "waiting_input", stage_id: "frontend", dependency_setup_selected: true,
       input: { kind: "dependency_setup" } }), "tools");
     assert.equal(p.api.frontier({ status: "running", stage_id: "data_download" }), 4);
@@ -752,14 +752,12 @@ async function main() {
       assert.equal(p.calls.includes(status === "running" ? "pause" : status === "ready" ? "start" : "resume"), true);
     }
   });
-  await test("tool preparation starts once and the real download chapter retains its pause and resume controls", async () => {
+  await test("legacy frontend work starts in downloads and retains pause and resume controls", async () => {
     const project = checkpointProject(), p = page(project), primary = p.operation;
-    assert.equal(p.shell.dataset.step, "tools");
-    assert.equal(primary.hidden, false); assert.equal(primary.textContent, "학습 도구 확인 시작");
-    assert.equal(p.next.textContent, "다음"); assert.equal(p.next.disabled, false);
-    await p.next.fire("click"); await p.settle();
-    assert.equal(p.shell.dataset.step, "scale"); assert.equal(p.calls.includes("start"), false);
-    await p.back.fire("click"); await p.settle(); assert.equal(p.shell.dataset.step, "tools");
+    assert.equal(p.shell.dataset.step, "downloads");
+    assert.equal(primary.hidden, false); assert.equal(primary.textContent, "설치·다운로드 시작");
+    assert.equal(p.next.textContent, "다음"); assert.equal(p.next.disabled, true);
+    await p.next.fire("click"); assert.equal(p.calls.includes("start"), false);
     await primary.fire("click"); await primary.fire("click"); assert.equal(p.calls.filter(call => call === "start").length, 1);
     p.state.busy = false; project.status = "running"; project.stage_id = "data_download"; project.download_checkpoint.state = "running";
     project.progress = { done: 100, total: 100 }; p.ui.render(); await p.settle();
@@ -949,25 +947,25 @@ async function main() {
     assert.equal(JSON.stringify(project), original);
     assert.equal(p.calls.some(call => ["input", "start", "resume", "create"].includes(call)), false);
   });
-  await test("dependency setup and installation stay in the tools chapter until actual downloads start", async () => {
+  await test("a saved dependency prompt previews the chosen packages and waits for explicit install and download", async () => {
     const project = checkpointProject("running", "running");
     delete project.download_checkpoint;
+    project.preset = "check";
     project.navigation_checkpoint = { policy: "explicit_story_v1", step: "downloads", state: "running" };
     project.download_files = ["a", "b"].map(id => ({ id, label: `자료 ${id}`, state: "waiting", done: 0, total: 100, unit: "bytes" }));
-    let finishInstallation;
+    let finishSave;
     const p = page(project, { input: async state => {
       state.busy = true; p.ui.render();
-      const installed = await new Promise(resolve => { finishInstallation = resolve; });
+      const saved = await new Promise(resolve => { finishSave = resolve; });
       state.busy = false;
-      return installed;
+      return saved;
     } });
+    p.state.recipes = [{ id: "check" }];
     const history = p.shell.querySelector(".story-history"), input = p.get("input-section");
     const activity = p.get("story-download-activity");
     const tools = p.ticks.find(tick => tick.dataset.step === "tools"), downloads = p.ticks.find(tick => tick.dataset.step === "downloads");
-    assert.equal(p.shell.dataset.step, "tools");
-    assert.equal(p.get("story-title").textContent, "학습 도구 준비");
-    assert.equal(tools.getAttribute("aria-current"), "step");
-    assert.equal(downloads.disabled, true);
+    assert.equal(p.shell.dataset.step, "downloads");
+    assert.equal(downloads.getAttribute("aria-current"), "step");
     assert.equal(history.hidden, true);
     assert.equal(input.hidden, true);
     assert.equal(activity.hidden, false);
@@ -975,32 +973,59 @@ async function main() {
 
     project.status = "waiting_input";
     project.input = { kind: "dependency_setup", recommended_backend: "cu128" };
-    p.ui.render();
+    project.dependency_setup = { recommended_backend: "cu128", packages: { cpu: ["waiting-cpu-package"], cu128: ["waiting-gpu-package"] },
+      evaluation_runtime_packages: ["waiting-evaluation-runtime"] };
+    p.ui.render(); await p.settle();
+    assert.equal(p.shell.dataset.step, "tools");
+    assert.equal(p.get("story-title").textContent, "학습 도구 준비");
+    assert.equal(tools.getAttribute("aria-current"), "step");
+    assert.equal(downloads.disabled, true);
     assert.equal(input.hidden, false);
     assert.equal(activity.hidden, true);
     assert.equal(history.hidden, true, "planned rows cannot overlap the CPU/GPU form");
-    assert.equal(p.next.textContent, "설치하고 계속");
+    assert.equal(p.next.textContent, "다음");
     assert.equal(p.next.disabled, false);
     assert.equal(p.operation.hidden, true);
 
-    const materials = p.ticks.find(tick => tick.dataset.step === "materials");
-    await materials.fire("click"); await p.settle();
-    assert.equal(p.shell.dataset.step, "materials");
+    p.get("dependency-cpu").checked = true;
+    p.get("dependency-cu128").checked = false;
+    await advanceSetup(p, "scale", "materials");
     assert.equal(input.hidden, true);
-    await tools.fire("click"); await p.settle();
-    assert.equal(p.shell.dataset.step, "tools");
-    assert.equal(input.hidden, false);
-    assert.equal(p.next.textContent, "설치하고 계속");
-    const installation = p.next.fire("click"); await p.flush();
-    assert.equal(p.next.disabled, true);
+    assert.equal(p.operation.hidden, true);
+    assert.equal(p.calls.some(call => ["input", "start", "resume"].includes(call)), false);
+    const installs = p.get("story-tool-materials");
+    assert.equal(installs.hidden, false);
+    assert.match(textOf(installs), /waiting-cpu-package/);
+    assert.match(textOf(installs), /waiting-evaluation-runtime/);
+    assert.doesNotMatch(textOf(installs), /waiting-gpu-package/);
+
+    const confirmation = p.next.fire("click"); await p.flush();
+    assert.equal(p.get("story-panel").inert, true);
+    assert.equal(p.shell.querySelector(".story-loader").hidden, false);
     await p.next.fire("click");
     assert.equal(p.calls.filter(call => call === "input").length, 1);
-    assert.equal(p.shell.dataset.step, "tools");
+
+    project.status = "paused";
+    delete project.input;
+    project.dependency_backend = "cpu";
+    project.dependency_setup_selected = true;
+    project.dependency_install_pending = true;
+    finishSave(true); await p.settle(); await confirmation; await p.settle();
+    assert.equal(p.shell.dataset.step, "downloads");
+    assert.equal(p.operation.textContent, "설치·다운로드 시작");
+    assert.equal(p.operation.hidden, false);
+    assert.equal(p.next.disabled, true);
+    assert.equal(p.calls.some(call => ["start", "resume"].includes(call)), false);
+
+    await p.operation.fire("click"); await p.operation.fire("click");
+    assert.equal(p.calls.filter(call => call === "start").length, 1);
+    assert.equal(p.calls.includes("resume"), false);
 
     project.status = "running";
-    delete project.input;
+    project.dependency_install_pending = false;
     project.progress = { phase: "evaluation_environment", label: "GPU 평가 실행환경 설치·확인", phase_elapsed_seconds: 74.8 };
-    finishInstallation(true); await installation; p.ui.render();
+    p.state.busy = false; p.ui.render();
+    assert.equal(p.shell.dataset.step, "downloads");
     assert.equal(p.next.textContent, "다음");
     assert.equal(input.hidden, true);
     assert.equal(history.hidden, true);
@@ -1023,13 +1048,15 @@ async function main() {
     assert.equal(p.shell.dataset.step, "tools");
     assert.equal(input.hidden, true);
     assert.equal(history.hidden, true);
-    assert.match(textOf(activity), /학습 도구 준비를 마쳤습니다\./);
-    assert.equal(activity.querySelector("i").dataset.status, "complete");
+    assert.equal(p.get("story-tool-picker").hidden, false);
+    assert.equal(p.get("story-tool-cpu").checked, true);
+    assert.equal(p.get("story-tool-picker").disabled, true);
     await downloads.fire("click"); await p.settle();
     assert.equal(p.shell.dataset.step, "downloads");
     assert.match(textOf(history), /35%/);
     assert.equal(p.calls.filter(call => call === "input").length, 1);
-    assert.equal(p.calls.some(call => ["start", "resume", "pause"].includes(call)), false);
+    assert.equal(p.calls.filter(call => call === "start").length, 1);
+    assert.equal(p.calls.some(call => ["resume", "pause"].includes(call)), false);
   });
   await test("cached download verification uses its own measured gauge without displaying transferred bytes as completion", () => {
     const project=checkpointProject("running","running");project.stage_id="data_download";

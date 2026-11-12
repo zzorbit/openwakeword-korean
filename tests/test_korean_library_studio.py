@@ -259,6 +259,60 @@ def test_existing_dependency_prompt_still_submits_and_resumes_frontend(manager):
     assert request["context"]["inputs"] == {"dependency_backend": "cpu"}
 
 
+@pytest.mark.parametrize("checkpoint", ["navigation_checkpoints", "download_checkpoint"])
+def test_deferred_dependency_choice_waits_for_download_start_even_after_retry(manager, checkpoint):
+    original = create(manager, **{checkpoint: True})
+    project_id = original["id"]
+    manager.start(project_id)
+    for backend, worker_count in (("cpu", 1), ("cu128", 2)):
+        manager.workers.items[-1].finish({"state": "waiting_input", "input_kind": "dependency_setup",
+                                         "recommended_backend": "cu128"})
+        manager.tick()
+        waiting_state = manager._load(project_id)
+        waiting = manager.describe(waiting_state)
+        assert waiting["input"]["recommended_backend"] == "cu128"
+        assert waiting["dependency_setup"]["recommended_backend"] == "cu128"
+        assert waiting["dependency_setup"]["packages"][backend]
+        assert not waiting["dependency_install_pending"]
+        checkpoint_key = "navigation_checkpoint" if checkpoint == "navigation_checkpoints" else checkpoint
+        assert waiting[checkpoint_key]["state"] == "running"
+
+        saved = manager.submit_input(project_id, {"dependency_backend": backend, "defer_dependency_install": True})
+        saved_state = manager._load(project_id)
+        assert saved["status"] == "paused"
+        assert saved["dependency_backend"] == backend and saved["dependency_setup_selected"]
+        assert saved["dependency_install_pending"] and "input" not in saved
+        assert saved[checkpoint_key] == waiting[checkpoint_key]
+        assert saved_state["history"] == waiting_state["history"]
+        assert saved_state["input_submitted"] and not saved_state["auto_continue"]
+        manager.tick()
+        assert len(manager.workers.items) == worker_count
+
+        launched = manager.start(project_id)
+        assert launched["status"] == "running" and not launched["dependency_install_pending"]
+        assert len(manager.workers.items) == worker_count + 1
+        request = read_json(manager.workers.items[-1].request_path)
+        assert request["stage"] == "frontend"
+        assert request["context"]["inputs"] == {"dependency_backend": backend}
+
+
+@pytest.mark.parametrize("input_kind,backend,flag", [
+    ("generation_policy", "cpu", True), ("dependency_setup", "gpu", True), ("dependency_setup", "cpu", "true"),
+])
+def test_invalid_deferred_dependency_input_leaves_project_unchanged(manager, input_kind, backend, flag):
+    original = create(manager, navigation_checkpoints=True)
+    project_id = original["id"]
+    manager.start(project_id)
+    manager.workers.items[-1].finish({"state": "waiting_input", "input_kind": input_kind})
+    manager.tick()
+    path = manager._path(project_id)
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="학습 도구"):
+        manager.submit_input(project_id, {"dependency_backend": backend, "defer_dependency_install": flag})
+    assert path.read_bytes() == before
+    assert len(manager.workers.items) == 1
+
+
 @pytest.mark.parametrize("backend", [None, True, 5, [], "cuda", "CPU", ""])
 def test_invalid_dependency_backend_does_not_create_project(manager, backend):
     with pytest.raises(ValueError, match="CPU 또는 NVIDIA GPU"):

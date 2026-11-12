@@ -1856,7 +1856,7 @@ function pendingHardStorageRecipe() {
     assert.equal(groups.length, 9);
     assert.equal(groups.filter(group => /\bcurrent\b|\bdone\b/.test(group.className)).length, 0);
   });
-  await test("dependency setup radio cards preserve the choice and submit CPU or GPU through the shared form", async () => {
+  await test("dependency setup radio cards preserve the choice and save CPU or GPU without starting installation", async () => {
     const project = { id: "bora", wakeword: "보라야", status: "waiting_input", stage: "frontend", error: null,
       input: { kind: "dependency_setup", recommended_backend: "cu128", hint: "현재 가상 환경에만 설치합니다. NVIDIA GPU가 없다면 CPU용을 선택하세요." } };
     const b = browser({ initialState: { projects: [project] } }); await flush();
@@ -1882,7 +1882,9 @@ function pendingHardStorageRecipe() {
     assert.equal(cpu.checked, true); assert.equal(gpu.checked, false, "polling keeps the user's choice");
     assert.equal(await b.storyBridge.input(), true);
     const payloads = b.calls.filter(call => call.url.endsWith("/input")).map(call => JSON.parse(call.options.body));
-    assert.deepEqual(payloads, [{ dependency_backend: "cu128" }, { dependency_backend: "cpu" }]);
+    assert.deepEqual(payloads, [{ dependency_backend: "cu128", defer_dependency_install: true },
+      { dependency_backend: "cpu", defer_dependency_install: true }]);
+    assert.equal(b.calls.some(call => /\/(start|resume)$/.test(call.url)), false);
 
     cpu.checked = false; gpu.checked = true;
     project.input = { ...project.input, id: "new-dependency-prompt", recommended_backend: "cpu" }; await b.tick();
