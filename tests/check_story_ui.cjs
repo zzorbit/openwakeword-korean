@@ -6,6 +6,9 @@ const vm = require("node:vm");
 const source = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources/studio_story.js"), "utf8");
 const listeningSource = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources/listening_player.js"), "utf8");
 const textOf = item => [item.textContent, ...item.children.map(textOf)].join(" ");
+const downloadRows = root => root.querySelectorAll(".story-download-item").filter(row => row.dataset.placeholder !== "true");
+const currentDownloadRow = root => downloadRows(root).find(row => row.getAttribute("aria-current") === "step");
+const downloadRowLabel = row => row.querySelector(".story-download-item-label").textContent;
 const commonToolPackages = ["qwen-tts==0.1.1", "onnx>=1.16", "openwakeword==0.6.0"];
 const evaluationToolPackages = ["onnxruntime-gpu==1.31.0", "nvidia-cublas==13.8.0.4", "nvidia-cuda-runtime==13.4.92", "nvidia-cudnn-cu13==9.27.0.42"];
 const toolSetup = {
@@ -307,8 +310,8 @@ async function main() {
       const used = rows * height + Math.max(0, rows - 1) * gap + (capacity < items ? 44 : 0);
       assert.ok(used <= available, `${used} exceeds ${available}`); return capacity;
     };
-    assert.equal(fits(9, 734, 128, 1, 12), 5, "319×950 single-column download list paginates");
-    assert.equal(fits(9, 330, 80, 1, 12), 3, "600×540 short download list paginates");
+    assert.equal(fits(9, 734, 128, 1, 12), 5, "319×950 single-column history paginates");
+    assert.equal(fits(9, 330, 80, 1, 12), 3, "600×540 short history paginates");
     assert.equal(fits(9, 600, 80, 2, 4), 9, "1280×800 desktop keeps the complete two-column list");
     assert.equal(fits(20, 330, 44, 1, 10), 5, "phrase fields reserve pager space");
     assert.equal(fits(6, 734, 44, 1, 10), 6, "tall narrow phrase fields all fit when appropriate");
@@ -791,37 +794,39 @@ async function main() {
     assert.equal(p.calls.filter(call => call === "resume").length, 1);
     assert.equal(p.shell.dataset.step, "downloads");
   });
-  await test("live download density uses measured space without hiding rows or changing progress and operation gates", async () => {
-    for (const [width, height, available, rowHeights, expectedDensity, overflow] of [
-      [1280, 800, 460, { normal: 80, compact: 64, tight: 48 }, "normal", false],
-      [1280, 800, 460, { normal: 120, compact: 80, tight: 48 }, "compact", false],
-      [600, 540, 205, { normal: 100, compact: 50, tight: 20 }, "tight", false],
-      [319, 950, 518, { normal: 128, compact: 80, tight: 64 }, "tight", true],
-    ]) {
-      const project = checkpointProject("running", "running"); project.stage_id = "data_download";
-      project.progress = { done: 17, total: 100, files: Array.from({ length: 9 }, (_, i) => ({
-        id: `asset-${i}`, group: `group-${i}`, label: `자료 ${i + 1}`, state: "downloading", done: 17, total: 100, unit: "bytes",
-      })) };
-      const p = page(project, { width, height, getComputedStyle: () => ({ rowGap: "0px" }) });
-      const history = p.shell.querySelector(".story-history"), list = history.querySelector(".story-history-rows");
-      p.shell.querySelector(".story-stage").getBoundingClientRect = () => ({ height: available });
-      p.shell.querySelector(".story-panel-heading").getBoundingClientRect = () => ({ height: 0 });
-      p.shell.querySelector(".story-actions").getBoundingClientRect = () => ({ height: 0 });
-      const rows = [...list.children];
-      rows.forEach(row => { row.getBoundingClientRect = () => ({ height: rowHeights[list.dataset.density] }); });
-      project.progress.files[0].done = 18; p.ui.render();
-      assert.equal(list.style["--download-list-height"], `${available - 22}px`, "current work caption keeps one reserved line outside the download rows");
-      assert.equal(list.dataset.density, expectedDensity);
-      assert.equal(list.dataset.overflow, String(overflow), "unavoidable overflow is reported without concealing any asset");
-      assert.equal(rows.length, 9); assert.ok(rows.every(row => !row.hidden));
-      assert.equal(history.querySelector(".story-pagination").hidden, true);
-      assert.equal(p.next.disabled, true); assert.equal(p.operation.textContent, "일시정지");
-      p.ui.render(); assert.deepEqual(list.children, rows, "polling preserves every displayed download row");
-      assert.equal(project.progress.done, 17); assert.equal(project.progress.files[0].done, 18);
-      assert.equal(p.calls.some(call => ["start", "pause", "resume"].includes(call)), false);
-      p.state.project = null; p.ui.render();
-      assert.equal(p.shell.querySelector(".story-live").hidden, true, "new setup does not expose the retained download contents");
-    }
+  await test("downloads give each item equal weight and show completed, current and upcoming work together", () => {
+    const project = checkpointProject("running", "running"); project.stage_id = "data_download";
+    project.stages[0].status = "completed";
+    project.download_setup_items = [
+      { id: "torch", label: "PyTorch", state: "complete" },
+      { id: "audio", label: "TorchAudio", state: "complete" },
+    ];
+    project.download_files = [
+      { id: "small", label: "완료 자료", state: "complete", done: 100, total: 100, unit: "bytes" },
+      { id: "large", label: "진행 자료", state: "downloading", done: 2500, total: 10000, unit: "bytes" },
+      { id: "next", label: "예정 자료", state: "waiting", done: 0, total: 500, unit: "bytes" },
+    ];
+    const p = page(project);
+    const history = p.shell.querySelector(".story-history"), reel = history.querySelector(".story-download-reel");
+    const gauge = history.querySelector("progress"), rows = downloadRows(reel);
+    const active = currentDownloadRow(reel), index = rows.indexOf(active);
+    assert.equal(history.querySelectorAll("progress").length, 1);
+    assert.equal(gauge.max, rows.length);
+    assert.equal(gauge.value, 3.25, "a completed item counts one and a quarter of an active item counts 0.25");
+    assert.deepEqual(rows.slice(index - 1, index + 2).map(downloadRowLabel), ["완료 자료", "진행 자료", "예정 자료"]);
+    assert.equal(rows[index - 1].querySelector("i").dataset.status, "complete");
+    assert.equal(active.querySelector("i").dataset.status, "active");
+    assert.equal(rows[index + 1].querySelector("i").hidden, true);
+    assert.equal(history.querySelector(".story-pagination").hidden, true);
+    assert.equal(p.next.disabled, true); assert.equal(p.operation.textContent, "일시정지");
+    reel.scrollTop = 123;
+    project.download_files[1].done = 5000; p.ui.render();
+    assert.equal(gauge.value, 3.5);
+    assert.equal(currentDownloadRow(reel), active, "polling updates the same row");
+    assert.equal(reel.scrollTop, 123, "polling the same file leaves manual scrolling alone");
+    assert.equal(p.calls.some(call => ["start", "pause", "resume"].includes(call)), false);
+    p.state.project = null; p.ui.render();
+    assert.equal(p.shell.querySelector(".story-live").hidden, true, "new setup does not expose the retained download contents");
   });
   await test("download checkpoint holds a completed data phase until next explicitly releases it and follows a busy response once", async () => {
     const project = checkpointProject("awaiting_next", "paused"); project.stage_id = "references";
@@ -987,10 +992,11 @@ async function main() {
     const tools = p.ticks.find(tick => tick.dataset.step === "tools"), downloads = p.ticks.find(tick => tick.dataset.step === "downloads");
     assert.equal(p.shell.dataset.step, "downloads");
     assert.equal(downloads.getAttribute("aria-current"), "step");
-    assert.equal(history.hidden, true);
+    assert.equal(history.hidden, false);
     assert.equal(input.hidden, true);
-    assert.equal(activity.hidden, false);
-    assert.match(textOf(activity), /실행환경/);
+    assert.equal(activity.hidden, true);
+    assert.match(downloadRowLabel(currentDownloadRow(history)), /실행환경/);
+    assert.equal(downloadRows(history).find(row => downloadRowLabel(row) === "자료 a").dataset.state, "waiting");
 
     project.status = "waiting_input";
     project.input = { kind: "dependency_setup", recommended_backend: "cu128" };
@@ -1046,9 +1052,11 @@ async function main() {
     assert.equal(p.shell.dataset.step, "downloads");
     assert.equal(p.next.textContent, "다음");
     assert.equal(input.hidden, true);
-    assert.equal(history.hidden, true);
-    assert.equal(activity.querySelector("i").dataset.status, "active");
-    assert.match(textOf(activity), /GPU 평가 실행환경 설치·확인 · 1분 14초 경과/);
+    assert.equal(history.hidden, false);
+    const setupRow = currentDownloadRow(history);
+    assert.equal(setupRow.querySelector("i").dataset.status, "active");
+    assert.equal(downloadRowLabel(setupRow), "GPU 평가 실행환경 설치·확인");
+    assert.match(textOf(setupRow), /1분 14초 경과/);
 
     project.stages[0].status = "completed";
     project.stage_id = "data_download";
@@ -1059,7 +1067,8 @@ async function main() {
     assert.equal(downloads.getAttribute("aria-current"), "step");
     assert.equal(input.hidden, true);
     assert.equal(history.hidden, false);
-    assert.match(textOf(history), /자료 a.*35%/);
+    assert.equal(downloadRowLabel(currentDownloadRow(history)), "자료 a");
+    assert.match(textOf(currentDownloadRow(history)), /35 B \/ 100 B/);
     assert.match(textOf(history), /자료 b/);
 
     await tools.fire("click"); await p.settle();
@@ -1071,48 +1080,59 @@ async function main() {
     assert.equal(p.get("story-tool-picker").disabled, true);
     await downloads.fire("click"); await p.settle();
     assert.equal(p.shell.dataset.step, "downloads");
-    assert.match(textOf(history), /35%/);
+    assert.match(textOf(currentDownloadRow(history)), /35 B \/ 100 B/);
     assert.equal(p.calls.filter(call => call === "input").length, 1);
     assert.equal(p.calls.filter(call => call === "start").length, 1);
     assert.equal(p.calls.some(call => ["resume", "pause"].includes(call)), false);
   });
-  await test("cached download verification uses its own measured gauge without displaying transferred bytes as completion", () => {
+  await test("cached download verification displays the measured hash progress without marking the file complete", () => {
     const project=checkpointProject("running","running");project.stage_id="data_download";
     project.download_files=[{id:"asset-a",group:"group-a",label:"자료 A",state:"verifying",done:1000,total:1000,unit:"bytes"},
       {id:"asset-b",group:"group-b",label:"자료 B",state:"verifying",done:2000,total:2000,unit:"bytes"}];
     project.progress={stage:"data_download",current_asset:"asset-a",phase:"hash",label:"원본 파일 검증",current_event:{phase:"hash",done:7,total:100},files:project.download_files};
-    const p=page(project),rows=p.shell.querySelector(".story-history-rows").children;
-    assert.match(textOf(rows[0]),/0 \/ 1개/);assert.match(textOf(rows[0]),/7%/);assert.doesNotMatch(textOf(rows[0]),/100%/);
-    assert.equal(rows[0].querySelector("progress").max,100);assert.equal(rows[0].querySelector("progress").value,7);
-    assert.equal(rows[1].querySelector("progress").hidden,false);assert.equal(rows[1].querySelector("progress").getAttribute("value"),null);
-    assert.equal(rows[1].querySelector(".story-history-percent").textContent,"");
-    assert.match(rows[0].querySelector("progress").getAttribute("aria-label"),/무결성 검사/);
-    project.download_files[0].state="reused";p.ui.render();assert.match(textOf(rows[0]),/1 \/ 1개/);
-    assert.equal(rows[0].querySelector(".story-progress-indicator").dataset.status,"complete");
+    const p = page(project), history = p.shell.querySelector(".story-history");
+    const [first, second] = ["자료 A", "자료 B"].map(label => downloadRows(history).find(row => downloadRowLabel(row) === label));
+    assert.match(textOf(first), /파일 검사 7%/);
+    assert.match(textOf(second), /파일 검사 중/);
+    assert.equal(first.querySelector("i").dataset.status, "active");
+    const meter = history.querySelector(".story-download-meter");
+    assert.match(textOf(meter), /0 \/ \d+개 완료/);
+    assert.equal(history.querySelectorAll("progress").length, 1);
+    project.download_files[0].state = "reused"; p.ui.render();
+    assert.equal(first.querySelector("i").dataset.status, "complete");
+    assert.match(textOf(first), /기존 자료 재사용/);
+    assert.match(textOf(meter), /1 \/ \d+개 완료/);
   });
   await test("parallel verification in one group never borrows another file's hash percentage",()=>{
     const project=checkpointProject("running","running");project.stage_id="data_download";
-    project.progress={current_asset:"one",current_event:{phase:"hash",done:80,total:100},files:["one","two"].map(id=>({id,group:"shared",label:"묶음",state:"verifying",done:100,total:100,unit:"bytes"}))};
-    const p=page(project),row=p.shell.querySelector(".story-history-rows").children[0];
-    assert.equal(row.querySelector(".story-history-percent").textContent,"");assert.equal(row.querySelector("progress").getAttribute("value"),null);
-    assert.match(textOf(row),/0 \/ 2개/);assert.equal(p.calls.includes("resume"),false);
+    project.progress = { current_asset: "one", current_event: { phase: "hash", done: 80, total: 100 },
+      files: ["one", "two"].map(id => ({ id, group: "shared", label: "묶음", filename: `${id}.zip`,
+        state: "verifying", done: 100, total: 100, unit: "bytes" })) };
+    const p = page(project), rows = downloadRows(p.shell);
+    const first = rows.find(row => textOf(row).includes("one.zip")), second = rows.find(row => textOf(row).includes("two.zip"));
+    assert.match(textOf(first), /파일 검사 80%/);
+    assert.doesNotMatch(textOf(second), /80%/);
+    assert.equal(p.calls.includes("resume"), false);
   });
-  await test("download rows retain one stable current-work caption through extraction and connection",()=>{
-    const css = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources/studio_story.css"), "utf8");
-    assert.match(css, /#story-download-activity\{text-align:center\}/);
-    const project=checkpointProject("running","running");project.stage_id="data_download";
-    project.download_files=[{id:"a",label:"파일",state:"waiting",unit:"bytes",done:0,total:100}];
-    const p=page(project),caption=p.get("story-download-activity");
-    assert.equal(caption.hidden,false);assert.match(textOf(caption),/자료 파일/);assert.equal(caption.querySelector("i").dataset.status,"active");
-    project.progress={stage:"data_download",phase:"extract",label:"기존 추출 파일 검증",done:123,total:22835,unit:"files"};p.ui.render();
-    assert.match(textOf(caption),/기존 추출 파일 검증.*123 \/ 22,835개/);assert.equal(caption.style.whiteSpace,"nowrap");
-    project.stage_id="data_connect";project.progress={done:3,total:20,unit:"완료 단계"};p.ui.render();
-    assert.match(textOf(caption),/자료를 연결/);assert.doesNotMatch(textOf(caption),/3 \/ 20/);
-    project.progress={label:"공통 평가 원본 준비",done:12115.651,total:14400,unit:"seconds"};p.ui.render();
-    assert.match(textOf(caption),/3시간 21분 55초 \/ 4시간/);
-    project.progress={label:"자료 변환·분리",done:1,total:3,unit:"datasets"};p.ui.render();
-    assert.match(textOf(caption),/1 \/ 3개 자료/);
-    project.status="failed";project.error="자료 검증 실패";p.ui.render();assert.equal(caption.hidden,true);
+  await test("the queue follows extraction and connection while retaining measured details and failure state", () => {
+    const project = checkpointProject("running", "running"); project.stage_id = "data_download";
+    project.stages[0].status = "completed";
+    project.download_files = [{ id: "a", label: "파일", state: "complete", unit: "bytes", done: 100, total: 100 }];
+    const p = page(project), current = () => currentDownloadRow(p.shell);
+    assert.match(textOf(current()), /자료 파일 준비/);
+    assert.equal(current().querySelector("i").dataset.status, "active");
+    project.progress = { stage: "data_download", phase: "extract", label: "기존 추출 파일 검증", done: 123, total: 22835, unit: "files" };
+    p.ui.render(); assert.match(textOf(current()), /기존 추출 파일 검증.*123 \/ 22,835개/);
+    project.stages[1].status = project.stages[2].status = "completed";
+    project.stage_id = "data_connect"; project.progress = { done: 3, total: 20, unit: "완료 단계" };
+    p.ui.render(); assert.match(textOf(current()), /검사한 자료 연결/); assert.doesNotMatch(textOf(current()), /3 \/ 20/);
+    project.progress = { label: "공통 평가 원본 준비", done: 12115.651, total: 14400, unit: "seconds" };
+    p.ui.render(); assert.match(textOf(current()), /3시간 21분 55초 \/ 4시간/);
+    project.progress = { label: "자료 변환·분리", done: 1, total: 3, unit: "datasets" };
+    p.ui.render(); assert.match(textOf(current()), /1 \/ 3개 자료/);
+    project.status = "failed"; project.error = "자료 검증 실패"; p.ui.render();
+    assert.equal(current().dataset.state, "failed");
+    assert.equal(current().querySelector("i").hidden, true);
   });
   await test("one phrase next carries successful input through the exact completed boundary and destination readiness",async()=>{
     for(const fast of [false,true]){
@@ -1285,7 +1305,8 @@ async function main() {
     await visit(p, "downloads");
     const history = p.shell.querySelector(".story-history");
     assert.ok(textOf(history).includes("소음 증강 음악")); assert.ok(textOf(history).includes("2 KiB"));
-    assert.equal(history.querySelectorAll("progress").length, 2);
+    assert.equal(history.querySelectorAll("progress").length, 1);
+    assert.match(textOf(history.querySelector(".story-download-meter")), /100%/);
     assert.ok(!textOf(history).includes("/초"));
     assert.equal(p.next.textContent, "다음");
   });
@@ -1297,13 +1318,13 @@ async function main() {
     ];
     const p = page(historyModel({ downloads: { completed: true, progress: { files } } }));
     await visit(p, "downloads");
-    const history = p.shell.querySelector(".story-history"), rows = history.querySelectorAll(".story-history-row");
-    assert.equal(rows.length, 3);
+    const history = p.shell.querySelector(".story-history");
+    const rows = files.map(file => downloadRows(history).find(row => downloadRowLabel(row) === file.label));
     assert.ok(textOf(rows[0]).includes("1,500.25 / 1,500시간"));
     assert.ok(textOf(rows[1]).includes("750 / 1,500시간"));
-    assert.ok(textOf(rows[1]).includes("50%"));
     assert.ok(textOf(rows[2]).includes("— / 500시간"));
-    assert.equal(rows[2].querySelector("progress").hidden, true);
+    assert.equal(rows[1].querySelector("i").hidden, true);
+    assert.equal(rows[2].querySelector("i").hidden, true);
     assert.ok(!textOf(history).includes("1 / 1개"));
     assert.equal(p.calls.some(call => ["create", "start", "resume", "input"].includes(call)), false);
   });
@@ -2316,19 +2337,24 @@ async function main() {
     await toggle.fire("click"); await container.fire("focusout", { relatedTarget: p.shell }); assert.equal(menu.hidden, true);
     await toggle.fire("click"); await p.windowEvent("blur"); assert.equal(menu.hidden, true, "leaving the window or focusing an embedded player dismisses the menu");
   });
-  await test("download single view keeps every live row visible at narrow and short heights", () => {
+  await test("the download reel keeps every live item reachable by scrolling without pagination", () => {
     for (const [width, height] of [[319, 540], [600, 540], [1280, 800]]) {
       const project = checkpointProject("running", "running"); project.stage_id = "data_download";
       project.progress = { files: Array.from({ length: 9 }, (_, i) => ({ id: `asset-${i}`, group: `group-${i}`, label: `자료 ${i + 1}`, state: "downloading", done: i + 1, total: 100, unit: "bytes" })) };
       const p = page(project, { width, height });
-      const history = p.shell.querySelector(".story-history"), list = history.querySelector(".story-history-rows"), pager = history.querySelector(".story-pagination");
-      assert.equal(list.children.length, 9);
-      assert.equal(list.children.every(row => !row.hidden), true);
+      const history = p.shell.querySelector(".story-history"), reel = history.querySelector(".story-download-reel");
+      const list = reel.querySelector(".story-download-items"), pager = history.querySelector(".story-pagination");
+      const assets = () => downloadRows(reel).filter(row => /^자료 \d+$/.test(downloadRowLabel(row)));
+      assert.equal(assets().length, 9);
+      assert.ok(assets().every(row => !row.hidden));
+      assert.equal(reel.tabIndex, 0);
+      assert.match(reel.getAttribute("aria-label"), /다운로드 항목/);
+      assert.equal(list.children[0].getAttribute("aria-hidden"), "true");
+      assert.equal(list.children.at(-1).getAttribute("aria-hidden"), "true");
       assert.equal(pager.hidden, true); assert.equal(p.next.disabled, true);
-      assert.ok(["normal", "compact", "tight"].includes(list.dataset.density));
-      const first = list.children[0]; project.progress.files[0].done = 57; p.ui.render();
-      assert.equal(list.children[0], first, "progress polling preserves the existing rows");
-      assert.equal(list.children.every(row => !row.hidden), true); assert.equal(pager.hidden, true);
+      const first = assets()[0]; project.progress.files[0].done = 57; p.ui.render();
+      assert.equal(assets()[0], first, "progress polling preserves the existing rows");
+      assert.ok(assets().every(row => !row.hidden)); assert.equal(pager.hidden, true);
       assert.equal(project.progress.files[0].done, 57);
       assert.equal(p.calls.some(call => ["start", "resume", "pause", "input"].includes(call)), false);
     }
@@ -2338,9 +2364,10 @@ async function main() {
     project.completed_stage_views = { downloads: { completed: true, rows: Array.from({ length: 9 }, (_, i) => ({ label: `완료 자료 ${i + 1}`, done: 100, total: 100, unit: "files" })) } };
     const p = page(project, { width: 360, height: 540 });
     await p.ticks.find(tick => tick.dataset.step === "downloads").fire("click"); await p.settle();
-    const history = p.shell.querySelector(".story-history"), list = history.querySelector(".story-history-rows");
-    assert.equal(p.shell.dataset.step, "downloads"); assert.equal(list.children.length, 9);
-    assert.equal(list.children.every(row => !row.hidden), true);
+    const history = p.shell.querySelector(".story-history");
+    const assets = downloadRows(history).filter(row => /^완료 자료 \d+$/.test(downloadRowLabel(row)));
+    assert.equal(p.shell.dataset.step, "downloads"); assert.equal(assets.length, 9);
+    assert.ok(assets.every(row => !row.hidden && row.querySelector("i").dataset.status === "complete"));
     assert.equal(history.querySelector(".story-pagination").hidden, true);
     assert.equal(p.calls.some(call => ["start", "resume", "pause", "input"].includes(call)), false);
   });

@@ -1495,6 +1495,7 @@
       pause: pauseFrame,
       preview: kind => selectAudioView(kind),
       logs: loadLog,
+      installLog: id => api(`/api/projects/${encodeURIComponent(id)}/log`),
       refresh,
       prepareRecipes: loadRecipes,
       message,

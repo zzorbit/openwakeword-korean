@@ -135,12 +135,86 @@ def _dependency_package_requirements():
 
     evaluation_runtime = [f"{name}=={version}" for name, version in PINS.items()]
     packages = {
-        backend: [argument for command in _dependency_plan({}, backend) for argument in command
-                  if re.match(r"^[\w.-]+(?:==|>=)", argument)]
+        backend: [argument for command in _dependency_plan({}, backend) for argument in _dependency_specs(command)]
         for backend in ("cpu", "cu128")
     }
     packages["cu128"].extend(evaluation_runtime)
     return packages, evaluation_runtime
+
+
+def _dependency_specs(arguments):
+    return [argument for argument in arguments if re.match(r"^[\w.-]+(?:==|>=)", argument)]
+
+
+def _download_setup_rows(backend, evaluation_runtime, phase, *, complete=False, log=""):
+    """Project the install plan using worker phases and its existing pip log.
+
+    Packages in a pip invocation become complete when the worker reaches the
+    next invocation or phase. Wheel names refine the active item within the
+    invocation, without treating pip's console output as a completion receipt.
+    """
+    from .studio_steps import _dependency_plan
+
+    def row(identifier, label):
+        return {"id": identifier, "label": label, "state": "waiting"}
+
+    def package_rows(specs):
+        return [row(re.split(r"==|>=", spec, maxsplit=1)[0], spec) for spec in specs]
+
+    commands = _dependency_plan({}, backend) if backend in ("cpu", "cu128") else []
+    packages = [("environment_install", package_rows(_dependency_specs(command))) for command in commands]
+    runtime = []
+    if evaluation_runtime:
+        runtime_rows = ([row("evaluation-runtime", "GPU 평가 실행 환경 확인")]
+                        if os.environ.get("KOWW_GPU_RUNTIME_PATH") else package_rows(evaluation_runtime))
+        runtime = [("evaluation_environment", runtime_rows)]
+    batches = [("environment_check", [row("environment-check", "학습·평가 실행 환경 확인")]), *packages]
+    if backend == "cu128":
+        batches.extend(runtime)
+    batches.append(("environment_onnx", [row("environment-onnx", "모델 내보내기 환경 확인")]))
+    if backend != "cu128":
+        batches.extend(runtime)
+    batches.append(("frontend_assets", [row("frontend-assets", "음성 특징 추출 모델")]))
+
+    # The GPU installer runs inside environment_install when training uses CUDA.
+    # Later worker phases identify their item directly.
+    active_phase, required, wheel, filename = phase, set(), "", ""
+    if phase in ("environment_install", "evaluation_environment"):
+        for line in log.splitlines():
+            if line.startswith("필요한 학습 패키지 설치: "):
+                if phase == "environment_install":
+                    active_phase = "environment_install"
+                    required = set(_dependency_specs(line.partition(": ")[2].split()))
+                wheel = filename = ""
+            elif line.startswith("별도 GPU 실행 환경을 프로젝트 캐시에 설치합니다."):
+                active_phase, required = "evaluation_environment", set()
+                wheel = filename = ""
+            elif line.startswith(("Installing collected packages:", "Successfully installed ")):
+                wheel = filename = ""
+            elif match := re.match(r"^\s*(?:Downloading|Using cached) (\S+)", line):
+                name = unquote(match[1].partition("?")[0].rsplit("/", 1)[-1])
+                if name.lower().endswith(".whl"):
+                    wheel = name.split("-", 1)[0].lower().replace("_", "-")
+                    filename = name
+
+    active = next((index for index, (batch_phase, rows) in enumerate(batches)
+                   if batch_phase == active_phase and (not required or any(r["label"] in required for r in rows))), None)
+    if active is None and phase == "environment_install":
+        active = 0
+    for index, (_, rows) in enumerate(batches):
+        if complete or active is not None and index < active:
+            for item in rows:
+                item["state"] = "complete"
+        elif index == active:
+            tracked_wheel = any(item["id"] == wheel for item in rows)
+            for item in rows:
+                if required and item["label"] not in required:
+                    item["state"] = "complete"
+                elif not tracked_wheel or item["id"] == wheel:
+                    item["state"] = "installing"
+                    if tracked_wheel:
+                        item["filename"] = filename
+    return [item for _, rows in batches for item in rows]
 
 
 # Content-Length of the pinned win_amd64 / cp312 wheels from download.pytorch.org.
@@ -3629,6 +3703,7 @@ class StudioManager:
                     continue
             if planned:
                 row = item(identifier, label, group, label, total=size)
+                row["filename"] = Path(asset["filename"]).name
                 if verified:
                     try:
                         row["cache_candidate"] = target.is_file() and target.stat().st_size == size
@@ -3636,7 +3711,8 @@ class StudioManager:
                         pass
                 files_out.append(row)
                 return
-            files_out.append(item(identifier, label, group, label, size if verified else None, size, complete=verified))
+            row = item(identifier, label, group, label, size if verified else None, size, complete=verified)
+            files_out.append({**row, "filename": Path(asset["filename"]).name})
 
         names = {"generic": ("generic_negative", "일반 비호출 · openWakeWord"),
                  "zeroth": ("zeroth", "한국어 낭독 · Zeroth"),
@@ -4480,6 +4556,20 @@ class StudioManager:
                                "independent_Final_completed": False}
         view["completed_stage_views"] = self._completed_stage_views(state)
         completed_downloads = view["completed_stage_views"].get("downloads", {}).get("progress") or {}
+        if stage["id"] in ("frontend", "data_download", "data_review", "data_connect") or "downloads" in view["completed_stage_views"]:
+            frontend_complete = (self._history_result(state, "frontend") is not None
+                                 or "downloads" in view["completed_stage_views"])
+            frontend_progress = owned_progress if job.get("stage") == "frontend" else {}
+            phase = frontend_progress.get("phase")
+            evaluation_runtime = view.get("evaluation_runtime_packages")
+            if evaluation_runtime is None and state["settings"].get("evaluation_backend") in ("auto", "cuda"):
+                _, evaluation_runtime = _dependency_package_requirements()
+            setup_items = _download_setup_rows(dependency_backend, evaluation_runtime, phase,
+                complete=frontend_complete,
+                log=_job_log_tail(job) if phase in ("environment_install", "evaluation_environment") else "")
+            view["download_setup_items"] = setup_items
+            if frontend_progress:
+                view["progress"] = {**view["progress"], "setup_items": setup_items}
         if stage["id"] in ("frontend", "data_download", "data_review", "data_connect"):
             view["download_files"] = completed_downloads.get("files") or self._live_download_files(
                 state, download_record, running=job.get("stage") == "data_download" and view.get("process_alive", False))

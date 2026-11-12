@@ -230,6 +230,56 @@ def test_recipe_and_saved_project_share_dependency_requirements(manager, monkeyp
     assert request["context"]["inputs"] == {"dependency_backend": "cu128"}
 
 
+def test_download_setup_rows_follow_the_current_worker_and_survive_completion(manager, monkeypatch):
+    monkeypatch.delenv("KOWW_GPU_RUNTIME_PATH", raising=False)
+    project = create(manager, navigation_checkpoints=True, dependency_backend="cu128")
+    project_id = project["id"]
+    planned = {row["id"]: row["state"] for row in project["download_setup_items"]}
+    assert planned["torch"] == planned["onnxruntime-gpu"] == planned["frontend-assets"] == "waiting"
+    assert all(row.get("filename") for row in project["download_files"] if row["id"].startswith("base:"))
+
+    manager.start(project_id)
+    state = manager._load(project_id)
+    log = Path(state["job"]["log"])
+    log.write_text("필요한 학습 패키지 설치: torch==2.8.0+cu128 torchaudio==2.8.0+cu128 --index-url https://download.pytorch.org/whl/cu128\n"
+                   "Downloading https://download.pytorch.org/whl/cu128/torch-2.8.0%2Bcu128-cp312-win_amd64.whl (3461.4 MB)\n",
+                   encoding="utf-8")
+    phase = "environment_install"
+    monkeypatch.setattr(manager, "_owned_task_progress", lambda *_: {"phase": phase})
+    view = manager.describe(state)
+    rows = {row["id"]: row for row in view["download_setup_items"]}
+    assert rows["environment-check"]["state"] == "complete"
+    assert rows["torch"]["state"] == "installing"
+    assert rows["torch"]["filename"] == "torch-2.8.0+cu128-cp312-win_amd64.whl"
+    assert rows["torchaudio"]["state"] == rows["qwen-tts"]["state"] == "waiting"
+    assert view["progress"]["setup_items"] == view["download_setup_items"]
+
+    with log.open("a", encoding="utf-8") as output:
+        output.write("Installing collected packages: torch, torchaudio\n")
+    rows = {row["id"]: row for row in manager.describe(state)["download_setup_items"]}
+    assert rows["torch"]["state"] == rows["torchaudio"]["state"] == "installing"
+    assert "filename" not in rows["torch"]
+
+    with log.open("a", encoding="utf-8") as output:
+        output.write("필요한 학습 패키지 설치: onnx>=1.16\n")
+    rows = {row["id"]: row for row in manager.describe(state)["download_setup_items"]}
+    assert rows["torch"]["state"] == rows["torchaudio"]["state"] == rows["qwen-tts"]["state"] == "complete"
+    assert rows["onnx"]["state"] == "installing"
+
+    phase = "environment_onnx"
+    rows = {row["id"]: row for row in manager.describe(state)["download_setup_items"]}
+    assert rows["onnxruntime-gpu"]["state"] == "complete"
+    assert rows["environment-onnx"]["state"] == "installing"
+    phase = "frontend_assets"
+    rows = {row["id"]: row for row in manager.describe(state)["download_setup_items"]}
+    assert rows["environment-onnx"]["state"] == "complete"
+    assert rows["frontend-assets"]["state"] == "installing"
+
+    manager.workers.items[0].finish()
+    assert manager._finish_job(state)
+    assert all(row["state"] == "complete" for row in manager.describe(state)["download_setup_items"])
+
+
 @pytest.mark.parametrize("first_backend", [None, "cpu"])
 def test_dependency_choice_does_not_rewrite_a_matched_model(manager, first_backend):
     original = create(manager, **({"dependency_backend": first_backend} if first_backend is not None else {}))
