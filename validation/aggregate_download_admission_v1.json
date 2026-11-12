@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "kind": "audited_aggregate_download_admission_update",
+  "releases": [
+    {
+      "line_endings": "CRLF",
+      "target_computation_sha256": "b8d1c9b40abb91dbbe1500a6ab922f769e08bafbff5e375e2260e4cee328e829",
+      "target_stages_sha256": "8589b8bc6d86d7e04e33bdefbbb47a1216265092d074befd234cd62d6cdcd734",
+      "sources": [
+        {
+          "computation_sha256": "4c6fdddc4349ac998869657de3066a4c143a36369275583ae6dd4fe1fd8b6978",
+          "stages_sha256": "56910287134bf8f3688743b6f11c54f6bf3dc5c14b1778e84f3dd6357f79d4dd",
+          "changed_files": [
+            "downloads.py"
+          ]
+        },
+        {
+          "computation_sha256": "0002ac6e810f3656cd0ba4400a9f434b088e936c1f7f69ffb1311e251ca79a3e",
+          "stages_sha256": "ba58808e7fa0de597f6a97b8b60800272b403d0887259b6b63ddbacdc691dfdf",
+          "changed_files": [
+            "downloads.py"
+          ]
+        },
+        {
+          "computation_sha256": "1098e002acf28cfa8d863b0dd6701a1b3c366de19f3267ef7c3eaf380bef402f",
+          "stages_sha256": "5bb03ab00820d47d6d0bd4bd6cb20aa107c88533c0b543b567aefe672536a8c3",
+          "changed_files": [
+            "downloads.py",
+            "gpu_runtime_install.py"
+          ],
+          "gpu_runtime_evidence_sha256": "002f80afe978e87b39c16094bd8ad18d9179427fd5435a9593de3474388e6d5d"
+        }
+      ]
+    },
+    {
+      "line_endings": "LF",
+      "target_computation_sha256": "5adf2d4c54e21988777354b18cbaec0ed7b41426c7b397bd8cd8066061fe99da",
+      "target_stages_sha256": "35990c7529bad56c4ae9605f2fd3abc050b916dc271063b873f96575e90dad2e",
+      "sources": [
+        {
+          "computation_sha256": "688c877c6a38656dae27c34a209e8623c7a171277aba91a5973e7f65986b9183",
+          "stages_sha256": "7b464f3270916a7e65359731791f8d636514156b77ab6bd92b0b3e23ec12a720",
+          "changed_files": [
+            "downloads.py"
+          ]
+        },
+        {
+          "computation_sha256": "cc89568eca719ab7a44cd752ea14a1d9a5929c2548b70c71b3158eb3d8e90e6e",
+          "stages_sha256": "f17e93b18f2858bb895d47dc58706373a8894d3919a132929accc472ffbd75ed",
+          "changed_files": [
+            "downloads.py"
+          ]
+        },
+        {
+          "computation_sha256": "7ce9423ef77c82e8517ec2218298ba4dac15d86bda010ea7ee8f84fbc306193d",
+          "stages_sha256": "9c174445612be55c8f1918b4f28d85e53cfe40c835a900fb4beae63937584c1d",
+          "changed_files": [
+            "downloads.py",
+            "gpu_runtime_install.py"
+          ],
+          "gpu_runtime_evidence_sha256": "002f80afe978e87b39c16094bd8ad18d9179427fd5435a9593de3474388e6d5d"
+        }
+      ]
+    }
+  ],
+  "verification": [
+    "The execution-contract file differences match each source listed above. All source catalogs and checksum pins are identical.",
+    "For every source the only existing definition changed in downloads.py is download_many. Transfer, resume, locking and verification definitions are AST-identical.",
+    "Fixtures cover one initial file per host, fair startup within the global bound, one trial at a time, aggregate throughput gain, retaining the last effective limit, unrelated completion and host-local retry."
+  ],
+  "scope": "Download scheduling and progress, plus the previously audited GPU runtime recovery for its older source. Local fixtures do not measure production transfer rates."
+}

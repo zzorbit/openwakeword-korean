@@ -1,11 +1,12 @@
 """Adaptive scheduling must not mistake local verification for network work."""
+from collections import Counter, deque
 import hashlib
 import threading
 
 import pytest
 import requests
 
-from korean_openwakeword.downloads import download_checked, download_many, download_partial
+from korean_openwakeword.downloads import _DownloadAdmission, download_checked, download_many, download_partial
 
 
 class Response:
@@ -70,7 +71,7 @@ def test_manual_workers_above_the_previous_limit_are_fixed(monkeypatch, kind):
     assert all(record["download_mode"] == "fixed" and record["target_workers"] == 5 for record in records)
 
 
-def test_auto_starts_distinct_groups_before_admitting_more_of_one_group(monkeypatch):
+def test_auto_starts_one_file_per_host_before_admitting_more_of_any_host(monkeypatch):
     monkeypatch.setenv("KOWW_DOWNLOAD_WORKERS", "auto")
     monkeypatch.setenv("KOWW_DOWNLOAD_MAX_WORKERS", "3")
     items = [
@@ -79,6 +80,7 @@ def test_auto_starts_distinct_groups_before_admitting_more_of_one_group(monkeypa
         {"id": "a3", "group": "a", "source_url": "https://one.example/a3"},
         {"id": "b1", "group": "b", "source_url": "https://one.example/b1"},
         {"id": "c1", "group": "c", "source_url": "https://two.example/c1"},
+        {"id": "d1", "group": "d", "source_url": "https://three.example/d1"},
     ]
     first_wave, lock = threading.Barrier(3), threading.Lock()
     started = []
@@ -92,7 +94,7 @@ def test_auto_starts_distinct_groups_before_admitting_more_of_one_group(monkeypa
         return item["id"]
 
     assert download_many(items, worker) == [item["id"] for item in items]
-    assert set(started[:3]) == {"a1", "b1", "c1"}
+    assert set(started[:3]) == {"a1", "c1", "d1"}
 
 
 def test_retry_does_not_hold_open_slots_for_unrelated_origins(monkeypatch):
@@ -102,29 +104,26 @@ def test_retry_does_not_hold_open_slots_for_unrelated_origins(monkeypatch):
         {"id": "retry0", "group": "first", "source_url": "https://retry.example/0"},
         {"id": "retry1", "group": "second", "source_url": "https://retry.example/1"},
         {"id": "healthy0", "group": "healthy", "source_url": "https://healthy.example/0"},
-        {"id": "retry2", "group": "third", "source_url": "https://retry.example/2"},
         {"id": "healthy1", "group": "healthy", "source_url": "https://healthy.example/1"},
     ]
-    first_wave, lock = threading.Barrier(3), threading.Lock()
-    retry_observed, replacement_started = threading.Event(), threading.Event()
-    started, records = [], []
+    first_wave = threading.Barrier(2)
+    retry_observed, replacement_started, retry_finished = (threading.Event() for _ in range(3))
+    records = []
 
     def worker(item, report):
         name = item["id"]
-        with lock:
-            started.append(name)
-            in_first_wave = len(started) <= 3
-        if in_first_wave:
+        if name in {"retry0", "healthy0"}:
             first_wave.wait(timeout=5)
         if name == "retry0":
             report({"phase": "retry"})
             assert replacement_started.wait(timeout=5), "An unrelated origin should keep filling available slots"
-        elif name.startswith("healthy"):
+            retry_finished.set()
+        elif name == "healthy0":
             assert retry_observed.wait(timeout=5)
-            if not in_first_wave:
-                replacement_started.set()
+        elif name == "healthy1":
+            replacement_started.set()
         else:
-            assert replacement_started.wait(timeout=5), "A retrying origin must not block an unrelated origin"
+            assert retry_finished.is_set(), "Do not admit another file on the same origin during a retry"
         return name
 
     def progress(record):
@@ -138,6 +137,78 @@ def test_retry_does_not_hold_open_slots_for_unrelated_origins(monkeypatch):
     assert records[-1]["verified_count"] == len(items)
 
 
+@pytest.mark.parametrize("extra_bytes", [0, 30 * 1024], ids=["unchanged", "higher"])
+def test_probe_uses_whole_batch_throughput_and_only_adds_one_file(extra_bytes):
+    hosts = ["first", "first", "first", "second", "second"]
+    admission = _DownloadAdmission(hosts, 4)
+    active = Counter({"first": 1, "second": 1})
+    waiting = {"first": deque([(2, 1), (4, 2)]), "second": deque([(3, 4)])}
+    interval_bytes = 60 * 1024
+
+    admission.observe(0, 0, {0, 3}, waiting, active)
+    assert (admission.limit("first"), admission.limit("second")) == (1, 1)
+    admission.observe(3, interval_bytes, {0, 3}, waiting, active)
+    assert (admission.limit("first"), admission.limit("second")) == (2, 1)
+
+    waiting["first"].popleft()
+    active["first"] += 1
+    admission.observe(3, interval_bytes, {0, 1, 3}, waiting, active)
+    admission.observe(6, 2 * interval_bytes + extra_bytes, {0, 1, 3}, waiting, active)
+    assert admission.limit("first") == (2 if extra_bytes else 1)
+    assert admission.limit("second") == 1
+
+    if extra_bytes:
+        admission.retry("second", 6)
+        assert (admission.limit("first"), admission.limit("second")) == (2, 1)
+    else:
+        admission.observe(9, 3 * interval_bytes, {0, 1, 3}, waiting, active)
+        assert (admission.limit("first"), admission.limit("second")) == (1, 1)
+
+
+def test_unproductive_third_file_falls_back_to_two_after_a_successful_trial():
+    admission = _DownloadAdmission(["source"] * 4, 4)
+    active = Counter({"source": 1})
+    waiting = {"source": deque([(1, 1), (2, 2), (3, 3)])}
+
+    admission.observe(0, 0, {0}, waiting, active)
+    admission.observe(3, 60 * 1024, {0}, waiting, active)
+    assert admission.limit("source") == 2
+
+    waiting["source"].popleft()
+    active["source"] = 2
+    admission.observe(3, 60 * 1024, {0, 1}, waiting, active)
+    admission.observe(6, 150 * 1024, {0, 1}, waiting, active)
+    assert admission.limit("source") == 2
+    admission.observe(9, 240 * 1024, {0, 1}, waiting, active)
+    assert admission.limit("source") == 3
+
+    waiting["source"].popleft()
+    active["source"] = 3
+    admission.observe(9, 240 * 1024, {0, 1, 2}, waiting, active)
+    admission.observe(12, 330 * 1024, {0, 1, 2}, waiting, active)
+    assert admission.limit("source") == 2
+
+
+def test_completion_on_another_host_invalidates_in_progress_throughput_comparison():
+    hosts = ["first", "first", "first", "second"]
+    admission = _DownloadAdmission(hosts, 4)
+    active = Counter({"first": 1, "second": 1})
+    waiting = {"first": deque([(2, 1), (3, 2)])}
+    interval_bytes = 60 * 1024
+
+    admission.observe(0, 0, {0, 3}, waiting, active)
+    admission.observe(3, interval_bytes, {0, 3}, waiting, active)
+    assert admission.limit("first") == 2
+
+    waiting["first"].popleft()
+    active["first"] += 1
+    admission.observe(3, interval_bytes, {0, 1, 3}, waiting, active)
+    admission.end_transfer(3)
+    active["second"] -= 1
+    admission.observe(6, 3 * interval_bytes, {0, 1}, waiting, active)
+    assert admission.limit("first") == 1
+
+
 def test_scheduler_changes_admission_without_interrupting_an_active_file(monkeypatch):
     monkeypatch.setenv("KOWW_DOWNLOAD_WORKERS", "auto")
     monkeypatch.delenv("KOWW_DOWNLOAD_MAX_WORKERS", raising=False)
@@ -145,16 +216,22 @@ def test_scheduler_changes_admission_without_interrupting_an_active_file(monkeyp
     records = []
 
     class ScriptedController:
-        def __init__(self, *, ceiling):
-            self.limit, self.reason = 1, "fixture initial"
+        def __init__(self, hosts, max_workers):
+            self.admission_limit, self.reason = 1, "fixture initial"
 
-        def update(self, now, total, **kwargs):
+        def limit(self, host):
+            return self.admission_limit
+
+        def observe(self, now, total, network_files, waiting, active_by_host):
             if total >= 2:
-                self.limit, self.reason = 1, "fixture reduction"
+                self.admission_limit, self.reason = 1, "fixture reduction"
             elif total >= 1:
-                self.limit, self.reason = 2, "fixture growth"
+                self.admission_limit, self.reason = 2, "fixture growth"
 
-    monkeypatch.setattr("korean_openwakeword.downloads.AdaptiveConcurrency", ScriptedController)
+        def end_transfer(self, index):
+            pass
+
+    monkeypatch.setattr("korean_openwakeword.downloads._DownloadAdmission", ScriptedController)
 
     def worker(item, report):
         if item["id"] == "first":
@@ -175,8 +252,9 @@ def test_scheduler_changes_admission_without_interrupting_an_active_file(monkeyp
             assert not first_finished.is_set()
             release_first.set()
 
-    assert download_many([{"id": name} for name in ("first", "second", "third")], worker,
-                         progress=progress) == ["first", "second", "third"]
+    names = ["first", "second", "third"]
+    items = [{"id": name, "source_url": f"https://source.example/{name}"} for name in names]
+    assert download_many(items, worker, progress=progress) == names
     assert any(record["target_workers"] == 2 for record in records)
     assert first_finished.is_set() and records[-1]["completed"]
 

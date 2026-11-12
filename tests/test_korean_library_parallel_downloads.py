@@ -68,9 +68,12 @@ def test_environment_can_select_serial_and_explicit_limit_overrides_it(monkeypat
 @pytest.mark.parametrize("worker_limit", [None, 3])
 def test_failure_stops_new_submissions_and_waits_for_active_files(tmp_path, monkeypatch, worker_limit):
     monkeypatch.delenv("KOWW_DOWNLOAD_WORKERS", raising=False)
-    monkeypatch.delenv("KOWW_DOWNLOAD_MAX_WORKERS", raising=False)
+    monkeypatch.setenv("KOWW_DOWNLOAD_MAX_WORKERS", "3")
     barrier, release = threading.Barrier(3), threading.Event()
     started, records = [], []
+    items = assets(8)
+    for item in items:
+        item["source_url"] = f"https://source-{item['id']}.example/asset"
 
     def worker(item, report):
         index = item["id"]
@@ -89,7 +92,7 @@ def test_failure_stops_new_submissions_and_waits_for_active_files(tmp_path, monk
             release.set()
 
     with pytest.raises(ValueError, match="fixture transfer failed"):
-        download_many(assets(8), worker, progress=progress, max_workers=worker_limit)
+        download_many(items, worker, progress=progress, max_workers=worker_limit)
     assert sorted(started) == ["0", "1", "2"]
     assert (tmp_path / "0.part").read_bytes() == b"resume me"
     assert (tmp_path / "1").is_file() and (tmp_path / "2").is_file()

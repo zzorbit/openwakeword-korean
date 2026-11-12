@@ -1,5 +1,6 @@
 """Checksum-pinned public assets with resumable downloads and no silent approval."""
 from collections import Counter, deque
+from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
@@ -15,7 +16,6 @@ import time
 import requests
 
 from .common import now, read_json, write_json, writer_lock
-from .download_control import AdaptiveConcurrency
 
 
 def _stat_identity(info):
@@ -81,10 +81,131 @@ def _dataset_order(items):
             remaining.append(group)
 
 
+@dataclass(frozen=True)
+class _ThroughputSample:
+    started: float
+    network_bytes: float
+    files: frozenset[int]
+
+
+@dataclass(frozen=True)
+class _HostProbe:
+    host: str
+    index: int
+    started: float
+    baseline_rate: float
+    baseline_files: frozenset[int]
+
+
+class _DownloadAdmission:
+    """Start one file per host and compare batch throughput for each extra file."""
+
+    def __init__(self, hosts, max_workers, *, window_seconds=3.0):
+        self._hosts = hosts
+        self._limits = dict.fromkeys(hosts, 1)
+        self._probe_order = deque(host for host in self._limits if host is not None)
+        self._max_workers = max_workers
+        self._window_seconds = window_seconds
+        self._retry_until = {}
+        self._rejected = set()
+        self._remaining_hosts = frozenset()
+        self._sample = None
+        self._probe = None
+        self.reason = "initial"
+
+    def limit(self, host):
+        probing = self._probe is not None and self._probe.host == host
+        return self._limits[host] + int(probing)
+
+    def _finish_probe(self, reason):
+        self._probe = self._sample = None
+        self.reason = reason
+
+    def retry(self, host, now):
+        self._limits[host] = max(1, self._limits[host] // 2)
+        self._retry_until[host] = now + 15.0
+        self._rejected.discard(host)
+        self._finish_probe("retry")
+
+    def end_transfer(self, index):
+        probe = self._probe
+        if probe and (index == probe.index or index in probe.baseline_files):
+            self._finish_probe("inconclusive")
+        elif self._sample and index in self._sample.files:
+            self._sample = None
+
+    def _rate(self, now, network_bytes, network_files):
+        sample = self._sample
+        if sample is None or sample.files != network_files:
+            self._sample = _ThroughputSample(now, network_bytes, network_files)
+            return None
+        elapsed = now - sample.started
+        if elapsed >= self._window_seconds:
+            return (network_bytes - sample.network_bytes) / elapsed
+        return None
+
+    def _observe_probe(self, now, network_bytes, network_files):
+        probe = self._probe
+        trial_files = probe.baseline_files | {probe.index}
+        if (not probe.baseline_files <= network_files <= trial_files
+                or now - probe.started >= 4 * self._window_seconds):
+            self._finish_probe("inconclusive")
+        elif network_files == trial_files:
+            rate = self._rate(now, network_bytes, network_files)
+            if rate is None:
+                return
+            if rate >= probe.baseline_rate * 1.10:
+                self._limits[probe.host] += 1
+                self._finish_probe("gain")
+                self._sample = _ThroughputSample(now, network_bytes, network_files)
+            else:
+                self._rejected.add(probe.host)
+                self._finish_probe("no_gain")
+
+    def observe(self, now, network_bytes, network_files, waiting, active_by_host):
+        network_files = frozenset(network_files)
+        if self._probe:
+            self._observe_probe(now, network_bytes, network_files)
+            return
+
+        # A provider finishing changes the capacity available to everyone else.
+        remaining = frozenset(waiting) | {host for host, active in active_by_host.items() if active}
+        if remaining != self._remaining_hosts:
+            self._remaining_hosts = remaining
+            self._rejected.clear()
+            self._sample = None
+
+        # Drain any extra file still running after a rejected trial or retry.
+        if (sum(active_by_host.values()) >= self._max_workers
+                or any(active > self._limits[host] for host, active in active_by_host.items())):
+            self._sample = None
+            return
+
+        network_by_host = Counter(self._hosts[index] for index in network_files)
+        candidates = {
+            host for host in waiting if host is not None and host not in self._rejected
+            and now >= self._retry_until.get(host, -math.inf)
+            and active_by_host[host] == network_by_host[host] == self._limits[host]
+        }
+        if not candidates:
+            self._sample = None
+            return
+
+        rate = self._rate(now, network_bytes, network_files)
+        if rate is None or network_bytes - self._sample.network_bytes < 16 * 1024:
+            return
+        host = next(host for host in self._probe_order if host in candidates)
+        self._probe_order.rotate(-self._probe_order.index(host) - 1)
+        self._probe = _HostProbe(host, waiting[host][0][1], now, rate, network_files)
+        self._sample = None
+        self.reason = "probe"
+
+
 def download_many(items, worker, *, progress=None, max_workers=None):
     """Run independent whole-file downloads with bounded concurrency.
 
-    Automatic admission is fair across datasets and adapts per source host.
+    Automatic admission starts one file per source host. It tries one additional
+    file at a time and retains the higher limit when total network throughput improves.
     Explicit worker counts retain fixed concurrency and input admission order.
     Results are returned in input order in both modes.
 
@@ -113,8 +234,9 @@ def download_many(items, worker, *, progress=None, max_workers=None):
         raise ValueError("Pinned asset size must be a positive integer")
     byte_total = sum(sizes) if all(size is not None for size in sizes) else None
     available, results = [0] * len(items), [None] * len(items)
-    received, reading, writing = ([0.0] * len(items) for _ in range(3))
+    received = [0.0] * len(items)
     networking = [False] * len(items)
+    transferring = set()
     downloaded = [False] * len(items)
     file_views = [{"id": item["id"], "label": item.get("label", item["id"]),
                    "group": item.get("group", item["id"]),
@@ -132,55 +254,35 @@ def download_many(items, worker, *, progress=None, max_workers=None):
     for priority, index in enumerate(order):
         waiting.setdefault(hosts[index], deque()).append((priority, index))
     active_by_host = Counter()
-    controllers = {host: AdaptiveConcurrency(ceiling=max_workers) for host in waiting} if automatic else {}
-    indexes_by_host = {host: [index for _, index in entries] for host, entries in waiting.items()}
-    reason = "initial" if automatic else "fixed"
+    admission = _DownloadAdmission(hosts, max_workers) if automatic else None
 
     def target():
-        if not automatic:
+        if admission is None:
             return max_workers
-        remaining_capacity = sum(controller.limit for host, controller in controllers.items()
+        remaining_capacity = sum(admission.limit(host) for host in active_by_host.keys() | waiting.keys()
                                  if host in waiting or active_by_host[host])
         return max(1, min(max_workers, remaining_capacity))
 
     def next_ready():
-        # Skip a saturated host without delaying the next eligible dataset.
-        eligible = (entries[0] for host, entries in waiting.items()
-                    if not automatic or active_by_host[host] < controllers[host].limit)
-        chosen = min(eligible, default=None)
+        # Give a host its first file before adding work to an already served host.
+        eligible = ((host, entries[0]) for host, entries in waiting.items()
+                    if admission is None or active_by_host[host] < admission.limit(host))
+        chosen = min(eligible, key=lambda entry: (
+            entry[0] in active_by_host, active_by_host[entry[0]] > 0, entry[1][0]), default=None)
         if chosen is None:
             return None
-        _, index = chosen
-        host = hosts[index]
+        host, (_, index) = chosen
         waiting[host].popleft()
         if not waiting[host]:
             del waiting[host]
         return index
 
-    def update_control(host, timestamp=None, *, retry=False):
-        nonlocal reason
-        controller = controllers.get(host)
-        if controller is None:
-            return
-        previous = controller.limit, controller.reason
-        indexes = indexes_by_host[host]
-        controller.update(
-            time.monotonic() if timestamp is None else timestamp,
-            sum(received[index] for index in indexes),
-            network_active=sum(networking[index] for index in indexes),
-            read_seconds=sum(reading[index] for index in indexes),
-            write_seconds=sum(writing[index] for index in indexes),
-            retry=retry,
-            backlog=host in waiting,
-        )
-        if retry or (controller.limit, controller.reason) != previous:
-            reason = controller.reason
-
     def emit(index=None, event=None, *, completed=False):
         nonlocal last_emit, last_signature
         if progress:
             timestamp = time.monotonic()
-            signature = (target(), verified, len(pending), completed, (event or {}).get("phase"))
+            reason = admission.reason if admission is not None else "fixed"
+            signature = (target(), verified, len(pending), completed, (event or {}).get("phase"), reason)
             if timestamp - last_emit < .25 and signature == last_signature:
                 return
             last_emit, last_signature = timestamp, signature
@@ -211,14 +313,21 @@ def download_many(items, worker, *, progress=None, max_workers=None):
                          else event.get("done"))
                 if isinstance(count, (int, float)) and not isinstance(count, bool) and count >= 0:
                     available[index] = max(available[index], min(count, sizes[index]) if sizes[index] else count)
-            for key, values in (("network_bytes", received), ("read_seconds", reading), ("write_seconds", writing)):
-                value = event.get(key)
-                if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
-                    values[index] = max(values[index], value)
+            previous_bytes = received[index]
+            value = event.get("network_bytes")
+            if (isinstance(value, (int, float)) and not isinstance(value, bool)
+                    and math.isfinite(value) and value >= 0):
+                received[index] = max(received[index], value)
+            was_networking = networking[index]
             if isinstance(event.get("network_active"), bool):
                 networking[index] = event["network_active"]
             elif event.get("phase") in ("hash", "retry"):
                 networking[index] = False
+            if not networking[index]:
+                transferring.discard(index)
+            elif received[index] > previous_bytes:
+                # A request can announce itself before the first bytes arrive.
+                transferring.add(index)
             view = file_views[index]
             phase = event.get("phase")
             view["state"] = {"download": "downloading", "hash": "verifying",
@@ -242,7 +351,11 @@ def download_many(items, worker, *, progress=None, max_workers=None):
                     if (isinstance(value, (int, float)) and not isinstance(value, bool)
                             and math.isfinite(value) and value >= 0):
                         view[key] = value
-            update_control(hosts[index], event.get("observed_at"), retry=event.get("phase") == "retry")
+            if admission is not None:
+                if phase == "retry":
+                    admission.retry(hosts[index], time.monotonic())
+                elif was_networking and not networking[index]:
+                    admission.end_transfer(index)
             emit(index, event)
 
     def run(index):
@@ -274,7 +387,9 @@ def download_many(items, worker, *, progress=None, max_workers=None):
                     host = hosts[index]
                     active_by_host[host] -= 1
                     networking[index] = False
-                    update_control(host)
+                    transferring.discard(index)
+                    if admission is not None:
+                        admission.end_transfer(index)
                     try:
                         results[index] = future.result()
                     except BaseException as error:
@@ -292,7 +407,10 @@ def download_many(items, worker, *, progress=None, max_workers=None):
                                    else not downloaded[index]))
                         file_views[index].update(state="reused" if reused else "complete",
                                                  done=available[index], bytes_per_second=None, eta_seconds=None)
-                if done:
+                reason = admission.reason if admission is not None else None
+                if admission is not None and not failed.is_set():
+                    admission.observe(time.monotonic(), sum(received), transferring, waiting, active_by_host)
+                if done or (admission is not None and admission.reason != reason):
                     emit()
             drain()
         except BaseException:

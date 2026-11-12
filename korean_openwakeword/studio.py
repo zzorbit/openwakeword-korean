@@ -523,13 +523,48 @@ _LEGACY_COMPATIBLE_CONTRACTS = {
 # Final release fingerprints and the preserved-input equivalence receipt are
 # filled only after the complete source tree has been frozen and tested.
 _AUDITED_ACQUISITION_UPDATES = {
-    # Provider scheduling changes admission order only; file pins and transfer code are unchanged.
+    # Exact CRLF and LF source/target pairs in validation/aggregate_download_admission_v1.json.
+    "4c6fdddc4349ac998869657de3066a4c143a36369275583ae6dd4fe1fd8b6978": {
+        "source_stages_sha256": "56910287134bf8f3688743b6f11c54f6bf3dc5c14b1778e84f3dd6357f79d4dd",
+        "target_computation_sha256": "b8d1c9b40abb91dbbe1500a6ab922f769e08bafbff5e375e2260e4cee328e829",
+        "target_stages_sha256": "8589b8bc6d86d7e04e33bdefbbb47a1216265092d074befd234cd62d6cdcd734",
+        "changed_files": ('downloads.py',),
+        "evidence_sha256": "b5797453e85314beb686dbc0eacc4aef4cd25ef6403de513a72898830896518b",
+    },
     "0002ac6e810f3656cd0ba4400a9f434b088e936c1f7f69ffb1311e251ca79a3e": {
         "source_stages_sha256": "ba58808e7fa0de597f6a97b8b60800272b403d0887259b6b63ddbacdc691dfdf",
-        "target_computation_sha256": "4c6fdddc4349ac998869657de3066a4c143a36369275583ae6dd4fe1fd8b6978",
-        "target_stages_sha256": "56910287134bf8f3688743b6f11c54f6bf3dc5c14b1778e84f3dd6357f79d4dd",
-        "changed_files": ("downloads.py",),
-        "evidence_sha256": "57a2a7ee41da05c8791863cccc3331ea2b1e6665fbb5fba765349639ac58bb54",
+        "target_computation_sha256": "b8d1c9b40abb91dbbe1500a6ab922f769e08bafbff5e375e2260e4cee328e829",
+        "target_stages_sha256": "8589b8bc6d86d7e04e33bdefbbb47a1216265092d074befd234cd62d6cdcd734",
+        "changed_files": ('downloads.py',),
+        "evidence_sha256": "b5797453e85314beb686dbc0eacc4aef4cd25ef6403de513a72898830896518b",
+    },
+    "1098e002acf28cfa8d863b0dd6701a1b3c366de19f3267ef7c3eaf380bef402f": {
+        "source_stages_sha256": "5bb03ab00820d47d6d0bd4bd6cb20aa107c88533c0b543b567aefe672536a8c3",
+        "target_computation_sha256": "b8d1c9b40abb91dbbe1500a6ab922f769e08bafbff5e375e2260e4cee328e829",
+        "target_stages_sha256": "8589b8bc6d86d7e04e33bdefbbb47a1216265092d074befd234cd62d6cdcd734",
+        "changed_files": ('downloads.py', 'gpu_runtime_install.py'),
+        "evidence_sha256": "b5797453e85314beb686dbc0eacc4aef4cd25ef6403de513a72898830896518b",
+    },
+    "688c877c6a38656dae27c34a209e8623c7a171277aba91a5973e7f65986b9183": {
+        "source_stages_sha256": "7b464f3270916a7e65359731791f8d636514156b77ab6bd92b0b3e23ec12a720",
+        "target_computation_sha256": "5adf2d4c54e21988777354b18cbaec0ed7b41426c7b397bd8cd8066061fe99da",
+        "target_stages_sha256": "35990c7529bad56c4ae9605f2fd3abc050b916dc271063b873f96575e90dad2e",
+        "changed_files": ('downloads.py',),
+        "evidence_sha256": "b5797453e85314beb686dbc0eacc4aef4cd25ef6403de513a72898830896518b",
+    },
+    "cc89568eca719ab7a44cd752ea14a1d9a5929c2548b70c71b3158eb3d8e90e6e": {
+        "source_stages_sha256": "f17e93b18f2858bb895d47dc58706373a8894d3919a132929accc472ffbd75ed",
+        "target_computation_sha256": "5adf2d4c54e21988777354b18cbaec0ed7b41426c7b397bd8cd8066061fe99da",
+        "target_stages_sha256": "35990c7529bad56c4ae9605f2fd3abc050b916dc271063b873f96575e90dad2e",
+        "changed_files": ('downloads.py',),
+        "evidence_sha256": "b5797453e85314beb686dbc0eacc4aef4cd25ef6403de513a72898830896518b",
+    },
+    "7ce9423ef77c82e8517ec2218298ba4dac15d86bda010ea7ee8f84fbc306193d": {
+        "source_stages_sha256": "9c174445612be55c8f1918b4f28d85e53cfe40c835a900fb4beae63937584c1d",
+        "target_computation_sha256": "5adf2d4c54e21988777354b18cbaec0ed7b41426c7b397bd8cd8066061fe99da",
+        "target_stages_sha256": "35990c7529bad56c4ae9605f2fd3abc050b916dc271063b873f96575e90dad2e",
+        "changed_files": ('downloads.py', 'gpu_runtime_install.py'),
+        "evidence_sha256": "b5797453e85314beb686dbc0eacc4aef4cd25ef6403de513a72898830896518b",
     },
     # Exact non-material VoiceDesign option pin exclusion; all source evidence stays frozen.
     '8ec72f66469ab1ebbc7a58202bc39e68d75d0d8dcae4a1fbdd9e16dc220b9012': {'source_stages_sha256': '37e5396812e3c28715d2818a51fa120c17834bcbdd4ef7f3fd2400601ae29c34', 'target_computation_sha256': '1770934c2cf9b6e4e84edd532d1591991836f69604a7930cb6da6f3c199917f6', 'target_stages_sha256': '0e766b081f2651106fcb613fcbfd0208c4527a2974714e25068c6e25350e3a8d', 'changed_files': ['material_policy.py'], 'evidence_sha256': '807cb103d36fd144d7834ca803c0e1d3d3d8e89d941f3496723fa60ac54ef26f'},
@@ -542,14 +577,6 @@ _AUDITED_ACQUISITION_UPDATES = {
     },
     # Exact 0.24.0 -> 0.24.1 original-owner validation repair.
     "41e7cbd1606ebbed420f5b07f971296207d263ed878acbab3d26a7b388f9edec": {'source_stages_sha256': 'f13dad4d451cefc5269ff1f1bad5e9f4a740bbd97cc7b25298b51c67fa5dca7e', 'target_computation_sha256': '190472c48c47978effa8a0360fd56287ca72c8c250e321619bbe00984f518ccb', 'target_stages_sha256': '24b984a10bd10d23663ef9e463286730fbd51ea0f658235b363e0a09b2cdf966', 'changed_files': ('material_policy.py',), 'evidence_sha256': '30765776c7006abc7630249662f36039bbf2f7080d520dc412d43b2a9e98e0b6'},
-    # Bounded-memory Windows GPU publication and verified staging recovery.
-    "1098e002acf28cfa8d863b0dd6701a1b3c366de19f3267ef7c3eaf380bef402f": {
-        "source_stages_sha256": "5bb03ab00820d47d6d0bd4bd6cb20aa107c88533c0b543b567aefe672536a8c3",
-        "target_computation_sha256": "0002ac6e810f3656cd0ba4400a9f434b088e936c1f7f69ffb1311e251ca79a3e",
-        "target_stages_sha256": "ba58808e7fa0de597f6a97b8b60800272b403d0887259b6b63ddbacdc691dfdf",
-        "changed_files": ("gpu_runtime_install.py",),
-        "evidence_sha256": "002f80afe978e87b39c16094bd8ad18d9179427fd5435a9593de3474388e6d5d",
-    },
     # Exact GPU-required evaluation / Windows publication repair.
     "190472c48c47978effa8a0360fd56287ca72c8c250e321619bbe00984f518ccb": {'source_stages_sha256': '24b984a10bd10d23663ef9e463286730fbd51ea0f658235b363e0a09b2cdf966', 'target_computation_sha256': '93eb771702f0dce745787f0e1493d0150118ea652896d22521c649f08e03f0a1', 'target_stages_sha256': '8f4ca49e07e13b564543574f39649dd0ea725267152bb5fd017bcc35dffa82d3', 'changed_files': ('evaluation_backend.py', 'gpu_runtime_install.py', 'studio_steps.py'), 'evidence_sha256': '9010a49f2879a605120a816d6e6847ec97428da7439856ad3f2fe8278b10afd4'},
 }
