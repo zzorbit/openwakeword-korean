@@ -26,6 +26,18 @@ def _file_identity(path):
     return _stat_identity(Path(path).stat())
 
 
+def _verification_path_key(resolved_path):
+    # Windows can preserve the extended prefix on one spelling of the same file.
+    # Normalize only drive and UNC forms. File identity is still checked separately.
+    key = str(resolved_path)
+    if os.name == "nt" and key.startswith("\\\\?\\"):
+        if key[4:8].lower() == "unc\\":
+            return "\\\\" + key[8:]
+        if key[5:7] == ":\\":
+            return key[4:]
+    return key
+
+
 class VerificationCache:
     """Hash evidence owned by one preparation call, never a persistent trust cache."""
     def __init__(self):
@@ -39,7 +51,7 @@ class VerificationCache:
 
     def _checksum(self, path, algorithm, observed_identity):
         with self._lock:
-            checksum, identity = self._verified.get((str(path), algorithm), (None, None))
+            checksum, identity = self._verified.get((_verification_path_key(path), algorithm), (None, None))
         return checksum if identity == observed_identity else None
 
     def verified_sha256(self, path, observed_identity):
@@ -50,7 +62,7 @@ class VerificationCache:
         if _file_identity(path) != observed_identity:
             raise ValueError("File changed during checksum verification")
         with self._lock:
-            self._verified[(str(path), algorithm)] = (expected, observed_identity)
+            self._verified[(_verification_path_key(path), algorithm)] = (expected, observed_identity)
 
 
 def _download_host(item):

@@ -1,8 +1,10 @@
 """HTTP resume/corruption handling without downloading the production corpus."""
 import hashlib
+import os
+from pathlib import Path
 import pytest
 import requests
-from korean_openwakeword.downloads import download_checked, dataset_catalog
+from korean_openwakeword.downloads import VerificationCache, download_checked, dataset_catalog, verify_checksum
 
 
 class Response:
@@ -35,6 +37,22 @@ def test_download_and_reuse(tmp_path, monkeypatch, resume):
     assert path.read_bytes() == payload and not first["content_approved"]
     monkeypatch.setattr("korean_openwakeword.downloads.requests.get", lambda *a, **k: pytest.fail("Reused asset must not redownload"))
     assert download_checked("https://example.org/fixture", path, sha, len(payload))["reused"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows extended path aliases")
+def test_verified_download_cache_accepts_both_windows_path_spellings(tmp_path):
+    output = (tmp_path / "asset").resolve()
+    extended = Path("\\\\?\\" + str(output))
+    payload = b"verified public archive"
+    checksum = hashlib.sha256(payload).hexdigest()
+    output.write_bytes(payload)
+    cache = VerificationCache()
+
+    verify_checksum(extended, "sha256", checksum, verification_cache=cache)
+    assert cache.matches(output, "sha256", checksum)
+
+    output.write_bytes(payload + b" changed")
+    assert not cache.matches(output, "sha256", checksum)
 
 
 def test_server_ignoring_range_restarts_safely(tmp_path, monkeypatch):
