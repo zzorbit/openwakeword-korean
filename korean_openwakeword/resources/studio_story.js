@@ -3,6 +3,7 @@
 (() => {
   const definitions = [
     ["entry", "호출어 입력", "‘보라야’와 같은 한국어 호출어를 입력해 주세요."],
+    ["tools", "학습 도구 준비", "CPU 또는 NVIDIA GPU에서 학습에 사용할 실행 환경을 준비합니다."],
     ["scale", "학습 규모 선택", "사용 목적과 환경에 맞는 학습 규모를 선택하세요."],
     ["materials", "준비 자료", "학습과 평가에 사용할 자료의 종류와 용량을 확인하세요."],
     ["downloads", "자료 다운로드", "학습과 평가에 필요한 자료를 내려받고 검사합니다."],
@@ -22,7 +23,7 @@
     ["microphone", "마이크 시험", "마이크로 호출어를 말하고 모델의 반응을 확인해 주세요."],
   ];
   const mapping = {
-    frontend: "downloads", data: "downloads", data_download: "downloads", data_review: "downloads", data_connect: "downloads",
+    frontend: "tools", data: "downloads", data_download: "downloads", data_review: "downloads", data_connect: "downloads",
     references: "voices", references_review: "voices", pilot: "pronunciation", pilot_review: "pronunciation",
     generate: "positive-generation", positives: "positive-generation", positive_review: "pronunciation", hard_phrases: "phrases",
     hard_pilot: "hard-review", hard_generation: "hard-generation", hard_review: "hard-review", hard_connect: "hard-review",
@@ -75,6 +76,7 @@
     return mergedReferenceReview(project) ? screens.filter(id => id !== "voices") : screens;
   }
   function stageScreen(project, id) {
+    if (id === "frontend" && project?.dependency_setup_selected === true && project.input?.kind !== "dependency_setup") return "downloads";
     if (mergedReferenceReview(project) && ["references", "references_review"].includes(id)) return "voice-listening";
     if (id === "hard_connect" && sampleFirstHardReview(project)) return "hard-generation";
     if (twoPhasePositiveReview(project)) {
@@ -85,6 +87,7 @@
   }
   const downloadCheckpoint = project => project?.download_checkpoint?.policy === "explicit_download_v1" ? project.download_checkpoint : null;
   const navigationCheckpoint = project => project?.navigation_checkpoint?.policy === "explicit_story_v1" ? project.navigation_checkpoint : null;
+  // Tool preparation and downloads share the saved worker checkpoint.
   const navigationStart = [
     ["downloads", ["frontend", "data_download", "data_review", "data_connect"]],
     ["voices", ["references", "references_review"]],
@@ -124,30 +127,20 @@
       .every(id => project.stages?.some(record => record.id === id && done(record.status)));
   }
   function frontier(project) {
-    if (!project) return 2;
     const screens = displayOrder(project);
+    if (!project) return screens.indexOf("materials");
     if (done(project.status)) return screens.indexOf((project.results?.mic_url || project.mic_url) ? "microphone" : "results");
     if (referencePreparationReached(project) && project.reference_preparation.ready !== true) return screens.indexOf("voices");
     // Only actual current/completed backend stages unlock later screens.
-    const current = stageStep(project), position = Math.max(3, screens.indexOf(current));
+    const current = stageStep(project), position = Math.max(screens.indexOf("materials"), screens.indexOf(current));
     const navigation = navigationCheckpoint(project);
     return current === "voices" && completedNavigationStep(project, "voices")
       && (!navigation || (navigation.state === "awaiting_next" && project.status === "paused")) ? screens.indexOf("voice-listening") : position;
   }
   const titles = { check: "동작 확인용", trial: "시험 모델용", production: "상용 모델용" };
   const shortDescriptions = { check: "라이브러리 동작 확인", trial: "호출 성능 비교·시험", production: "많은 자료로 본격 학습" };
+  const toolBackends = { cpu: ["CPU", "NVIDIA GPU 없이 실행"], cu128: ["NVIDIA GPU", "CUDA 12.8 사용"] };
   const count = value => Number.isFinite(value) ? value.toLocaleString("ko-KR") : "—";
-  function renderScaleSummary(card, settings) {
-    const summary = card.querySelector(".preset-summary");
-    if (!summary) return;
-    const originals = settings?.originals ?? settings?.positive_originals;
-    const updates = settings?.updates;
-    const details = [];
-    if (Number.isSafeInteger(originals) && originals > 0) details.push(`호출어 원본 ${count(originals)}개`);
-    if (Number.isSafeInteger(updates) && updates > 0) details.push(`모델당 학습 ${count(updates)}회`);
-    const text = details.join(" · ");
-    if (summary.textContent !== text) summary.textContent = text;
-  }
   function pageCapacity(items, available, rowHeight, columns = 1, gap = 12, pagerSpace = 44) {
     if (!items) return 1;
     const rows = Math.ceil(items / columns);
@@ -241,6 +234,16 @@
     const savedWord = node("input"); savedWord.id = "story-saved-wakeword";
     savedWord.type = "text"; savedWord.readOnly = true;
     savedWord.setAttribute("aria-label", "호출어"); savedEntry.append(savedWord);
+    const toolPicker = node("fieldset", undefined, "story-tool-options");
+    toolPicker.id = "story-tool-picker"; toolPicker.append(node("legend", "연산 장치", "sr-only"));
+    const toolInputs = new Map();
+    for (const [backend, [label, description]] of Object.entries(toolBackends)) {
+      const card = node("label", undefined, "dependency-option"), radio = node("input");
+      radio.id = `story-tool-${backend}`; radio.type = "radio"; radio.name = "setup-backend"; radio.value = backend;
+      radio.addEventListener("change", () => { if (radio.checked) setupBackend = backend; });
+      card.append(radio, node("strong", label), node("span", description));
+      toolInputs.set(backend, radio); toolPicker.append(card);
+    }
     const scale = node("div", undefined, "story-scale"); scale.append($("presets"));
     const savedScale = node("div", undefined, "story-scale story-saved-scale");
     const savedPresets = node("div", undefined, "preset-grid"); savedPresets.id = "story-saved-presets";
@@ -249,21 +252,24 @@
       const card = node("label", undefined, "preset"), radio = node("input");
       radio.type = "radio"; radio.name = "saved-preset"; radio.value = id; radio.disabled = true;
       const line = node("div"); line.append(radio, node("span", title, "preset-title"));
-      card.append(line, node("p", shortDescriptions[id], "preset-description"), node("p", "", "preset-summary"));
+      card.append(line, node("p", shortDescriptions[id], "preset-description"));
       savedPresets.append(card);
     }
     const materials = node("div", undefined, "story-materials");
     const materialsTabs = node("div", undefined, "story-material-tabs"); materialsTabs.setAttribute("role", "tablist"); materialsTabs.setAttribute("aria-label", "자료 구분");
     const materialColumns = node("div", undefined, "story-material-columns"); materialColumns.tabIndex = 0; materialColumns.setAttribute("aria-label", "준비 자료 목록");
+    const toolMaterials = node("section", undefined, "story-tool-materials"); toolMaterials.id = "story-tool-materials"; toolMaterials.hidden = true;
+    toolMaterials.setAttribute("aria-labelledby", "story-tool-materials-title");
     const locationStatus = node("div", undefined, "story-location-status"); locationStatus.hidden = true;
     const locationFeedback = node("p"); locationFeedback.setAttribute("role", "status");
     const locationRetry = button("다시 확인", "story-secondary", () => bridge.retryLocation()); locationRetry.hidden = true;
     locationStatus.append(locationFeedback, locationRetry);
-    materials.append(materialsTabs, materialColumns, locationStatus);
+    materials.append(materialsTabs, materialColumns, toolMaterials, locationStatus);
     const live = node("div", undefined, "story-live");
     const statusCard = document.querySelector(".current-card");
     const liveSummary = node("div", undefined, "story-live-summary");
     const downloadActivity = node("p", undefined, "story-history-note");
+    downloadActivity.id = "story-download-activity";
     const downloadActivityLabel = node("span"), downloadActivityIndicator = node("i", undefined, "story-progress-indicator");
     downloadActivity.hidden = true;
     Object.assign(downloadActivity.style, { minHeight: "22px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" });
@@ -357,7 +363,7 @@
     live.append(migrationNote, voiceCounts, liveSummary, downloadActivity, downloads, review, input, results, historic, evaluationPlan, listenActions);
     // Core forms and event bindings retain their IDs when moved into chapters.
     // Inactive controls stay connected so their drafts survive navigation.
-    content.append(entry, savedEntry, scale, savedScale, materials, live, voiceListening);
+    content.append(entry, savedEntry, toolPicker, scale, savedScale, materials, live, voiceListening);
     const footer = node("div", undefined, "story-actions");
     const back = button("이전", "story-button", () => navigate(screens.indexOf(current) - 1));
     const operation = button("일시정지", "story-button story-operation", controlJob); operation.hidden = true;
@@ -399,7 +405,8 @@
       positiveFrame.removeAttribute("src"); positiveFrame.hidden = true;
       render();
     });
-    let current = "entry", projectKey = "", maximum = 2, setupReached = 0, following = true, transitioning = false, transitionSession = null, creationPending = false;
+    let current = "entry", projectKey = "", maximum = frontier(null), setupReached = 0, following = true, transitioning = false, transitionSession = null, creationPending = false;
+    let setupBackend = null;
     let hardConnectionIntent = null;
     const connectingHard = project => current === "hard-review" && stageId(project) === "hard_connect"
       && running(project?.status) && !project.review && !project.input;
@@ -1076,20 +1083,26 @@
       const backwards = position < screens.indexOf(current), target = screens[position];
       if (!automatic) hardConnectionIntent = null;
       const session = beginTransition(backwards);
-      following = automatic || (state.project && position === frontier(state.project));
+      following = automatic || (state.project && (target === stageStep(state.project) || position === frontier(state.project)));
       void runTransition(session, undefined, () => { current = target; historyPage = 0; historyKey = ""; });
       return true;
     }
     function humanGate(project) { return Boolean(project?.review || project?.input || (project?.migration && !project.process_alive)); }
+    function draftBackend(state) {
+      return setupBackend || (state.dependencySetup?.recommended_backend === "cu128" ? "cu128" : "cpu");
+    }
+    function selectingTools(project) {
+      return current === "tools" && project?.status === "waiting_input" && stageStep(project) === current
+        && project.input?.kind === "dependency_setup" && typeof bridge.input === "function";
+    }
     function editingPhrases(project) {
       return Boolean(project && current === "phrases" && stageId(project) === "hard_phrases"
         && project.status === "waiting_input" && project.input?.kind === "hard_phrases"
         && !project.review && !project.migration && project.process_alive !== true && typeof bridge.input === "function");
     }
-    function canStartDownloads(project) {
+    function canStartDataPreparation(project) {
       const navigation = navigationCheckpoint(project), download = downloadCheckpoint(project);
-      return Boolean(project && current === "downloads" && stageStep(project) === "downloads"
-        && !humanGate(project) && !completedStep(project, "downloads")
+      return Boolean(project && !humanGate(project) && !completedStep(project, current)
         && (!navigation || navigation.state === "awaiting_start") && (!download || download.state === "awaiting_start")
         && ["ready", "idle", "pending", "created"].includes(project.status));
     }
@@ -1167,8 +1180,8 @@
         || current === "voice-listening" && !(mergedReferenceReview(project) && ["references", "references_review"].includes(stageId(project)))) return "";
       if (running(project.status)) return "pause";
       if (["paused", "failed", "error", "interrupted"].includes(project.status)) return "resume";
-      if (canStartDownloads(project)) return "start";
-      if (current !== "downloads" && ["ready", "idle", "pending", "created"].includes(project.status)) return "start";
+      if (current === "tools" || current === "downloads") return canStartDataPreparation(project) ? "start" : "";
+      if (["ready", "idle", "pending", "created"].includes(project.status)) return "start";
       return "";
     }
     async function controlJob() {
@@ -1191,10 +1204,17 @@
           // Polls may receive the created model meanwhile, but must not reveal
           // it early or allow another creation request.
           const session = beginTransition(false); creationPending = true;
-          await runTransition(session, (async () => bridge.create({ navigationCheckpoints: true }))());
+          await runTransition(session, (async () => bridge.create({
+            navigationCheckpoints: true, dependencyBackend: draftBackend(state),
+          }))());
           return;
         }
         navigate(position + 1); return;
+      }
+      if (selectingTools(project)) {
+        following = true;
+        await bridge.input();
+        return;
       }
       if (reviewingReferenceGroup(project)) {
         syncReferenceFrame();
@@ -1274,6 +1294,19 @@
       openDialog(listenDialog);
     }
     function setView(view, mode) { if (!listening) bridge.view(view, mode); }
+    function renderToolMaterials(backend, packages, evaluationPackages) {
+      toolMaterials.hidden = !toolBackends[backend] || !Array.isArray(packages) || !packages.length;
+      if (toolMaterials.hidden) return;
+      const heading = node("h2", "설치 항목"); heading.id = "story-tool-materials-title";
+      const device = node("strong", toolBackends[backend][0]);
+      toolMaterials.replaceChildren(heading, node("p", packages.join(" · ")));
+      heading.append(" · ", device);
+      const separateEvaluation = Array.isArray(evaluationPackages) ? evaluationPackages.filter(name => !packages.includes(name)) : [];
+      if (separateEvaluation.length) {
+        const evaluation = node("p"); evaluation.append(node("strong", "GPU 평가 환경"), " · ", separateEvaluation.join(" · "));
+        toolMaterials.append(evaluation);
+      }
+    }
     function renderMaterials() {
       if (!materialData) return;
       const small = matchMedia("(max-width:760px), (max-height:700px)").matches;
@@ -1553,9 +1586,9 @@
     const downloadGroupOrder = ["generic_negative", "zeroth", "audioset", "musan", "seoul", "fsd50k", "common_rir", "official_music", "mit_rir"];
     let downloadRowViews = new Map();
     const downloadList = node("div", undefined, "story-history-rows");
-    function renderDownloadActivity(project, visible) {
-      downloadActivity.hidden = !visible;
-      if (!visible) return;
+    function renderDownloadActivity(project, active, toolsComplete) {
+      downloadActivity.hidden = !active && !toolsComplete;
+      if (downloadActivity.hidden) return;
       const progress = project.progress || {}, stage = stageId(project);
       const defaults = { frontend: "학습·평가 실행환경을 확인하고 있습니다...", data_download: "자료 파일을 준비하고 있습니다...",
         data_review: "학습·평가 자료를 검사하고 있습니다...", data_connect: "검증한 자료를 연결하고 평가용 배경 음원을 준비하고 있습니다..." };
@@ -1563,10 +1596,10 @@
         ? progress.label.trim().slice(0, 240) : defaults[stage] || "자료 준비 상태를 확인하고 있습니다...";
       const numeric = Number.isFinite(progress.done) && progress.done >= 0 && Number.isFinite(progress.total) && progress.total > 0
         && !/단계|bytes|바이트/.test(progress.unit || "");
-      const text = label + (numeric ? ` · ${progressAmount(progress.done, progress.total, progress.unit || "개")}` : "")
+      const text = toolsComplete ? "학습 도구 준비를 마쳤습니다." : label + (numeric ? ` · ${progressAmount(progress.done, progress.total, progress.unit || "개")}` : "")
         + (stage === "frontend" ? phaseElapsed(progress) : "");
       downloadActivityLabel.textContent = text + " "; downloadActivity.title = text;
-      updateProgressIndicator(downloadActivityIndicator, "active");
+      updateProgressIndicator(downloadActivityIndicator, toolsComplete ? "complete" : "active");
     }
     function renderStoryDownloads(files, verification, quality, activeDownload) {
       const groups = new Map(), complete = file => ["complete", "reused"].includes(file.state);
@@ -1932,6 +1965,7 @@
         voiceListening.classList.remove("candidate-review");
         shell.classList.remove("candidate-reference-review");
         maximum = frontier(project); current = project ? stageStep(project) : "entry"; lastFrontier = project ? stageStep(project) : "entry";
+        if (!project) setupBackend = null;
         historyPage = 0; historyKey = ""; setupReached = 0;
       }
       syncReferenceFrame(); syncPreflightFrame();
@@ -1975,7 +2009,9 @@
       if (reviewStage !== "hard_review") hardReviewRevealFailed = false;
       const checkpoint = downloadCheckpoint(project), navigation = navigationCheckpoint(project);
       const preparationPending = current === "voices" && referencePreparationNeeded(project) && project.reference_preparation.ready !== true;
-      const position = screens.indexOf(current), historical = Boolean(!preparationPending && project && (position < maximum || done(project.status)
+      const liveTools = Boolean(project && current === "tools" && actual === current);
+      const preparingTools = current === "downloads" && stageId(project) === "frontend";
+      const position = screens.indexOf(current), historical = Boolean(!preparationPending && project && (position < maximum && !liveTools || done(project.status)
         || (current === "downloads" && checkpoint?.state === "awaiting_next" && completedStep(project, "downloads"))
         || (navigation?.state === "awaiting_next" && current === navigation.step && completedNavigationStep(project, current))));
       shell.dataset.step = current; shell.dataset.model = project ? "existing" : "new";
@@ -1987,10 +2023,12 @@
       shell.classList.toggle("preparing-results", preparingResults);
       const definition = definitions.find(([id]) => id === current);
       const [, title = "학습 상태", description = "현재 작업 상태를 확인해 주세요."] = definition || [];
+      const toolsSelection = selectingTools(project);
       heading.textContent = title;
       hardGenerationSummary.hidden = true; hardGenerationSummary.textContent = "";
       const savedReviewDescription = historical && pronunciationSteps.has(current);
       subtitle.textContent = savedReviewDescription ? "대표 음원과 저장된 판정을 확인합니다." : description;
+      if (toolsSelection || current === "tools" && !project) subtitle.textContent = "음성 생성과 모델 학습에 사용할 연산 장치를 선택하세요.";
       if (current === "voices" && separateReferencePreparation(project)) subtitle.textContent = "성별·연령별로 검수할 기준 목소리 후보를 미리 생성합니다.";
       if (current === "voice-listening" && !project?.reference_preview?.review_required) {
         subtitle.textContent = "생성 설정이 비슷한 목소리를 묶음별로 들어보세요.";
@@ -2031,9 +2069,11 @@
         if (reviewingPreflight(project)) nextDisabled = Boolean(state.busy || !preflightReady(project));
         if (current === "hard-review" && hardReviewRevealFailed) nextDisabled = true;
         if (editingPhrases(project)) nextDisabled = Boolean(state.busy || phraseInputPending);
+        if (toolsSelection) nextDisabled = Boolean(state.busy);
         nextDisabled = nextDisabled || Boolean(referenceApprovalContext);
         if (next.disabled !== nextDisabled) next.disabled = nextDisabled;
-        if (next.textContent !== "다음") next.textContent = "다음";
+        const nextText = toolsSelection ? "설치하고 계속" : "다음";
+        if (next.textContent !== nextText) next.textContent = nextText;
         if (next.title) next.title = "";
       }
       const action = operationAction(project);
@@ -2041,36 +2081,40 @@
       const preparationPausing = current === "voices" && referencePreparationNeeded(project) && project.reference_preparation.status === "pausing";
       const operationDisabled = Boolean(!action || state.busy || transitioning || project?.status === "pausing" || preparationPausing);
       if (operation.disabled !== operationDisabled) operation.disabled = operationDisabled;
+      const startsToolsAndDownloads = preparingTools && action === "start";
       const operationText = project?.status === "pausing" || preparationPausing ? "정지 대기" : ["pause", "prepare_pause"].includes(action) ? "일시정지" : ["resume", "prepare_resume"].includes(action) ? "재개"
         : action === "prepare_start" ? "생성 시작"
-        : ["load_review", "load_hard_review"].includes(action) ? "다시 열기" : current === "downloads" ? "다운로드 시작" : "시작";
+        : ["load_review", "load_hard_review"].includes(action) ? "다시 열기"
+        : startsToolsAndDownloads ? "설치·다운로드 시작"
+        : current === "tools" ? "학습 도구 확인 시작" : current === "downloads" ? "다운로드 시작" : "시작";
       if (operation.textContent !== operationText) operation.textContent = operationText;
       const operationTitle = action === "pause" ? "현재 단계가 끝난 뒤 멈춥니다." : action === "prepare_pause" ? "진행 중인 후보 생성 작업을 일시정지합니다." : "";
       if (operation.title !== operationTitle) operation.title = operationTitle;
       footer.classList.toggle("has-operation", !operation.hidden);
+      footer.classList.toggle("has-tool-choice", toolsSelection);
+      footer.classList.toggle("has-tool-start", startsToolsAndDownloads);
       migrationNote.hidden = !project?.migration || project.process_alive === true;
       // Hidden panels stay connected; polling never rebuilds their inputs or
       // embedded documents, and never resets a review's listening position.
-      const wanted = current === "entry" ? (project ? savedEntry : entry) : current === "scale" ? (project ? savedScale : scale)
+      const pickerBackend = project ? project.dependency_backend : draftBackend(state);
+      const showToolPicker = current === "tools" && !liveTools && toolInputs.has(pickerBackend);
+      const wanted = showToolPicker ? toolPicker : current === "entry" ? (project ? savedEntry : entry) : current === "scale" ? (project ? savedScale : scale)
         : current === "materials" ? materials : current === "voice-listening" ? voiceListening : live;
-      for (const unit of [entry, savedEntry, scale, savedScale, materials, live, voiceListening]) unit.hidden = unit !== wanted;
+      for (const unit of [entry, savedEntry, toolPicker, scale, savedScale, materials, live, voiceListening]) unit.hidden = unit !== wanted;
+      if (showToolPicker) {
+        toolPicker.disabled = Boolean(project || state.busy);
+        for (const [backend, radio] of toolInputs) radio.checked = backend === pickerBackend;
+      }
       if (project && savedWord.value !== (project.wakeword || "")) savedWord.value = project.wakeword || "";
       if (project) for (const card of savedPresets.children) {
         const radio = card.querySelector("input"); radio.checked = radio.value === project.preset;
         card.setAttribute("data-selected", String(radio.checked));
-        if (current === "scale") {
-          const settings = radio.checked ? project.settings : state.recipes.find(recipe => recipe.id === radio.value);
-          renderScaleSummary(card, settings);
-        }
       }
       if (!project) {
         for (const preset of $("presets").children) {
           const radio = preset.querySelector('input[name="preset"]');
           const description = preset.querySelector(".preset-description");
           if (radio) { preset.setAttribute("data-selected", String(radio.checked)); if (description) description.textContent = shortDescriptions[radio.value] || description.textContent; }
-          if (radio && current === "scale") {
-            renderScaleSummary(preset, state.recipes.find(recipe => recipe.id === radio.value));
-          }
         }
         settingsDialog.content.querySelector("#advanced").hidden = false;
       } else {
@@ -2087,14 +2131,20 @@
         results.hidden = !frameStep || !(project.results?.url || project.results_url);
         review.hidden = historical || frameStep || !project.review || running(project.status) || repairProgressVisible(project)
           || current === "hard-review" && hardReviewRevealFailed;
-        input.hidden = historical || frameStep || !project.input || running(project.status);
-        const hasDownloadRows = current === "downloads" && Boolean(project.download_files?.length || project.progress?.files?.length);
-        renderDownloadActivity(project, hasDownloadRows && !historical && chapterWorkActive(project, false) && !project.error);
+        const dependencySetup = project.input?.kind === "dependency_setup";
+        input.hidden = historical || frameStep || !project.input || running(project.status) || dependencySetup && current !== "tools";
+        const hasDownloadRows = current === "downloads" && !preparingTools
+          && Boolean(project.download_files?.length || project.progress?.files?.length);
+        const chapterComplete = completedStep(project, current);
+        const chapterActive = !chapterComplete && chapterWorkActive(project, historical);
+        renderDownloadActivity(project, (current === "tools" || preparingTools || hasDownloadRows) && chapterActive && !project.error,
+          current === "tools" && chapterComplete);
         liveSummary.hidden = historical || frameStep || repairProgressVisible(project) && !project.error
           || preparingResults && !project.error
           || connectingHard(project) && !project.error
           || editingPhrases(project) && !project.error
-          || ((hasDownloadRows || (["call-pilot-review", "hard-review"].includes(current) && !review.hidden)) && !project.error);
+          || ((dependencySetup && !input.hidden || !downloadActivity.hidden || hasDownloadRows
+            || (["call-pilot-review", "hard-review"].includes(current) && !review.hidden)) && !project.error);
         currentTitle.hidden = true;
         const preparationError = current === "voices" && separateReferencePreparation(project) && typeof project.reference_preparation?.error === "string"
           ? project.reference_preparation.error : "";
@@ -2105,8 +2155,6 @@
           preparationErrorShown = Boolean(preparationError || repairError);
         }
         downloads.hidden = true;
-        const chapterComplete = completedStep(project, current);
-        const chapterActive = !chapterComplete && chapterWorkActive(project, historical);
         $("progress").dataset.active = String(chapterActive);
         $("progress-label").dataset.status = progressStatus(chapterActive, chapterComplete);
         $("progress").setAttribute("aria-label", chapterComplete ? "현재 작업 진행률 · 완료" : "현재 작업 진행률");
@@ -2133,7 +2181,7 @@
         }
         voiceCounts.hidden = rows.length === 0;
         shell.dataset.workRows = String(!voiceCounts.hidden);
-        historic.hidden = !(historical || hasDownloadRows) || frameStep || !voiceCounts.hidden || ["voices", "entry", "scale", "materials"].includes(current);
+        historic.hidden = !(historical || hasDownloadRows) || frameStep || !voiceCounts.hidden || ["tools", "voices", "entry", "scale", "materials"].includes(current);
         hardButton.hidden = current !== "hard-review" || !project.hard_preview?.url
           || project.hard_preview.available === false || !(project.hard_preview.count > 0);
         positiveButton.hidden = repairProgressVisible(project) || current !== "pronunciation" || !project.positive_preview?.url
@@ -2162,7 +2210,10 @@
         locationRetry.hidden = !error;
         const recipe = state.recipes.find(recipe => recipe.id === (project?.preset || state.selectedPreset));
         const values = project ? { ...recipe, ...project.settings, evaluation_policy: project.evaluation_policy || recipe?.evaluation_policy } : recipe;
-        const fingerprint = JSON.stringify([values, !project ? [$("adv-originals").value, $("adv-generic").value, $("adv-korean").value] : null]);
+        const toolPackages = project?.dependency_packages ?? state.dependencySetup?.packages?.[pickerBackend];
+        const evaluationPackages = project?.evaluation_runtime_packages ?? state.dependencySetup?.evaluation_runtime_packages;
+        const fingerprint = JSON.stringify([values, pickerBackend, toolPackages, evaluationPackages,
+          !project ? [$("adv-originals").value, $("adv-generic").value, $("adv-korean").value] : null]);
         if (fingerprint !== materialKey) {
           materialKey = fingerprint;
           materialData = values ? bridge.materials(values, Boolean(project)) : null;
@@ -2175,6 +2226,7 @@
             update("hard", Number.isFinite(s.hard_samples_per_phrase) ? `문구당 ${count(s.hard_samples_per_phrase)}개` : undefined);
           }
           renderMaterials();
+          renderToolMaterials(pickerBackend, toolPackages, evaluationPackages);
         }
       }
       const details = project ? `${project.directory || ""}` : "";

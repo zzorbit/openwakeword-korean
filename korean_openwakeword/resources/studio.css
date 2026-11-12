@@ -58,7 +58,6 @@ p{margin:8px 0}
 .preset input{accent-color:var(--blue);padding:0;margin:0 7px 0 0}
 .preset-title{font-size:16px;font-weight:750}
 .preset-description{font-size:13px;color:var(--muted);margin:8px 0 11px;min-height:42px}
-.preset-summary{font-size:12px;line-height:1.9;margin:0;color:var(--muted)}
 .storage-location{display:flex;align-items:baseline;flex-wrap:wrap;gap:6px 14px;font-size:13px}
 .storage-location>span{font-weight:650}
 .storage-location .directory{margin:0;min-width:0}
@@ -156,7 +155,6 @@ footer{font-size:11px;color:var(--muted);text-align:center;margin:36px 0 6px}
 .card{padding:21px}
 .preset-grid{grid-template-columns:1fr}
 .preset-description{min-height:0;margin:6px 0}
-.preset-summary{display:flex;gap:14px;flex-wrap:wrap}
 .advanced-grid{grid-template-columns:1fr 1fr}
 .stages{grid-template-columns:repeat(3,minmax(0,1fr));row-gap:14px}
 .current-heading,.project-heading{align-items:flex-start}
@@ -172,7 +170,6 @@ h1{font-size:28px}
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}
 }
 
-.preset-summary>span{display:block}
 
 .source-meta{overflow-wrap:anywhere;text-align:left}
 @media(max-width:760px){.source-meta{grid-column:2}
@@ -273,7 +270,6 @@ a.source-name:hover{text-decoration:underline}
 }
 
 .preset-description:empty{display:none}
-.preset-summary{margin-top:12px}
 
 .source-list section+section{margin-top:24px}
 .source-list h3{font-size:15px;margin:0 0 6px}
@@ -333,7 +329,6 @@ main.dashboard-shell{height:100dvh;width:100%;max-width:none;margin:0;padding:12
 .setup-panel .preset{padding:14px}
 .setup-panel .preset-title{font-size:17px}
 .setup-panel .preset-description{min-height:0;font-size:15px;line-height:1.5;margin:8px 0}
-.setup-panel .preset-summary{font-size:15px;line-height:1.65;margin:10px 0 0}
 .setup-card .storage-location{grid-column:1/-1;display:grid;grid-template-columns:130px minmax(0,1fr);gap:16px;font-size:14px;align-items:baseline}
 .setup-card .storage-location>span{font-size:15px}
 .setup-card .directory{font-size:14px}

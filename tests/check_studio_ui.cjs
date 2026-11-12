@@ -734,13 +734,14 @@ function pendingHardStorageRecipe() {
     assert.ok(label); assert.notEqual(label.tagName, "a");
     assert.equal(descendants(preview).some(node => node.tagName === "img"), false);
   });
-  await test("each training scale shows its reference voice count while common evaluation keeps 30 voices", async () => {
+  await test("training scale cards omit counts while material details retain their reference voice counts", async () => {
     const recipes = [["check", 20, 1000], ["trial", 100, 20000], ["production", 500, 100000]]
       .map(([id, train_references, originals]) => commonRecipe({ id, train_references, originals }));
     const b = browser({ recipeList: recipes }); await flush();
     for (const [index, recipe] of recipes.entries()) {
       const preset = b.elements.get("presets").children[index];
-      assert.match(textOf(preset), new RegExp(`학습 기준 목소리 ${recipe.train_references}개`));
+      assert.equal(withClass(preset, "preset-summary").length, 0);
+      assert.doesNotMatch(textOf(preset), /\d[\d,]*\s*(?:개|회)|증강 R\d/);
       descendants(preset).find(node => node.tagName === "input").handlers.change();
       const groups = b.elements.get("source-preview").children;
       assert.match(textOf(material(groups[0], "호출어 음성")), new RegExp(`기준 목소리 ${recipe.train_references}개`));
@@ -1479,14 +1480,19 @@ function pendingHardStorageRecipe() {
     await b.storyBridge.action("start");
     assert.equal(b.calls.filter(call => call.url === "/api/projects/bora/start").length, 1);
   });
-  await test("new story navigation is workflow-only and creation never starts work before the explicit start button", async () => {
-    const b = browser({ withStory: true }); await flush();
+  await test("story creation forwards the selected tools without starting work before the explicit start button", async () => {
+    const setup = { recommended_backend: "cu128", packages: { cpu: ["cpu-package"], cu128: ["gpu-package"] },
+      evaluation_runtime_packages: ["gpu-runtime"] };
+    const b = browser({ withStory: true, recipeResponse: value => ({ ok: true, status: 200,
+      text: async () => JSON.stringify({ ...value, dependency_setup: setup }) }) }); await flush();
+    assert.deepEqual(JSON.parse(JSON.stringify(b.storyBridge.state().dependencySetup)), setup);
     b.elements.get("wakeword").value = "보라야";
     b.elements.get("wakeword").handlers.input(); await locationSettled();
-    await b.storyBridge.create({ navigationCheckpoints: true });
+    await b.storyBridge.create({ navigationCheckpoints: true, dependencyBackend: "cpu" });
     const mutations = b.calls.filter(call => call.options.method === "POST" && call.url !== "/api/model-location");
     assert.deepEqual(mutations.map(call => call.url), ["/api/projects"]);
-    assert.deepEqual(JSON.parse(mutations[0].options.body), { wakeword: "보라야", preset: "check", navigation_checkpoints: true, reference_voice_review: true });
+    assert.deepEqual(JSON.parse(mutations[0].options.body), { wakeword: "보라야", preset: "check",
+      navigation_checkpoints: true, reference_voice_review: true, dependency_backend: "cpu" });
     assert.equal(b.calls.some(call => /\/(start|resume)$/.test(call.url)), false);
   });
   await test("candidate reference preview is available before any source audio exists", async () => {
@@ -1850,18 +1856,37 @@ function pendingHardStorageRecipe() {
     assert.equal(groups.length, 9);
     assert.equal(groups.filter(group => /\bcurrent\b|\bdone\b/.test(group.className)).length, 0);
   });
-  await test("dependency setup asks for CPU/GPU without mislabeling it as source admission", async () => {
-    const project = { id: "bora", wakeword: "보라야", status: "waiting_input", stage: "frontend", error: null, input: { kind: "dependency_setup", recommended_backend: "cu128" } };
+  await test("dependency setup radio cards preserve the choice and submit CPU or GPU through the shared form", async () => {
+    const project = { id: "bora", wakeword: "보라야", status: "waiting_input", stage: "frontend", error: null,
+      input: { kind: "dependency_setup", recommended_backend: "cu128", hint: "현재 가상 환경에만 설치합니다. NVIDIA GPU가 없다면 CPU용을 선택하세요." } };
     const b = browser({ initialState: { projects: [project] } }); await flush();
+    const cpu = b.elements.get("dependency-cpu"), gpu = b.elements.get("dependency-cu128");
+    const radios = [...html.matchAll(/<input\b(?=[^>]*\bname="dependency_backend")[^>]*>/g)].map(([input]) => input);
+    assert.equal(radios.length, 2);
+    for (const [id, value] of [["dependency-cpu", "cpu"], ["dependency-cu128", "cu128"]]) {
+      const radio = radios.find(input => input.includes(`id="${id}"`));
+      assert.ok(radio?.includes('type="radio"') && radio.includes(`value="${value}"`));
+    }
     assert.equal(b.elements.get("connection").hidden, true);
     assert.equal(b.elements.get("project-error").hidden, true);
     assert.equal(b.elements.get("input-section").hidden, false);
     assert.equal(b.elements.get("input-form").hidden, false);
     assert.equal(b.elements.get("input-value").hidden, true); assert.equal(b.elements.get("input-value").required, false);
-    assert.equal(b.elements.get("dependency-backend").hidden, false); assert.equal(b.elements.get("dependency-backend").value, "cu128");
-    assert.equal(b.elements.get("input-submit").textContent, "선택한 도구 설치하고 계속");
-    await b.submit("input-form"); const request = b.calls.find(call => call.url.endsWith("/input"));
-    assert.deepEqual(JSON.parse(request.options.body), { dependency_backend: "cu128" });
+    assert.equal(b.elements.get("dependency-backend").hidden, false);
+    assert.equal(b.elements.get("input-hint").hidden, true);
+    assert.equal(b.elements.get("input-hint").textContent, "");
+    assert.equal(cpu.checked, false); assert.equal(gpu.checked, true);
+    await b.submit("input-form");
+
+    cpu.checked = true; gpu.checked = false; await b.tick();
+    assert.equal(cpu.checked, true); assert.equal(gpu.checked, false, "polling keeps the user's choice");
+    assert.equal(await b.storyBridge.input(), true);
+    const payloads = b.calls.filter(call => call.url.endsWith("/input")).map(call => JSON.parse(call.options.body));
+    assert.deepEqual(payloads, [{ dependency_backend: "cu128" }, { dependency_backend: "cpu" }]);
+
+    cpu.checked = false; gpu.checked = true;
+    project.input = { ...project.input, id: "new-dependency-prompt", recommended_backend: "cpu" }; await b.tick();
+    assert.equal(cpu.checked, true); assert.equal(gpu.checked, false, "a new prompt uses its own recommendation");
   });
   await test("null and missing errors render normally while string and object errors remain visible", async () => {
     const cases = [
@@ -1878,7 +1903,7 @@ function pendingHardStorageRecipe() {
       assert.equal(b.elements.get("project-error").hidden, !entry.visible);
       assert.equal(b.elements.get("project-error").textContent, entry.text);
       assert.equal(b.elements.get("input-section").hidden, false);
-      assert.equal(b.elements.get("dependency-backend").value, "cu128");
+      assert.equal(b.elements.get("dependency-cu128").checked, true);
     }
   });
   await test("a null current stage does not prevent rendering dependency input", async () => {
@@ -1888,7 +1913,7 @@ function pendingHardStorageRecipe() {
     assert.equal(b.elements.get("project-title").textContent, "‘보라야’");
     assert.ok(b.elements.get("stages").children.length > 0);
     assert.equal(b.elements.get("input-section").hidden, false);
-    assert.equal(b.elements.get("dependency-backend").value, "cu128");
+    assert.equal(b.elements.get("dependency-cu128").checked, true);
   });
   await test("fetch failures are connection errors and recover on the next successful poll", async () => {
     const project = { id: "bora", wakeword: "보라야", status: "ready", stage: "data", error: null };

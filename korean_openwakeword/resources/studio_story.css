@@ -51,7 +51,10 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-shell :is(#wakeword,#story-saved-wakeword):focus,.story-shell :is(#wakeword,#story-saved-wakeword):focus-visible{outline:none;box-shadow:none;border-bottom-color:#bdc5cf;border-bottom-width:2px}
 .story-actions{position:relative;z-index:3;display:flex;align-items:center;justify-content:center;gap:8px;flex:none;width:100%;height:44px;margin-block-start:auto}
 .story-actions.has-operation{width:304px;max-width:calc(100vw - 48px)}
+.story-actions.has-tool-start{width:368px}
 .story-shell .story-actions>.story-button{flex:0 1 96px;min-width:0;white-space:nowrap}
+.story-shell .story-actions.has-tool-choice>.story-button:last-child{flex-basis:144px}
+.story-shell .story-actions.has-tool-start>.story-operation{flex:0 0 160px}
 .story-shell .story-button{display:flex;align-items:center;justify-content:center;flex:none;width:96px;height:44px;min-height:44px;padding:0 4px;margin:0;border:0;border-radius:8px;background:#292d33;color:#e9edf2;box-shadow:none;font:500 16px/22px system-ui,"Malgun Gothic",sans-serif;cursor:pointer;transition:background-color .2s ease}
 .story-shell .story-button:hover:not(:disabled){background:#363d47;color:#e9edf2}
 .story-shell .story-button:disabled{opacity:.55;cursor:default}
@@ -68,10 +71,12 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-scale .preset input{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
 .story-scale .preset-title{font-size:19px;font-weight:600;line-height:28px;word-break:keep-all}
 .story-scale .preset-description{font-size:15px;font-weight:500;line-height:22px;min-height:0;margin:0;color:#c3cbd6;word-break:keep-all}
-.story-scale .preset-summary{display:block;margin:0;color:#c3cbd6;font-size:13px;line-height:18px;word-break:keep-all}
-.story-scale .preset-summary:empty{display:none}
 .story-shell[data-step="materials"] .story-content{flex:0 1 auto;min-height:0}
 .story-materials{display:flex;flex-direction:column;flex:0 1 auto;width:100%;min-height:0}
+.story-tool-materials{display:grid;gap:4px;flex:none;margin-top:14px;padding-top:10px;border-top:1px solid #343c47;overflow-wrap:anywhere}
+.story-tool-materials h2{margin:0;font:500 16px/24px system-ui,"Malgun Gothic",sans-serif}
+.story-tool-materials p{margin:0;color:#c3cbd6;font-size:14px;line-height:20px}
+.story-tool-materials strong{font-weight:500;color:#e3e7ec}
 .story-location-status{display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:8px;margin-top:12px;font-size:14px;line-height:20px}
 .story-location-status p{margin:0;overflow-wrap:anywhere}
 .story-material-columns{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:36px;width:100%;min-height:0;flex:0 1 auto;align-items:start;overflow:auto;scrollbar-width:thin;overscroll-behavior:contain}
@@ -200,6 +205,9 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-shell:is([data-step="call-pilot-review"],[data-step="pronunciation"],[data-step="hard-review"]) .story-history{width:100%}
 .story-shell:is([data-step="call-pilot-review"],[data-step="pronunciation"],[data-step="hard-review"]) .story-history-content:empty{display:none}
 .story-live #input-section{display:flex;flex-direction:column;min-height:0;flex:1 1 0;width:100%;max-width:740px;align-self:center}
+.story-shell[data-step="tools"] .story-live #input-section[data-input-kind="dependency_setup"],
+.story-shell[data-step="tools"] .story-live #input-section[data-input-kind="dependency_setup"] #input-form{flex-basis:auto}
+.story-shell[data-step="tools"] .story-live #input-section[data-input-kind="dependency_setup"]{max-width:490px}
 .story-shell[data-step="phrases"] .story-live #input-section[data-input-kind="hard_phrases"]{max-width:560px}
 .story-live #input-section>.eyebrow{display:none}
 .story-live #input-section .input-heading{display:block;flex:none;margin:0 0 12px}
@@ -211,6 +219,23 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-live #input-form #input-submit{align-self:center;justify-self:center;margin:0;padding:9px 16px;border:0;border-radius:8px;background:#292d33;color:#e9edf2;font:500 16px/24px system-ui,"Malgun Gothic",sans-serif;box-shadow:none;flex:none}
 .story-live #input-form #input-submit:hover{background:#363d47}
 .story-live #input-form #input-hint{font-size:14px;line-height:22px;margin:6px 0;color:#bdc5d1}
+.story-shell[data-step="tools"] #input-section[data-input-kind="dependency_setup"] :is(.input-heading,#input-submit){display:none}
+.story-shell[data-step="tools"] #input-section[data-input-kind="dependency_setup"] .input-content{overflow:visible;padding:0}
+#story-tool-picker{width:min(490px,100%)}
+.story-tool-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;min-width:0;margin:0;padding:0;border:0}
+:is(#dependency-backend,#story-tool-picker) .dependency-option{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;
+  min-width:0;min-height:114px;margin:0;padding:14px 8px;border:1px solid #424a56;border-radius:12px;
+  background:#22272e;color:#e3e7ec;text-align:center;word-break:keep-all;cursor:pointer;
+  transition:background-color .2s ease,border-color .2s ease
+}
+:is(#dependency-backend,#story-tool-picker):not(:disabled) .dependency-option:hover{background:#2a303a;border-color:#677589}
+:is(#dependency-backend,#story-tool-picker) .dependency-option:has(input:checked){background:#2c3542;border-color:#8a99ad;box-shadow:0 0 0 1px #8a99ad}
+.story-tool-options .dependency-option:has(input:focus-visible){outline:2px solid #a8afb7;outline-offset:3px}
+.story-tool-options .dependency-option input{width:16px;height:16px;margin:0;padding:0;accent-color:#bac5d6;cursor:inherit}
+.story-tool-options .dependency-option strong{font-size:17px;line-height:24px;font-weight:600}
+.story-tool-options .dependency-option span{font-size:14px;line-height:20px;font-weight:400;color:#c3cbd6}
+:is(#dependency-backend,#story-tool-picker):disabled .dependency-option{cursor:default}
 .story-live #input-section[data-input-kind="hard_phrases"] #input-hint{display:none}
 .story-live #input-form .hard-phrase-field{position:relative;min-width:0}
 .story-live #input-form .hard-phrase-field input{padding-right:38px}

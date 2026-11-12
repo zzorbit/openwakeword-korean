@@ -127,6 +127,21 @@ def _model_choice(word, preset, settings):
             **{key: float(settings[key]) for key in ("generic_hours", "korean_hours")}}
 
 
+def _dependency_package_requirements():
+    """Use the worker's package requirements without probing installed packages."""
+    from .gpu_runtime_install import PINS
+    from .studio_steps import _dependency_plan
+
+    evaluation_runtime = [f"{name}=={version}" for name, version in PINS.items()]
+    packages = {
+        backend: [argument for command in _dependency_plan({}, backend) for argument in command
+                  if re.match(r"^[\w.-]+(?:==|>=)", argument)]
+        for backend in ("cpu", "cu128")
+    }
+    packages["cu128"].extend(evaluation_runtime)
+    return packages, evaluation_runtime
+
+
 def _elapsed(start):
     try:
         return max(0, time.time() - datetime.fromisoformat(start).timestamp())
@@ -858,7 +873,7 @@ class StudioManager:
 
     def recipes(self):
         from .studio_data import material_recipe
-        from .studio_steps import preset_settings
+        from .studio_steps import _recommended_dependency_backend, preset_settings
         from .project import voice_candidates
         presets = []
         for key, label in (("check", "동작 확인용"), ("trial", "시험 모델용"), ("production", "상용 모델용")):
@@ -878,7 +893,10 @@ class StudioManager:
                                     policy=settings["voice_design_policy"])
             presets.append({**settings, **recipe, "id": key, "label": label,
                             "reference_design": self._voice_design(bank, settings)})
+        packages, evaluation_runtime = _dependency_package_requirements()
         return {"presets": presets, "default_directory": str(self.workspace / "models"),
+                "dependency_setup": {"recommended_backend": _recommended_dependency_backend(),
+                                     "packages": packages, "evaluation_runtime_packages": evaluation_runtime},
                 "storage_note": "호출어별 학습 자료와 결과를 models 폴더에 자동으로 저장합니다. 공통 자료와 캐시는 작업 폴더 안에서 공유합니다."}
 
     def _model_request(self, payload):
@@ -953,6 +971,9 @@ class StudioManager:
                 if payload.get("reference_voice_review") and not payload.get("navigation_checkpoints"):
                     raise ValueError("기준 목소리 검수에는 전체 단계 확인이 필요합니다.")
             word, preset, settings, plan = self._model_request(payload)
+            dependency_backend = payload.get("dependency_backend")
+            if "dependency_backend" in payload and dependency_backend not in ("cpu", "cu128"):
+                raise ValueError("학습 도구는 CPU 또는 NVIDIA GPU를 선택하세요.")
             target, saved = self._model_location(word, preset, settings)
             if saved:
                 self.registry["active_project_id"] = saved["id"]
@@ -992,6 +1013,10 @@ class StudioManager:
                 self._navigation_bounds(state)
                 state["navigation_checkpoint"] = {"policy": "explicit_story_v1", "step": "downloads", "state": "awaiting_start"}
                 state["next_action"] = "자료 다운로드 시작을 누르세요."
+            if dependency_backend is not None:
+                state["inputs"]["dependency_backend"] = dependency_backend
+                state["dependency_setup_selected"] = True
+                state["next_action"] = "선택한 학습 도구 준비를 시작하세요."
             if payload.get("reference_voice_review") is True:
                 state["reference_voice_review_policy"] = "candidate_pool_v2"
             state["execution_contract"] = {**self._execution_contract,
@@ -4099,6 +4124,14 @@ class StudioManager:
         index, plan = state["index"], state["plan"]
         stage = plan[index] if index < len(plan) else {"id": "completed", "label": "완료"}
         view = {key: state.get(key) for key in ("id", "wakeword", "preset", "status", "error", "next_action", "created_at")}
+        dependency_backend = state.get("inputs", {}).get("dependency_backend")
+        view["dependency_backend"] = dependency_backend
+        view["dependency_setup_selected"] = state.get("dependency_setup_selected") is True
+        if dependency_backend in ("cpu", "cu128"):
+            packages, evaluation_runtime = _dependency_package_requirements()
+            view["dependency_packages"] = packages[dependency_backend]
+            if dependency_backend == "cu128" or state["settings"].get("evaluation_backend") in ("auto", "cuda"):
+                view["evaluation_runtime_packages"] = evaluation_runtime
         if isinstance(state.get("download_checkpoint"), dict):
             view["download_checkpoint"] = {key: state["download_checkpoint"].get(key) for key in ("policy", "state")}
         if isinstance(state.get("navigation_checkpoint"), dict):

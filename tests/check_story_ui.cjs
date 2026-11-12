@@ -5,6 +5,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const source = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources/studio_story.js"), "utf8");
 const listeningSource = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources/listening_player.js"), "utf8");
+const textOf = item => [item.textContent, ...item.children.map(textOf)].join(" ");
 
 // A DOM adapter exercises navigation and real-state gates without audio,
 // network, an installed browser, or changes to a stored workflow.
@@ -35,7 +36,8 @@ function page(initialProject = null, options = {}) {
     get firstElementChild() { return this.children[0] || null; }
     contains(target) { return this === target || this.children.some(child => child.contains(target)); }
     append(...children) {
-      for (const child of children) {
+      for (const item of children) {
+        const child = typeof item === "string" ? Object.assign(new Element("#text"), { textContent: item }) : item;
         if (child.parentElement) child.parentElement.children = child.parentElement.children.filter(item => item !== child);
         child.parentElement = this; this.children.push(child);
       }
@@ -84,7 +86,8 @@ function page(initialProject = null, options = {}) {
   const documentHandlers = {};
   const document = { body, hidden: false, createElement: tag => new Element(tag), getElementById: get, querySelector: selector => body.querySelector(selector), title: "", addEventListener: (name, fn) => { (documentHandlers[name] ||= []).push(fn); } };
   if (options.fonts) document.fonts = options.fonts;
-  const state = { project: initialProject, recipes: [], selectedPreset: "check", recipeReady: true, busy: false };
+  const state = { project: initialProject, recipes: [], selectedPreset: "check", recipeReady: true, busy: false,
+    dependencySetup: options.dependencySetup || { recommended_backend: "cpu", packages: { cpu: [], cu128: [] } } };
   const windowHandlers = {};
   const chapterRequests = [];
   const context = vm.createContext({ document, console, URL, location: { origin: "http://studio.local", href: "http://studio.local/" }, innerWidth: options.width || 1200, innerHeight: options.height || 900, matchMedia: query => ({ matches: options.matchMedia?.(query) ?? false }),
@@ -141,6 +144,12 @@ function page(initialProject = null, options = {}) {
 
 async function main() {
   let passed = 0;
+  async function advanceSetup(p, ...steps) {
+    for (const step of steps) {
+      await p.next.fire("click"); await p.settle();
+      assert.equal(p.shell.dataset.step, step);
+    }
+  }
   async function test(name, fn) {
     if (process.env.KOWW_STORY_TEST_FILTER && !new RegExp(process.env.KOWW_STORY_TEST_FILTER).test(name)) return;
     await fn(); console.log("  ✓ " + name); passed++;
@@ -179,7 +188,7 @@ async function main() {
     await visible()[1].fire("pointerenter",{pointerType:"mouse"});assert.equal(visible()[1].dataset.distance,"0");
     await visible()[1].fire("click");baseline();
     await visible()[4].fire("pointerenter",{pointerType:"mouse"});baseline();
-    await p.settle();assert.equal(p.shell.dataset.step,"scale");baseline();
+    await p.settle();assert.equal(p.shell.dataset.step,"tools");baseline();
     await visible()[3].fire("pointerenter",{pointerType:"mouse"});p.state.busy=true;p.ui.render();baseline();
     await visible()[3].fire("pointerenter",{pointerType:"mouse"});baseline();
     p.state.busy=false;p.ui.render();await visible()[3].fire("pointerenter",{pointerType:"mouse"});
@@ -192,11 +201,16 @@ async function main() {
   });
   await test("backend current stage determines unlocked frontier; pending later stages unlock nothing", () => {
     const p = page();
-    assert.equal(p.api.frontier({ status: "running", stage_id: "references", stages: [{ id: "evaluation", status: "pending" }] }), 4);
-    assert.equal(p.api.frontier({ status: "waiting_review", stage: { id: "hard_review" } }), 10);
-    assert.equal(p.api.frontier({ status: "running", stage_id: "unknown" }), 3);
-    assert.equal(p.api.frontier({ status: "completed", results: { url: "/results/" } }), 14);
-    assert.equal(p.api.frontier({ status: "completed", results: { url: "/results/", mic_url: "/microphone/" } }), 15);
+    assert.equal(p.api.frontier({ status: "running", stage_id: "frontend" }), 3);
+    assert.equal(p.api.stageStep({ status: "running", stage_id: "frontend" }), "tools");
+    assert.equal(p.api.stageStep({ status: "waiting_input", stage_id: "frontend", dependency_setup_selected: true,
+      input: { kind: "dependency_setup" } }), "tools");
+    assert.equal(p.api.frontier({ status: "running", stage_id: "data_download" }), 4);
+    assert.equal(p.api.frontier({ status: "running", stage_id: "references", stages: [{ id: "evaluation", status: "pending" }] }), 5);
+    assert.equal(p.api.frontier({ status: "waiting_review", stage: { id: "hard_review" } }), 11);
+    assert.equal(p.api.frontier({ status: "running", stage_id: "unknown" }), 4);
+    assert.equal(p.api.frontier({ status: "completed", results: { url: "/results/" } }), 15);
+    assert.equal(p.api.frontier({ status: "completed", results: { url: "/results/", mic_url: "/microphone/" } }), 16);
   });
   await test("setup index keeps reached screens when returning to the first screen", async () => {
     const p = page(), visible = () => p.ticks.filter(tick => !tick.hidden).length;
@@ -216,46 +230,48 @@ async function main() {
   await test("saved progress stays indexed while reviewing earlier screens and grows with actual backend progress", async () => {
     const project = { id: "model", wakeword: "보라야", status: "waiting_review", stage_id: "pilot_review", progress: {} };
     const p = page(project), visible = () => p.ticks.filter(tick => !tick.hidden).length;
-    assert.equal(p.shell.dataset.step, "pronunciation"); assert.equal(visible(), 7);
-    assert.deepEqual(p.ticks.slice(0, 7).map(tick => tick.dataset.distance), ["3", "3", "3", "3", "3", "3", "3"]);
-    assert.equal(p.next.disabled, true); assert.equal(p.ticks[7].hidden, true); assert.equal(p.ticks[7].disabled, true);
-    await p.ticks[7].fire("click"); assert.equal(p.timers.length, 0);
+    assert.equal(p.shell.dataset.step, "pronunciation"); assert.equal(visible(), 8);
+    assert.ok(p.ticks.slice(0, 8).every(tick => tick.dataset.distance === "3"));
+    assert.equal(p.next.disabled, true); assert.equal(p.ticks[8].hidden, true); assert.equal(p.ticks[8].disabled, true);
+    await p.ticks[8].fire("click"); assert.equal(p.timers.length, 0);
     await p.ticks[0].fire("click"); await p.settle();
     assert.equal(p.shell.dataset.step, "entry"); assert.equal(p.ticks[0].parentElement.hidden, false);
-    assert.equal(visible(), 7); assert.equal(p.ticks[0].getAttribute("aria-current"), "step");
-    assert.equal(p.ticks[6].getAttribute("aria-current"), "false");
-    assert.deepEqual(p.ticks.slice(0, 7).map(tick => tick.dataset.distance), ["3", "3", "3", "3", "3", "3", "3"]);
+    assert.equal(visible(), 8); assert.equal(p.ticks[0].getAttribute("aria-current"), "step");
+    assert.equal(p.ticks[7].getAttribute("aria-current"), "false");
+    assert.ok(p.ticks.slice(0, 8).every(tick => tick.dataset.distance === "3"));
     project.stage_id = "hard_review"; p.ui.render();
-    assert.equal(p.shell.dataset.step, "entry"); assert.equal(visible(), 11);
-    assert.equal(p.ticks[10].hidden, false); assert.equal(p.ticks[11].hidden, true);
+    assert.equal(p.shell.dataset.step, "entry"); assert.equal(visible(), 12);
+    assert.equal(p.ticks[11].hidden, false); assert.equal(p.ticks[12].hidden, true);
     const timerCount = p.timers.length;
-    await p.ticks[11].fire("click"); assert.equal(p.timers.length, timerCount);
+    await p.ticks[12].fire("click"); assert.equal(p.timers.length, timerCount);
     assert.equal(p.shell.dataset.step, "entry");
     assert.equal(p.calls.some(call => ["create", "start", "resume", "input"].includes(call)), false);
   });
   await test("index extent resets to the selected model and a fresh setup without leaking later progress", async () => {
     const p = page({ id: "finished", wakeword: "보라야", status: "completed", results: { url: "/results/" } });
-    assert.equal(p.ticks.filter(tick => !tick.hidden).length, 15);
+    assert.equal(p.ticks.filter(tick => !tick.hidden).length, 16);
     p.state.project = { id: "earlier", wakeword: "다른이름", status: "running", stage_id: "references", progress: {} };
     p.ui.render();
-    assert.equal(p.shell.dataset.step, "voices"); assert.equal(p.ticks.filter(tick => !tick.hidden).length, 5);
-    assert.equal(p.ticks[5].hidden, true);
+    assert.equal(p.shell.dataset.step, "voices"); assert.equal(p.ticks.filter(tick => !tick.hidden).length, 6);
+    assert.equal(p.ticks[6].hidden, true);
     p.state.project = null; p.ui.render();
     assert.equal(p.shell.dataset.step, "entry"); assert.equal(p.ticks[0].parentElement.hidden, true);
     await p.next.fire("click"); await p.settle();
     assert.equal(p.ticks.filter(tick => !tick.hidden).length, 2); assert.equal(p.ticks[2].hidden, true);
     assert.equal(p.calls.some(call => ["create", "start", "resume", "input"].includes(call)), false);
   });
-  await test("eighteen stages have short headings and sentence subtitles, with voice listening separate from preparation", async () => {
+  await test("chapter definitions keep tool preparation before downloads and voice listening after voice preparation", async () => {
     const p = page(), { definitions } = p.api;
-    assert.equal(definitions.length, 18);
+    assert.equal(definitions.length, 19);
     assert.ok(definitions.every(([, title, subtitle]) => title && !title.endsWith(".") && subtitle.endsWith(".")));
     assert.equal(p.get("story-title").textContent, "호출어 입력");
     assert.equal(p.get("story-title").getAttribute("aria-describedby"), "story-subtitle");
     assert.equal(p.get("story-subtitle").textContent, "‘보라야’와 같은 한국어 호출어를 입력해 주세요.");
-    await p.next.fire("click"); await p.settle();
+    await advanceSetup(p, "tools", "scale");
     assert.equal(p.get("story-title").textContent, "학습 규모 선택");
     assert.equal(p.get("story-subtitle").textContent, "사용 목적과 환경에 맞는 학습 규모를 선택하세요.");
+    assert.deepEqual(Array.from(definitions.slice(0, 5), ([id]) => id), ["entry", "tools", "scale", "materials", "downloads"]);
+    assert.equal(definitions[1][1], "학습 도구 준비");
     const voices = definitions.findIndex(([id]) => id === "voices");
     assert.equal(definitions[voices + 1][0], "voice-listening"); assert.equal(definitions[voices + 2][0], "call-pilot-generation");
   });
@@ -286,14 +302,24 @@ async function main() {
       evaluation: Array.from({ length: 5 }, (_, index) => ({ name: `평가 자료 ${index + 1}`, amount: "2,000개", downloadLabel: "생성 예정", sources: [{ name: "Qwen TTS", downloadReuse: "생성 예정" }] })),
       downloadTotals: { training: { bytes: 6144, unknown: true, label: "약 6KiB + 미정" }, evaluation: { bytes: 0, unknown: false, label: "별도 다운로드 없음" } },
     };
-    const p = page(null, { materials: () => materials, create: state => {
+    const p = page(null, { materials: () => materials,
+      dependencySetup: { recommended_backend: "cu128", packages: { cpu: ["fixture-cpu"], cu128: ["fixture-gpu"] },
+        evaluation_runtime_packages: ["fixture-evaluation-gpu"] }, create: state => {
       state.project = { id: "capacity-model", wakeword: "보라야", preset: "check", status: "ready", stage_id: "frontend", progress: {},
-        download_checkpoint: { policy: "explicit_download_v1", state: "awaiting_start" } };
+        dependency_setup_selected: true, navigation_checkpoint: { policy: "explicit_story_v1", step: "downloads", state: "awaiting_start" } };
       state.busy = false;
     } });
     p.state.recipes = [{ id: "check" }];
-    await p.next.fire("click"); await p.settle(); await p.next.fire("click"); await p.settle();
-    assert.equal(p.shell.dataset.step, "materials");
+    await advanceSetup(p, "tools");
+    assert.equal(p.get("story-tool-picker").hidden, false);
+    assert.equal(p.get("story-tool-cu128").checked, true);
+    await advanceSetup(p, "scale", "materials");
+    const installs = p.get("story-tool-materials");
+    assert.equal(installs.hidden, false);
+    assert.match(textOf(installs), /설치 항목/);
+    assert.match(textOf(installs), /fixture-gpu/);
+    assert.match(textOf(installs), /fixture-evaluation-gpu/);
+    assert.doesNotMatch(textOf(installs), /fixture-cpu/);
     const columns = p.shell.querySelector(".story-material-columns"), training = () => columns.children[0];
     assert.deepEqual(p.shell.querySelectorAll(".story-material-total").map(node => node.textContent), ["약 6KiB + 미정", "별도 다운로드 없음"]);
     assert.equal(p.shell.querySelector(".story-material-total").getAttribute("aria-label"), "학습용 자료 합산 다운로드 용량: 약 6KiB + 미정");
@@ -317,17 +343,18 @@ async function main() {
     p.ui.render(); await p.windowEvent("resize"); assert.equal(capacities().length, 6, "render and resize keep every row");
     assert.equal(p.calls.some(call => ["create", "start", "resume", "pause", "input"].includes(call)), false);
     const creation = p.next.fire("click"); await p.settle(); await creation;
-    assert.equal(p.calls.filter(call => call === "create").length, 1); assert.deepEqual(p.creationOptions, [{ navigationCheckpoints: true }]);
+    assert.equal(p.calls.filter(call => call === "create").length, 1);
+    assert.deepEqual(p.creationOptions, [{ navigationCheckpoints: true, dependencyBackend: "cu128" }]);
     assert.equal(p.shell.dataset.step, "downloads"); assert.equal(p.next.disabled, true);
     const downloadStart = p.operation;
-    assert.equal(downloadStart.textContent, "다운로드 시작"); assert.equal(downloadStart.parentElement.hidden, false); assert.equal(downloadStart.disabled, false);
+    assert.equal(downloadStart.textContent, "설치·다운로드 시작"); assert.equal(downloadStart.parentElement.hidden, false); assert.equal(downloadStart.disabled, false);
     assert.equal(p.calls.some(call => ["start", "resume", "input"].includes(call)), false);
   });
   await test("small material screens switch groups without slicing rows or starting work", async () => {
     const rows = (prefix, length) => Array.from({ length }, (_, index) => ({ name: `${prefix} ${index + 1}`, amount: "1시간", downloadLabel: index ? "다운로드 약 1GiB" : "다운로드 용량 미확정", description: "직접 준비할 자료", sources: index ? [{ name: "선정 자료" }] : [] }));
     const p = page(null, { width: 319, height: 420, matchMedia: query => query.includes("max-width:760px"), materials: () => ({ training: rows("학습", 6), evaluation: rows("평가", 5) }) });
     p.state.recipes = [{ id: "check" }];
-    await p.next.fire("click"); await p.settle(); await p.next.fire("click"); await p.settle();
+    await advanceSetup(p, "tools", "scale", "materials");
     const columns = p.shell.querySelector(".story-material-columns"), tabs = p.shell.querySelectorAll(".story-material-tab");
     assert.equal(columns.children[0].hidden, false); assert.equal(columns.children[1].hidden, true);
     assert.equal(columns.children[0].querySelectorAll(".story-material-row").length, 6);
@@ -351,20 +378,27 @@ async function main() {
     assert.equal(p.timers[0].delay, 800);
     await p.next.fire("click");
     assert.equal(p.timers.length, 1, "transition blocks a second click");
-    await p.settle(); assert.equal(p.shell.dataset.step, "scale");
-    await p.next.fire("click"); await p.settle(); assert.equal(p.shell.dataset.step, "materials");
+    await p.settle(); assert.equal(p.shell.dataset.step, "tools");
+    const cpu = p.get("story-tool-cpu"), gpu = p.get("story-tool-cu128");
+    assert.equal(cpu.checked, true);
+    cpu.checked = false; gpu.checked = true;
+    await gpu.fire("change", { target: gpu });
+    await advanceSetup(p, "scale");
+    await p.back.fire("click"); await p.settle();
+    assert.equal(p.shell.dataset.step, "tools"); assert.equal(gpu.checked, true);
+    await advanceSetup(p, "scale", "materials");
     const creation = p.next.fire("click"); await p.next.fire("click");
     assert.equal(p.calls.filter(call => call === "create").length, 1);
-    assert.deepEqual(p.creationOptions, [{ navigationCheckpoints: true }]);
+    assert.deepEqual(p.creationOptions, [{ navigationCheckpoints: true, dependencyBackend: "cu128" }]);
     assert.equal(p.calls.includes("start"), false, "model creation does not start downloads");
-    assert.equal(p.timers[2].delay, 800); await p.settle(); await creation;
+    assert.equal(p.timers.at(-1).delay, 800); await p.settle(); await creation;
   });
   await test("fast creation starts immediately while the visible notice keeps its full 800 ms hold", async () => {
     const p = page(null, { create: state => {
       state.project = { id: "new-model", wakeword: "보라야", status: "running", stage_id: "data_download", progress: {} };
       state.busy = false;
     } });
-    await p.next.fire("click"); await p.settle(); await p.next.fire("click"); await p.settle();
+    await advanceSetup(p, "tools", "scale", "materials");
     const creation = p.next.fire("click");
     assert.equal(p.calls.filter(call => call === "create").length, 1);
     await p.flush();
@@ -372,13 +406,13 @@ async function main() {
     assert.equal(p.get("story-panel").inert, true, "preparing the destination cannot reveal it early");
     assert.equal(p.shell.querySelector(".story-loader").hidden, false);
     await p.next.fire("click"); assert.equal(p.calls.filter(call => call === "create").length, 1);
-    assert.equal(p.timers[2].delay, 800); await p.settle(); await creation;
+    assert.equal(p.timers[3].delay, 800); await p.settle(); await creation;
     assert.equal(p.shell.dataset.step, "downloads");
     assert.equal(p.shell.querySelector(".story-loader").hidden, true);
   });
   await test("creation failure restores the material screen and controls after the notice hold without retrying", async () => {
     const p = page(null, { create: state => { state.busy = false; return Promise.reject(new Error("creation unavailable")); } });
-    await p.next.fire("click"); await p.settle(); await p.next.fire("click"); await p.settle();
+    await advanceSetup(p, "tools", "scale", "materials");
     const creation = p.next.fire("click");
     await p.flush();
     p.ui.render(); assert.equal(p.shell.querySelector(".story-loader").hidden, false);
@@ -411,7 +445,7 @@ async function main() {
       return [animation, motion({}, Infinity)]; // An infinite child effect cannot hold the parent transition.
     } });
     const loader = p.shell.querySelector(".story-loader"), panel = p.get("story-panel");
-    for (const [control, before, after] of [[p.next, "entry", "scale"], [p.back, "scale", "entry"]]) {
+    for (const [control, before, after] of [[p.next, "entry", "tools"], [p.back, "tools", "entry"]]) {
       const start = p.now();
       await control.fire("click");
       assert.equal(loader.hidden, true, "the loader is not shown before the panel actually finishes");
@@ -451,13 +485,13 @@ async function main() {
     p.advanceTimer(); await p.flush(); p.elapse(700);
     assert.equal(p.get("story-panel").inert, true, "the prepared destination stays concealed until exit completion");
     phases[2].finish(); await p.flush();
-    assert.equal(p.shell.dataset.step, "scale"); assert.equal(p.now(), 2900);
+    assert.equal(p.shell.dataset.step, "tools"); assert.equal(p.now(), 2900);
   });
   await test("no-motion and reduced-motion paths keep the full notice hold without a completion event", async () => {
     const p = page(null, { getComputedStyle: () => ({ animationDuration: "0s", transitionDuration: "0s" }) });
     await p.next.fire("click"); assert.equal(p.get("story-panel").inert, true);
     assert.equal(p.timers.at(-1).delay, 800);
-    await p.settle(); assert.equal(p.now(), 800); assert.equal(p.shell.dataset.step, "scale");
+    await p.settle(); assert.equal(p.now(), 800); assert.equal(p.shell.dataset.step, "tools");
   });
   await test("a missing finite completion signal is recovered by finishing that motion before advancing", async () => {
     const phases = [];
@@ -474,7 +508,7 @@ async function main() {
     const p = page(null, { create: state => new Promise(resolve => { resolveCreate = () => {
       state.project = { id: "created", status: "ready", stage_id: "data_download" }; state.busy = false; resolve();
     }; }) });
-    await p.next.fire("click"); await p.settle(); await p.next.fire("click"); await p.settle();
+    await advanceSetup(p, "tools", "scale", "materials");
     const creation = p.next.fire("click"); await p.flush(); p.advanceTimer(); await p.flush(); p.elapse(3000);
     assert.equal(p.shell.dataset.step, "materials"); assert.equal(p.shell.querySelector(".story-loader").hidden, false);
     await p.next.fire("click"); assert.equal(p.calls.filter(value => value === "create").length, 1);
@@ -505,7 +539,7 @@ async function main() {
   });
   await test("page hiding releases a pending model-creation transition without waiting for its network response", async () => {
     const p = page(null, { create: () => new Promise(() => {}) });
-    await p.next.fire("click"); await p.settle(); await p.next.fire("click"); await p.settle();
+    await advanceSetup(p, "tools", "scale", "materials");
     const creation = p.next.fire("click"); await p.flush();
     await p.windowEvent("pagehide"); await creation;
     assert.equal(p.get("story-panel").inert, false); assert.equal(p.shell.querySelector(".story-loader").hidden, true);
@@ -515,7 +549,7 @@ async function main() {
     const project = { id: "model", wakeword: "보라야", status: "running", stage_id: "data_download", progress: { done: 100, total: 100, files: [] } };
     const p = page(project);
     assert.equal(p.shell.dataset.step, "downloads"); assert.equal(p.next.textContent, "다음"); assert.equal(p.next.disabled, true);
-    assert.equal(p.ticks[4].hidden, true); assert.equal(p.timers.length, 0);
+    assert.equal(p.ticks[5].hidden, true); assert.equal(p.timers.length, 0);
     await p.next.fire("click"); assert.equal(p.calls.includes("pause"), false);
     assert.equal(p.operation.textContent, "일시정지"); await p.operation.fire("click"); assert.deepEqual(p.calls.filter(call => call === "pause"), ["pause"]);
     assert.equal(p.calls.includes("start"), false);
@@ -698,7 +732,7 @@ async function main() {
       assert.equal(p.next.disabled, true, variant + " must block next");
       await p.next.fire("click"); await p.operation.fire("click");
       assert.equal(p.calls.some(call => ["start", "resume", "pause", "input"].includes(call)), false);
-      if (["missing", "failed"].includes(variant)) assert.equal(p.api.frontier(project), 4);
+      if (["missing", "failed"].includes(variant)) assert.equal(p.api.frontier(project), 5);
     }
   });
   await test("unfinished results work retains its status and central recovery controls before the result page exists", async () => {
@@ -718,14 +752,18 @@ async function main() {
       assert.equal(p.calls.includes(status === "running" ? "pause" : status === "ready" ? "start" : "resume"), true);
     }
   });
-  await test("explicit download start, pause and resume use the central operation button while footer next stays gated", async () => {
+  await test("tool preparation starts once and the real download chapter retains its pause and resume controls", async () => {
     const project = checkpointProject(), p = page(project), primary = p.operation;
-    assert.equal(primary.hidden, false); assert.equal(primary.textContent, "다운로드 시작");
-    assert.equal(p.next.textContent, "다음"); assert.equal(p.next.disabled, true);
-    await p.next.fire("click"); assert.equal(p.calls.includes("start"), false);
+    assert.equal(p.shell.dataset.step, "tools");
+    assert.equal(primary.hidden, false); assert.equal(primary.textContent, "학습 도구 확인 시작");
+    assert.equal(p.next.textContent, "다음"); assert.equal(p.next.disabled, false);
+    await p.next.fire("click"); await p.settle();
+    assert.equal(p.shell.dataset.step, "scale"); assert.equal(p.calls.includes("start"), false);
+    await p.back.fire("click"); await p.settle(); assert.equal(p.shell.dataset.step, "tools");
     await primary.fire("click"); await primary.fire("click"); assert.equal(p.calls.filter(call => call === "start").length, 1);
     p.state.busy = false; project.status = "running"; project.stage_id = "data_download"; project.download_checkpoint.state = "running";
-    project.progress = { done: 100, total: 100 }; p.ui.render();
+    project.progress = { done: 100, total: 100 }; p.ui.render(); await p.settle();
+    assert.equal(p.shell.dataset.step, "downloads");
     assert.equal(primary.hidden, false); assert.equal(p.operation.textContent, "일시정지"); assert.equal(p.next.disabled, true);
     await p.next.fire("click"); assert.equal(p.calls.includes("pause"), false);
     await p.operation.fire("click"); assert.equal(p.calls.filter(call => call === "pause").length, 1);
@@ -775,7 +813,7 @@ async function main() {
       state.busy = false; p.ui.render();
     } });
     const primary = p.operation;
-    assert.equal(p.shell.dataset.step, "downloads"); assert.equal(p.api.frontier(project), 3);
+    assert.equal(p.shell.dataset.step, "downloads"); assert.equal(p.api.frontier(project), 4);
     assert.equal(p.next.disabled, false); assert.equal(primary.hidden, true);
     p.ui.render(); assert.equal(p.timers.length, 0, "awaiting-next polling never starts voice generation or navigation");
     assert.equal(p.calls.includes("resume"), false);
@@ -911,7 +949,88 @@ async function main() {
     assert.equal(JSON.stringify(project), original);
     assert.equal(p.calls.some(call => ["input", "start", "resume", "create"].includes(call)), false);
   });
-  const textOf = item => [item.textContent, ...item.children.map(textOf)].join(" ");
+  await test("dependency setup and installation stay in the tools chapter until actual downloads start", async () => {
+    const project = checkpointProject("running", "running");
+    delete project.download_checkpoint;
+    project.navigation_checkpoint = { policy: "explicit_story_v1", step: "downloads", state: "running" };
+    project.download_files = ["a", "b"].map(id => ({ id, label: `자료 ${id}`, state: "waiting", done: 0, total: 100, unit: "bytes" }));
+    let finishInstallation;
+    const p = page(project, { input: async state => {
+      state.busy = true; p.ui.render();
+      const installed = await new Promise(resolve => { finishInstallation = resolve; });
+      state.busy = false;
+      return installed;
+    } });
+    const history = p.shell.querySelector(".story-history"), input = p.get("input-section");
+    const activity = p.get("story-download-activity");
+    const tools = p.ticks.find(tick => tick.dataset.step === "tools"), downloads = p.ticks.find(tick => tick.dataset.step === "downloads");
+    assert.equal(p.shell.dataset.step, "tools");
+    assert.equal(p.get("story-title").textContent, "학습 도구 준비");
+    assert.equal(tools.getAttribute("aria-current"), "step");
+    assert.equal(downloads.disabled, true);
+    assert.equal(history.hidden, true);
+    assert.equal(input.hidden, true);
+    assert.equal(activity.hidden, false);
+    assert.match(textOf(activity), /실행환경/);
+
+    project.status = "waiting_input";
+    project.input = { kind: "dependency_setup", recommended_backend: "cu128" };
+    p.ui.render();
+    assert.equal(input.hidden, false);
+    assert.equal(activity.hidden, true);
+    assert.equal(history.hidden, true, "planned rows cannot overlap the CPU/GPU form");
+    assert.equal(p.next.textContent, "설치하고 계속");
+    assert.equal(p.next.disabled, false);
+    assert.equal(p.operation.hidden, true);
+
+    const materials = p.ticks.find(tick => tick.dataset.step === "materials");
+    await materials.fire("click"); await p.settle();
+    assert.equal(p.shell.dataset.step, "materials");
+    assert.equal(input.hidden, true);
+    await tools.fire("click"); await p.settle();
+    assert.equal(p.shell.dataset.step, "tools");
+    assert.equal(input.hidden, false);
+    assert.equal(p.next.textContent, "설치하고 계속");
+    const installation = p.next.fire("click"); await p.flush();
+    assert.equal(p.next.disabled, true);
+    await p.next.fire("click");
+    assert.equal(p.calls.filter(call => call === "input").length, 1);
+    assert.equal(p.shell.dataset.step, "tools");
+
+    project.status = "running";
+    delete project.input;
+    project.progress = { phase: "evaluation_environment", label: "GPU 평가 실행환경 설치·확인", phase_elapsed_seconds: 74.8 };
+    finishInstallation(true); await installation; p.ui.render();
+    assert.equal(p.next.textContent, "다음");
+    assert.equal(input.hidden, true);
+    assert.equal(history.hidden, true);
+    assert.equal(activity.querySelector("i").dataset.status, "active");
+    assert.match(textOf(activity), /GPU 평가 실행환경 설치·확인 · 1분 14초 경과/);
+
+    project.stages[0].status = "completed";
+    project.stage_id = "data_download";
+    project.progress = {};
+    project.download_files[0] = { ...project.download_files[0], state: "downloading", done: 35 };
+    p.ui.render(); await p.settle();
+    assert.equal(p.shell.dataset.step, "downloads");
+    assert.equal(downloads.getAttribute("aria-current"), "step");
+    assert.equal(input.hidden, true);
+    assert.equal(history.hidden, false);
+    assert.match(textOf(history), /자료 a.*35%/);
+    assert.match(textOf(history), /자료 b/);
+
+    await tools.fire("click"); await p.settle();
+    assert.equal(p.shell.dataset.step, "tools");
+    assert.equal(input.hidden, true);
+    assert.equal(history.hidden, true);
+    assert.match(textOf(activity), /학습 도구 준비를 마쳤습니다\./);
+    assert.equal(activity.querySelector("i").dataset.status, "complete");
+    await downloads.fire("click"); await p.settle();
+    assert.equal(p.shell.dataset.step, "downloads");
+    assert.match(textOf(history), /35%/);
+    assert.equal(p.calls.filter(call => call === "input").length, 1);
+    assert.equal(p.calls.some(call => ["start", "resume", "pause"].includes(call)), false);
+  });
   await test("cached download verification uses its own measured gauge without displaying transferred bytes as completion", () => {
     const project=checkpointProject("running","running");project.stage_id="data_download";
     project.download_files=[{id:"asset-a",group:"group-a",label:"자료 A",state:"verifying",done:1000,total:1000,unit:"bytes"},
@@ -933,14 +1052,12 @@ async function main() {
     assert.equal(row.querySelector(".story-history-percent").textContent,"");assert.equal(row.querySelector("progress").getAttribute("value"),null);
     assert.match(textOf(row),/0 \/ 2개/);assert.equal(p.calls.includes("resume"),false);
   });
-  await test("planned download rows retain one stable current-work caption through environment extraction and connection",()=>{
-    const project=checkpointProject("running","running");project.stage_id="frontend";
+  await test("download rows retain one stable current-work caption through extraction and connection",()=>{
+    const project=checkpointProject("running","running");project.stage_id="data_download";
     project.download_files=[{id:"a",label:"파일",state:"waiting",unit:"bytes",done:0,total:100}];
-    const p=page(project),caption=p.shell.querySelector(".story-live").children.find(e=>e.style.minHeight==="22px");
-    assert.equal(caption.hidden,false);assert.match(textOf(caption),/실행환경/);assert.equal(caption.querySelector("i").dataset.status,"active");
-    project.progress={phase:"evaluation_environment",label:"GPU 평가 실행환경 설치·확인",phase_elapsed_seconds:74.8};p.ui.render();
-    assert.match(textOf(caption),/GPU 평가 실행환경 설치·확인 · 1분 14초 경과/);
-    project.stage_id="data_download";project.progress={stage:"data_download",phase:"extract",label:"기존 추출 파일 검증",done:123,total:22835,unit:"files"};p.ui.render();
+    const p=page(project),caption=p.get("story-download-activity");
+    assert.equal(caption.hidden,false);assert.match(textOf(caption),/자료 파일/);assert.equal(caption.querySelector("i").dataset.status,"active");
+    project.progress={stage:"data_download",phase:"extract",label:"기존 추출 파일 검증",done:123,total:22835,unit:"files"};p.ui.render();
     assert.match(textOf(caption),/기존 추출 파일 검증.*123 \/ 22,835개/);assert.equal(caption.style.whiteSpace,"nowrap");
     project.stage_id="data_connect";project.progress={done:3,total:20,unit:"완료 단계"};p.ui.render();
     assert.match(textOf(caption),/자료를 연결/);assert.doesNotMatch(textOf(caption),/3 \/ 20/);
@@ -1018,7 +1135,7 @@ async function main() {
     assert.equal(radios.find(radio => radio.checked).value, "production");
     assert.ok(radios.every(radio => radio.disabled)); assert.equal(p.state.selectedPreset, "trial");
     p.ui.render(); assert.equal(p.state.selectedPreset, "trial");
-    p.state.project = null; p.ui.render(); await p.next.fire("click"); await p.settle();
+    p.state.project = null; p.ui.render(); await advanceSetup(p, "tools", "scale");
     assert.equal(p.shell.dataset.step, "scale"); assert.equal(group.parentElement.hidden, true);
     assert.equal(p.state.selectedPreset, "trial");
   });
@@ -2283,7 +2400,7 @@ async function main() {
     let release;
     const p = page(null, { fonts: { ready: new Promise(resolve => { release = resolve; }) }, paintFrames: true });
     await p.next.fire("click"); p.advanceTimer(); await p.flush();
-    assert.equal(p.shell.dataset.step, "scale"); assert.equal(p.shell.querySelector(".story-loader").hidden, false);
+    assert.equal(p.shell.dataset.step, "tools"); assert.equal(p.shell.querySelector(".story-loader").hidden, false);
     assert.equal(p.get("story-panel").inert, true);
     release(); for (let i = 0; i < 8; i++) await p.flush();
     assert.equal(p.shell.querySelector(".story-loader").hidden, true); assert.equal(p.get("story-panel").inert, false);

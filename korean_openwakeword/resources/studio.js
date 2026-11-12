@@ -243,6 +243,7 @@
 
   let snapshot = { projects: [] }, recipes = [], selectedId = "", selectedPreset = "check";
   let newProject = false, busy = false, refreshTask = null, pollTimer = null, recipeReady = false;
+  let dependencySetup = null;
   let selectionRevision = 0, recipeTask = null;
   let pageSuspended = false, logRequest = null;
   let locationTimer = null, locationRevision = 0, modelLocation = { key: "", directory: "", error: "" };
@@ -452,13 +453,7 @@
       const title = element("span", recipe.label || names[recipe.id] || recipe.id, "preset-title");
       const heading = element("div"); heading.append(radio, title);
       const detail = element("p", recipe.description || "", "preset-description");
-      const summary = element("p", undefined, "preset-summary");
-      const originals = recipe.originals ?? recipe.positive_originals, rounds = recipe.rounds ?? recipe.augmentation_rounds, updates = recipe.updates;
-      if (originals !== undefined) summary.append(element("span", `호출어 ${number(originals)}개`));
-      if (rounds !== undefined) summary.append(element("span", `증강 R${number(rounds)}`));
-      if (updates !== undefined) summary.append(element("span", `학습 ${number(updates)}회 / 모델`));
-      if (Number.isInteger(recipe.train_references) && recipe.train_references > 0) summary.append(element("span", `학습 기준 목소리 ${number(recipe.train_references)}개`));
-      label.append(heading, detail, summary); return label;
+      label.append(heading, detail); return label;
     });
     replace($("presets"), nodes.length ? nodes : [element("p", "사용 가능한 작업 규모가 없습니다. 서버 설정을 확인하세요.", "muted")]);
   }
@@ -959,23 +954,27 @@
     $("input-form").hidden = !editable;
     $("input-title").textContent = input.title || (!editable ? "작업을 확인해주세요" : dependencies ? "학습 도구를 준비해주세요" : hard ? "유사어 후보를 정해주세요" : "추가 자료를 연결해주세요");
     $("input-description").textContent = input.description || (!editable ? "자동으로 해결할 수 없는 문제가 있어 멈췄습니다. 아래 작업 기록에서 원인과 필요한 조치를 확인하세요." : dependencies ? "이 가상 환경에 필요한 음성 생성·학습 도구를 설치합니다. 사용할 연산 환경을 선택하세요." : hard ? "호출어와 헷갈릴 수 있는 표현을 입력하세요." : "자동으로 준비할 수 없는 자료가 있습니다. 안내에 맞는 검수·승인 기록을 연결하면 이어서 진행합니다.");
-    $("input-label").textContent = input.label || (dependencies ? "설치할 연산 도구" : hard ? "유사어 문구" : "자료 승인 기록 · 한 줄에 경로 하나씩");
-    $("input-label").hidden = false; $("input-hint").hidden = false;
-    $("input-label").htmlFor = dependencies ? "dependency-backend" : hard ? "hard-phrase-1" : "input-value";
+    $("input-label").textContent = input.label || (hard ? "유사어 문구" : "자료 승인 기록 · 한 줄에 경로 하나씩");
+    $("input-label").hidden = dependencies; $("input-hint").hidden = dependencies;
+    $("input-label").htmlFor = hard ? "hard-phrase-1" : "input-value";
     $("input-value").hidden = dependencies || hard; $("input-value").required = !dependencies && !hard;
     $("hard-phrase-editor").hidden = !hard;
     $("dependency-backend").hidden = !dependencies;
     if (input.kind !== "material_admissions") {
-      const submitText = dependencies ? "선택한 도구 설치하고 계속" : "저장하고 이어서 진행";
+      const submitText = dependencies ? "설치하고 계속" : "저장하고 이어서 진행";
       if ($("input-submit").textContent !== submitText) $("input-submit").textContent = submitText;
     }
-    $("input-hint").textContent = input.hint || (dependencies ? "현재 가상 환경에만 설치합니다. NVIDIA GPU가 없다면 CPU용을 선택하세요." : hard ? "확인한 후보로 소수의 검수용 음성을 먼저 만듭니다." : "직접 준비한 자료의 승인 기록이 필요합니다. 원본 음원 경로만 입력하면 승인된 것으로 처리하지 않습니다.");
+    $("input-hint").textContent = dependencies ? "" : input.hint || (hard ? "확인한 후보로 소수의 검수용 음성을 먼저 만듭니다." : "직접 준비한 자료의 승인 기록이 필요합니다. 원본 음원 경로만 입력하면 승인된 것으로 처리하지 않습니다.");
     if (identity !== inputIdentity) {
       $("input-value").value = (input.phrases || input.values || input.suggestions || []).join("\n");
       hardPhraseFields = [];
       $("hard-phrase-fields").replaceChildren();
       if (hard) for (const value of (input.phrases || input.values || input.suggestions || []).length ? (input.phrases || input.values || input.suggestions) : [""]) addHardPhraseField(value);
-      $("dependency-backend").value = input.recommended_backend === "cu128" ? "cu128" : "cpu";
+      if (dependencies) {
+        const useGpu = input.recommended_backend === "cu128";
+        $("dependency-cpu").checked = !useGpu;
+        $("dependency-cu128").checked = useGpu;
+      }
       $("material-mode").value = "source";
       const source = input.source || {};
       $("source-directory").value = source.directory || ""; $("source-dataset").value = source.dataset || "zeroth";
@@ -988,6 +987,7 @@
     renderInputMode(project);
     renderHardGenerationCounts(project);
     if ($("input-submit").disabled !== busy) $("input-submit").disabled = busy;
+    if ($("dependency-backend").disabled !== busy) $("dependency-backend").disabled = busy;
     if ($("hard-phrase-add").disabled !== busy) $("hard-phrase-add").disabled = busy;
     for (const field of hardPhraseFields) { field.input.disabled = busy; field.remove.disabled = busy; }
   }
@@ -1356,7 +1356,7 @@
     catch (error) { message(error.message, true); await refresh(); return false; }
     finally { busy = false; render(); }
   }
-  async function create(event, { downloadCheckpoint = false, navigationCheckpoints = false } = {}) {
+  async function create(event, { downloadCheckpoint = false, navigationCheckpoints = false, dependencyBackend } = {}) {
     event.preventDefault(); if (busy) return;
     let body;
     try { body = creationBody(); }
@@ -1366,6 +1366,7 @@
       body.navigation_checkpoints = true;
       body.reference_voice_review = true;
     } else if (downloadCheckpoint === true) body.download_checkpoint = true;
+    if (dependencyBackend) body.dependency_backend = dependencyBackend;
     busy = true; message("모델 학습 폴더를 만들고 있습니다."); render();
     try {
       const result = await api("/api/projects", "POST", body), project = result.project || result;
@@ -1392,7 +1393,7 @@
       if (hard) hardPhraseFields[0]?.input.focus();
       return false;
     }
-    let body = dependencies ? { dependency_backend: $("dependency-backend").value } : hard ? { phrases: values } : { admissions: values };
+    let body = dependencies ? { dependency_backend: $("dependency-cu128").checked ? "cu128" : "cpu" } : hard ? { phrases: values } : { admissions: values };
     if (sourceMode) {
       const source = { directory: $("source-directory").value.trim(), dataset: $("source-dataset").value, pool: $("source-pool").value };
       if (!source.directory) { message("음원 폴더를 입력하세요.", true); return false; }
@@ -1449,6 +1450,7 @@
         recipes = Array.isArray(result.presets) ? result.presets : [];
         if (!recipes.length) throw new Error("작업 규모 설정이 비어 있습니다. 다시 불러오세요.");
         if (!recipes.some(recipe => recipe.id === selectedPreset)) selectedPreset = recipes[0].id;
+        dependencySetup = result.dependency_setup || null;
         recipeReady = true; renderPresets(); renderRecipe(); render();
       }).finally(() => { recipeTask = null; });
     }
@@ -1470,7 +1472,8 @@
   }
   async function initializeStudio() {
     if (window.KowwStory) story = window.KowwStory.create({
-      state: () => ({ project: newProject ? null : selectedProject(), recipes, selectedPreset, busy, recipeReady, locationError: modelLocation.error }),
+      state: () => ({ project: newProject ? null : selectedProject(), recipes, selectedPreset, busy, recipeReady,
+        dependencySetup, locationError: modelLocation.error }),
       wakewordError,
       retryLocation: previewLocation,
       materials: materialGroups,

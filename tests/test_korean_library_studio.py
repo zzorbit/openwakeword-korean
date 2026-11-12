@@ -193,6 +193,81 @@ def test_recipes_preview_has_three_budgets_known_sources_and_no_network(manager)
     assert manager.workers.calls == []
 
 
+def test_recipe_and_saved_project_share_dependency_requirements(manager, monkeypatch):
+    from korean_openwakeword import studio_steps
+    from korean_openwakeword.gpu_runtime_install import PINS
+
+    monkeypatch.setattr(studio_steps, "_recommended_dependency_backend", lambda: "cu128")
+    setup = manager.recipes()["dependency_setup"]
+    assert setup["recommended_backend"] == "cu128"
+    common = ["qwen-tts==0.1.1", "onnx>=1.16", "openwakeword==0.6.0"]
+    cpu_torch = "2.8.0" if sys.platform == "darwin" else "2.8.0+cpu"
+    runtime = [f"{name}=={version}" for name, version in PINS.items()]
+    assert setup["packages"] == {
+        "cpu": [f"torch=={cpu_torch}", f"torchaudio=={cpu_torch}", *common],
+        "cu128": ["torch==2.8.0+cu128", "torchaudio==2.8.0+cu128", *common, *runtime],
+    }
+    assert setup["evaluation_runtime_packages"] == runtime
+
+    def unexpected_probe():
+        raise AssertionError("Project polling must not probe NVIDIA hardware")
+
+    monkeypatch.setattr(studio_steps, "_recommended_dependency_backend", unexpected_probe)
+    for word, backend in (("보라야", "cpu"), ("가영아", "cu128")):
+        view = create(manager, wakeword=word, navigation_checkpoints=True, dependency_backend=backend)
+        assert view["dependency_backend"] == backend
+        assert view["dependency_setup_selected"] is True
+        assert view["dependency_packages"] == setup["packages"][backend]
+        assert view["evaluation_runtime_packages"] == runtime
+        assert view["navigation_checkpoint"] == {"policy": "explicit_story_v1", "step": "downloads", "state": "awaiting_start"}
+        assert manager._load(view["id"])["inputs"] == {"dependency_backend": backend}
+    assert manager.workers.calls == []
+
+    manager.start(view["id"])
+    request = read_json(manager.workers.items[0].request_path)
+    assert request["stage"] == "frontend"
+    assert request["context"]["inputs"] == {"dependency_backend": "cu128"}
+
+
+@pytest.mark.parametrize("first_backend", [None, "cpu"])
+def test_dependency_choice_does_not_rewrite_a_matched_model(manager, first_backend):
+    original = create(manager, **({"dependency_backend": first_backend} if first_backend is not None else {}))
+    path = manager._path(original["id"])
+    contents = path.read_bytes()
+    matched = create(manager, dependency_backend="cu128")
+    assert matched["id"] == original["id"]
+    assert matched["dependency_backend"] == first_backend
+    assert matched["dependency_setup_selected"] is (first_backend is not None)
+    assert path.read_bytes() == contents
+
+
+def test_existing_dependency_prompt_still_submits_and_resumes_frontend(manager):
+    original = create(manager, navigation_checkpoints=True)
+    manager.start(original["id"])
+    manager.workers.items[-1].finish({"state": "waiting_input", "input_kind": "dependency_setup"})
+    manager.tick()
+    waiting = manager.describe(manager._load(original["id"]))
+    assert waiting["input"]["kind"] == "dependency_setup"
+    assert waiting["dependency_backend"] is None
+    assert waiting["dependency_setup_selected"] is False
+
+    resumed = manager.submit_input(original["id"], {"dependency_backend": "cpu"})
+    assert resumed["dependency_backend"] == "cpu"
+    assert resumed["dependency_setup_selected"] is False
+    request = read_json(manager.workers.items[-1].request_path)
+    assert request["stage"] == "frontend"
+    assert request["context"]["inputs"] == {"dependency_backend": "cpu"}
+
+
+@pytest.mark.parametrize("backend", [None, True, 5, [], "cuda", "CPU", ""])
+def test_invalid_dependency_backend_does_not_create_project(manager, backend):
+    with pytest.raises(ValueError, match="CPU 또는 NVIDIA GPU"):
+        create(manager, dependency_backend=backend)
+    assert not manager.registry["projects"]
+    assert not (manager.workspace / "models").exists()
+    assert manager.workers.calls == []
+
+
 @pytest.mark.parametrize("version", [1, 2, 3, 4])
 def test_new_common_benchmark_is_separate_and_saved_protocol_remains_readable(manager, version):
     from korean_openwakeword.studio_steps import common_evaluation_policy
