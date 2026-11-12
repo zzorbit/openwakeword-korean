@@ -1594,22 +1594,20 @@
       const byBytes = Number.isFinite(row.bytes) && Number.isFinite(row.totalBytes) && row.totalBytes > 0;
       const fraction = row.verification ? Number.isFinite(row.verificationPercent) ? row.verificationPercent / 100 : null
         : byBytes ? row.bytes / row.totalBytes : totalKnown && doneKnown ? row.done / row.total : null;
-      const checking = row.quality === "checking";
-      const awaitingResult = row.quality === "waiting" || (checking && fraction >= 1);
-      const percentage = checking ? Math.floor(fraction * 1000) / 10 : Math.min(100, fraction * 100);
-      percent.textContent = fraction === null || awaitingResult || row.indeterminate ? ""
+      const percentage = Math.min(100, fraction * 100);
+      percent.textContent = fraction === null || row.indeterminate ? ""
         : `${percentage.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}%`;
       bar.hidden = fraction === null && !row.verification;
-      bar.dataset.quality = row.quality || "";
       bar.dataset.active = String(Boolean(row.active));
       if (fraction !== null || row.verification) {
         bar.max = row.verification ? 100 : byBytes ? row.totalBytes : row.total;
-        if (awaitingResult || fraction === null || row.indeterminate) bar.removeAttribute("value");
+        if (fraction === null || row.indeterminate) bar.removeAttribute("value");
         else bar.value = Math.min(bar.max, row.verification ? row.verificationPercent : byBytes ? row.bytes : row.done);
-        bar.setAttribute("aria-label", (row.label || "자료") + (row.verification ? " 현재 파일 무결성 검사 진행률" : row.quality ? " 품질 검사 진행률" : " 진행률") + (row.active ? " · 진행 중" : ""));
+        bar.setAttribute("aria-label", (row.label || "자료") + (row.verification ? " 현재 파일 무결성 검사 진행률" : " 진행률") + (row.active ? " · 진행 중" : ""));
       }
     }
     const downloadGroupOrder = ["generic_negative", "zeroth", "audioset", "musan", "seoul", "fsd50k", "common_rir", "official_music", "mit_rir"];
+    const downloadFileComplete = file => ["complete", "reused"].includes(file.state);
     let downloadRowViews = new Map();
     const downloadList = node("div", undefined, "story-history-rows");
     let legacyInstallLog = null;
@@ -1663,8 +1661,15 @@
         ? progress.label.trim().slice(0, 240) : defaults[stage] || "자료 준비 상태를 확인하고 있습니다...";
       const numeric = Number.isFinite(progress.done) && progress.done >= 0 && Number.isFinite(progress.total) && progress.total > 0
         && !/단계|bytes|바이트/.test(progress.unit || "");
-      const text = toolsComplete ? "학습 도구 준비를 마쳤습니다." : label + (numeric ? ` · ${progressAmount(progress.done, progress.total, progress.unit || "개")}` : "")
+      let text = toolsComplete ? "학습 도구 준비를 마쳤습니다." : label + (numeric ? ` · ${progressAmount(progress.done, progress.total, progress.unit || "개")}` : "")
         + (stage === "frontend" ? phaseElapsed(progress) : "");
+      if (stage === "data_download" && progress.phase === "download_many") {
+        // The public list groups separately verified MIT WAVs into the one bundle shown in the table.
+        const files = project.download_files?.filter(file => (file.unit || "bytes") === "bytes");
+        text = files?.length
+          ? `자료 다운로드 · ${progressAmount(files.filter(downloadFileComplete).length, files.length, "files")} 확인`
+          : "자료 다운로드 중";
+      }
       downloadActivityLabel.textContent = text + " "; downloadActivity.title = text;
       updateProgressIndicator(downloadActivityIndicator, toolsComplete ? "complete" : "active");
     }
@@ -1701,7 +1706,7 @@
     function renderStoryDownloads(project, files, verification, quality, active, legacy) {
       const stage = stageId(project);
       const activeDownload = active && stage === "data_download";
-      const groups = new Map(), complete = file => ["complete", "reused"].includes(file.state);
+      const groups = new Map();
       const fileActive = file => activeDownload && ["downloading", "verifying", "retrying"].includes(file.state);
       const sum = (files, key) => files.every(file => Number.isFinite(file[key])) ? files.reduce((value, file) => value + file[key], 0) : null;
       const rank = key => downloadGroupOrder.includes(key) ? downloadGroupOrder.indexOf(key) : downloadGroupOrder.length;
@@ -1713,14 +1718,14 @@
       const rows = [...groups].sort(([a], [b]) => rank(a) - rank(b)).flatMap(([key, group]) => {
         if (group.some(file => (file.unit || "bytes") !== "bytes")) {
           return group.map(file => ({ ...file, key: file.id, label: file.label || file.group_label || "자료",
-            active: fileActive(file), completed: complete(file),
+            active: fileActive(file), completed: downloadFileComplete(file),
             failed: file.state === "failed" }));
         }
-        return [{ key, label: group[0].group_label || group[0].label || "자료", done: group.filter(complete).length,
+        return [{ key, label: group[0].group_label || group[0].label || "자료", done: group.filter(downloadFileComplete).length,
           total: group.length, unit: "files", bytes: sum(group, "done"), totalBytes: sum(group, "total"),
           failed: group.some(file => file.state === "failed"),
           active: group.some(fileActive),
-          completed: group.every(complete),
+          completed: group.every(downloadFileComplete),
           verifying: group.some(file => file.state === "verifying"),
           hashPercent: group.filter(file => file.state === "verifying").length === 1
             && group.some(file => file.id === verification?.id && file.state === "verifying") ? verification.percent : null,
@@ -1744,15 +1749,14 @@
           view.item.append(view.note);
         }
         const inspection = (row.group || row.key) === "generic_negative" && row.completed ? quality : null;
-        const gauge = inspection && Number.isFinite(inspection.total)
-          ? { ...row, done: inspection.done, total: inspection.total, unit: "rows", bytes: null, totalBytes: null }
-          : row.verifying || row.state === "verifying" ? { ...row, verification: true, verificationPercent: row.hashPercent } : row;
-        const inspectionActive = Boolean(activeDownload && inspection && inspection.state !== "complete");
+        const gauge = row.verifying || row.state === "verifying"
+          ? { ...row, verification: true, verificationPercent: row.hashPercent } : row;
+        const inspectionActive = activeDownload && inspection?.state === "checking";
         const rowActive = row.active && !row.failed;
-        updateHistoryRow(view, { ...gauge, active: inspection ? inspectionActive : rowActive, quality: inspection?.state });
+        updateHistoryRow(view, { ...gauge, active: rowActive });
         view.item.dataset.failed = String(Boolean(row.failed));
         if (view.titleIndicator.parentElement !== view.title) view.title.append(view.titleIndicator);
-        updateProgressIndicator(view.titleIndicator, inspection ? "" : progressStatus(rowActive, row.completed));
+        updateProgressIndicator(view.titleIndicator, progressStatus(rowActive, row.completed));
         const sizeNote = row.failed ? "다운로드 실패"
           : Number.isFinite(row.totalBytes) ? progressAmount(row.bytes, row.totalBytes, "bytes")
             : row.unit === "files" && Object.hasOwn(row, "totalBytes")
@@ -1766,7 +1770,11 @@
         view.noteDetail.textContent = detail && inspection ? detail + " · " : detail;
         view.inspectionStatus.hidden = !inspection;
         updateProgressIndicator(view.inspectionIndicator, progressStatus(inspectionActive, inspection?.state === "complete"));
-        view.inspectionLabel.textContent = inspection ? inspection.state === "complete" ? "검사 완료" : inspectionActive ? "품질 검사 중" : "품질 검사 미완료" : "";
+        view.inspectionLabel.textContent = {
+          waiting: "품질 검사 대기",
+          checking: inspectionActive ? "품질 검사 중" : "품질 검사 미완료",
+          complete: "품질 검사 완료",
+        }[inspection?.state] || "";
         view.note.hidden = !detail && !inspection;
         view.item.hidden = false;
         nextViews.set(row.key, view);

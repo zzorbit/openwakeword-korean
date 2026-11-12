@@ -921,16 +921,25 @@ async function main() {
       assert.equal(requests, 1);
     }
   });
-  await test("failed dataset quality inspection never keeps a running spinner", () => {
-    const project = checkpointProject("running", "error");
+  await test("download stays at 100% while quality inspection reports its own state", () => {
+    const project = checkpointProject("running", "running");
     project.stage_id = "data_download";
-    project.error = "자료 검사 실패";
     project.download_files = [{ id: "a", group: "generic_negative", label: "일반 비호출 자료", state: "complete", done: 100, total: 100, unit: "bytes" }];
-    project.download_quality = { state: "checking", done: 7, total: 10 };
     const p = page(project);
-    const history = p.shell.querySelector(".story-history");
-    const row = historyRowByLabel(history, "일반 비호출 자료");
-    assert.match(textOf(row), /70%/);
+    const row = historyRowByLabel(p.shell.querySelector(".story-history"), "일반 비호출 자료");
+    const percent = row.querySelector(".story-history-percent"), quality = row.querySelector(".story-quality-label");
+    assert.equal(percent.textContent, "100%");
+    assert.equal(quality.textContent, "품질 검사 대기");
+    assert.equal(hasActiveDownloadSpinner(row), false);
+    project.download_quality = { state: "checking", done: 7, total: 10 };
+    p.ui.render();
+    assert.equal(percent.textContent, "100%");
+    assert.equal(quality.textContent, "품질 검사 중");
+    assert.equal(hasActiveDownloadSpinner(row), true);
+    project.status = "error"; project.error = "자료 검사 실패";
+    p.ui.render();
+    assert.equal(percent.textContent, "100%");
+    assert.equal(quality.textContent, "품질 검사 미완료");
     assert.equal(hasActiveDownloadSpinner(row), false);
     assert.equal(p.get("story-download-activity").hidden, true);
   });
@@ -1208,6 +1217,25 @@ async function main() {
     const p=page(project),row=historyRowByLabel(p.shell, "묶음");
     assert.equal(row.querySelector(".story-history-percent").textContent,"");assert.equal(row.querySelector("progress").getAttribute("value"),null);
     assert.match(textOf(row),/0 \/ 2개/);assert.equal(p.calls.includes("resume"),false);
+  });
+  await test("download caption totals the displayed bundles without raw worker counts", () => {
+    const project = checkpointProject("running", "running");
+    project.stage_id = "data_download";
+    project.progress = { phase: "download_many", label: "자료 다운로드 · 자동 1개 · 4/283개 확인", done: 4, total: 283 };
+    project.download_files = Array.from({ length: 14 }, (_, i) => ({
+      id: i === 13 ? "mit_rir" : "asset-" + i, state: i < 3 ? "complete" : i === 3 ? "reused" : "waiting",
+      done: i < 4 ? 100 : 0, total: 100, unit: "bytes",
+    }));
+    const p = page(project), caption = p.get("story-download-activity");
+    assert.match(textOf(caption), /자료 다운로드 · 4 \/ 14개 확인/);
+    assert.doesNotMatch(textOf(caption), /자동|283/);
+    project.download_files.at(-1).state = "complete";
+    p.ui.render();
+    assert.match(textOf(caption), /자료 다운로드 · 5 \/ 14개 확인/);
+    delete project.download_files;
+    p.ui.render();
+    assert.match(textOf(caption), /자료 다운로드 중/);
+    assert.doesNotMatch(textOf(caption), /자동|283/);
   });
   await test("download rows retain one stable current-work caption through extraction and connection",()=>{
     const css = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources/studio_story.css"), "utf8");
