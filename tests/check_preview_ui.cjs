@@ -881,6 +881,56 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
   assert.equal(raceCard.children[3].children[0].disabled,false);assert.equal(raceCard.children[3].children[1].textContent,'선택');
   assert.equal(raceCard.children[2].hidden,true);assert.equal(raceCard.children[2].textContent,'');
   assert.equal(endedRaceState.accepted.length,0);assert.equal(raceAudio.playCalls,1,'natural completion never selects or relays');
+  {
+    const pendingHearState=structuredClone(initialCandidateState);
+    const [heardRow,oldChoice,newChoice]=pendingHearState.items;
+    oldChoice.selected=true;pendingHearState.accepted=[oldChoice];
+    let releaseHear;
+    const pendingHear=await screen('reference-preview',[],{config:candidateConfig,respond:async(url,options)=>{
+      if(!options)return {payload:pendingHearState};
+      const action=JSON.parse(options.body);
+      const row=pendingHearState.items.find(item=>item.id===action.id&&item.sha256===action.sha256);
+      assert.ok(row);
+      if(action.action==='hear'){
+        assert.equal(row,heardRow);
+        row.heard=true;
+        // Freeze the server reply before either subsequent selection is saved.
+        const reply=structuredClone(pendingHearState);
+        await new Promise(resolve=>{releaseHear=resolve;});
+        return {payload:reply};
+      }
+      assert.equal(action.action,'toggle');
+      row.selected=!row.selected;
+      pendingHearState.accepted=pendingHearState.items.filter(item=>item.selected);
+      return {payload:pendingHearState};
+    }});
+    const cards=pendingHear.nodes.get('candidate-list').children;
+    const choice=index=>cards[index].children[3].children[0];
+    const audio=pendingHear.nodes.get('audio');
+    function finishFirstClip(){
+      cards[0].children[0].handlers.click();
+      audio.duration=1;audio.currentTime=1;audio.played={length:1,start:()=>0,end:()=>1};
+      audio.finish();
+    }
+    finishFirstClip();
+    assert.ok(cards.every((_,index)=>!choice(index).disabled),'natural playback completion never disables candidate selections');
+    await pendingHear.flush();
+    assert.equal(typeof releaseHear,'function','a completed clip still saves a factual listening record');
+    assert.ok(cards.every((_,index)=>!choice(index).disabled),'candidate selections remain available throughout the pending listening save');
+    choice(1).change(false);choice(2).change(true);
+    assert.equal(choice(1).checked,false,'deselection is immediately visible during the listening save');
+    assert.equal(choice(2).checked,true,'selection is immediately visible during the listening save');
+    await pendingHear.flush();
+    releaseHear();await pendingHear.flush();
+    assert.deepEqual(pendingHearState.accepted.map(item=>item.id),[newChoice.id]);
+    assert.equal(choice(1).checked,false,'the earlier listening reply cannot restore a deselected candidate');
+    assert.equal(choice(2).checked,true,'the earlier listening reply cannot discard the newer choice');
+    assert.equal(pendingHear.nodes.get('candidate-list').children[2],cards[2],'saving hearing and selection preserves the candidate cards');
+    const writes=()=>pendingHear.calls.filter(call=>call.options).map(call=>JSON.parse(call.options.body));
+    assert.deepEqual(writes().filter(action=>action.action==='toggle').map(action=>action.id),[oldChoice.id,newChoice.id]);
+    finishFirstClip();await pendingHear.flush();
+    assert.equal(writes().filter(action=>action.action==='hear').length,1,'the acknowledged listening record is retained after the selection changes');
+  }
   const stoppedRace=await screen('reference-preview',[],{config:candidateConfig,payload:initialCandidateState});
   const stoppedAudio=stoppedRace.nodes.get('audio'),stoppedPlay=stoppedRace.nodes.get('candidate-list').children[0].children[0];
   stoppedPlay.handlers.click();stoppedAudio.duration=1;stoppedAudio.currentTime=1;stoppedAudio.played={length:1,start:()=>0,end:()=>1};

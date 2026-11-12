@@ -239,6 +239,7 @@ let reportedCandidateGroup;
 let reportedCandidateHeight=null,candidateHeightFrame=null,candidateHeightForce=false,candidateResizeObserver=null,candidateHeightSuspended=false;
 const initialCandidateRequests=new Set();
 const sessionHeard=new Set();
+const candidateHearWrites=new Map();
 function mountListeningView(){
   if(viewMode==='list')return;
   if(viewMode)throw Error('검수 방식이 변경되었습니다. 화면을 새로고침해 주세요.');
@@ -379,9 +380,19 @@ audio.addEventListener('ended',async()=>{
   const index=currentIndex;
   if(groups.length){
     const item=items[index],version=playbackVersion;
+    if(candidateMode){
+      candidatePlaybackIntent=null;setPlaying(false);
+      if(heard(item))return;
+      if(!playedWholeClip()){
+        errorMessage.textContent='처음부터 끝까지 들은 경우에만 청취 완료로 기록합니다.';return;
+      }
+      if(editable)void recordCandidateHearing(item);
+      else sessionHeard.add(`${item.id}:${item.sha256}`);
+      return;
+    }
     if(!heard(item)){
       if(!playedWholeClip()){
-        stop();errorMessage.textContent=candidateMode?'처음부터 끝까지 들은 경우에만 청취 완료로 기록합니다.':'처음부터 끝까지 들으면 확인 표시가 생깁니다.';return;
+        stop();errorMessage.textContent='처음부터 끝까지 들으면 확인 표시가 생깁니다.';return;
       }
       if(editable){
         if(!await saveReview('hear',{id:item.id,sha256:item.sha256}))return;
@@ -391,8 +402,6 @@ audio.addEventListener('ended',async()=>{
     }
     if(version!==playbackVersion||document.hidden)return;
   }
-  // Listening completion neither selects a candidate nor advances playback.
-  if(candidateMode){candidatePlaybackIntent=null;setPlaying(false);return;}
   if(hard)voicePicker?.setBadge(index,'들음');
   if(index+1<items.length)select(index+1,true);
   else if(positive&&total>items.length)loadPage(pageStart+items.length<total?pageStart+items.length:0,true);
@@ -430,7 +439,7 @@ function parseItems(rows){
     return {...item,audio:audioUrl(item.audio)};
   });
 }
-function heard(item){return item.heard===true||(!editable&&sessionHeard.has(`${item.id}:${item.sha256}`));}
+function heard(item){return item.heard===true||((candidateMode||!editable)&&sessionHeard.has(`${item.id}:${item.sha256}`));}
 function regenerationRunning(){return job?.status==='running'||candidateMode&&job?.status==='queued';}
 function playedWholeClip(){
   const ranges=audio.played, tolerance=0.05;
@@ -950,6 +959,25 @@ function scheduleReviewPoll(){
     }
   },1200);
 }
+function recordCandidateHearing(item){
+  const key=`${item.id}:${item.sha256}`,scope=candidateSelectionScope();
+  if(candidateHearWrites.has(key))return;
+  const url=candidateBatchUrl(config.save_url);
+  const write=(async()=>{
+    try{
+      const response=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-Koww-Token':config.token},
+        signal:globalThis.AbortSignal?.timeout?.(15000),body:JSON.stringify({action:'hear',id:item.id,sha256:item.sha256})});
+      const payload=await response.json();
+      if(!response.ok)throw Error(payload.error||'청취 기록을 저장하지 못했습니다.');
+      // Only acknowledge the heard clip. A full snapshot can contain an older selection.
+      sessionHeard.add(key);
+    }catch(error){
+      if(candidateMode&&editable&&scope===candidateSelectionScope()&&!errorMessage.textContent)
+        errorMessage.textContent=error.message||'청취 기록을 저장하지 못했습니다.';
+    }
+  })().finally(()=>candidateHearWrites.delete(key));
+  candidateHearWrites.set(key,write);
+}
 async function saveReview(action,fields,nextKey){
   if(saving||regenerationRunning()||candidateMode&&candidateSelectionBlocked)return false;
   candidateStarting=candidateMode&&action==='more';
@@ -957,7 +985,8 @@ async function saveReview(action,fields,nextKey){
   saving=true;syncReview();
   if(candidateMode)candidateLoadVersion++;
   try{
-    const saveUrl=candidateMode&&['hear','toggle'].includes(action)?candidateBatchUrl(config.save_url):config.save_url;
+    if(candidateMode&&candidateHearWrites.size)await Promise.all(candidateHearWrites.values());
+    const saveUrl=candidateMode&&action==='toggle'?candidateBatchUrl(config.save_url):config.save_url;
     const response=await fetch(saveUrl,{method:'POST',headers:{'Content-Type':'application/json','X-Koww-Token':config.token},
       body:JSON.stringify({action,...fields})});
     const payload=await response.json();
