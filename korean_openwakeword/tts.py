@@ -37,6 +37,13 @@ _REFERENCE_PREPARATION_PREVIOUS_IMPLEMENTATIONS = {
     LEGACY_CALL_IMPLEMENTATION, "9f39f255e364f0186f8e866bfb317dbef90d6c01f3481147c04637b3d0585aee"}
 
 
+def _generation_evidence_sha256():
+    from .call_generation_history import SCHEDULING_ONLY_TTS_DIGESTS
+
+    current = digest(__file__)
+    return SCHEDULING_ONLY_TTS_DIGESTS.get(current, current)
+
+
 def technical_qc(samples, rate):
     samples = np.asarray(samples, dtype=np.float64)
     reasons = []
@@ -163,7 +170,7 @@ def generate_references(project, split="train", limit=None, model=None):
     selected = families[:limit] if limit is not None else families
     output = root / "data" / "references" / split
     with writer_lock(output):
-        reference_contract = {"tts": config["tts"], "families": families, "text": reference_text, "implementation_sha256": digest(__file__),
+        reference_contract = {"tts": config["tts"], "families": families, "text": reference_text, "implementation_sha256": _generation_evidence_sha256(),
             "reference_preparation": {"policy": clone_reference.GENERATED_POLICY, "rules": dict(clone_reference.RULES),
                                       "implementation_sha256": digest(clone_reference.__file__)}}
         rows, generation_update = _reference_generation_journal(root, output, reference_contract)
@@ -235,7 +242,7 @@ def call_generation_location(root, split, staged_scope):
 
 def call_generation_contract(config, split, references, pilot, method, staged_scope=None):
     contract = {"word": config["wakeword"], "split": split, "tts": config["tts"], "method": method,
-                "references": references, "pilot": pilot, "implementation_sha256": digest(__file__)}
+                "references": references, "pilot": pilot, "implementation_sha256": _generation_evidence_sha256()}
     if staged_scope is not None:
         contract["staged_scope"] = staged_scope
     if method == "clone":
@@ -324,7 +331,7 @@ def validate_call_rows(root, config, split, references, rows, context, *, scope=
     """Check both historical and newly prepared attempts without inventing QC."""
     tts_id, samples, passing, counts, verified = identity(config["tts"]), set(), {}, Counter(), set()
     scope_id = identity(scope)[:16] if scope is not None else ""
-    implementation_sha = digest(__file__) if method == "clone" else None
+    implementation_sha = _generation_evidence_sha256() if method == "clone" else None
     for index, row in enumerate(rows):
         slot = row.get("slot")
         if type(slot) is not int or slot < 0 or not references:
@@ -414,7 +421,8 @@ def _exhausted_slots(rows, references, target, passing, limit, split):
 
 
 @project_storage
-def generate(project, split="train", limit=None, pilot=False, method="clone", model=None, *, staged_scope=None):
+def generate(project, split="train", limit=None, pilot=False, method="clone", model=None, *,
+             staged_scope=None, attempt_ceiling=None, excluded_sha256=()):
     root, config = load_project(project)
     if split not in ("train", "validation", "final") or method not in ("clone", "design") or limit is not None and (type(limit) is not int or limit < 1):
         raise ValueError("Use a valid split/method and a positive generation limit")
@@ -432,6 +440,15 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
     admission = snapshot_json(root, approval, "generation_policy") if not pilot else None
     if staged_scope is not None and (not pilot or method != "clone" or split == "final"):
         raise ValueError("Scoped pronunciation generation is only for staged Train or Validation calls")
+    if attempt_ceiling is not None or excluded_sha256:
+        if not isinstance(staged_scope, dict) or staged_scope.get("kind") != "preflight":
+            raise ValueError("Retry scheduling is only for staged preflight calls")
+        if attempt_ceiling is not None and (type(attempt_ceiling) is not int or not 1 <= attempt_ceiling <= CLONE_ATTEMPTS):
+            raise ValueError("Invalid staged preflight attempt ceiling")
+    if not isinstance(excluded_sha256, (tuple, list, set, frozenset)) or any(
+            type(sha) is not str or len(sha) != 64 or any(char not in "0123456789abcdef" for char in sha)
+            for sha in excluded_sha256):
+        raise ValueError("Invalid staged preflight audio exclusion")
     references = (staged_scope["references"] if staged_scope is not None
                   else read_rows(root / "data" / "references" / split / "references.jsonl"))
     if method == "clone":
@@ -471,7 +488,9 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
         initial_row_count = len(rows)
         pending = [i for i in range(target) if i not in by_slot]
         attempt_limit = CLONE_ATTEMPTS if method == "clone" else ORIGINAL_ATTEMPTS
-        runnable = [slot for slot in pending if attempts_by_slot[slot] < attempt_limit]
+        # An intermediate sweep does not change the frozen per-slot budget.
+        ceiling = attempt_limit if attempt_ceiling is None else attempt_ceiling
+        runnable = [slot for slot in pending if attempts_by_slot[slot] < ceiling]
         prepared = {}
         if method == "clone" and runnable:
             # Prepare/verify before model loading, and only for unfinished slots.
@@ -489,12 +508,13 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
         existing_hashes = {r["sha256"] for r in rows if r.get("sha256")}
         if staged_scope is not None:
             existing_hashes.update(staged_scope.get("excluded_sha256", ()))
+        existing_hashes.update(excluded_sha256)
         # These immutable settings and retry counts are independent of output.
         generation_contract_id = context["current_id"] if method == "clone" else identity(settings)
         for slot in runnable:
             reference = references[slot % len(references)]
             family = reference.get("voice_family_id", reference.get("family_id"))
-            for attempt in range(attempts_by_slot[slot], attempt_limit):
+            for attempt in range(attempts_by_slot[slot], ceiling):
                 sample_id = f"{split}_{slot:06d}_attempt{attempt}"
                 seed_parts = [config["tts"]["seed"], split, slot, attempt]
                 if scope_id:

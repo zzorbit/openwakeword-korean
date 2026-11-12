@@ -123,81 +123,156 @@ def test_incomplete_voice_coverage_cannot_publish_or_approve_a_pilot(tmp_path, m
     assert (project.parent / "approval.json").read_bytes() == before
 
 
-def test_explicit_pilot_retry_reuses_passed_clips_and_spends_one_round_per_failed_bank(tmp_path, monkeypatch):
+def _pilot_synthesis_fixture(project, monkeypatch, train):
     import numpy as np
     import soundfile as sf
 
     from korean_openwakeword import tts, tts_runtime
-    from test_call_generation_recovery import RecoveryModel, legacy_run
+    from test_call_generation_recovery import RecoveryModel
     from test_korean_library_tts_journal import cpu_seed
 
-    project, _, train, _, base = legacy_run(tmp_path, count=3, references_count=3,
-                                            scope_kind="preflight", revision=identity([]))
     root = project.parent
     validation = []
     for number in range(2):
         audio = root / f"eval_{number}.wav"
         sf.write(audio, .11 * np.sin(np.arange(8000) / (25 + number)), 16000, subtype="FLOAT")
-        validation.append(dict(train[0], voice_family_id=f"eval_{number}", split="validation", text="평가 기준 음성입니다.",
+        validation.append(dict(train[0], voice_family_id=f"eval_{number}", split="validation", text=f"평가 기준 음성 {number}입니다.",
                                path=str(audio.relative_to(root)), sha256=digest(audio)))
 
     class SelectiveModel(RecoveryModel):
-        fail_validation = False
+        def __init__(self):
+            super().__init__()
+            self.failures_left = {}
+            self.generated = []
 
         def generate_voice_clone(self, **options):
-            if self.fail_validation and options["voice_clone_prompt"]["ref_text"] == validation[0]["text"]:
+            reference = options["voice_clone_prompt"]["ref_text"]
+            self.generated.append(reference)
+            if self.failures_left.get(reference, 0) > 0:
+                self.failures_left[reference] -= 1
                 self.calls += 1
                 return [np.zeros(9600)], 16000
             return super().generate_voice_clone(**options)
 
-    model = SelectiveModel(fail=True)
+    model = SelectiveModel()
     monkeypatch.setattr(tts, "_seed", cpu_seed)
     monkeypatch.setattr(tts_runtime, "CloneRuntime", lambda *args: model)
     monkeypatch.setattr(pilot, "_preflight_banks", lambda *_: {"train": train, "validation": validation})
-    settings = {"train_references": 3, "validation_references": 2}
+    return model, validation, {"train_references": len(train), "validation_references": len(validation)}
+
+
+def test_pilot_attempts_every_voice_before_retrying_failures(tmp_path, monkeypatch):
+    from test_korean_library_tts_journal import approved_project
+
+    project = approved_project(tmp_path / "word", "clone", count=2)
+    train = [dict(row, text=f"학습 기준 음성 {index}입니다.") for index, row in enumerate(
+        read_rows(project.parent / "data/references/train/references.jsonl"))]
+    model, validation, settings = _pilot_synthesis_fixture(project, monkeypatch, train)
+    references = [row["text"] for row in train + validation]
+    model.failures_left.update({references[0]: 2, references[2]: 2})
+
+    result = pilot.prepare_prepost_pilot(project, settings)
+
+    assert model.generated[:4] == references
+    assert model.generated[4:] == [references[0], references[2], references[0], references[2]]
+    assert result["full_target_reached"] and result["technical_pass"] == 4
+    assert [row["preflight_reference"] for row in read_rows(result["review_queue"])] == train + validation
+
+
+def test_explicit_pilot_retry_reuses_passed_clips_and_retries_both_banks(tmp_path, monkeypatch):
+    from korean_openwakeword import tts
+    from test_call_generation_recovery import RecoveryModel, legacy_run
+    from test_korean_library_tts_journal import cpu_seed
+
+    project, _, train, scope, base = legacy_run(tmp_path, count=3, references_count=3,
+                                                scope_kind="preflight", revision=identity([]))
+    root = project.parent
+    monkeypatch.setattr(tts, "_seed", cpu_seed)
+    tts.generate(project, "train", len(train), True, "clone", model=RecoveryModel(fail=True), staged_scope=scope)
+    model, validation, settings = _pilot_synthesis_fixture(project, monkeypatch, train)
+    model.failures_left[validation[0]["text"]] = tts.CLONE_ATTEMPTS
     first = pilot.prepare_prepost_pilot(project, settings)
-    assert first["technical_pass"] == 2 and first["target"] == 5
+    assert first["technical_pass"] == 3 and first["target"] == 5
+    assert model.generated[:2] == [row["text"] for row in validation]
+    assert {row["split"] for row in first["exhausted_slots"]} == {"train", "validation"}
+    assert "review_queue" not in first
     base_journal = base / "candidates.jsonl"
-    original_wavs = {row["voice_family_id"]: row["sha256"] for row in read_rows(base_journal) if row["qc"]["passed"]}
-    base_bytes = {path: path.read_bytes() for path in base.iterdir() if path.is_file()}
+    journals = list((root / "data/call_pronunciation").glob("*/*/candidates.jsonl"))
+    assert base_journal in journals and len(journals) == 2
+    original_wavs = {row["voice_family_id"]: row["sha256"] for journal in journals for row in read_rows(journal)
+                     if row["qc"]["passed"]}
+    base_bytes = {path: path.read_bytes() for journal in journals for path in journal.parent.iterdir() if path.is_file()}
     approval = (root / "approval.json").read_bytes()
 
-    retry = pilot.prepare_prepost_pilot(project, settings, quality_retry_rounds=1)
-    assert retry["technical_pass"] == 2 and "review_queue" not in retry
-    assert retry["exhausted_slots"][0]["label"] == first["exhausted_slots"][0]["label"]
-    assert retry["exhausted_slots"][0]["slot"] == 2
-    contracts = list((root / "data/call_pronunciation").glob("*/train/contract.json"))
-    retry_path, = (path for path in contracts if path.parent != base)
-    retry_scope = read_json(retry_path)["staged_scope"]
-    assert retry_scope["quality_retry_round"] == 1 and retry_scope["references"] == [train[2]]
-    assert retry_scope["excluded_sha256"] == sorted(original_wavs.values())
-    retry_bytes = (retry_path.parent / "candidates.jsonl").read_bytes()
-    calls = model.calls
-    assert pilot.prepare_prepost_pilot(project, settings, quality_retry_rounds=1) == retry
-    assert model.calls == calls
-
-    model.fail = False
-    model.fail_validation = True
-    evaluation_failed = pilot.prepare_prepost_pilot(project, settings, quality_retry_rounds=2)
-    assert evaluation_failed["technical_pass"] == 3
-    assert {row["split"] for row in evaluation_failed["exhausted_slots"]} == {"validation"}
-    validation_scopes = [read_json(path)["staged_scope"] for path in (root / "data/call_pronunciation").glob("*/validation/contract.json")]
-    assert len(validation_scopes) == 1 and "quality_retry_round" not in validation_scopes[0]
-
-    model.fail_validation = False
-    complete = pilot.prepare_prepost_pilot(project, settings, quality_retry_rounds=3)
+    model.generated.clear()
+    complete = pilot.prepare_prepost_pilot(project, settings, quality_retry_rounds=1)
     assert complete["full_target_reached"] is True and not complete["exhausted_slots"]
+    assert model.generated == [train[2]["text"], validation[0]["text"]]
     queue = read_rows(complete["review_queue"])
     assert [row["preflight_reference"] for row in queue] == train + validation
     assert [row["voice_number"] for row in queue] == [1, 2, 3, 1, 2]
-    assert {row["voice_family_id"]: row["sha256"] for row in queue[:2]} == original_wavs
+    assert {row["voice_family_id"]: row["sha256"] for row in queue if row["voice_family_id"] in original_wavs} == original_wavs
     assert len({row["sha256"] for row in queue}) == 5
     assert all(path.read_bytes() == content for path, content in base_bytes.items())
-    assert (retry_path.parent / "candidates.jsonl").read_bytes() == retry_bytes
     assert (root / "approval.json").read_bytes() == approval
+    retry_scopes = {path.parent.name: read_json(path)["staged_scope"]
+                    for path in (root / "data/call_pronunciation").glob("*/*/contract.json")
+                    if "quality_retry_round" in read_json(path)["staged_scope"]}
+    assert {split: [ref["voice_family_id"] for ref in staged["references"]] for split, staged in retry_scopes.items()} == {
+        "train": [train[2]["voice_family_id"]], "validation": [validation[0]["voice_family_id"]]}
+    assert all(staged["quality_retry_round"] == 1 for staged in retry_scopes.values())
     calls = model.calls
-    assert pilot.prepare_prepost_pilot(project, settings, quality_retry_rounds=3) == complete
+    assert pilot.prepare_prepost_pilot(project, settings, quality_retry_rounds=1) == complete
     assert model.calls == calls
+
+
+def test_pilot_completes_fresh_validation_before_retrying_an_already_exhausted_train_round(tmp_path, monkeypatch):
+    from korean_openwakeword import tts
+    from test_call_generation_recovery import RecoveryModel, legacy_run
+    from test_korean_library_tts_journal import cpu_seed
+
+    project, _, train, scope, base = legacy_run(tmp_path, count=3, references_count=3,
+                                                scope_kind="preflight", revision=identity([]))
+    root = project.parent
+    monkeypatch.setattr(tts, "_seed", cpu_seed)
+    tts.generate(project, "train", len(train), True, "clone", model=RecoveryModel(fail=True), staged_scope=scope)
+    passed = [row["sha256"] for row in read_rows(base / "candidates.jsonl") if row["qc"]["passed"]]
+    prior_retry_scope = {**scope, "references": [train[2]], "excluded_sha256": sorted(passed), "quality_retry_round": 1}
+    tts.generate(project, "train", 1, True, "clone", model=RecoveryModel(fail=True), staged_scope=prior_retry_scope)
+    prior_retry, _ = tts.call_generation_location(root, "train", prior_retry_scope)
+    before = {path: digest(path) for folder in (base, prior_retry) for path in folder.iterdir() if path.is_file()}
+    model, validation, settings = _pilot_synthesis_fixture(project, monkeypatch, train)
+
+    result = pilot.prepare_prepost_pilot(project, settings, quality_retry_rounds=2)
+
+    assert result["full_target_reached"]
+    assert model.generated == [row["text"] for row in validation] + [train[2]["text"]]
+    assert all(digest(path) == old_hash for path, old_hash in before.items())
+    assert [row["sha256"] for row in read_rows(result["review_queue"])[:2]] == passed
+
+
+def test_pilot_keeps_an_existing_validation_scope_bound_to_train_passes(tmp_path, monkeypatch):
+    from korean_openwakeword import tts
+    from test_call_generation_recovery import legacy_run
+
+    project, _, train, scope, base = legacy_run(tmp_path, count=3, references_count=3,
+                                                scope_kind="preflight", revision=identity([]))
+    root = project.parent
+    model, validation, settings = _pilot_synthesis_fixture(project, monkeypatch, train)
+    tts.generate(project, "train", len(train), True, "clone", model=model, staged_scope=scope)
+    train_hashes = [row["sha256"] for row in read_rows(base / "candidates.jsonl") if row["qc"]["passed"]]
+    prior_scope = {**scope, "references": validation, "excluded_sha256": sorted(train_hashes)}
+    tts.generate(project, "validation", len(validation), True, "clone", model=model, staged_scope=prior_scope)
+    prior_output, _ = tts.call_generation_location(root, "validation", prior_scope)
+    validation_hashes = [row["sha256"] for row in read_rows(prior_output / "candidates.jsonl") if row["qc"]["passed"]]
+    before = {path: digest(path) for folder in (base, prior_output) for path in folder.iterdir() if path.is_file()}
+    model.generated.clear()
+
+    result = pilot.prepare_prepost_pilot(project, settings)
+
+    assert result["full_target_reached"] and model.generated == []
+    assert [row["sha256"] for row in read_rows(result["review_queue"])] == train_hashes + validation_hashes
+    assert all(digest(path) == old_hash for path, old_hash in before.items())
 
 
 @pytest.mark.parametrize("preset,expected", [("check", 20), ("trial", 100), ("production", 500)])

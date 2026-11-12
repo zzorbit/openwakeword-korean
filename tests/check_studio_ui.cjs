@@ -2052,7 +2052,8 @@ function pendingHardStorageRecipe() {
     const description = b.elements.get("input-description").textContent;
     assert.ok(description.startsWith(detail + "\n\n"));
     assert.match(description, /‘실패한 샘플 다시 생성’을 누르세요/);
-    assert.match(description, /통과한 음성은 재사용하고, 실패한 샘플과 아직 생성하지 못한 샘플만 만듭니다/);
+    assert.match(description, /아직 시도하지 않은 샘플을 먼저 만들고, 실패한 샘플은 마지막에 모아 다시 생성합니다/);
+    assert.match(description, /통과한 음성은 그대로 사용합니다/);
     assert.ok(!b.calls.some(call => call.url.endsWith("/retry_generation")));
   });
   await test("additional raw sources are submitted for preparation; existing receipt connection stays optional", async () => {

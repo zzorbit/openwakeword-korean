@@ -15,6 +15,16 @@ LEGACY_TTS = "a8a62455fee84260915d489aa2bccb0249ad874c9bfb2496678a5c725292473e"
 POLICY = "prepared_clone_bounded_recovery_v1"
 BRIDGE = "preserved_clone_history_after_reference_generation_v1"
 
+# These exact TTS revisions only change when already-defined attempts are run
+# and keep previously accepted audio excluded across the preflight sweeps.
+# Keep the generation/QC evidence fingerprint on both checkout formats.
+SCHEDULING_ONLY_TTS_DIGESTS = {
+    "5d2b347f2b00ea11a9a5ecfd912d75fa5fb9843126cd64e46ab051c079e18334":
+        "64cf14186bd4fab8ddbd0444830539ba453e199f01d76b6f2b4bbc9d5ed7dc55",
+    "d9a0bd6407f3e19cc1bb9aa2c780c0d2f5dfa5e805ff5489d1b8a781e08987f7":
+        "e5167c6a96979f424685544d1c726252a89052d17936bb1f3500309ece930e37",
+}
+
 
 def previous_contract(expected):
     policy = expected.get("clone_input_policy", {})

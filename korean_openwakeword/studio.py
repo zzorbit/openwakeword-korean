@@ -468,6 +468,24 @@ def _audited_reference_candidate_update(previous, current):
 _PREFLIGHT_QUALITY_RETRY_UPDATE = "audited_preflight_quality_retry_update"
 _AUDITED_CALL_GENERATION_RECOVERY_UPDATES = {
     # CRLF and LF releases. Evidence is the normalized pilot regression test file.
+    "013c7ca9e78aecb2a4568930341f3ea2d75c4257d0241bea1ccab1d3b2a5a0db": {
+        "kind": _PREFLIGHT_QUALITY_RETRY_UPDATE,
+        "source_stages_sha256": "2a6cce7e0c31a69d72e8b95b5f9db9bba28f9756a2c9fb630a8c64e063a3660f",
+        "target_computation_sha256": "2a4c393dad188c1f800a5de8bd949ab9697f9a0ebbb99b751365431d5463682f",
+        "target_stages_sha256": "b0d24c93f0c88f94442d23a7e790c8c7ec79e670f009168595c0f0d74b48c415",
+        "changed_files": ("call_generation_history.py", "pilot.py", "tts.py"),
+        "evidence_sha256": "a70940fdc9f24dbc099c1e3a2950058a5be7c897de66d784c0361e0546f7fe6c",
+        "reason": "모든 기준 목소리의 첫 샘플을 시도한 뒤 실패한 샘플을 다시 생성합니다. 기존에 통과한 샘플은 보존합니다.",
+    },
+    "8c37266b4ba45b9e407aeca3d078be3d0a216936b1c1fd4d1f0573208a69fc51": {
+        "kind": _PREFLIGHT_QUALITY_RETRY_UPDATE,
+        "source_stages_sha256": "47f7319a980a8fbe42a973fd05dc463bbb12e5f219094db9040f1c80c54ac7ea",
+        "target_computation_sha256": "0f7c4787fafed6a085981519df9d2c1ee89818f14b5c932e823a2072e0f0e710",
+        "target_stages_sha256": "7d1ff0f79014d5ae1901fb3e9d96fecd04a8ada7b4bc62c58e9c7aec635a89c1",
+        "changed_files": ("call_generation_history.py", "pilot.py", "tts.py"),
+        "evidence_sha256": "a70940fdc9f24dbc099c1e3a2950058a5be7c897de66d784c0361e0546f7fe6c",
+        "reason": "모든 기준 목소리의 첫 샘플을 시도한 뒤 실패한 샘플을 다시 생성합니다. 기존에 통과한 샘플은 보존합니다.",
+    },
     "1a55d55a872bc02d08feb6709c24157c2f6ef8fd197502dd10e643469aed1db1": {
         "kind": _PREFLIGHT_QUALITY_RETRY_UPDATE,
         "source_stages_sha256": "05c07d33e0264ba7ef697e90dfc1a273c134efc065008a4bdbc65b44f14affb2",
@@ -522,6 +540,14 @@ def _audited_call_generation_recovery_update(previous, current):
                 acquisition = prior["evidence_sha256"]
     if not isinstance(audit, dict):
         return None
+    preceding_retry = None
+    if audit.get("kind") == _PREFLIGHT_QUALITY_RETRY_UPDATE and audit["target_computation_sha256"] != current.get("computation_sha256"):
+        next_audit = _AUDITED_CALL_GENERATION_RECOVERY_UPDATES.get(audit["target_computation_sha256"])
+        if (next_audit and next_audit.get("kind") == _PREFLIGHT_QUALITY_RETRY_UPDATE
+                and next_audit["source_stages_sha256"] == audit["target_stages_sha256"]):
+            preceding_retry = audit["evidence_sha256"]
+            audit = {**next_audit, "source_stages_sha256": audit["source_stages_sha256"],
+                     "changed_files": set(next_audit["changed_files"]) | set(audit["changed_files"])}
     old_files, new_files = previous.get("files"), current.get("files")
     if (not isinstance(old_files, dict) or not isinstance(new_files, dict)
             or identity(old_files) != source or identity(new_files) != current.get("computation_sha256")
@@ -539,6 +565,7 @@ def _audited_call_generation_recovery_update(previous, current):
             "target_computation_sha256": current["computation_sha256"],
             "evidence_sha256": audit["evidence_sha256"],
             **({"preceding_acquisition_evidence_sha256": acquisition} if acquisition else {}),
+            **({"preceding_retry_evidence_sha256": preceding_retry} if preceding_retry else {}),
             **({"reason": audit["reason"]} if audit.get("reason") else {})}
 
 
@@ -1364,6 +1391,11 @@ class StudioManager:
                     generic_binding = self._call_recovery_generic_import(state)
                     if generic_binding:
                         call_recovery_update["preserved_precomputed_generic_metadata"] = generic_binding
+                if call_recovery_update and "tts.py" in call_recovery_update["changed_files"]:
+                    generated = Path(state["project"]).parent / "data/generated"
+                    if any(stage in remaining and (generated / folder / "contract.json").is_file()
+                           for stage, folder in (("hard_pilot", "hard_pilot"), ("hard_generation", "hard"))):
+                        return blocked("진행 중이던 유사어 생성의 저장 계약을 유지하려면 이전 버전에서 해당 단계를 완료하세요.")
                 candidate_compatible = (not candidate_update or
                                         (self._can_update_reference_optional_listening(state)
                                          if candidate_update.get("kind") == "audited_reference_optional_listening_update"

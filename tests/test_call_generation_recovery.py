@@ -280,9 +280,9 @@ def test_current_prepost_workflow_recovers_or_reports_actual_failure_without_hum
     assert (output / "candidates.jsonl").read_bytes().startswith(original_journal)
     if fail:
         assert result["technical_pass"] == 2 and result["target"] == 5
-        assert len(result["exhausted_slots"]) == 1
-        assert result["exhausted_slots"][0]["attempts"] == 6
-        assert "near_silence" in result["exhausted_slots"][0]["failures"][-1]["qc"]["reasons"]
+        failures = result["exhausted_slots"]
+        assert [(row["split"], row["slot"]) for row in failures] == [("train", 2), ("validation", 0), ("validation", 1)]
+        assert all(row["attempts"] == 6 and "near_silence" in row["failures"][-1]["qc"]["reasons"] for row in failures)
         assert _generation_complete(result)["exhausted_slots"] == result["exhausted_slots"]
         assert "review_queue" not in result
         calls = model.calls

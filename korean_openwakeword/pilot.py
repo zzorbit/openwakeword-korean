@@ -326,18 +326,116 @@ def _alternate_reference(root, config, original, round_key, load_design_model, r
     raise ValueError("교체 기준 목소리의 기술 검사를 통과하지 못했습니다.")
 
 
-def _preflight_scope_samples(project, root, config, split, scope, model):
+def _preflight_scope_samples(project, root, config, split, scope, model, *, ceiling=0, excluded=()):
     from .tts import CLONE_ATTEMPTS, _exhausted_slots, call_generation_location, generate
 
     references = scope["references"]
     output, _ = call_generation_location(root, split, scope)
     rows, passing = _passing_slots(root, config, split, references, output, scope)
     counts = Counter(row["slot"] for row in rows)
-    if any(slot not in passing and counts[slot] < CLONE_ATTEMPTS for slot in range(len(references))):
-        generate(project, split, len(references), True, "clone", model=model, staged_scope=scope)
+    if any(slot not in passing and counts[slot] < ceiling for slot in range(len(references))):
+        generate(project, split, len(references), True, "clone", model=model, staged_scope=scope,
+                 attempt_ceiling=ceiling, excluded_sha256=excluded)
         rows, passing = _passing_slots(root, config, split, references, output, scope)
     failures = _exhausted_slots(rows, references, len(references), passing, CLONE_ATTEMPTS, split)
-    return len(rows), passing, failures
+    return rows, passing, failures
+
+
+def _generate_preflight_banks(project, root, config, banks, pending, reviewed_hashes, round_key, model, retry_rounds):
+    from .tts import CLONE_ATTEMPTS, call_generation_location
+
+    def make_scope(references, excluded):
+        return {"kind": "preflight", "revision": round_key, "references": references,
+                "excluded_sha256": sorted(excluded)}
+
+    def has_scope(split, scope):
+        directory, _ = call_generation_location(root, split, scope)
+        return (directory / "contract.json").is_file()
+
+    def missing(bank):
+        return [row for row in bank["references"] if row["voice_family_id"] not in bank["passing"]]
+
+    known_hashes = set(reviewed_hashes)
+    journals = {}
+
+    def visit(split, bank, scope, ceiling=0):
+        rows, passing, failures = _preflight_scope_samples(
+            project, root, config, split, scope, model, ceiling=ceiling, excluded=tuple(sorted(known_hashes)))
+        journals[(split, identity(scope))] = rows
+        for row in passing.values():
+            family = row["voice_family_id"]
+            previous = bank["passing"].get(family)
+            if previous is not None and previous["sample_id"] == row["sample_id"]:
+                continue
+            if previous is not None or row["sha256"] in known_hashes:
+                raise ValueError("호출어 샘플 생성 차수 사이에서 동일한 음원이 발견됐습니다.")
+            bank["passing"][family] = row
+            bank["failed"].pop(family, None)
+            known_hashes.add(row["sha256"])
+        for failure in failures:
+            family = failure["voice_family_id"]
+            if family in bank["passing"]:
+                continue
+            original = bank["failed"].get(family, failure)
+            bank["failed"][family] = {**failure, "slot": original["slot"], "label": original["label"]}
+        return failures
+
+    # Read historical scopes in their original order before scheduling new work.
+    # Old validation used all Train hashes available at the time as part of its key.
+    work = {}
+    legacy_retry = 1
+    legacy_complete = True
+    legacy_retries = []
+    for split, bank_rows in banks.items():
+        references = [row for row in bank_rows if row["voice_family_id"] in pending]
+        if not references:
+            continue
+        legacy_scope = make_scope(references, known_hashes)
+        if split == "train" or legacy_complete and has_scope(split, legacy_scope):
+            base = legacy_scope
+        else:
+            base = {**make_scope(references, reviewed_hashes), "schedule": "deferred_failures_v1"}
+        bank = {"references": references, "base": base, "passing": {}, "failed": {}}
+        work[split] = bank
+        if legacy_complete and has_scope(split, legacy_scope):
+            failures = visit(split, bank, legacy_scope)
+            while missing(bank) and len(failures) == len(missing(bank)) and legacy_retry <= retry_rounds:
+                scope = {**make_scope(missing(bank), known_hashes), "quality_retry_round": legacy_retry}
+                if not has_scope(split, scope):
+                    break
+                legacy_retries.append((split, scope))
+                failures = visit(split, bank, scope)
+                legacy_retry += 1
+        legacy_complete = legacy_complete and not missing(bank)
+
+    # Give every pending voice a first attempt before retrying any failed voice.
+    for ceiling in range(1, CLONE_ATTEMPTS + 1):
+        for split, bank in work.items():
+            if missing(bank):
+                visit(split, bank, bank["base"], ceiling)
+
+    # An interrupted, previously authorized round resumes in its exact scope.
+    for split, scope in legacy_retries:
+        bank = work[split]
+        if missing(bank):
+            visit(split, bank, scope, CLONE_ATTEMPTS)
+
+    for retry_round in range(legacy_retry, retry_rounds + 1):
+        if not any(missing(bank) for bank in work.values()):
+            break
+        scopes = {split: {**make_scope(missing(bank), known_hashes), "quality_retry_round": retry_round,
+                          "schedule": "deferred_failures_v1"}
+                  for split, bank in work.items() if missing(bank)}
+        for ceiling in range(1, CLONE_ATTEMPTS + 1):
+            for split, scope in scopes.items():
+                bank = work[split]
+                if missing(bank):
+                    visit(split, bank, scope, ceiling)
+
+    counts = Counter(row["voice_family_id"] for rows in journals.values() for row in rows)
+    exhausted = [{**failure, "attempts": counts[family]} for bank in work.values()
+                 for family, failure in bank["failed"].items()]
+    return work, sum(counts.values()), exhausted
 
 
 @project_storage
@@ -374,52 +472,19 @@ def prepare_prepost_pilot(project, settings, *, prior_rounds=(), quality_retry_r
                         reference_hashes.add(reference["sha256"])
             design = None
         model = CloneRuntime(config["tts"]["clone_model"], config["tts"], root, "auto", config["training"]["cpu_threads"])
-        selected, split_counts, attempts, exhausted = [], {}, 0, []
-        previous_split_complete = True
-        next_retry = 1
-        for split, group in REVIEW_GROUPS.items():
-            voice_numbers = {row["voice_family_id"]: index for index, row in enumerate(banks[split], 1)}
-            references = [row for row in banks[split] if row["voice_family_id"] in pending]
-            if not references:
-                continue
-            if not previous_split_complete:
-                split_counts[split] = {"target": len(references), "technical_pass": 0}
-                continue
-            scope = {"kind": "preflight", "revision": round_key, "references": references,
-                     "excluded_sha256": sorted(heard_hashes)}
-            passing, failures, original_failures = {}, [], {}
-            while True:
-                count, scope_passing, failures = _preflight_scope_samples(project, root, config, split, scope, model)
-                attempts += count
-                for row in scope_passing.values():
-                    family = row["voice_family_id"]
-                    if family in passing or row["sha256"] in heard_hashes:
-                        raise ValueError("호출어 샘플 생성 차수 사이에서 동일한 음원이 발견됐습니다.")
-                    passing[family] = row
-                    heard_hashes.add(row["sha256"])
-                missing = [reference for reference in references if reference["voice_family_id"] not in passing]
-                if "quality_retry_round" not in scope:
-                    original_failures = {failure["voice_family_id"]: failure for failure in failures}
-                if not missing or len(failures) != len(missing) or next_retry > quality_retry_rounds:
-                    break
-                # Each user-authorized round serves the first incomplete bank.
-                # Reconstruction from the earlier journals gives the same scope
-                # if a worker was interrupted during one of these attempts.
-                scope = {**scope, "quality_retry_round": next_retry, "references": missing,
-                         "excluded_sha256": sorted(heard_hashes)}
-                next_retry += 1
-            for failure in failures:
-                original = original_failures[failure["voice_family_id"]]
-                exhausted.append({**failure, "slot": original["slot"], "label": original["label"]})
-            split_counts[split] = {"target": len(references), "technical_pass": len(passing)}
-            previous_split_complete = len(passing) == len(references)
-            for reference in references:
+        work, attempts, exhausted = _generate_preflight_banks(
+            project, root, config, banks, pending, heard_hashes, round_key, model, quality_retry_rounds)
+        selected, split_counts = [], {}
+        for split, bank in work.items():
+            passing = bank["passing"]
+            split_counts[split] = {"target": len(bank["references"]), "technical_pass": len(passing)}
+            for number, reference in enumerate(banks[split], 1):
                 family = reference["voice_family_id"]
                 if family not in passing:
                     continue
                 row = passing[family]
-                selected.append({**row, "review_group": group, "pronunciation_policy": PREPOST_PILOT_POLICY,
-                                 "voice_number": voice_numbers[family],
+                selected.append({**row, "review_group": REVIEW_GROUPS[split], "pronunciation_policy": PREPOST_PILOT_POLICY,
+                                 "voice_number": number,
                                  "preflight_round": round_index, "preflight_reference": reference})
         result = {"attempts": attempts, "target": len(pending), "technical_pass": len(selected), "pilot": True,
                   "independent_STT_runs": 0, "full_target_reached": len(selected) == len(pending),
