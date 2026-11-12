@@ -1306,33 +1306,22 @@
       openDialog(listenDialog);
     }
     function setView(view, mode) { if (!listening) bridge.view(view, mode); }
-    function renderToolMaterials(backend, packages, evaluationPackages) {
+    function renderToolMaterials(backend, packages) {
       toolMaterials.hidden = !Object.hasOwn(toolBackends, backend) || !Array.isArray(packages) || !packages.length;
       if (toolMaterials.hidden) return;
       const specs = new Map(packages.map(spec => spec.split(/==|>=/, 2)));
       const [torchVersion, torchBuild] = specs.get("torch")?.split("+") ?? [];
       const cuda = backend === "cu128" && torchBuild?.match(/^cu(\d{2})(\d)$/);
-      const training = [];
-      if (specs.has("torch")) training.push(torchVersion ? `PyTorch ${torchVersion}` : "PyTorch");
-      if (specs.has("torchaudio")) training.push("TorchAudio");
-      const shared = [["qwen-tts", "Qwen TTS"], ["onnx", "ONNX"], ["openwakeword", "openWakeWord"]]
-        .filter(([id]) => specs.has(id)).map(([, label]) => label);
-      const gpuEvaluation = specs.has("onnxruntime-gpu") || Array.isArray(evaluationPackages)
-        && evaluationPackages.some(spec => spec.split(/==|>=/, 1)[0] === "onnxruntime-gpu");
-      const groups = [["학습", training], ["공통", shared], ["GPU 평가", gpuEvaluation ? ["ONNX Runtime"] : []]];
+      const tools = [];
+      if (specs.has("torch")) tools.push(torchVersion ? `PyTorch ${torchVersion}` : "PyTorch");
+      if (specs.has("torchaudio")) tools.push("TorchAudio");
+      if (!tools.length) { toolMaterials.hidden = true; return; }
 
       const header = node("div", undefined, "story-material-heading");
-      const heading = node("h2", "설치 항목"); heading.id = "story-tool-materials-title";
+      const heading = node("h2", "연산 도구"); heading.id = "story-tool-materials-title";
       const device = toolBackends[backend][0];
       header.append(heading, node("span", cuda ? `${device} · CUDA ${cuda[1]}.${cuda[2]}` : device));
-      const summary = node("dl", undefined, "story-tool-materials-list");
-      for (const [label, names] of groups) {
-        if (!names.length) continue;
-        const group = node("div");
-        group.append(node("dt", label), node("dd", names.join(" · ")));
-        summary.append(group);
-      }
-      toolMaterials.replaceChildren(header, summary);
+      toolMaterials.replaceChildren(header, node("p", tools.join(" · "), "story-tool-materials-tools"));
     }
     function renderMaterials() {
       if (!materialData) return;
@@ -2239,8 +2228,7 @@
         const toolPlan = project?.dependency_setup ?? state.dependencySetup;
         const toolPackages = needsToolChoice ? toolPlan?.packages?.[pickerBackend]
           : project?.dependency_packages ?? toolPlan?.packages?.[pickerBackend];
-        const evaluationPackages = project?.evaluation_runtime_packages ?? toolPlan?.evaluation_runtime_packages;
-        const fingerprint = JSON.stringify([values, pickerBackend, toolPackages, evaluationPackages,
+        const fingerprint = JSON.stringify([values, pickerBackend, toolPackages,
           !project ? [$("adv-originals").value, $("adv-generic").value, $("adv-korean").value] : null]);
         if (fingerprint !== materialKey) {
           materialKey = fingerprint;
@@ -2254,7 +2242,7 @@
             update("hard", Number.isFinite(s.hard_samples_per_phrase) ? `문구당 ${count(s.hard_samples_per_phrase)}개` : undefined);
           }
           renderMaterials();
-          renderToolMaterials(pickerBackend, toolPackages, evaluationPackages);
+          renderToolMaterials(pickerBackend, toolPackages);
         }
       }
       const details = project ? `${project.directory || ""}` : "";

@@ -19,11 +19,11 @@ const toolSetup = {
 function assertToolPreview(installs, device) {
   assert.equal(installs.hidden, false);
   const text = textOf(installs);
-  assert.match(text, /설치 항목/);
+  assert.equal(installs.querySelector("h2")?.textContent, "연산 도구");
   assert.match(text, device);
-  assert.match(text, /학습.*PyTorch 2\.8\.0.*TorchAudio/);
-  assert.match(text, /공통.*Qwen TTS.*ONNX.*openWakeWord/);
-  assert.match(text, /GPU 평가.*ONNX Runtime/);
+  assert.match(text, /PyTorch 2\.8\.0/);
+  assert.match(text, /TorchAudio/);
+  assert.doesNotMatch(text, /공통|GPU 평가|Qwen TTS|ONNX|openWakeWord/i);
   assert.doesNotMatch(text, /==|>=|nvidia-cublas|nvidia-cuda-runtime|nvidia-cudnn/i);
 }
 
