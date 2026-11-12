@@ -1610,6 +1610,28 @@
     const downloadFileComplete = file => ["complete", "reused"].includes(file.state);
     let downloadRowViews = new Map();
     const downloadList = node("div", undefined, "story-history-rows");
+    let verificationProject = null, verificationTask = null;
+    const verificationByFile = new Map();
+    function trackDownloadVerification(project, files) {
+      const progress = project.progress;
+      if (verificationProject !== project.id || (verificationTask && progress?.task_id && verificationTask !== progress.task_id)) {
+        verificationByFile.clear();
+        verificationProject = project.id;
+        verificationTask = null;
+      }
+      if (progress?.task_id) verificationTask = progress.task_id;
+      const verifying = new Map(files.filter(file => file.state === "verifying").map(file => [file.id, file]));
+      for (const [id, saved] of verificationByFile) {
+        if (!verifying.has(id) || verifying.get(id).attempt !== saved.attempt) verificationByFile.delete(id);
+      }
+      // The worker publishes the latest event across all files, which may belong to another download.
+      const file = verifying.get(progress?.current_asset), event = progress?.current_event;
+      if (file && event?.phase === "hash" && Number.isFinite(event.done) && event.done >= 0
+          && Number.isFinite(event.total) && event.total > 0) {
+        verificationByFile.set(file.id, { attempt: file.attempt, percent: Math.min(100, Math.floor(event.done / event.total * 100)) });
+      }
+      return verificationByFile;
+    }
     let legacyInstallLog = null;
     function frontendSetupFailed(project) {
       return stageId(project) === "frontend" && ["error", "failed"].includes(project.status) && Boolean(project.error);
@@ -1715,14 +1737,14 @@
             active: fileActive(file), completed: downloadFileComplete(file),
             failed: file.state === "failed" }));
         }
+        const verifying = group.filter(file => file.state === "verifying");
         return [{ key, label: group[0].group_label || group[0].label || "자료", done: group.filter(downloadFileComplete).length,
           total: group.length, unit: "files", bytes: sum(group, "done"), totalBytes: sum(group, "total"),
           failed: group.some(file => file.state === "failed"),
           active: group.some(fileActive),
           completed: group.every(downloadFileComplete),
-          verifying: group.some(file => file.state === "verifying"),
-          hashPercent: group.filter(file => file.state === "verifying").length === 1
-            && group.some(file => file.id === verification?.id && file.state === "verifying") ? verification.percent : null,
+          verifying: verifying.length > 0,
+          hashPercent: verifying.length === 1 ? verification?.get(verifying[0].id)?.percent : null,
           reused: group.filter(file => file.state === "reused").length,
           cacheCandidate: group.some(file => file.cache_candidate && file.state === "waiting") }];
       });
@@ -1931,10 +1953,7 @@
       const needsLegacyStatus = downloadActive && stageId(project) === "frontend"
         && !project.download_setup_items?.length && !project.progress?.setup_items?.length;
       const legacy = setupFailed || needsLegacyStatus ? legacyInstallStatus(project, setupFailed) : null;
-      const event = !valid && downloadFiles?.length ? project.progress?.current_event : null;
-      const verification = event?.phase === "hash" && Number.isFinite(event.done) && event.done >= 0
-        && Number.isFinite(event.total) && event.total > 0
-        ? { id: project.progress.current_asset, percent: Math.min(100, Math.floor(event.done / event.total * 100)) } : null;
+      const verification = current === "downloads" && !valid ? trackDownloadVerification(project, downloadFiles || []) : null;
       const progress = project?.progress;
       let quality = downloadFiles?.length ? project.download_quality : null;
       if (!quality && downloadFiles?.length && !valid && stageId(project) === "data_download" && !project.error) {
@@ -1947,7 +1966,7 @@
           progress?.phase, progress?.label, progress?.done, progress?.total, progress?.unit,
           stageId(project) === "frontend" ? phaseElapsed(progress) : ""]
         : null;
-      const fingerprint = JSON.stringify([project?.id, current, valid, view, downloadFiles, verification, quality, downloadActive, downloadState, project?.migration, historyPage, innerWidth, innerHeight]);
+      const fingerprint = JSON.stringify([project?.id, current, valid, view, downloadFiles, verification && [...verification], quality, downloadActive, downloadState, project?.migration, historyPage, innerWidth, innerHeight]);
       if (fingerprint === historyKey) return;
       historyKey = fingerprint; savedReview.hidden = true; historyPages.hidden = true;
       const unknown = () => historyContent.replaceChildren(node("p", "저장된 세부 내역이 없습니다.", "story-history-note"));

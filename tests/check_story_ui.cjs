@@ -1211,6 +1211,43 @@ async function main() {
     project.download_files[0].state="reused";p.ui.render();assert.match(textOf(rows[0]),/1 \/ 1개/);
     assert.equal(rows[0].querySelector(".story-progress-indicator").dataset.status,"complete");
   });
+  await test("parallel downloads retain each active file hash gauge until verification or the attempt changes", () => {
+    const project = checkpointProject("running", "running");
+    project.stage_id = "data_download";
+    const zeroth = { id: "base:zeroth", group: "zeroth", label: "Zeroth", state: "verifying", done: 100, total: 100, unit: "bytes" };
+    const musan = { id: "common:musan", group: "musan", label: "MUSAN", state: "downloading", done: 30, total: 100, unit: "bytes" };
+    project.download_files = [zeroth, musan];
+    const hashEvent = (done, taskId = "attempt-one") => ({ stage: "data_download", task_id: taskId, current_asset: zeroth.id,
+      current_event: { phase: "hash", done, total: 100 } });
+    const downloadEvent = (taskId = "attempt-one") => ({ stage: "data_download", task_id: taskId, current_asset: musan.id,
+      current_event: { phase: "download", done: musan.done, total: musan.total } });
+    project.progress = hashEvent(18);
+    const p = page(project);
+    const row = historyRowByLabel(p.shell, "Zeroth");
+    const bar = row.querySelector("progress"), percent = row.querySelector(".story-history-percent");
+    assert.equal(percent.textContent, "18%");
+    assert.equal(bar.value, 18);
+
+    musan.done = 32; project.progress = downloadEvent(); p.ui.render();
+    assert.equal(historyRowByLabel(p.shell, "Zeroth"), row);
+    assert.equal(percent.textContent, "18%");
+    assert.equal(bar.value, 18);
+    assert.equal(historyRowByLabel(p.shell, "MUSAN").querySelector(".story-history-percent").textContent, "32%");
+
+    project.progress = hashEvent(22); p.ui.render();
+    assert.equal(percent.textContent, "22%");
+    assert.equal(bar.value, 22);
+    zeroth.state = "retrying"; project.progress = downloadEvent(); p.ui.render();
+    zeroth.state = "verifying"; p.ui.render();
+    assert.equal(percent.textContent, "");
+    assert.equal(bar.getAttribute("value"), null);
+
+    project.progress = hashEvent(24); p.ui.render();
+    assert.equal(bar.value, 24);
+    project.progress = downloadEvent("attempt-two"); p.ui.render();
+    assert.equal(percent.textContent, "");
+    assert.equal(bar.getAttribute("value"), null);
+  });
   await test("parallel verification in one group never borrows another file's hash percentage",()=>{
     const project=checkpointProject("running","running");project.stage_id="data_download";
     project.progress={current_asset:"one",current_event:{phase:"hash",done:80,total:100},files:["one","two"].map(id=>({id,group:"shared",label:"묶음",state:"verifying",done:100,total:100,unit:"bytes"}))};
