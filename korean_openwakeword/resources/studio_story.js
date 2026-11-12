@@ -1590,43 +1590,28 @@
       const totalKnown = Number.isFinite(row.total) && row.total > 0, doneKnown = Number.isFinite(row.done) && row.done >= 0;
       const label = row.label || "자료";
       if (title.textContent !== label) title.textContent = label;
-      amount.textContent = totalKnown ? `${doneKnown ? row.unit === "bytes" ? quantity(row.done, row.unit) : count(row.done) : "—"} / ${quantity(row.total, row.unit)}` : doneKnown ? quantity(row.done, row.unit) : "수량 기록 없음";
+      amount.textContent = row.statusText || (totalKnown ? `${doneKnown ? row.unit === "bytes" ? quantity(row.done, row.unit) : count(row.done) : "—"} / ${quantity(row.total, row.unit)}` : doneKnown ? quantity(row.done, row.unit) : "수량 기록 없음");
       const byBytes = Number.isFinite(row.bytes) && Number.isFinite(row.totalBytes) && row.totalBytes > 0;
       const fraction = row.verification ? Number.isFinite(row.verificationPercent) ? row.verificationPercent / 100 : null
         : byBytes ? row.bytes / row.totalBytes : totalKnown && doneKnown ? row.done / row.total : null;
       const checking = row.quality === "checking";
       const awaitingResult = row.quality === "waiting" || (checking && fraction >= 1);
       const percentage = checking ? Math.floor(fraction * 1000) / 10 : Math.min(100, fraction * 100);
-      percent.textContent = fraction === null || awaitingResult ? ""
+      percent.textContent = fraction === null || awaitingResult || row.hidePercent ? ""
         : `${percentage.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}%`;
       bar.hidden = fraction === null && !row.verification;
       bar.dataset.quality = row.quality || "";
       bar.dataset.active = String(Boolean(row.active));
       if (fraction !== null || row.verification) {
         bar.max = row.verification ? 100 : byBytes ? row.totalBytes : row.total;
-        if (awaitingResult || fraction === null) bar.removeAttribute("value");
+        if (awaitingResult || fraction === null || row.indeterminate) bar.removeAttribute("value");
         else bar.value = Math.min(bar.max, row.verification ? row.verificationPercent : byBytes ? row.bytes : row.done);
         bar.setAttribute("aria-label", (row.label || "자료") + (row.verification ? " 현재 파일 무결성 검사 진행률" : row.quality ? " 품질 검사 진행률" : " 진행률") + (row.active ? " · 진행 중" : ""));
       }
     }
-    const downloadQueue = node("section", undefined, "story-download-queue");
-    const downloadMeter = node("div", undefined, "story-download-meter");
-    const downloadCount = node("span"), downloadPercent = node("strong"), downloadGauge = node("progress");
-    downloadGauge.setAttribute("aria-label", "설치·자료 다운로드 전체 진행률");
-    downloadMeter.append(downloadCount, downloadPercent, downloadGauge);
-    const downloadReel = node("div", undefined, "story-download-reel");
-    downloadReel.tabIndex = 0;
-    downloadReel.setAttribute("role", "region");
-    downloadReel.setAttribute("aria-label", "설치·자료 다운로드 항목");
-    const downloadItems = node("ol", undefined, "story-download-items");
-    const downloadSpacer = () => {
-      const item = node("li", undefined, "story-download-item");
-      item.dataset.placeholder = "true"; item.setAttribute("aria-hidden", "true");
-      return item;
-    };
-    const downloadFirst = downloadSpacer(), downloadLast = downloadSpacer();
-    downloadReel.append(downloadItems); downloadQueue.append(downloadMeter, downloadReel);
-    let downloadRowViews = new Map(), downloadFocus = "", downloadQueueProject = "";
+    const downloadGroupOrder = ["generic_negative", "zeroth", "audioset", "musan", "seoul", "fsd50k", "common_rir", "official_music", "mit_rir"];
+    let downloadRowViews = new Map();
+    const downloadList = node("div", undefined, "story-history-rows");
     let legacyInstallLog = null;
     function frontendSetupFailed(project) {
       return stageId(project) === "frontend" && ["error", "failed"].includes(project.status) && Boolean(project.error);
@@ -1690,11 +1675,6 @@
         : here && project.status === "paused" ? "paused" : "waiting";
       return { id, label, state, detail };
     }
-    function downloadPhaseDetail(progress) {
-      if (!Number.isFinite(progress.done) || !Number.isFinite(progress.total) || progress.total <= 0
-          || /단계|bytes|바이트/.test(progress.unit || "")) return "";
-      return progressAmount(progress.done, progress.total, progress.unit || "개");
-    }
     function downloadSetupRows(project, active, legacy) {
       const progress = project.progress || {};
       const setup = project.download_setup_items || progress.setup_items;
@@ -1728,94 +1708,100 @@
           : item.state === "installing" ? active ? "active" : failed ? "waiting" : "paused" : item.state,
       }));
     }
-    function downloadFileRow(file, active, verification) {
-      const transferring = ["downloading", "verifying", "retrying"].includes(file.state);
-      const complete = ["complete", "reused"].includes(file.state);
-      const state = complete ? "complete" : file.state === "failed" ? "failed"
-        : transferring ? active ? "active" : "paused" : "waiting";
-      const totalKnown = Number.isFinite(file.total) && file.total > 0;
-      const amount = totalKnown ? progressAmount(file.done, file.total, file.unit || "bytes")
-        : Number.isFinite(file.done) && file.done > 0 ? quantity(file.done, file.unit || "bytes") : "";
-      const verificationNote = file.id === verification?.id ? `파일 검사 ${verification.percent}%` : "파일 검사 중";
-      const note = { verifying: verificationNote, retrying: "다시 시도 중", failed: "다운로드 실패", reused: "기존 자료 재사용" }[file.state]
-        || (file.cache_candidate && state === "waiting" ? "기존 파일 확인 대기" : "");
-      return { id: `file:${file.id}`, label: file.group_label || file.label || "자료", filename: file.filename,
-        detail: [note, amount].filter(Boolean).join(" · "), state,
-        fraction: totalKnown && Number.isFinite(file.done) && (transferring || file.state === "unknown")
-          ? Math.max(0, Math.min(0.99, file.done / file.total)) : 0 };
-    }
     function renderStoryDownloads(project, files, verification, quality, active, legacy) {
-      const stage = stageId(project), progress = project.progress || {};
-      const rows = downloadSetupRows(project, active && stage === "frontend", legacy);
-      const assets = files.map(file => downloadFileRow(file, active && stage === "data_download", verification));
-      rows.push(...assets);
-      if (quality) {
-        const checking = stage === "data_download" && progress.phase === "quality";
-        rows.push({ id: "data-quality", label: "일반 비호출 자료 품질 검사",
-          state: quality.state === "complete" ? "complete" : checking ? active ? "active" : "paused" : "waiting",
-          detail: checking && Number.isFinite(quality.total) ? progressAmount(quality.done, quality.total, "rows") : "" });
+      const stage = stageId(project);
+      const activeDownload = active && stage === "data_download";
+      const groups = new Map(), complete = file => ["complete", "reused"].includes(file.state);
+      const fileActive = file => activeDownload && ["downloading", "verifying", "retrying"].includes(file.state);
+      const sum = (files, key) => files.every(file => Number.isFinite(file[key])) ? files.reduce((value, file) => value + file[key], 0) : null;
+      const rank = key => downloadGroupOrder.includes(key) ? downloadGroupOrder.indexOf(key) : downloadGroupOrder.length;
+      for (const file of files) {
+        const key = file.group || file.id;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(file);
       }
-      const showAssetWork = assets.some(row => ["active", "failed", "paused"].includes(row.state))
-        || stage === "data_download" && progress.phase === "quality" && quality;
-      for (const [id, fallback] of [["data_download", "자료 파일 준비"], ["data_review", "학습·평가 자료 검사"], ["data_connect", "검사한 자료 연결"]]) {
-        const currentPhase = stage === id && (id !== "data_download" || !showAssetWork);
-        rows.push(downloadStageItem(project, id, currentPhase && progress.label || fallback,
-          active && currentPhase, currentPhase ? downloadPhaseDetail(progress) : ""));
-      }
-      const finished = rows.filter(row => row.state === "complete");
-      if (downloadQueueProject === project.id) {
-        const previous = [...downloadRowViews].filter(([, view]) => view.item.dataset.state === "complete");
-        const order = new Map(previous.map(([id], index) => [id, index]));
-        const rank = row => order.get(row.id) ?? previous.length;
-        finished.sort((first, second) => rank(first) - rank(second));
-      }
-      const inProgress = rows.filter(row => ["active", "paused", "failed"].includes(row.state));
-      const waiting = rows.filter(row => row.state === "waiting");
-      const lead = inProgress.find(row => row.state === "failed")
-        || inProgress.find(row => row.state === "active" && row.id === downloadFocus)
-        || inProgress.find(row => row.state === "active") || inProgress[0] || waiting[0] || finished.at(-1);
-      const leadIsFinished = lead.state === "complete";
-      const queue = leadIsFinished ? finished : [...finished, lead, ...waiting.filter(row => row !== lead), ...inProgress.filter(row => row !== lead)];
-      const fraction = rows.reduce((sum, row) => sum + (row.state === "complete" ? 1 : row.fraction || 0), 0);
-      downloadCount.textContent = `${count(finished.length)} / ${count(rows.length)}개 완료`;
-      downloadPercent.textContent = `${Math.floor(fraction / rows.length * 100)}%`;
-      downloadGauge.max = rows.length; downloadGauge.value = fraction;
-      const nextViews = new Map();
-      const items = queue.map(row => {
-        let view = downloadQueueProject === project.id ? downloadRowViews.get(row.id) : null;
-        if (!view) {
-          const item = node("li", undefined, "story-download-item");
-          const label = node("span", undefined, "story-download-item-label");
-          const detail = node("span", undefined, "story-download-item-detail");
-          const indicator = node("i", undefined, "story-progress-indicator");
-          item.append(label, detail, indicator);
-          view = { item, label, detail, indicator };
+      const rows = [...groups].sort(([a], [b]) => rank(a) - rank(b)).flatMap(([key, group]) => {
+        if (group.some(file => (file.unit || "bytes") !== "bytes")) {
+          return group.map(file => ({ ...file, key: file.id, label: file.label || file.group_label || "자료",
+            active: fileActive(file), completed: complete(file),
+            failed: file.state === "failed" }));
         }
-        const { item, label, detail, indicator } = view;
-        item.dataset.state = row.state;
-        item.dataset.current = String(row === lead && !leadIsFinished);
-        if (row === lead && !leadIsFinished) item.setAttribute("aria-current", "step");
-        else item.removeAttribute("aria-current");
-        label.textContent = row.label;
-        label.title = row.filename || row.label;
-        const status = row.state === "paused" ? "일시정지" : row.state === "failed" && !row.detail ? "오류" : "";
-        detail.textContent = [row.filename, row.detail, status].filter(Boolean).join(" · ");
-        detail.title = detail.textContent;
-        updateProgressIndicator(indicator, progressStatus(row.state === "active", row.state === "complete"));
-        nextViews.set(row.id, view);
-        return item;
+        return [{ key, label: group[0].group_label || group[0].label || "자료", done: group.filter(complete).length,
+          total: group.length, unit: "files", bytes: sum(group, "done"), totalBytes: sum(group, "total"),
+          failed: group.some(file => file.state === "failed"),
+          active: group.some(fileActive),
+          completed: group.every(complete),
+          verifying: group.some(file => file.state === "verifying"),
+          hashPercent: group.filter(file => file.state === "verifying").length === 1
+            && group.some(file => file.id === verification?.id && file.state === "verifying") ? verification.percent : null,
+          reused: group.filter(file => file.state === "reused").length,
+          cacheCandidate: group.some(file => file.cache_candidate && file.state === "waiting") }];
       });
-      const children = [downloadFirst, ...items, downloadLast];
-      if (downloadItems.children.length !== children.length || children.some((item, i) => downloadItems.children[i] !== item)) {
-        downloadItems.replaceChildren(...children);
+      if (stage === "frontend" || project.download_setup_items?.length || project.progress?.setup_items?.length
+          || project.dependency_packages?.length || project.evaluation_runtime_packages?.length) {
+        for (const item of downloadSetupRows(project, active && stage === "frontend", legacy)) {
+          const complete = item.state === "complete";
+          const measured = Number.isFinite(item.done) && item.done >= 0 && Number.isFinite(item.total) && item.total > 0;
+          const done = complete ? item.total || 1 : measured ? item.done : 0;
+          rows.push({ ...item, key: item.id, setup: true, completed: complete, failed: item.state === "failed",
+            active: item.state === "active", done, total: measured ? item.total : 1, unit: measured ? item.unit || "items" : "items",
+            indeterminate: !measured && item.state === "active",
+            statusText: measured ? "" : ({ complete: "완료", active: "설치·확인 중", paused: "일시정지", failed: "설치·확인 실패" }[item.state] || "대기 중"),
+            hidePercent: !measured && !complete });
+        }
       }
-      const opening = historyContent.firstElementChild !== downloadQueue || downloadQueueProject !== project.id;
-      if (historyContent.firstElementChild !== downloadQueue) historyContent.replaceChildren(downloadQueue);
-      if (opening || downloadFocus !== lead.id) {
-        const item = nextViews.get(lead.id).item;
-        if (Number.isFinite(item.offsetTop)) downloadReel.scrollTop = Math.max(0, item.offsetTop - item.offsetHeight);
+      const nextViews = new Map(), items = rows.map(row => {
+        let view = downloadList.dataset.project === project.id ? downloadRowViews.get(row.key) : null;
+        if (!view) {
+          view = historyRowView();
+          view.titleIndicator = node("i", undefined, "story-progress-indicator");
+          view.note = node("p", undefined, "story-history-note");
+          view.noteDetail = node("span", undefined, "story-history-note-detail");
+          view.inspectionStatus = node("span", undefined, "story-quality-status");
+          view.inspectionIndicator = node("i", undefined, "story-progress-indicator story-quality-indicator");
+          view.inspectionLabel = node("span", undefined, "story-quality-label");
+          view.inspectionStatus.append(view.inspectionIndicator, view.inspectionLabel);
+          view.note.append(view.noteDetail, view.inspectionStatus);
+          view.item.append(view.note);
+        }
+        const inspection = (row.group || row.key) === "generic_negative" && row.completed ? quality : null;
+        const gauge = inspection && Number.isFinite(inspection.total)
+          ? { ...row, done: inspection.done, total: inspection.total, unit: "rows", bytes: null, totalBytes: null }
+          : row.verifying || row.state === "verifying" ? { ...row, verification: true, verificationPercent: row.hashPercent } : row;
+        const inspectionActive = Boolean(activeDownload && inspection && inspection.state !== "complete");
+        const rowActive = row.active && !row.failed;
+        updateHistoryRow(view, { ...gauge, active: inspection ? inspectionActive : rowActive, quality: inspection?.state });
+        view.item.dataset.failed = String(Boolean(row.failed));
+        view.item.dataset.setup = String(Boolean(row.setup));
+        view.title.title = row.filename || "";
+        if (view.titleIndicator.parentElement !== view.title) view.title.append(view.titleIndicator);
+        updateProgressIndicator(view.titleIndicator, inspection ? "" : progressStatus(rowActive, row.completed));
+        const sizeNote = !row.setup && row.failed ? "다운로드 실패"
+          : Number.isFinite(row.totalBytes) ? `${quantity(row.bytes, "bytes")} / ${quantity(row.totalBytes, "bytes")}`
+            : row.unit === "files" && Object.hasOwn(row, "totalBytes")
+              ? Number.isFinite(row.bytes) && row.bytes > 0 ? `${quantity(row.bytes, "bytes")} / —` : "전체 용량 확인 전"
+              : "";
+        const checkPercent = Number.isFinite(row.hashPercent) ? ` · ${row.hashPercent}%` : "";
+        const reuseNote = row.verifying || row.state === "verifying" ? "파일 무결성 확인 중" + checkPercent
+          : row.state === "reused" || (row.reused > 0 && row.reused === row.total) ? "기존 자료 재사용"
+          : row.reused > 0 ? `기존 자료 ${count(row.reused)}개 재사용` : row.cacheCandidate ? "기존 파일 확인 대기" : "";
+        const detail = (row.setup ? [row.filename, row.detail] : [sizeNote, reuseNote]).filter(Boolean).join(" · ");
+        view.noteDetail.textContent = detail && inspection ? detail + " · " : detail;
+        view.inspectionStatus.hidden = !inspection;
+        updateProgressIndicator(view.inspectionIndicator, progressStatus(inspectionActive, inspection?.state === "complete"));
+        view.inspectionLabel.textContent = inspection ? inspection.state === "complete" ? "검사 완료" : inspectionActive ? "품질 검사 중" : "품질 검사 미완료" : "";
+        view.note.hidden = !detail && !inspection;
+        view.item.hidden = false;
+        nextViews.set(row.key, view);
+        return view.item;
+      });
+      downloadRowViews = nextViews;
+      downloadList.dataset.project = project.id;
+      if (historyContent.firstElementChild !== downloadList) historyContent.replaceChildren(downloadList);
+      if (downloadList.children.length !== items.length || items.some((item, i) => downloadList.children[i] !== item)) {
+        downloadList.replaceChildren(...items);
       }
-      downloadFocus = lead.id; downloadQueueProject = project.id; downloadRowViews = nextViews;
+      paginateHistoryRows(downloadList, items, innerWidth > 600 ? 2 : 1);
     }
     function historyPlayerActive() {
       return !savedReview.hidden && !historic.hidden && !live.hidden && !transitioning
@@ -2072,11 +2058,33 @@
       list.append(...allItems); historyContent.replaceChildren(list);
       paginateHistoryRows(list, allItems);
     }
-    function paginateHistoryRows(list, allItems) {
+    function paginateHistoryRows(list, allItems, columns = 1) {
+      if (current === "downloads") {
+        const available = historyHeight();
+        const tools = allItems.filter(item => item.dataset.setup === "true").length;
+        const toolColumns = innerWidth >= 1080 ? 4 : columns;
+        const rowCount = Math.ceil((allItems.length - tools) / columns) + Math.ceil(tools / toolColumns);
+        const budget = rowCount ? available / rowCount : available;
+        const densities = budget >= 82 ? ["normal", "compact", "tight"] : budget >= 64 ? ["compact", "tight"] : ["tight"];
+        historyPage = 0; historyPages.hidden = true;
+        allItems.forEach(item => { item.hidden = false; });
+        list.style.setProperty("--download-list-height", `${Math.floor(available)}px`);
+        let required = 0;
+        for (const density of densities) {
+          list.dataset.density = density;
+          const style = typeof getComputedStyle === "function" ? getComputedStyle(list) : null;
+          const gap = style ? parseFloat(style.rowGap) || 0 : 4;
+          const rowHeight = Math.max(0, ...allItems.map(item => item.getBoundingClientRect?.().height || 70));
+          required = list.scrollHeight || rowCount * rowHeight + Math.max(0, rowCount - 1) * gap;
+          if (required <= available) break;
+        }
+        list.dataset.overflow = String(required > available);
+        return;
+      }
       const style = typeof getComputedStyle === "function" ? getComputedStyle(list) : null;
       const gap = style ? parseFloat(style.rowGap) || 0 : 18;
       const rowHeight = Math.max(...allItems.map(item => item.getBoundingClientRect?.().height || 70));
-      const size = pageCapacity(allItems.length, historyHeight(), rowHeight, 1, gap), pages = Math.ceil(allItems.length / size);
+      const size = pageCapacity(allItems.length, historyHeight(), rowHeight, columns, gap), pages = Math.ceil(allItems.length / size);
       historyPage = Math.min(historyPage, pages - 1);
       allItems.forEach((item, i) => { item.hidden = Math.floor(i / size) !== historyPage; });
       renderHistoryPages(pages);
@@ -2278,7 +2286,7 @@
         const hasDownloadRows = current === "downloads";
         const chapterComplete = completedStep(project, current);
         const chapterActive = !chapterComplete && chapterWorkActive(project, historical);
-        renderDownloadActivity(project, current === "tools" && chapterActive && !project.error,
+        renderDownloadActivity(project, (current === "tools" || hasDownloadRows) && chapterActive && !project.error,
           current === "tools" && chapterComplete);
         liveSummary.hidden = historical || frameStep || repairProgressVisible(project) && !project.error
           || preparingResults && !project.error
