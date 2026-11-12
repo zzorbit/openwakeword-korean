@@ -1307,17 +1307,32 @@
     }
     function setView(view, mode) { if (!listening) bridge.view(view, mode); }
     function renderToolMaterials(backend, packages, evaluationPackages) {
-      toolMaterials.hidden = !toolBackends[backend] || !Array.isArray(packages) || !packages.length;
+      toolMaterials.hidden = !Object.hasOwn(toolBackends, backend) || !Array.isArray(packages) || !packages.length;
       if (toolMaterials.hidden) return;
+      const specs = new Map(packages.map(spec => spec.split(/==|>=/, 2)));
+      const [torchVersion, torchBuild] = specs.get("torch")?.split("+") ?? [];
+      const cuda = backend === "cu128" && torchBuild?.match(/^cu(\d{2})(\d)$/);
+      const training = [];
+      if (specs.has("torch")) training.push(torchVersion ? `PyTorch ${torchVersion}` : "PyTorch");
+      if (specs.has("torchaudio")) training.push("TorchAudio");
+      const shared = [["qwen-tts", "Qwen TTS"], ["onnx", "ONNX"], ["openwakeword", "openWakeWord"]]
+        .filter(([id]) => specs.has(id)).map(([, label]) => label);
+      const gpuEvaluation = specs.has("onnxruntime-gpu") || Array.isArray(evaluationPackages)
+        && evaluationPackages.some(spec => spec.split(/==|>=/, 1)[0] === "onnxruntime-gpu");
+      const groups = [["학습", training], ["공통", shared], ["GPU 평가", gpuEvaluation ? ["ONNX Runtime"] : []]];
+
+      const header = node("div", undefined, "story-material-heading");
       const heading = node("h2", "설치 항목"); heading.id = "story-tool-materials-title";
-      const device = node("strong", toolBackends[backend][0]);
-      toolMaterials.replaceChildren(heading, node("p", packages.join(" · ")));
-      heading.append(" · ", device);
-      const separateEvaluation = Array.isArray(evaluationPackages) ? evaluationPackages.filter(name => !packages.includes(name)) : [];
-      if (separateEvaluation.length) {
-        const evaluation = node("p"); evaluation.append(node("strong", "GPU 평가 환경"), " · ", separateEvaluation.join(" · "));
-        toolMaterials.append(evaluation);
+      const device = toolBackends[backend][0];
+      header.append(heading, node("span", cuda ? `${device} · CUDA ${cuda[1]}.${cuda[2]}` : device));
+      const summary = node("dl", undefined, "story-tool-materials-list");
+      for (const [label, names] of groups) {
+        if (!names.length) continue;
+        const group = node("div");
+        group.append(node("dt", label), node("dd", names.join(" · ")));
+        summary.append(group);
       }
+      toolMaterials.replaceChildren(header, summary);
     }
     function renderMaterials() {
       if (!materialData) return;

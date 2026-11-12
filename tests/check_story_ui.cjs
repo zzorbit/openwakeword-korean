@@ -6,6 +6,26 @@ const vm = require("node:vm");
 const source = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources/studio_story.js"), "utf8");
 const listeningSource = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources/listening_player.js"), "utf8");
 const textOf = item => [item.textContent, ...item.children.map(textOf)].join(" ");
+const commonToolPackages = ["qwen-tts==0.1.1", "onnx>=1.16", "openwakeword==0.6.0"];
+const evaluationToolPackages = ["onnxruntime-gpu==1.31.0", "nvidia-cublas==13.8.0.4", "nvidia-cuda-runtime==13.4.92", "nvidia-cudnn-cu13==9.27.0.42"];
+const toolSetup = {
+  recommended_backend: "cu128",
+  packages: {
+    cpu: ["torch==2.8.0+cpu", "torchaudio==2.8.0+cpu", ...commonToolPackages],
+    cu128: ["torch==2.8.0+cu128", "torchaudio==2.8.0+cu128", ...commonToolPackages, ...evaluationToolPackages],
+  },
+  evaluation_runtime_packages: evaluationToolPackages,
+};
+function assertToolPreview(installs, device) {
+  assert.equal(installs.hidden, false);
+  const text = textOf(installs);
+  assert.match(text, /설치 항목/);
+  assert.match(text, device);
+  assert.match(text, /학습.*PyTorch 2\.8\.0.*TorchAudio/);
+  assert.match(text, /공통.*Qwen TTS.*ONNX.*openWakeWord/);
+  assert.match(text, /GPU 평가.*ONNX Runtime/);
+  assert.doesNotMatch(text, /==|>=|nvidia-cublas|nvidia-cuda-runtime|nvidia-cudnn/i);
+}
 
 // A DOM adapter exercises navigation and real-state gates without audio,
 // network, an installed browser, or changes to a stored workflow.
@@ -302,9 +322,7 @@ async function main() {
       evaluation: Array.from({ length: 5 }, (_, index) => ({ name: `평가 자료 ${index + 1}`, amount: "2,000개", downloadLabel: "생성 예정", sources: [{ name: "Qwen TTS", downloadReuse: "생성 예정" }] })),
       downloadTotals: { training: { bytes: 6144, unknown: true, label: "약 6KiB + 미정" }, evaluation: { bytes: 0, unknown: false, label: "별도 다운로드 없음" } },
     };
-    const p = page(null, { materials: () => materials,
-      dependencySetup: { recommended_backend: "cu128", packages: { cpu: ["fixture-cpu"], cu128: ["fixture-gpu"] },
-        evaluation_runtime_packages: ["fixture-evaluation-gpu"] }, create: state => {
+    const p = page(null, { materials: () => materials, dependencySetup: toolSetup, create: state => {
       state.project = { id: "capacity-model", wakeword: "보라야", preset: "check", status: "ready", stage_id: "frontend", progress: {},
         dependency_setup_selected: true, navigation_checkpoint: { policy: "explicit_story_v1", step: "downloads", state: "awaiting_start" } };
       state.busy = false;
@@ -314,12 +332,7 @@ async function main() {
     assert.equal(p.get("story-tool-picker").hidden, false);
     assert.equal(p.get("story-tool-cu128").checked, true);
     await advanceSetup(p, "scale", "materials");
-    const installs = p.get("story-tool-materials");
-    assert.equal(installs.hidden, false);
-    assert.match(textOf(installs), /설치 항목/);
-    assert.match(textOf(installs), /fixture-gpu/);
-    assert.match(textOf(installs), /fixture-evaluation-gpu/);
-    assert.doesNotMatch(textOf(installs), /fixture-cpu/);
+    assertToolPreview(p.get("story-tool-materials"), /NVIDIA GPU\s*·\s*CUDA 12\.8/);
     const columns = p.shell.querySelector(".story-material-columns"), training = () => columns.children[0];
     assert.deepEqual(p.shell.querySelectorAll(".story-material-total").map(node => node.textContent), ["약 6KiB + 미정", "별도 다운로드 없음"]);
     assert.equal(p.shell.querySelector(".story-material-total").getAttribute("aria-label"), "학습용 자료 합산 다운로드 용량: 약 6KiB + 미정");
@@ -973,8 +986,7 @@ async function main() {
 
     project.status = "waiting_input";
     project.input = { kind: "dependency_setup", recommended_backend: "cu128" };
-    project.dependency_setup = { recommended_backend: "cu128", packages: { cpu: ["waiting-cpu-package"], cu128: ["waiting-gpu-package"] },
-      evaluation_runtime_packages: ["waiting-evaluation-runtime"] };
+    project.dependency_setup = toolSetup;
     p.ui.render(); await p.settle();
     assert.equal(p.shell.dataset.step, "tools");
     assert.equal(p.get("story-title").textContent, "학습 도구 준비");
@@ -994,10 +1006,8 @@ async function main() {
     assert.equal(p.operation.hidden, true);
     assert.equal(p.calls.some(call => ["input", "start", "resume"].includes(call)), false);
     const installs = p.get("story-tool-materials");
-    assert.equal(installs.hidden, false);
-    assert.match(textOf(installs), /waiting-cpu-package/);
-    assert.match(textOf(installs), /waiting-evaluation-runtime/);
-    assert.doesNotMatch(textOf(installs), /waiting-gpu-package/);
+    assertToolPreview(installs, /\bCPU\b/);
+    assert.doesNotMatch(textOf(installs), /NVIDIA GPU|CUDA 12\.8/);
 
     const confirmation = p.next.fire("click"); await p.flush();
     assert.equal(p.get("story-panel").inert, true);

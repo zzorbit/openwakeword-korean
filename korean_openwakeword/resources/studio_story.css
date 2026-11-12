@@ -72,10 +72,10 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-scale .preset-description{font-size:15px;font-weight:500;line-height:22px;min-height:0;margin:0;color:#c3cbd6;word-break:keep-all}
 .story-shell[data-step="materials"] .story-content{flex:0 1 auto;min-height:0}
 .story-materials{display:flex;flex-direction:column;flex:0 1 auto;width:100%;min-height:0}
-.story-tool-materials{display:grid;gap:4px;flex:none;margin-top:14px;padding-top:10px;border-top:1px solid #343c47;overflow-wrap:anywhere}
-.story-tool-materials h2{margin:0;font:500 16px/24px system-ui,"Malgun Gothic",sans-serif}
-.story-tool-materials p{margin:0;color:#c3cbd6;font-size:14px;line-height:20px}
-.story-tool-materials strong{font-weight:500;color:#e3e7ec}
+.story-tool-materials{flex:none;margin-top:14px}
+.story-tool-materials-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,175px),1fr));gap:8px 18px;margin:8px 0 0}
+.story-tool-materials-list dt{color:#bdc5d1;font-size:13px;line-height:18px}
+.story-tool-materials-list dd{margin:2px 0 0;color:#e3e7ec;font-size:14px;line-height:20px;word-break:keep-all}
 .story-location-status{display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:8px;margin-top:12px;font-size:14px;line-height:20px}
 .story-location-status p{margin:0;overflow-wrap:anywhere}
 .story-material-columns{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:36px;width:100%;min-height:0;flex:0 1 auto;align-items:start;overflow:auto;scrollbar-width:thin;overscroll-behavior:contain}
