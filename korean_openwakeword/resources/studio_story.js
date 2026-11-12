@@ -1652,24 +1652,18 @@
       return legacy?.completed.includes(spec) || Boolean(version && legacy?.installed.includes(`${name}-${version}`));
     }
     function renderDownloadActivity(project, active, toolsComplete) {
-      downloadActivity.hidden = !active && !toolsComplete;
-      if (downloadActivity.hidden) return;
       const progress = project.progress || {}, stage = stageId(project);
+      const transferring = stage === "data_download" && progress.phase === "download_many";
+      downloadActivity.hidden = transferring || (!active && !toolsComplete);
+      if (downloadActivity.hidden) return;
       const defaults = { frontend: "학습·평가 실행환경을 확인하고 있습니다...", data_download: "자료 파일을 준비하고 있습니다...",
         data_review: "학습·평가 자료를 검사하고 있습니다...", data_connect: "검증한 자료를 연결하고 평가용 배경 음원을 준비하고 있습니다..." };
       const label = typeof progress.label === "string" && progress.label.trim() && !/단계/.test(progress.unit || "")
         ? progress.label.trim().slice(0, 240) : defaults[stage] || "자료 준비 상태를 확인하고 있습니다...";
       const numeric = Number.isFinite(progress.done) && progress.done >= 0 && Number.isFinite(progress.total) && progress.total > 0
         && !/단계|bytes|바이트/.test(progress.unit || "");
-      let text = toolsComplete ? "학습 도구 준비를 마쳤습니다." : label + (numeric ? ` · ${progressAmount(progress.done, progress.total, progress.unit || "개")}` : "")
+      const text = toolsComplete ? "학습 도구 준비를 마쳤습니다." : label + (numeric ? ` · ${progressAmount(progress.done, progress.total, progress.unit || "개")}` : "")
         + (stage === "frontend" ? phaseElapsed(progress) : "");
-      if (stage === "data_download" && progress.phase === "download_many") {
-        // The public list groups separately verified MIT WAVs into the one bundle shown in the table.
-        const files = project.download_files?.filter(file => (file.unit || "bytes") === "bytes");
-        text = files?.length
-          ? `자료 다운로드 · ${progressAmount(files.filter(downloadFileComplete).length, files.length, "files")} 확인`
-          : "자료 다운로드 중";
-      }
       downloadActivityLabel.textContent = text + " "; downloadActivity.title = text;
       updateProgressIndicator(downloadActivityIndicator, toolsComplete ? "complete" : "active");
     }
