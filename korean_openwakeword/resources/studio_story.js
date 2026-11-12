@@ -1690,7 +1690,9 @@
       const working = active && installing && !failed;
       const label = ["연산 도구", ...[...packages.keys()].map(id => names.get(id))].join(" · ");
       const bytes = project.dependency_download_bytes;
-      const capacity = Number.isFinite(bytes) && bytes > 0 ? "다운로드 약 " + quantity(bytes, "bytes") : "전체 용량 확인 전";
+      const receivedBytes = !pending.length ? bytes : downloadCheckpoint(project)?.state === "awaiting_start" ? 0 : null;
+      const capacity = Number.isFinite(bytes) && bytes > 0
+        ? progressAmount(receivedBytes, bytes, "bytes") : "전체 용량 확인 전";
       const status = failed ? "설치 실패" : installing && project.status === "paused" ? "일시정지" : "";
       const detail = status ? status + " · " + capacity : capacity;
       return { key: "compute-tools", label, detail, done: countInstalled, total: packages.size, unit: "items",
@@ -1752,7 +1754,7 @@
         if (view.titleIndicator.parentElement !== view.title) view.title.append(view.titleIndicator);
         updateProgressIndicator(view.titleIndicator, inspection ? "" : progressStatus(rowActive, row.completed));
         const sizeNote = row.failed ? "다운로드 실패"
-          : Number.isFinite(row.totalBytes) ? `${quantity(row.bytes, "bytes")} / ${quantity(row.totalBytes, "bytes")}`
+          : Number.isFinite(row.totalBytes) ? progressAmount(row.bytes, row.totalBytes, "bytes")
             : row.unit === "files" && Object.hasOwn(row, "totalBytes")
               ? Number.isFinite(row.bytes) && row.bytes > 0 ? `${quantity(row.bytes, "bytes")} / —` : "전체 용량 확인 전"
               : "";
@@ -1939,7 +1941,7 @@
       }
       const downloadState = current === "downloads"
         ? [project.status, stageId(project), project.stages, project.error, project.download_setup_items, progress?.setup_items,
-          project.dependency_download_bytes, project.dependency_packages, legacy,
+          downloadCheckpoint(project)?.state, project.dependency_download_bytes, project.dependency_packages, legacy,
           progress?.phase, progress?.label, progress?.done, progress?.total, progress?.unit,
           stageId(project) === "frontend" ? phaseElapsed(progress) : ""]
         : null;

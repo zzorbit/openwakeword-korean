@@ -847,7 +847,7 @@ async function main() {
     assert.equal(list.children.length, 4);
     const setup = historyRowByLabel(list, "연산 도구 · PyTorch · TorchAudio");
     assert.equal(setup.querySelector(".story-history-percent").textContent, "100%");
-    assert.equal(setup.querySelector(".story-history-note-detail").textContent, "다운로드 약 2 GiB");
+    assert.equal(setup.querySelector(".story-history-note-detail").textContent, "2 GiB / 2 GiB");
     assert.equal(setup.querySelector(".story-progress-indicator").dataset.status, "complete");
     assert.deepEqual(rows.map(row => row.querySelector(".story-history-percent").textContent), ["25%", "75%", "0%"]);
     assert.deepEqual(rows.map(row => row.querySelector("progress").value), [2500, 750, 0]);
@@ -859,10 +859,11 @@ async function main() {
   });
   await test("CPU and GPU packages share one gauge based on verified install counts", () => {
     for (const build of ["cpu", "cu128"]) {
-      const project = checkpointProject("running", "running");
-      project.stage_id = "frontend";
+      const project = checkpointProject();
       project.dependency_backend = build;
-      const torch = { id: "torch", label: "torch==2.8.0+" + build, state: "installing" };
+      const sizeKnown = build === "cu128";
+      if (sizeKnown) project.dependency_download_bytes = 2 * 1024 ** 3;
+      const torch = { id: "torch", label: "torch==2.8.0+" + build, state: "waiting" };
       const audio = { id: "torchaudio", label: "TorchAudio", state: "waiting" };
       project.download_setup_items = [torch, audio, { id: "openwakeword", label: "openwakeword==0.6.0", state: "waiting" }];
       project.download_files = [{ id: "a", label: "자료 A", state: "waiting", done: 0, total: 500, unit: "bytes" }];
@@ -870,7 +871,13 @@ async function main() {
       assert.equal(list.children.length, 2);
       const row = historyRowByLabel(list, "연산 도구 · PyTorch · TorchAudio"), bar = row.querySelector("progress");
       assert.doesNotMatch(textOf(row), /CPU|GPU|CUDA/);
-      assert.equal(row.querySelector(".story-history-note-detail").textContent, "전체 용량 확인 전");
+      const capacity = row.querySelector(".story-history-note-detail");
+      assert.equal(capacity.textContent, sizeKnown ? "0 B / 2 GiB" : "전체 용량 확인 전");
+      project.status = "running";
+      project.download_checkpoint.state = "running";
+      torch.state = "installing";
+      p.ui.render();
+      assert.equal(capacity.textContent, sizeKnown ? "— / 2 GiB" : "전체 용량 확인 전");
       assert.equal(bar.hidden, false);
       assert.equal(bar.getAttribute("value"), null);
       assert.equal(row.querySelector(".story-history-percent").textContent, "");
