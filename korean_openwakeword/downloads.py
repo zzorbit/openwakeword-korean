@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from statistics import median
 from urllib.parse import urlsplit
 import hashlib
 import math
@@ -101,12 +102,35 @@ class _ThroughputSample:
 
 
 @dataclass(frozen=True)
+class _ThroughputWindow:
+    seconds: float
+    network_bytes: float
+
+    @property
+    def rate(self):
+        return self.network_bytes / self.seconds
+
+
+@dataclass(frozen=True)
 class _HostProbe:
     host: str
     index: int
     started: float
-    baseline_rate: float
+    baseline: tuple[_ThroughputWindow, ...]
     baseline_files: frozenset[int]
+
+
+def _sustained_throughput_gain(baseline, trial):
+    baseline_rates = [window.rate for window in baseline]
+    trial_rates = [window.rate for window in trial]
+    baseline_rate, trial_rate = median(baseline_rates), median(trial_rates)
+    noise = max(median(abs(rate - baseline_rate) for rate in baseline_rates),
+                median(abs(rate - trial_rate) for rate in trial_rates))
+    if math.isclose(trial_rate, baseline_rate) or trial_rate - baseline_rate <= noise:
+        return False
+    baseline_average = sum(window.network_bytes for window in baseline) / sum(window.seconds for window in baseline)
+    trial_average = sum(window.network_bytes for window in trial) / sum(window.seconds for window in trial)
+    return trial_average > baseline_average and not math.isclose(trial_average, baseline_average)
 
 
 class _DownloadAdmission:
@@ -122,6 +146,7 @@ class _DownloadAdmission:
         self._rejected = set()
         self._remaining_hosts = frozenset()
         self._sample = None
+        self._windows = deque(maxlen=3)
         self._probe = None
         self.reason = "initial"
 
@@ -129,8 +154,13 @@ class _DownloadAdmission:
         probing = self._probe is not None and self._probe.host == host
         return self._limits[host] + int(probing)
 
+    def _reset_measurement(self):
+        self._sample = None
+        self._windows.clear()
+
     def _finish_probe(self, reason):
-        self._probe = self._sample = None
+        self._probe = None
+        self._reset_measurement()
         self.reason = reason
 
     def retry(self, host, now):
@@ -144,35 +174,42 @@ class _DownloadAdmission:
         if probe and (index == probe.index or index in probe.baseline_files):
             self._finish_probe("inconclusive")
         elif self._sample and index in self._sample.files:
-            self._sample = None
+            self._reset_measurement()
 
-    def _rate(self, now, network_bytes, network_files):
+    def _measure(self, now, network_bytes, network_files, *, minimum_bytes=0):
         sample = self._sample
         if sample is None or sample.files != network_files:
+            self._windows.clear()
             self._sample = _ThroughputSample(now, network_bytes, network_files)
             return None
         elapsed = now - sample.started
-        if elapsed >= self._window_seconds:
-            return (network_bytes - sample.network_bytes) / elapsed
+        received = network_bytes - sample.network_bytes
+        if elapsed >= self._window_seconds and received >= minimum_bytes:
+            self._sample = _ThroughputSample(now, network_bytes, network_files)
+            self._windows.append(_ThroughputWindow(elapsed, received))
+            if len(self._windows) == self._windows.maxlen:
+                return tuple(self._windows)
         return None
 
     def _observe_probe(self, now, network_bytes, network_files):
         probe = self._probe
         trial_files = probe.baseline_files | {probe.index}
-        if (not probe.baseline_files <= network_files <= trial_files
-                or now - probe.started >= 4 * self._window_seconds):
+        if not probe.baseline_files <= network_files <= trial_files:
             self._finish_probe("inconclusive")
-        elif network_files == trial_files:
-            rate = self._rate(now, network_bytes, network_files)
-            if rate is None:
-                return
-            if rate >= probe.baseline_rate * 1.10:
-                self._limits[probe.host] += 1
-                self._finish_probe("gain")
-                self._sample = _ThroughputSample(now, network_bytes, network_files)
-            else:
-                self._rejected.add(probe.host)
-                self._finish_probe("no_gain")
+            return
+        trial = self._measure(now, network_bytes, network_files) if network_files == trial_files else None
+        if trial is None:
+            if now - probe.started >= 5 * self._window_seconds:
+                self._finish_probe("inconclusive")
+            return
+        if _sustained_throughput_gain(probe.baseline, trial):
+            self._limits[probe.host] += 1
+            self._finish_probe("gain")
+            self._sample = _ThroughputSample(now, network_bytes, network_files)
+            self._windows.extend(trial)
+        else:
+            self._rejected.add(probe.host)
+            self._finish_probe("no_gain")
 
     def observe(self, now, network_bytes, network_files, waiting, active_by_host):
         network_files = frozenset(network_files)
@@ -185,12 +222,12 @@ class _DownloadAdmission:
         if remaining != self._remaining_hosts:
             self._remaining_hosts = remaining
             self._rejected.clear()
-            self._sample = None
+            self._reset_measurement()
 
         # Drain any extra file still running after a rejected trial or retry.
         if (sum(active_by_host.values()) >= self._max_workers
                 or any(active > self._limits[host] for host, active in active_by_host.items())):
-            self._sample = None
+            self._reset_measurement()
             return
 
         network_by_host = Counter(self._hosts[index] for index in network_files)
@@ -200,16 +237,16 @@ class _DownloadAdmission:
             and active_by_host[host] == network_by_host[host] == self._limits[host]
         }
         if not candidates:
-            self._sample = None
+            self._reset_measurement()
             return
 
-        rate = self._rate(now, network_bytes, network_files)
-        if rate is None or network_bytes - self._sample.network_bytes < 16 * 1024:
+        baseline = self._measure(now, network_bytes, network_files, minimum_bytes=16 * 1024)
+        if baseline is None:
             return
         host = next(host for host in self._probe_order if host in candidates)
         self._probe_order.rotate(-self._probe_order.index(host) - 1)
-        self._probe = _HostProbe(host, waiting[host][0][1], now, rate, network_files)
-        self._sample = None
+        self._probe = _HostProbe(host, waiting[host][0][1], now, baseline, network_files)
+        self._reset_measurement()
         self.reason = "probe"
 
 

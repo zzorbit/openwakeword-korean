@@ -34,6 +34,22 @@ def test_reentering_an_owner_cannot_reuse_a_previous_calls_verification(tmp_path
         assert not owner.verification_cache.matches(path, "sha256", expected)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows extended path aliases")
+def test_verified_material_can_be_borrowed_through_either_windows_path(tmp_path):
+    path = (tmp_path / "archive.bin").resolve()
+    extended = Path("\\\\?\\" + str(path))
+    data = b"pinned archive"
+    path.write_bytes(data)
+    expected = checksum(data)
+    with module.MaterialDownloads(tmp_path) as owner:
+        verify_checksum(extended, "sha256", expected, verification_cache=owner.verification_cache)
+        assert owner._remember(path, {"algorithm": "sha256", "expected": expected, "size_bytes": len(data)})
+        assert module.borrowed_download(path, "sha256", expected, len(data)).samefile(path)
+        assert module.borrowed_download(extended, "sha256", expected, len(data)).samefile(path)
+        path.write_bytes(b"altered archive")
+        assert module.borrowed_download(extended, "sha256", expected, len(data)) is None
+
+
 def asset(name, host, data):
     return {"id": name, "filename": name + ".bin", "source_url": f"https://{host}/{name}",
             "size_bytes": len(data), "checksum_algorithm": "sha256", "sha256": checksum(data)}
@@ -221,7 +237,7 @@ def test_completed_early_file_changed_before_queue_drains_is_not_borrowed(tmp_pa
 
     monkeypatch.setattr(module.MaterialDownloads, "_acquire", worker)
     with module.MaterialDownloads(tmp_path) as owner:
-        with pytest.raises(ValueError, match="changed before preparation"):
+        with pytest.raises(ValueError, match=r"fast\.bin"):
             owner.prepare(*arguments)
         fast = tmp_path / "shared" / "downloads" / "fast.bin"
         assert fast.read_bytes() == b"changed while another source was downloading"

@@ -9,7 +9,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 import os
 
-from .downloads import VerificationCache, _file_identity, download_checked, download_many
+from .downloads import VerificationCache, _file_identity, _verification_path_key, download_checked, download_many
 
 
 _current = ContextVar("koww_material_downloads", default=None)
@@ -27,7 +27,7 @@ def borrowed_download(path, algorithm, expected, size_bytes):
     if owner is None:
         return None
     path = Path(path).resolve()
-    binding = owner.verified.get((str(path), algorithm, expected, size_bytes))
+    binding = owner.verified.get((_verification_path_key(path), algorithm, expected, size_bytes))
     if binding is None:
         return None
     try:
@@ -99,7 +99,7 @@ class MaterialDownloads:
 
     def _remember(self, path, item):
         path = Path(path).resolve()
-        key = (str(path), item["algorithm"], item["expected"], item["size_bytes"])
+        key = (_verification_path_key(path), item["algorithm"], item["expected"], item["size_bytes"])
         observed = _file_identity(path)
         if self.verification_cache.matches(path, item["algorithm"], item["expected"]) and _file_identity(path) == observed:
             self.verified[key] = observed
@@ -113,7 +113,7 @@ class MaterialDownloads:
         def add(item):
             target = item.get("target")
             if target is not None:
-                key = os.path.normcase(str(Path(target).resolve()))
+                key = os.path.normcase(_verification_path_key(Path(target).resolve()))
                 pin = (item["algorithm"], item["expected"], item["size_bytes"])
                 if key in destinations:
                     if destinations[key] != pin:
@@ -196,7 +196,7 @@ class MaterialDownloads:
                 continue
             path = Path(result["path"] if isinstance(result, dict) else result)
             if not self._remember(path, item):
-                raise ValueError("Verified material changed before preparation; existing bytes are preserved")
+                raise ValueError(f"자료 준비 중 검증 기록을 다시 확인할 수 없습니다. {item['label']}의 기존 파일은 보존했습니다.")
             if item["kind"] == "base" and item["id"].startswith("base:"):
                 self.base_paths[item["asset"]["id"]] = path
         # Duplicated pins can serve another original ID without another job.

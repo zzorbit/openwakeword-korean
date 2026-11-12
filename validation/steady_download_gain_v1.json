@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "kind": "audited_steady_download_gain_update",
+  "prior_download_verification_evidence_sha256": "b26f32507a1af64f55388c7d88cc3048b7ad87fb5ca9b5885d5a439d1a518df7",
+  "releases": [
+    {
+      "line_endings": "CRLF",
+      "target_computation_sha256": "1a55d55a872bc02d08feb6709c24157c2f6ef8fd197502dd10e643469aed1db1",
+      "target_stages_sha256": "05c07d33e0264ba7ef697e90dfc1a273c134efc065008a4bdbc65b44f14affb2",
+      "sources": [
+        {
+          "computation_sha256": "a89dd8f89ed2534935a153104333b79181d0367292c4e46bd086a41b5d4ae77e",
+          "stages_sha256": "3b723b31d0a8e004620e79f6abdb67424fa3c2b85cae36c82e33cef4a59ab941",
+          "changed_files": [
+            "downloads.py",
+            "material_downloads.py"
+          ]
+        },
+        {
+          "computation_sha256": "b8d1c9b40abb91dbbe1500a6ab922f769e08bafbff5e375e2260e4cee328e829",
+          "stages_sha256": "8589b8bc6d86d7e04e33bdefbbb47a1216265092d074befd234cd62d6cdcd734",
+          "changed_files": [
+            "downloads.py",
+            "material_downloads.py"
+          ]
+        },
+        {
+          "computation_sha256": "4c6fdddc4349ac998869657de3066a4c143a36369275583ae6dd4fe1fd8b6978",
+          "stages_sha256": "56910287134bf8f3688743b6f11c54f6bf3dc5c14b1778e84f3dd6357f79d4dd",
+          "changed_files": [
+            "downloads.py",
+            "material_downloads.py"
+          ]
+        },
+        {
+          "computation_sha256": "0002ac6e810f3656cd0ba4400a9f434b088e936c1f7f69ffb1311e251ca79a3e",
+          "stages_sha256": "ba58808e7fa0de597f6a97b8b60800272b403d0887259b6b63ddbacdc691dfdf",
+          "changed_files": [
+            "downloads.py",
+            "material_downloads.py"
+          ]
+        },
+        {
+          "computation_sha256": "1098e002acf28cfa8d863b0dd6701a1b3c366de19f3267ef7c3eaf380bef402f",
+          "stages_sha256": "5bb03ab00820d47d6d0bd4bd6cb20aa107c88533c0b543b567aefe672536a8c3",
+          "changed_files": [
+            "downloads.py",
+            "gpu_runtime_install.py",
+            "material_downloads.py"
+          ],
+          "gpu_runtime_evidence_sha256": "002f80afe978e87b39c16094bd8ad18d9179427fd5435a9593de3474388e6d5d"
+        }
+      ]
+    },
+    {
+      "line_endings": "LF",
+      "target_computation_sha256": "fe8a0de0868bed40f830651a07146a5bbc58cc7b77c2f245c8b4ecb3ebafb78b",
+      "target_stages_sha256": "aecacf85cf420f3c5e946b49b2670415576e52d1d3cbfbd23269400e61b45216",
+      "sources": [
+        {
+          "computation_sha256": "e93c1365da51c7777ab12fa9a6982418cc508df49bc95577c36c63c6a228af71",
+          "stages_sha256": "b7973889bfc2002f19fb8568daf72a2bc18c867ba297addb9f33965698b5f625",
+          "changed_files": [
+            "downloads.py",
+            "material_downloads.py"
+          ]
+        },
+        {
+          "computation_sha256": "5adf2d4c54e21988777354b18cbaec0ed7b41426c7b397bd8cd8066061fe99da",
+          "stages_sha256": "35990c7529bad56c4ae9605f2fd3abc050b916dc271063b873f96575e90dad2e",
+          "changed_files": [
+            "downloads.py",
+            "material_downloads.py"
+          ]
+        },
+        {
+          "computation_sha256": "688c877c6a38656dae27c34a209e8623c7a171277aba91a5973e7f65986b9183",
+          "stages_sha256": "7b464f3270916a7e65359731791f8d636514156b77ab6bd92b0b3e23ec12a720",
+          "changed_files": [
+            "downloads.py",
+            "material_downloads.py"
+          ]
+        },
+        {
+          "computation_sha256": "cc89568eca719ab7a44cd752ea14a1d9a5929c2548b70c71b3158eb3d8e90e6e",
+          "stages_sha256": "f17e93b18f2858bb895d47dc58706373a8894d3919a132929accc472ffbd75ed",
+          "changed_files": [
+            "downloads.py",
+            "material_downloads.py"
+          ]
+        },
+        {
+          "computation_sha256": "7ce9423ef77c82e8517ec2218298ba4dac15d86bda010ea7ee8f84fbc306193d",
+          "stages_sha256": "9c174445612be55c8f1918b4f28d85e53cfe40c835a900fb4beae63937584c1d",
+          "changed_files": [
+            "downloads.py",
+            "gpu_runtime_install.py",
+            "material_downloads.py"
+          ],
+          "gpu_runtime_evidence_sha256": "002f80afe978e87b39c16094bd8ad18d9179427fd5435a9593de3474388e6d5d"
+        }
+      ]
+    }
+  ],
+  "verification": [
+    "Adaptive admission retains sustained modest aggregate throughput gains across comparable windows, with no fixed percent gate. The transfer, resume, locking and checksum definitions in downloads.py are AST-identical.",
+    "Material borrowing and destination deduplication use the same Windows path alias key as verification. The observed file identity, pinned size and checksums remain required.",
+    "Regression coverage includes stable small gains, transient spikes, unchanged and ambiguous throughput, path aliases, and invalidation of changed files."
+  ],
+  "scope": "Download scheduling and verification lookup, plus the previously audited Windows GPU runtime repair for its exact older source. Local fixtures do not measure production transfer rates."
+}

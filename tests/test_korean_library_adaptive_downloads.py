@@ -137,31 +137,49 @@ def test_retry_does_not_hold_open_slots_for_unrelated_origins(monkeypatch):
     assert records[-1]["verified_count"] == len(items)
 
 
-@pytest.mark.parametrize("extra_bytes", [0, 30 * 1024], ids=["unchanged", "higher"])
-def test_probe_uses_whole_batch_throughput_and_only_adds_one_file(extra_bytes):
+def observe_windows(admission, waiting, active, files, now, received, window_bytes):
+    for count in window_bytes:
+        now += 3
+        received += count
+        admission.observe(now, received, files, waiting, active)
+    return now, received
+
+
+@pytest.mark.parametrize(("baseline", "trial", "keep"), [
+    pytest.param((60_000,) * 3, (60_000,) * 3, False, id="unchanged"),
+    pytest.param((60_000,) * 3, (63_000,) * 3, True, id="sustained-five-percent"),
+    pytest.param((59_500, 60_000, 60_500), (61_200, 61_000, 61_400), True, id="smaller-gain-beyond-noise"),
+    pytest.param((60_000,) * 3, (90_000, 60_000, 60_000), False, id="transient-spike"),
+    pytest.param((60_000,) * 3, (63_000, 63_000, 51_000), False, id="lower-aggregate-rate"),
+    pytest.param((57_000, 60_000, 63_000), (62_000,) * 3, False, id="gain-within-observed-noise"),
+])
+def test_probe_uses_whole_batch_throughput_and_only_adds_one_file(baseline, trial, keep):
     hosts = ["first", "first", "first", "second", "second"]
     admission = _DownloadAdmission(hosts, 4)
     active = Counter({"first": 1, "second": 1})
     waiting = {"first": deque([(2, 1), (4, 2)]), "second": deque([(3, 4)])}
-    interval_bytes = 60 * 1024
 
     admission.observe(0, 0, {0, 3}, waiting, active)
+    now, received = observe_windows(admission, waiting, active, {0, 3}, 0, 0, baseline[:2])
     assert (admission.limit("first"), admission.limit("second")) == (1, 1)
-    admission.observe(3, interval_bytes, {0, 3}, waiting, active)
+    now, received = observe_windows(admission, waiting, active, {0, 3}, now, received, baseline[2:])
     assert (admission.limit("first"), admission.limit("second")) == (2, 1)
 
     waiting["first"].popleft()
     active["first"] += 1
-    admission.observe(3, interval_bytes, {0, 1, 3}, waiting, active)
-    admission.observe(6, 2 * interval_bytes + extra_bytes, {0, 1, 3}, waiting, active)
-    assert admission.limit("first") == (2 if extra_bytes else 1)
+    admission.observe(now, received, {0, 1, 3}, waiting, active)
+    now, received = observe_windows(admission, waiting, active, {0, 1, 3}, now, received, trial[:2])
+    assert admission.reason == "probe"
+    now, received = observe_windows(admission, waiting, active, {0, 1, 3}, now, received, trial[2:])
+    assert admission.limit("first") == (2 if keep else 1)
+    assert admission.reason == ("gain" if keep else "no_gain")
     assert admission.limit("second") == 1
 
-    if extra_bytes:
-        admission.retry("second", 6)
+    if keep:
+        admission.retry("second", now)
         assert (admission.limit("first"), admission.limit("second")) == (2, 1)
     else:
-        admission.observe(9, 3 * interval_bytes, {0, 1, 3}, waiting, active)
+        admission.observe(now + 3, received + 60_000, {0, 1, 3}, waiting, active)
         assert (admission.limit("first"), admission.limit("second")) == (1, 1)
 
 
@@ -171,21 +189,21 @@ def test_unproductive_third_file_falls_back_to_two_after_a_successful_trial():
     waiting = {"source": deque([(1, 1), (2, 2), (3, 3)])}
 
     admission.observe(0, 0, {0}, waiting, active)
-    admission.observe(3, 60 * 1024, {0}, waiting, active)
+    now, received = observe_windows(admission, waiting, active, {0}, 0, 0, (60_000,) * 3)
     assert admission.limit("source") == 2
 
     waiting["source"].popleft()
     active["source"] = 2
-    admission.observe(3, 60 * 1024, {0, 1}, waiting, active)
-    admission.observe(6, 150 * 1024, {0, 1}, waiting, active)
+    admission.observe(now, received, {0, 1}, waiting, active)
+    now, received = observe_windows(admission, waiting, active, {0, 1}, now, received, (90_000,) * 3)
     assert admission.limit("source") == 2
-    admission.observe(9, 240 * 1024, {0, 1}, waiting, active)
+    now, received = observe_windows(admission, waiting, active, {0, 1}, now, received, (90_000,))
     assert admission.limit("source") == 3
 
     waiting["source"].popleft()
     active["source"] = 3
-    admission.observe(9, 240 * 1024, {0, 1, 2}, waiting, active)
-    admission.observe(12, 330 * 1024, {0, 1, 2}, waiting, active)
+    admission.observe(now, received, {0, 1, 2}, waiting, active)
+    observe_windows(admission, waiting, active, {0, 1, 2}, now, received, (90_000,) * 3)
     assert admission.limit("source") == 2
 
 
@@ -194,19 +212,34 @@ def test_completion_on_another_host_invalidates_in_progress_throughput_compariso
     admission = _DownloadAdmission(hosts, 4)
     active = Counter({"first": 1, "second": 1})
     waiting = {"first": deque([(2, 1), (3, 2)])}
-    interval_bytes = 60 * 1024
-
     admission.observe(0, 0, {0, 3}, waiting, active)
-    admission.observe(3, interval_bytes, {0, 3}, waiting, active)
+    now, received = observe_windows(admission, waiting, active, {0, 3}, 0, 0, (60_000,) * 3)
     assert admission.limit("first") == 2
 
     waiting["first"].popleft()
     active["first"] += 1
-    admission.observe(3, interval_bytes, {0, 1, 3}, waiting, active)
+    admission.observe(now, received, {0, 1, 3}, waiting, active)
+    now, received = observe_windows(admission, waiting, active, {0, 1, 3}, now, received, (63_000,) * 2)
     admission.end_transfer(3)
     active["second"] -= 1
-    admission.observe(6, 3 * interval_bytes, {0, 1}, waiting, active)
+    admission.observe(now + 3, received + 63_000, {0, 1}, waiting, active)
     assert admission.limit("first") == 1
+    assert admission.reason == "inconclusive"
+
+
+def test_probe_expires_when_the_added_file_never_transfers():
+    admission = _DownloadAdmission(["source"] * 3, 3)
+    active = Counter({"source": 1})
+    waiting = {"source": deque([(1, 1), (2, 2)])}
+    admission.observe(0, 0, {0}, waiting, active)
+    now, received = observe_windows(admission, waiting, active, {0}, 0, 0, (60_000,) * 3)
+    assert admission.limit("source") == 2
+
+    waiting["source"].popleft()
+    active["source"] = 2
+    observe_windows(admission, waiting, active, {0}, now, received, (60_000,) * 5)
+    assert admission.limit("source") == 1
+    assert admission.reason == "inconclusive"
 
 
 def test_scheduler_changes_admission_without_interrupting_an_active_file(monkeypatch):
