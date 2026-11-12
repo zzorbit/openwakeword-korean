@@ -604,7 +604,12 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
     const ui=await screen('reference-preview',[],{config:candidateConfig,respond:async(url,options)=>{
       const view=new URL(url,'http://127.0.0.1:8793').searchParams.get('batch')||initialView;
       if(!options){if(control.failReads)return {ok:false,status:503,payload:{error:'상태 확인 실패'}};return {payload:control.readPayload||payload(view)};}
-      const action=JSON.parse(options.body);assert.equal(action.action,'toggle');
+      const action=JSON.parse(options.body);
+      if(action.action==='more'){
+        assert.equal(action.group,group);assert.equal(control.concurrent,0,'generation waits for selection saves');
+        saved.job={status:'running',group,completed:0,total:5};return {payload:payload(view)};
+      }
+      assert.equal(action.action,'toggle');
       const row=banks.get(view).find(row=>row.id===action.id&&row.sha256===action.sha256);assert.ok(row,'writes retain the candidate revision and viewed batch');
       control.concurrent++;control.maxConcurrent=Math.max(control.maxConcurrent,control.concurrent);
       return await new Promise((resolve,reject)=>control.pending.push({action,finish({commit=true,failure='',reply}={}){
@@ -631,6 +636,52 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
     await f.finish();assert.equal(f.writes().length,1,'repeated desired states coalesce instead of replaying redundant toggles');
     assert.equal(f.saved.accepted.length,1);assert.equal(f.ui.document.activeElement,first);assert.equal(f.checkbox(0),first);
     assert.equal(f.control.maxConcurrent,1);assert.equal(f.ui.nodes.get('audio').playCalls,undefined);assert.ok(f.saved.accepted.every(row=>!row.heard));
+  }
+  {
+    const f=await toggleFixture(),first=f.checkbox(0),audio=f.ui.nodes.get('audio');
+    const play=f.cards().map(card=>card.children[0]),more=f.ui.nodes.get('candidate-more');
+    play[0].handlers.click();audio.currentTime=.4;first.focus();
+    for(const selected of [true,false]){
+      first.change(selected);
+      assert.ok(play.every(button=>!button.disabled),'saving a choice leaves every play button available');
+      assert.equal(more.disabled,false,'saving below quota does not dim the generation button');
+      assert.equal(play[0].attributes['aria-pressed'],'true');assert.equal(audio.paused,false);
+      await f.finish();
+      assert.equal(audio.currentTime,.4,'saving does not restart the playing clip');
+      assert.equal(audio.playCalls,1);assert.equal(f.ui.document.activeElement,first);
+    }
+    assert.deepEqual(f.writes().map(action=>action.action),['toggle','toggle'],'generation always requires a click');
+    play[0].handlers.click();first.change(true);
+    play[1].handlers.click();assert.equal(audio.src,f.rows[1].audio,'play can switch clips during a choice save');
+    await f.finish();assert.equal(play[1].attributes['aria-pressed'],'true');assert.equal(audio.paused,false);
+  }
+  {
+    const f=await toggleFixture(),more=f.ui.nodes.get('candidate-more');
+    f.checkbox(0).change(true);
+    more.handlers.click();more.handlers.click();
+    f.checkbox(0).change(false);
+    assert.equal(more.hidden,false,'a queued click keeps the controls visible while the selection saves');
+    assert.deepEqual(f.writes().map(action=>action.action),['toggle']);
+    await f.finish();
+    assert.deepEqual(f.writes().map(action=>action.action),['toggle','toggle'],'a queued generation waits for the entire selection writer');
+    await f.finish();
+    assert.deepEqual(f.writes().map(action=>action.action),['toggle','toggle','more'],'one generation starts after every selection is acknowledged');
+    assertGeneratingStatus(f.ui);
+  }
+  for(const reason of ['quota','save failure','scope change']){
+    const f=await toggleFixture({selected:reason==='scope change'?[0]:[]}),more=f.ui.nodes.get('candidate-more');
+    f.checkbox(0).change(reason!=='scope change');
+    more.handlers.click();
+    if(reason==='quota'){
+      f.checkbox(1).change(true);await f.finish();await f.finish();
+    }else if(reason==='save failure'){
+      await f.finish({commit:false,failure:'http'});
+    }else{
+      const different=structuredClone(initialCandidateState),nextGroup=different.groups[1].key;
+      Object.assign(different,{active_group:nextGroup,items:candidates(nextGroup),accepted:[]});
+      await f.finish({reply:different});
+    }
+    assert.ok(f.writes().every(action=>action.action==='toggle'),`${reason} cancels a queued generation`);
   }
   {
     const f=await toggleFixture({selected:[0,1]});

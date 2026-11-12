@@ -314,7 +314,7 @@ function stop(release=false){
 window.addEventListener('message',event=>{
   if(event.origin!==location.origin||event.source!==window.parent)return;
   if(event.data?.type==='koww:reference-status'&&event.data.project===project){
-    if(candidateSelectionBlocked&&!saving&&!loading)recoverCandidateSelection();
+    if(candidateSelectionBlocked)recoverCandidateSelection();
     if(candidateMode)syncCandidates(true);
     scheduleCandidateHeight(true);
     if(typeof reportedComplete==='boolean')window.parent.postMessage?.({type:'koww:reference-review',project,complete:reportedComplete},location.origin);
@@ -346,7 +346,7 @@ function audioUrl(value){
   return url.pathname+url.search;
 }
 async function playCurrent(){
-  if(!items.length||document.hidden||loading||saving||regenerationRunning())return;
+  if(!items.length||document.hidden||(candidateMode?candidateControlsLocked():loading||saving||regenerationRunning()))return;
   playbackAllowed=true;
   if(!audio.getAttribute('src'))audio.src=items[currentIndex].audio;
   const version=++playbackVersion;
@@ -441,6 +441,8 @@ function parseItems(rows){
 }
 function heard(item){return item.heard===true||((candidateMode||!editable)&&sessionHeard.has(`${item.id}:${item.sha256}`));}
 function regenerationRunning(){return job?.status==='running'||candidateMode&&job?.status==='queued';}
+// Saving an individual selection does not take over the candidate controls.
+function candidateControlsLocked(){return loading||saving||regenerationRunning()||candidateSelectionBlocked;}
 function playedWholeClip(){
   const ranges=audio.played, tolerance=0.05;
   if(!Number.isFinite(audio.duration)||!ranges?.length)return false;
@@ -661,30 +663,35 @@ function cancelCandidateSelection(authoritative=false){
   const pending=Boolean(candidateSelectionWriter||candidateSelectionIntents.size);
   if(!pending&&!authoritative)return;
   candidateSelectionEpoch++;candidateSelectionIntents.clear();
-  if(candidateSelectionWriter){candidateSelectionWriter=null;saving=false;}
+  candidateSelectionWriter=null;
   candidateSelectionBlocked=authoritative?false:candidateSelectionBlocked||pending;
   if(pending)errorMessage.textContent=authoritative?'목소리 분류나 후보 목록이 바뀌어 대기 중인 선택을 취소했습니다.':'저장 대기 중인 선택을 취소했습니다. 저장된 선택 상태를 다시 확인합니다.';
   if(candidateMode&&!authoritative)syncCandidates();
 }
 function startSelectionWriter(){
-  const writer={epoch:++candidateSelectionEpoch,scope:candidateSelectionScope(),queueUrl:candidateBatchUrl(reviewQueueUrl),recovering:false};
-  candidateSelectionWriter=writer;saving=true;candidateLoadVersion++;return writer;
+  const writer={epoch:++candidateSelectionEpoch,scope:candidateSelectionScope(),queueUrl:candidateBatchUrl(reviewQueueUrl),afterSave:null};
+  candidateSelectionWriter=writer;candidateLoadVersion++;return writer;
+}
+function finishCandidateSelection(writer,saved=false){
+  if(!selectionWriterActive(writer))return;
+  candidateSelectionWriter=null;
+  syncCandidates();scheduleReviewPoll();
+  if(saved&&writer.scope===candidateSelectionScope())writer.afterSave?.();
 }
 function requestCandidateSelection(item,selected){
   const group=groups[groupIndex],key=selectionKey(item),projected=projectedCandidateSelection();
-  if(!candidateMode||!group||!editable||group.approved||loading||regenerationRunning()||candidateSelectionBlocked||
-    saving&&!candidateSelectionWriter||candidateSelectionWriter?.recovering||
+  if(!candidateMode||!group||!editable||group.approved||candidateControlsLocked()||
     !candidateRows.some(row=>row.id===item.id&&row.sha256===item.sha256)||
     selected&&!projected.has(key)&&projected.size>=group.target){syncCandidates();return;}
   // At most the current five cards have pending desired states. Repeated clicks
   // replace that card's intent instead of queueing another blind toggle.
   candidateSelectionIntents.set(key,{id:item.id,sha256:item.sha256,selected:Boolean(selected)});
   const starting=!candidateSelectionWriter,writer=candidateSelectionWriter||startSelectionWriter();
-  errorMessage.textContent='';stop();syncCandidates();
+  errorMessage.textContent='';syncCandidates();
   if(starting)drainCandidateSelection(writer);
 }
 async function reloadCandidateSelection(writer){
-  writer.recovering=true;candidateSelectionBlocked=true;candidateSelectionIntents.clear();syncCandidates();
+  candidateSelectionBlocked=true;candidateSelectionIntents.clear();syncCandidates();
   try{
     // A toggle response can be lost after commit. Read the truth; never resend it.
     // Let an already sent request settle before reading, even after pagehide.
@@ -709,6 +716,7 @@ async function reloadCandidateSelection(writer){
   }
 }
 async function drainCandidateSelection(writer){
+  let saved=false;
   try{
     while(selectionWriterActive(writer)&&writer.scope===candidateSelectionScope()){
       const acknowledged=new Set(acceptedRows.map(selectionKey)),pending=[];
@@ -716,7 +724,7 @@ async function drainCandidateSelection(writer){
         if(acknowledged.has(key)===intent.selected)candidateSelectionIntents.delete(key);
         else pending.push(intent);
       }
-      if(!pending.length)break;
+      if(!pending.length){saved=true;break;}
       // Release a slot before selecting its replacement when the quota is full.
       const intent=pending.find(item=>!item.selected)||pending[0];
       const expected=!acknowledged.has(selectionKey(intent));
@@ -741,15 +749,13 @@ async function drainCandidateSelection(writer){
       errorMessage.textContent='선택 저장 응답을 확인하지 못했습니다. 저장된 상태를 다시 확인합니다.';
       await reloadCandidateSelection(writer);
     }
-  }finally{
-    if(selectionWriterActive(writer)){candidateSelectionWriter=null;saving=false;syncCandidates();scheduleReviewPoll();}
-  }
+  }finally{finishCandidateSelection(writer,saved);}
 }
 async function recoverCandidateSelection(){
-  if(!candidateMode||!candidateSelectionBlocked||saving||loading)return;
+  if(!candidateMode||!candidateSelectionBlocked||candidateSelectionWriter||saving||loading)return;
   const writer=startSelectionWriter();
   try{await reloadCandidateSelection(writer);}
-  finally{if(selectionWriterActive(writer)){candidateSelectionWriter=null;saving=false;syncCandidates();scheduleReviewPoll();}}
+  finally{finishCandidateSelection(writer);}
 }
 function syncCandidateGenerationView(creating){
   if(creating&&!candidateGenerationView){
@@ -766,7 +772,7 @@ function syncCandidateGenerationView(creating){
 }
 function syncCandidates(forceReport=false){
   const group=groups[groupIndex];if(!group)return;
-  const busy=loading||saving||regenerationRunning()||candidateSelectionBlocked, canEdit=editable&&!group.approved;
+  const locked=candidateControlsLocked(), canEdit=editable&&!group.approved;
   const creating=candidateStarting||regenerationRunning();
   syncCandidateGenerationView(creating);
   const preparing=regenerationRunning()&&job?.phase==='preparing';
@@ -781,11 +787,11 @@ function syncCandidates(forceReport=false){
   for(const [name,value] of Object.entries(countAttributes))if(groupCount.getAttribute(name)!==value)groupCount.setAttribute(name,value);
   groupBack.hidden=true;groupBack.disabled=true;
   groupNext.textContent=group.approved?'검수 완료':'다음';
-  candidateReady=!busy&&canEdit&&selected===target;groupNext.disabled=!candidateReady;
+  candidateReady=!locked&&!candidateSelectionWriter&&canEdit&&selected===target;groupNext.disabled=!candidateReady;
   reviewStatus.hidden=true;groupNav.hidden=window.parent!==window;
   const history=candidateHistory();
-  candidatePrevious.hidden=creating;candidatePrevious.disabled=creating||loading||saving||candidateSelectionBlocked||!history.previous;
-  candidateMore.hidden=creating;candidateMore.disabled=creating||(history.next?loading||saving||candidateSelectionBlocked:busy||!canEdit||selected>=target);
+  candidatePrevious.hidden=creating;candidatePrevious.disabled=locked||!history.previous;
+  candidateMore.hidden=creating;candidateMore.disabled=locked||!candidateDeckAction('next',history,selected);
   candidateMoreLabel.textContent=history.next?'›':'+';candidateMoreLabel.hidden=!history.next&&creating;
   candidateMore.setAttribute('aria-label',history.next?'다음 후보 5개':preparing?'목소리 분류 준비 중':creating?`후보 생성 중 · ${Math.min(5,Number(job?.completed)||0)} / ${Number(job?.total)||5}`:'기준 목소리 후보 더 뽑기');
   candidateMore.title=history.next?'다음 후보 5개':selected>=target?'필요한 목소리를 선택했습니다. 아래 다음 버튼을 누르세요.':'기준 목소리 후보 5개 더 생성';
@@ -814,7 +820,7 @@ function syncCandidates(forceReport=false){
   candidateEmpty.hidden=!creating&&Boolean(candidateRows.length);
   candidateStatusLabel.textContent=creating?'추가 기준 목소리 후보를 생성하고 있습니다...':group.approved?'선택한 목소리를 확정했습니다.':job?.status==='failed'?'후보 생성을 다시 시도해 주세요.':'기준 목소리 후보를 생성해 주세요.';
   candidatePanel.setAttribute('aria-busy',String(creating));
-  candidateRetryActions.hidden=!(candidatePollPaused||candidateSelectionBlocked);candidateStatusRetry.disabled=loading||saving;
+  candidateRetryActions.hidden=!(candidatePollPaused||candidateSelectionBlocked);candidateStatusRetry.disabled=loading||saving||Boolean(candidateSelectionWriter);
   for(const view of candidateViews){
     const item=items.find(value=>value.id===view.id&&value.sha256===view.sha256);
     if(!item)continue;
@@ -824,11 +830,11 @@ function syncCandidates(forceReport=false){
     const selectedItem=projected.has(selectionKey(item));
     const listening=current?.id===item.id&&current?.sha256===item.sha256&&playing;
     view.row.setAttribute('data-playing',String(listening));view.row.setAttribute('data-selected',String(selectedItem));
-    view.play.disabled=busy;view.play.setAttribute('aria-pressed',String(listening));
+    view.play.disabled=locked;view.play.setAttribute('aria-pressed',String(listening));
     view.play.setAttribute('aria-label',`${candidateNumber(item)} ${listening?'일시정지':'재생'}`);
     view.check.hidden=true;view.checkbox.checked=selectedItem;
     // A poll or save does not replace or disable the focused checkbox.
-    view.checkbox.disabled=loading||regenerationRunning()||candidateSelectionBlocked||candidateSelectionWriter?.recovering||saving&&!candidateSelectionWriter||!canEdit||!selectedItem&&selected>=target;
+    view.checkbox.disabled=locked||!canEdit||!selectedItem&&selected>=target;
     view.checkbox.setAttribute('aria-label',`${candidateNumber(item)} ${selectedItem?'선택 해제':'선택'}`);
     view.choice.title=!selectedItem&&selected>=target?'이 분류의 목표 개수를 모두 선택했습니다.':'';
   }
@@ -902,7 +908,7 @@ function applyCandidates(payload){
 function requestInitialCandidates(){
   const group=groups[groupIndex];
   if(!candidateMode||!group||!editable||group.approved||candidateRows.length||acceptedRows.length>=group.target||
-    loading||saving||regenerationRunning()||job?.status==='failed'||initialCandidateRequests.has(group.key))return;
+    candidateControlsLocked()||candidateSelectionWriter||job?.status==='failed'||initialCandidateRequests.has(group.key))return;
   initialCandidateRequests.add(group.key);saveReview('more',{group:group.key});
 }
 function candidateHistory(){
@@ -910,12 +916,32 @@ function candidateHistory(){
   return {previous:index>0?candidateBatches[index-1]:index<0&&candidateViewBatch===candidateCurrentBatch&&candidateBatches.length?candidateBatches.at(-1):null,
     next:index>=0?candidateBatches[index+1]||null:null};
 }
+function candidateDeckAction(direction,history=candidateHistory(),selected=projectedCandidateSelection().size){
+  const batch=history[direction],group=groups[groupIndex];
+  if(batch)return {batch};
+  if(direction==='next'&&group&&editable&&!group.approved&&selected<group.target)return {group:group.key};
+  return null;
+}
+function requestCandidateDeckAction(direction){
+  if(!candidateMode||candidateControlsLocked())return;
+  const action=candidateDeckAction(direction);if(!action)return;
+  const run=()=>{
+    if(candidateControlsLocked())return;
+    const current=candidateDeckAction(direction);
+    if(!current||current.batch?.id!==action.batch?.id||current.group!==action.group)return;
+    if(action.batch)void loadCandidateBatch(action.batch);
+    else{stop();void saveReview('more',{group:action.group});}
+  };
+  // Keep one explicit click, only for the view whose selections are being saved.
+  if(candidateSelectionWriter)candidateSelectionWriter.afterSave??=run;
+  else run();
+}
 function candidateBatchUrl(base){
   if(!candidateMode||!candidateBatches.some(batch=>batch.id===candidateViewBatch))return base;
   const url=new URL(base,location.href);url.searchParams.set('batch',candidateViewBatch);return url.pathname+url.search;
 }
 async function loadCandidateBatch(batch){
-  if(loading||saving||!batch)return;
+  if(candidateControlsLocked()||candidateSelectionWriter||!batch)return;
   const version=++candidateLoadVersion;stop();loading=true;syncCandidates();
   try{
     const url=new URL(reviewQueueUrl,location.href);url.searchParams.set('batch',batch.id);
@@ -926,8 +952,8 @@ async function loadCandidateBatch(batch){
   }catch(error){if(version===candidateLoadVersion)errorMessage.textContent=error.message;}
   finally{if(version===candidateLoadVersion){loading=false;syncCandidates();scheduleReviewPoll();}}
 }
-candidatePrevious.addEventListener('click',()=>{if(!candidatePrevious.disabled)loadCandidateBatch(candidateHistory().previous);});
-candidateMore.addEventListener('click',()=>{if(!candidateMore.disabled){const next=candidateHistory().next;if(next)loadCandidateBatch(next);else{stop();saveReview('more',{group:groups[groupIndex].key});}}});
+candidatePrevious.addEventListener('click',()=>requestCandidateDeckAction('previous'));
+candidateMore.addEventListener('click',()=>requestCandidateDeckAction('next'));
 candidateStatusRetry.addEventListener('click',async()=>{
   if(candidateStatusRetry.disabled)return;
   if(candidateSelectionBlocked){await recoverCandidateSelection();return;}
@@ -944,7 +970,7 @@ function scheduleReviewPoll(){
   if(pollTimer||!regenerationRunning()||candidateMode&&candidatePollPaused)return;
   pollTimer=setTimeout(async()=>{
     pollTimer=undefined;
-    if(candidateMode&&(loading||saving)){scheduleReviewPoll();return;}
+    if(candidateMode&&(loading||saving||candidateSelectionWriter)){scheduleReviewPoll();return;}
     const version=candidateLoadVersion;
     try{
       const response=await fetch(candidateBatchUrl(reviewQueueUrl)),payload=await response.json();
@@ -979,7 +1005,7 @@ function recordCandidateHearing(item){
   candidateHearWrites.set(key,write);
 }
 async function saveReview(action,fields,nextKey){
-  if(saving||regenerationRunning()||candidateMode&&candidateSelectionBlocked)return false;
+  if(saving||regenerationRunning()||candidateMode&&(candidateSelectionWriter||candidateSelectionBlocked))return false;
   candidateStarting=candidateMode&&action==='more';
   if(candidateStarting)errorMessage.textContent='';
   saving=true;syncReview();
