@@ -1366,7 +1366,7 @@
       body.reference_voice_review = true;
     } else if (downloadCheckpoint === true) body.download_checkpoint = true;
     if (dependencyBackend) body.dependency_backend = dependencyBackend;
-    busy = true; message("모델 학습 폴더를 만들고 있습니다."); render();
+    busy = true; message(""); render();
     try {
       const result = await api("/api/projects", "POST", body), project = result.project || result;
       if (!project.id) throw new Error("모델 생성 결과에 식별자가 없습니다. 중복 생성 전에 목록을 확인하세요.");

@@ -1489,7 +1489,9 @@ function pendingHardStorageRecipe() {
     assert.deepEqual(JSON.parse(JSON.stringify(b.storyBridge.state().dependencySetup)), setup);
     b.elements.get("wakeword").value = "보라야";
     b.elements.get("wakeword").handlers.input(); await locationSettled();
-    await b.storyBridge.create({ navigationCheckpoints: true, dependencyBackend: "cpu" });
+    const creating = b.storyBridge.create({ navigationCheckpoints: true, dependencyBackend: "cpu" });
+    assert.equal(b.elements.get("message").hidden, true);
+    await creating;
     const mutations = b.calls.filter(call => call.options.method === "POST" && call.url !== "/api/model-location");
     assert.deepEqual(mutations.map(call => call.url), ["/api/projects"]);
     assert.deepEqual(JSON.parse(mutations[0].options.body), { wakeword: "보라야", preset: "check",
