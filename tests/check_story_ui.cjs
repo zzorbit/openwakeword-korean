@@ -834,6 +834,7 @@ async function main() {
     const project = checkpointProject("running", "running");
     project.stage_id = "data_download";
     project.stages[0].status = "completed";
+    project.dependency_download_bytes = 2 * 1024 ** 3;
     project.download_setup_items = ["torch", "torchaudio", "openwakeword"].map(id => ({ id, label: id, state: "complete" }));
     project.download_files = [
       { id: "a", label: "자료 A", state: "downloading", done: 2500, total: 10000, unit: "bytes" },
@@ -844,8 +845,9 @@ async function main() {
     const history = p.shell.querySelector(".story-history"), list = history.querySelector(".story-history-rows");
     const rows = ["자료 A", "자료 B", "자료 C"].map(label => historyRowByLabel(list, label));
     assert.equal(list.children.length, 4);
-    const setup = historyRowByLabel(list, "연산 도구");
+    const setup = historyRowByLabel(list, "연산 도구 · PyTorch · TorchAudio");
     assert.equal(setup.querySelector(".story-history-percent").textContent, "100%");
+    assert.equal(setup.querySelector(".story-history-note-detail").textContent, "다운로드 약 2 GiB");
     assert.equal(setup.querySelector(".story-progress-indicator").dataset.status, "complete");
     assert.deepEqual(rows.map(row => row.querySelector(".story-history-percent").textContent), ["25%", "75%", "0%"]);
     assert.deepEqual(rows.map(row => row.querySelector("progress").value), [2500, 750, 0]);
@@ -866,15 +868,16 @@ async function main() {
       project.download_files = [{ id: "a", label: "자료 A", state: "waiting", done: 0, total: 500, unit: "bytes" }];
       const p = page(project), list = p.shell.querySelector(".story-history-rows");
       assert.equal(list.children.length, 2);
-      const row = historyRowByLabel(list, "연산 도구"), bar = row.querySelector("progress");
-      assert.match(textOf(row), build === "cpu" ? /CPU · PyTorch · TorchAudio/ : /NVIDIA GPU · CUDA 12\.8 · PyTorch · TorchAudio/);
+      const row = historyRowByLabel(list, "연산 도구 · PyTorch · TorchAudio"), bar = row.querySelector("progress");
+      assert.doesNotMatch(textOf(row), /CPU|GPU|CUDA/);
+      assert.equal(row.querySelector(".story-history-note-detail").textContent, "전체 용량 확인 전");
       assert.equal(bar.hidden, false);
       assert.equal(bar.getAttribute("value"), null);
       assert.equal(row.querySelector(".story-history-percent").textContent, "");
       assert.equal(row.querySelector(".story-progress-indicator").dataset.status, "active");
       assert.equal(historyRowByLabel(list, "자료 A").querySelector("progress").value, 0);
       torch.state = "complete"; audio.state = "installing"; p.ui.render();
-      assert.equal(historyRowByLabel(list, "연산 도구"), row);
+      assert.equal(historyRowByLabel(list, "연산 도구 · PyTorch · TorchAudio"), row);
       assert.equal(bar.max, 2);
       assert.equal(bar.value, 1);
       assert.equal(row.querySelector(".story-history-percent").textContent, "50%");
@@ -903,7 +906,7 @@ async function main() {
       await p.flush(); p.ui.render();
       const history = p.shell.querySelector(".story-history");
       assert.equal(history.hidden, false);
-      const row = historyRowByLabel(history, "연산 도구");
+      const row = historyRowByLabel(history, "연산 도구 · PyTorch · TorchAudio");
       assert.match(textOf(row), /1 \/ 2개/);
       assert.equal(row.dataset.failed, "false");
       assert.equal(history.querySelectorAll(".story-history-row").length, 1);

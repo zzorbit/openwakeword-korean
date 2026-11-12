@@ -1688,12 +1688,12 @@
       const failed = pending.some(item => item.state === "failed") || installing && frontendSetupFailed(project);
       const countInstalled = packages.size - pending.length;
       const working = active && installing && !failed;
-      const backend = project.dependency_backend;
-      const device = backend === "cu128" ? "NVIDIA GPU · CUDA 12.8" : toolBackends[backend]?.[0];
+      const label = ["연산 도구", ...[...packages.keys()].map(id => names.get(id))].join(" · ");
+      const bytes = project.dependency_download_bytes;
+      const capacity = Number.isFinite(bytes) && bytes > 0 ? "다운로드 약 " + quantity(bytes, "bytes") : "전체 용량 확인 전";
       const status = failed ? "설치 실패" : installing && project.status === "paused" ? "일시정지" : "";
-      const detail = [device, [...names].filter(([id]) => packages.has(id)).map(([, label]) => label).join(" · "), status]
-        .filter(Boolean).join(" · ");
-      return { key: "compute-tools", label: "연산 도구", detail, done: countInstalled, total: packages.size, unit: "items",
+      const detail = status ? status + " · " + capacity : capacity;
+      return { key: "compute-tools", label, detail, done: countInstalled, total: packages.size, unit: "items",
         active: working, completed: !pending.length, failed, indeterminate: working && countInstalled === 0 };
     }
     function renderStoryDownloads(project, files, verification, quality, active, legacy) {
@@ -1939,7 +1939,7 @@
       }
       const downloadState = current === "downloads"
         ? [project.status, stageId(project), project.stages, project.error, project.download_setup_items, progress?.setup_items,
-          project.dependency_backend, project.dependency_packages, legacy,
+          project.dependency_download_bytes, project.dependency_packages, legacy,
           progress?.phase, progress?.label, progress?.done, progress?.total, progress?.unit,
           stageId(project) === "frontend" ? phaseElapsed(progress) : ""]
         : null;
