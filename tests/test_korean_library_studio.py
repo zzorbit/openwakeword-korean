@@ -218,6 +218,7 @@ def test_recipe_and_saved_project_share_dependency_requirements(manager, monkeyp
         assert view["dependency_backend"] == backend
         assert view["dependency_setup_selected"] is True
         assert view["dependency_packages"] == setup["packages"][backend]
+        assert view["dependency_download_bytes"] == setup["download_bytes"][backend]
         assert view["evaluation_runtime_packages"] == runtime
         assert view["navigation_checkpoint"] == {"policy": "explicit_story_v1", "step": "downloads", "state": "awaiting_start"}
         assert manager._load(view["id"])["inputs"] == {"dependency_backend": backend}

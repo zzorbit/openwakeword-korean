@@ -1306,7 +1306,7 @@
       openDialog(listenDialog);
     }
     function setView(view, mode) { if (!listening) bridge.view(view, mode); }
-    function renderToolMaterials(backend, packages) {
+    function renderToolMaterials(backend, packages, downloadBytes) {
       toolMaterials.hidden = !Object.hasOwn(toolBackends, backend) || !Array.isArray(packages) || !packages.length;
       if (toolMaterials.hidden) return;
       const specs = new Map(packages.map(spec => spec.split(/==|>=/, 2)));
@@ -1321,7 +1321,17 @@
       const heading = node("h2", "연산 도구"); heading.id = "story-tool-materials-title";
       const device = toolBackends[backend][0];
       header.append(heading, node("span", cuda ? `${device} · CUDA ${cuda[1]}.${cuda[2]}` : device));
-      toolMaterials.replaceChildren(header, node("p", tools.join(" · "), "story-tool-materials-tools"));
+      const capacity = Number.isSafeInteger(downloadBytes) && downloadBytes > 0
+        ? `다운로드 약 ${bridge.formatBytes(downloadBytes)}` : "다운로드 용량 미확정";
+      const list = node("dl", undefined, "story-material-list");
+      const row = node("div", undefined, "story-material-row");
+      const title = node("dt"), amount = node("dd");
+      title.append(node("span", tools.join(" · "), "story-material-source"));
+      const download = node("span", capacity, "story-material-capacity");
+      download.title = "PyTorch·TorchAudio 배포 파일 기준";
+      amount.append(node("strong", `${tools.length}개`), download);
+      row.append(title, amount); list.append(row);
+      toolMaterials.replaceChildren(header, list);
     }
     function renderMaterials() {
       if (!materialData) return;
@@ -2228,7 +2238,9 @@
         const toolPlan = project?.dependency_setup ?? state.dependencySetup;
         const toolPackages = needsToolChoice ? toolPlan?.packages?.[pickerBackend]
           : project?.dependency_packages ?? toolPlan?.packages?.[pickerBackend];
-        const fingerprint = JSON.stringify([values, pickerBackend, toolPackages,
+        const toolDownloadBytes = needsToolChoice ? toolPlan?.download_bytes?.[pickerBackend]
+          : project?.dependency_download_bytes ?? toolPlan?.download_bytes?.[pickerBackend];
+        const fingerprint = JSON.stringify([values, pickerBackend, toolPackages, toolDownloadBytes,
           !project ? [$("adv-originals").value, $("adv-generic").value, $("adv-korean").value] : null]);
         if (fingerprint !== materialKey) {
           materialKey = fingerprint;
@@ -2242,7 +2254,7 @@
             update("hard", Number.isFinite(s.hard_samples_per_phrase) ? `문구당 ${count(s.hard_samples_per_phrase)}개` : undefined);
           }
           renderMaterials();
-          renderToolMaterials(pickerBackend, toolPackages);
+          renderToolMaterials(pickerBackend, toolPackages, toolDownloadBytes);
         }
       }
       const details = project ? `${project.directory || ""}` : "";

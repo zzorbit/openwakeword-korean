@@ -25,6 +25,7 @@ import shutil
 import statistics
 import subprocess
 import sys
+from sysconfig import get_platform
 import threading
 import time
 import uuid
@@ -142,10 +143,29 @@ def _dependency_package_requirements():
     return packages, evaluation_runtime
 
 
+# Content-Length of the pinned win_amd64 / cp312 wheels from download.pytorch.org.
+_WINDOWS_CP312_TORCH_WHEEL_BYTES = {
+    "torch==2.8.0+cpu": 619_352_539,
+    "torchaudio==2.8.0+cpu": 2_495_725,
+    "torch==2.8.0+cu128": 3_461_384_651,
+    "torchaudio==2.8.0+cu128": 4_673_203,
+}
+
+
+def _dependency_download_bytes(packages):
+    if sys.implementation.name != "cpython" or sys.version_info[:2] != (3, 12) or get_platform() != "win-amd64":
+        return None
+    specs = [spec for spec in packages if spec.startswith(("torch==", "torchaudio=="))]
+    if len(specs) != 2 or any(spec not in _WINDOWS_CP312_TORCH_WHEEL_BYTES for spec in specs):
+        return None
+    return sum(_WINDOWS_CP312_TORCH_WHEEL_BYTES[spec] for spec in specs)
+
+
 def _dependency_setup_options(recommended_backend):
     packages, evaluation_runtime = _dependency_package_requirements()
     return {"recommended_backend": "cu128" if recommended_backend == "cu128" else "cpu",
-            "packages": packages, "evaluation_runtime_packages": evaluation_runtime}
+            "packages": packages, "evaluation_runtime_packages": evaluation_runtime,
+            "download_bytes": {backend: _dependency_download_bytes(specs) for backend, specs in packages.items()}}
 
 
 def _elapsed(start):
@@ -4152,6 +4172,7 @@ class StudioManager:
         if dependency_backend in ("cpu", "cu128"):
             packages, evaluation_runtime = _dependency_package_requirements()
             view["dependency_packages"] = packages[dependency_backend]
+            view["dependency_download_bytes"] = _dependency_download_bytes(view["dependency_packages"])
             if dependency_backend == "cu128" or state["settings"].get("evaluation_backend") in ("auto", "cuda"):
                 view["evaluation_runtime_packages"] = evaluation_runtime
         if isinstance(state.get("download_checkpoint"), dict):

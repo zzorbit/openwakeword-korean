@@ -15,8 +15,9 @@ const toolSetup = {
     cu128: ["torch==2.8.0+cu128", "torchaudio==2.8.0+cu128", ...commonToolPackages, ...evaluationToolPackages],
   },
   evaluation_runtime_packages: evaluationToolPackages,
+  download_bytes: { cu128: 3123456789 },
 };
-function assertToolPreview(installs, device) {
+function assertToolPreview(installs, device, capacityLabel) {
   assert.equal(installs.hidden, false);
   const text = textOf(installs);
   assert.equal(installs.querySelector("h2")?.textContent, "연산 도구");
@@ -25,6 +26,9 @@ function assertToolPreview(installs, device) {
   assert.match(text, /TorchAudio/);
   assert.doesNotMatch(text, /공통|GPU 평가|Qwen TTS|ONNX|openWakeWord/i);
   assert.doesNotMatch(text, /==|>=|nvidia-cublas|nvidia-cuda-runtime|nvidia-cudnn/i);
+  const row = installs.querySelector(".story-material-row"), amount = row.querySelector("dd");
+  assert.deepEqual(amount.children.map(node => [node.tagName, node.textContent]),
+    [["strong", "2개"], ["span", capacityLabel]]);
 }
 
 // A DOM adapter exercises navigation and real-state gates without audio,
@@ -332,7 +336,7 @@ async function main() {
     assert.equal(p.get("story-tool-picker").hidden, false);
     assert.equal(p.get("story-tool-cu128").checked, true);
     await advanceSetup(p, "scale", "materials");
-    assertToolPreview(p.get("story-tool-materials"), /NVIDIA GPU\s*·\s*CUDA 12\.8/);
+    assertToolPreview(p.get("story-tool-materials"), /NVIDIA GPU\s*·\s*CUDA 12\.8/, "다운로드 약 3123456789B");
     const columns = p.shell.querySelector(".story-material-columns"), training = () => columns.children[0];
     assert.deepEqual(p.shell.querySelectorAll(".story-material-total").map(node => node.textContent), ["약 6KiB + 미정", "별도 다운로드 없음"]);
     assert.equal(p.shell.querySelector(".story-material-total").getAttribute("aria-label"), "학습용 자료 합산 다운로드 용량: 약 6KiB + 미정");
@@ -1006,7 +1010,7 @@ async function main() {
     assert.equal(p.operation.hidden, true);
     assert.equal(p.calls.some(call => ["input", "start", "resume"].includes(call)), false);
     const installs = p.get("story-tool-materials");
-    assertToolPreview(installs, /\bCPU\b/);
+    assertToolPreview(installs, /\bCPU\b/, "다운로드 용량 미확정");
     assert.doesNotMatch(textOf(installs), /NVIDIA GPU|CUDA 12\.8/);
 
     const confirmation = p.next.fire("click"); await p.flush();
