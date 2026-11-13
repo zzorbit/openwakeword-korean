@@ -83,6 +83,67 @@ class RecoveryModel:
         return [wave], 16000
 
 
+def test_production_keeps_legacy_attempts_and_runs_both_banks_before_recovery(tmp_path, monkeypatch):
+    from korean_openwakeword import clone_reference, pilot
+
+    project = approved_project(tmp_path / "word", "clone", count=2)
+    root, config = project.parent, read_json(project)
+    train = read_rows(root / "data/references/train/references.jsonl")
+    legacy = train[0]
+    source = root / legacy["path"]
+    tone = .11 * np.sin(np.arange(8000) / 23)
+    sf.write(source, np.concatenate([tone, np.full(5 * 16000, .00001), tone]), 16000, subtype="FLOAT")
+    legacy["sha256"] = digest(source)
+    validation = root / "validation.wav"
+    sf.write(validation, .15 * np.sin(np.arange(9600) / 28), 16000, subtype="FLOAT")
+    banks = {"train": train, "validation": [dict(train[1], voice_family_id="eval", split="validation",
+        path=validation.name, sha256=digest(validation))]}
+    revision = "existing-review"
+    scope = {"kind": "production", "revision": revision, "references": train, "excluded_sha256": []}
+    train_dir, _ = tts.call_generation_location(root, "train", scope)
+
+    # Emulate a pre-update worker with six recorded failures and no validation.
+    old_prepare = clone_reference.prepare_clone_reference
+    monkeypatch.setattr(clone_reference, "prepare_clone_reference", lambda root, row, **_: old_prepare(root, row))
+    monkeypatch.setattr(tts, "_seed", cpu_seed)
+    old = RecoveryModel(fail=True)
+    old.create_voice_clone_prompt = lambda **kw: kw
+    result = tts.generate(project, "train", 1, True, "clone", model=old, staged_scope=scope)
+    assert result["exhausted_slots"][0]["attempts"] == 6
+    journal = train_dir / "candidates.jsonl"
+    historical = journal.read_bytes()
+    contract = (train_dir / "contract.json").read_bytes()
+    monkeypatch.setattr(clone_reference, "prepare_clone_reference", old_prepare)
+
+    events = []
+
+    class Updated(RecoveryModel):
+        def create_voice_clone_prompt(self, **kw):
+            duration = sf.info(kw["ref_audio"]).duration
+            assert duration < 2
+            return kw
+
+        def generate_voice_clone(self, **kw):
+            events.append(Path(kw["voice_clone_prompt"]["ref_audio"]).stem)
+            return super().generate_voice_clone(**kw)
+
+    scopes, directories, summaries = pilot._generate_production_banks(
+        project, root, banks, {"train": 2, "validation": 2}, revision, set(), Updated())
+    assert events == ["voice_1", "validation", "validation", "reference"]
+    assert directories["train"] == train_dir and scopes["train"] == scope
+    assert all(item["full_target_reached"] for item in summaries.values())
+    assert journal.read_bytes().startswith(historical)
+    assert (train_dir / "contract.json").read_bytes() == contract
+    rows, passing = _passing_slots(root, config, "train", train, train_dir, scope)
+    assert len(rows) == 8 and passing[0]["attempt"] == 6
+    assert passing[0]["retry_phase"] == "conditioned_recovery"
+    assert passing[0]["clone_reference_preparation"]["policy"] == clone_reference.INTERNAL_SILENCE_POLICY
+
+    events.clear()
+    pilot._generate_production_banks(project, root, banks, {"train": 2, "validation": 2}, revision, set(), Updated())
+    assert events == []
+
+
 def test_invalid_model_outputs_consume_budget_without_fake_waveforms(tmp_path, monkeypatch):
     project, config, refs, scope, output = legacy_run(tmp_path, count=6)
     monkeypatch.setattr(tts, "_seed", cpu_seed)

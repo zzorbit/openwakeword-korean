@@ -496,6 +496,42 @@ def prepare_prepost_pilot(project, settings, *, prior_rounds=(), quality_retry_r
         return result
 
 
+def _generate_production_banks(project, root, banks, targets, revision, heard_hashes, model):
+    from .tts import call_generation_location, generate
+
+    scopes = {split: {"kind": "production", "revision": revision, "references": bank,
+                      "excluded_sha256": sorted(heard_hashes)} for split, bank in banks.items()}
+    scopes["validation"]["schedule"] = "deferred_failures_v1"
+    directories = {split: call_generation_location(root, split, scope)[0] for split, scope in scopes.items()}
+
+    def saved_hashes(split):
+        return {row["sha256"] for row in read_rows(directories[split] / "candidates.jsonl")
+                if row.get("qc", {}).get("passed") is True}
+
+    # An older validation bank could only start after the train bank finished.
+    # Reconstruct its exact scope so its existing IDs and receipts stay usable.
+    hashes = {split: saved_hashes(split) for split in scopes}
+    if len(hashes["train"]) == targets["train"] and not (directories["validation"] / "contract.json").exists():
+        legacy_scope = {"kind": "production", "revision": revision, "references": banks["validation"],
+                        "excluded_sha256": sorted(heard_hashes | hashes["train"])}
+        legacy_dir, _ = call_generation_location(root, "validation", legacy_scope)
+        if (legacy_dir / "contract.json").is_file():
+            scopes["validation"], directories["validation"] = legacy_scope, legacy_dir
+            hashes["validation"] = saved_hashes("validation")
+
+    summaries = {}
+    # Both splits get a first pass before any retry, including after a resume.
+    for ceiling in (1, None):
+        for split in scopes:
+            if split in summaries and summaries[split]["full_target_reached"]:
+                continue
+            other = "validation" if split == "train" else "train"
+            summaries[split] = generate(project, split, targets[split], True, "clone", model=model,
+                staged_scope=scopes[split], attempt_ceiling=ceiling, excluded_sha256=hashes[other])
+            hashes[split] = saved_hashes(split)
+    return scopes, directories, summaries
+
+
 def stage_positives_for_review(project, settings, *, prior_rounds=None):
     """Freeze the full technical-pass corpus and select one call per voice."""
     from .tts import call_generation_location, generate
@@ -517,6 +553,16 @@ def stage_positives_for_review(project, settings, *, prior_rounds=None):
             or targets["validation"] > config["targets"]["validation_originals"]):
         raise ValueError("Staged generation cannot exceed the project's frozen targets")
     model = CloneRuntime(config["tts"]["clone_model"], config["tts"], root, "auto", config["training"]["cpu_threads"])
+    if preflight:
+        scopes, directories, summaries = _generate_production_banks(
+            project, root, banks, targets, revision, heard_hashes, model)
+        if any(not value["full_target_reached"] for value in summaries.values()):
+            return {"full_target_reached": False, "target": sum(targets.values()),
+                    "technical_pass": sum(value["technical_pass"] for value in summaries.values()),
+                    "attempts": sum(value["attempts"] for value in summaries.values()),
+                    "exhausted_slots": [row for value in summaries.values() for row in value["exhausted_slots"]],
+                    "split_counts": {split: {"target": targets[split], "technical_pass": value["technical_pass"]}
+                                     for split, value in summaries.items()}}
     outputs, sources, selected = [], {}, []
     source_hashes = set()
     for split, group in REVIEW_GROUPS.items():
@@ -526,13 +572,11 @@ def stage_positives_for_review(project, settings, *, prior_rounds=None):
         scope = None
         directory = root / "data/pilot" / split
         if preflight:
-            scope = {"kind": "production", "revision": revision, "references": banks[split],
-                     "excluded_sha256": sorted(heard_hashes | source_hashes)}
-            directory, _ = call_generation_location(root, split, scope)
-        options = {"staged_scope": scope} if preflight else {}
-        summary = generate(project, split, target, True, "clone", model=model, **options)
-        if summary.get("full_target_reached") is not True:
-            return summary
+            scope, directory, summary = scopes[split], directories[split], summaries[split]
+        else:
+            summary = generate(project, split, target, True, "clone", model=model)
+            if summary.get("full_target_reached") is not True:
+                return summary
         _, passing = _passing_slots(root, config, split, banks[split], directory, scope)
         if set(passing) != set(range(target)):
             raise ValueError("Staged call count differs from the completed generation target")

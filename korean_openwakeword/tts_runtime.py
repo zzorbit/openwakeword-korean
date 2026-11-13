@@ -3,11 +3,21 @@
 Keep the original TTS contract, seeds, sampling, weights and technical QC.
 Runtime qualification clips are never added to training or counted as listening.
 """
+from collections import OrderedDict
+from pathlib import Path
 import time
 import numpy as np
-from .common import now, write_json, identity
+from .common import digest, now, write_json, identity
 from .project import load_project
 from .task_progress import emit
+
+
+_GRAPH_BACKEND = "exact_shape_predictor_and_talker_cuda_graph"
+_PROMPT_CACHE_LIMIT = 544  # Covers a complete Studio Train and Validation voice bank.
+
+
+def _graph_capacity_exceeded(error):
+    return isinstance(error, ValueError) and str(error) == "Graph capacity exceeded"
 
 
 class CloneRuntime:
@@ -17,6 +27,8 @@ class CloneRuntime:
         self.model = None
         self.predictor = self.talker = None
         self.checked = {}
+        self.eager_prompts = {}
+        self._prompt_cache = OrderedDict()
         self.disabled = backend == "eager"
         self.report = {"requested_backend": backend, "created_at": now(), "qualifications": [],
                        "minimum_warm_speedup_fraction": .05,
@@ -46,8 +58,33 @@ class CloneRuntime:
 
     def create_voice_clone_prompt(self, **kwargs):
         self._load()
+        audio, text = kwargs.get("ref_audio"), kwargs.get("ref_text")
+        x_vector = kwargs.get("x_vector_only_mode", False)
+        cache_key = None
+        if (not self.disabled and self.report.get("parameter_devices") == ["cuda:0"]
+                and set(kwargs) <= {"ref_audio", "ref_text", "x_vector_only_mode"}
+                and isinstance(audio, str) and isinstance(text, str) and type(x_vector) is bool):
+            # Callers verify the prompt WAV before opening it. Hashing also
+            # keeps an external replacement at the same path from reusing it.
+            path = Path(audio)
+            if path.is_file():
+                cache_key = (digest(path), text, x_vector)
+                if cache_key in self._prompt_cache:
+                    self._prompt_cache.move_to_end(cache_key)
+                    return self._prompt_cache[cache_key]
         emit("tts_prompt_preparation", "기준 목소리 복제 정보 준비", eta_eligible=False)
+        if cache_key is not None:
+            import torch
+            cpu_before = torch.get_rng_state()
+            cuda_before = torch.cuda.get_rng_state(0)
         prompt = self.model.create_voice_clone_prompt(**kwargs)
+        if cache_key is not None and torch.equal(cpu_before, torch.get_rng_state()) and torch.equal(cuda_before, torch.cuda.get_rng_state(0)):
+            self._prompt_cache[cache_key] = prompt
+            if len(self._prompt_cache) > _PROMPT_CACHE_LIMIT:
+                _, evicted = self._prompt_cache.popitem(last=False)
+                for decisions in (self.checked, self.eager_prompts):
+                    for key in [key for key in decisions if key[0] == id(evicted)]:
+                        del decisions[key]
         emit("tts_generation", "호출어 음성 생성", eta_eligible=True)
         return prompt
 
@@ -91,11 +128,31 @@ class CloneRuntime:
         if self.disabled:
             emit("tts_generation", "호출어 음성 생성", eta_eligible=True)
             return self._eager(kwargs)
-        key = (id(kwargs["voice_clone_prompt"]), identity({k:v for k,v in kwargs.items() if k != "voice_clone_prompt"}))
+        prompt = kwargs["voice_clone_prompt"]
+        key = (id(prompt), identity({k: v for k, v in kwargs.items() if k != "voice_clone_prompt"}))
+        if key in self.eager_prompts:
+            emit("tts_generation", "호출어 음성 생성", eta_eligible=True)
+            return self._eager(kwargs)
         if key in self.checked:
             emit("tts_generation", "호출어 음성 생성", eta_eligible=True)
-            with torch.inference_mode():
-                return self.model.generate_voice_clone(**kwargs)
+            cpu_before = torch.get_rng_state()
+            cuda_before = torch.cuda.get_rng_state(0)
+            try:
+                with torch.inference_mode():
+                    return self.model.generate_voice_clone(**kwargs)
+            except ValueError as error:
+                if not _graph_capacity_exceeded(error):
+                    raise
+                # A later seed can be longer than the first qualified seed.
+                # Retry the same sample from its original RNG state. The next
+                # graph call prefills the cache again before any replay.
+                torch.set_rng_state(cpu_before)
+                torch.cuda.set_rng_state(cuda_before, 0)
+                del self.checked[key]
+                self.eager_prompts[key] = prompt
+                self.report.setdefault("replay_fallbacks", []).append({"at": now(), "reason": str(error), "scope": "prompt"})
+                self._save()
+                return self._eager(kwargs)
         # Compare each actual reference's first requested utterance at exactly
         # the caller's seed. All qualification repeats are ephemeral; only one
         # result and the RNG progression of one eager call are retained.
@@ -109,19 +166,26 @@ class CloneRuntime:
             cpu_after, cuda_after = torch.get_rng_state(), torch.cuda.get_rng_state(0)
         qualification = {"accepted": False, "eager_seconds": eager_seconds,
                          "minimum_warm_speedup_fraction": .05, "at": now()}
+        from .tts import technical_qc
+        from .audio import pcm16
         try:
+            eq_qc, eq_signal = technical_qc(expected[0] if expected is not None and len(expected) else [], rate)
+            if eq_qc["passed"] is not True:
+                # The caller will reject this exact eager output. Replaying it
+                # twice on the graph would waste time and could hit capacity.
+                torch.set_rng_state(cpu_after)
+                torch.cuda.set_rng_state(cuda_after, 0)
+                qualification.update(skipped="technical_qc_failed", quality_reasons=eq_qc["reasons"])
+                self.report["qualifications"].append(qualification)
+                self._save()
+                emit("tts_generation", "호출어 음성 생성", eta_eligible=True)
+                return expected, rate
             if not self.predictor:
                 self._enable()
             torch.cuda.synchronize(); started = time.perf_counter()
             with torch.inference_mode():
                 actual, actual_rate = self.model.generate_voice_clone(**kwargs)
             torch.cuda.synchronize(); graph_seconds = time.perf_counter()-started
-            from .tts import technical_qc
-            from .audio import pcm16
-            eq_qc, eq_signal = technical_qc(expected[0], rate)
-            if eq_signal is None:
-                raise ValueError("No comparable PCM for CUDA qualification")
-
             def compare_waveform(values, sample_rate):
                 qc, signal = technical_qc(values[0], sample_rate)
                 same_pcm = sample_rate == rate and signal is not None and np.array_equal(pcm16(eq_signal[0]), pcm16(signal[0]))
@@ -161,22 +225,26 @@ class CloneRuntime:
             if not faster:
                 raise ValueError("Warm CUDA graph is not at least 5% faster than eager")
         except (ValueError, RuntimeError, TypeError, AttributeError) as error:
-            self.disabled = True
-            if self.predictor:
-                self.model.model.talker.code_predictor.generate = self.predictor["original_generate"]
-                self.model.model.talker.model.forward = self.talker["original_forward"]
+            local_capacity = self.predictor is not None and _graph_capacity_exceeded(error)
+            if local_capacity:
+                self.eager_prompts[key] = prompt
+            else:
+                self.disabled = True
+                if self.predictor:
+                    self.model.model.talker.code_predictor.generate = self.predictor["original_generate"]
+                    self.model.model.talker.model.forward = self.talker["original_forward"]
+                self.report["actual_backend"] = "eager"
             torch.set_rng_state(cpu_after); torch.cuda.set_rng_state(cuda_after, 0)
-            qualification.update(fallback="eager", reason=str(error))
+            qualification.update(fallback="eager", reason=str(error), fallback_scope="prompt" if local_capacity else "runtime")
             self.report["qualifications"].append(qualification)
-            self.report["actual_backend"] = "eager"
             self._save()
             emit("tts_generation", "호출어 음성 생성", eta_eligible=True)
             return expected, rate
         # Retain the prompt: Python must not reuse an ID for another reference.
-        self.checked[key] = kwargs["voice_clone_prompt"]
-        qualification.update(accepted=True, backend="exact_shape_predictor_and_talker_cuda_graph")
+        self.checked[key] = prompt
+        qualification.update(accepted=True, backend=_GRAPH_BACKEND)
         self.report["qualifications"].append(qualification)
-        self.report["actual_backend"] = "exact_shape_predictor_and_talker_cuda_graph"
+        self.report["actual_backend"] = _GRAPH_BACKEND
         self._save()
         emit("tts_generation", "호출어 음성 생성", eta_eligible=True)
         return actual, actual_rate

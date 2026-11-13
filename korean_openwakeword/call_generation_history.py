@@ -15,14 +15,27 @@ LEGACY_TTS = "a8a62455fee84260915d489aa2bccb0249ad874c9bfb2496678a5c725292473e"
 POLICY = "prepared_clone_bounded_recovery_v1"
 BRIDGE = "preserved_clone_history_after_reference_generation_v1"
 
-# These exact TTS revisions only change when already-defined attempts are run
-# and keep previously accepted audio excluded across the preflight sweeps.
-# Keep the generation/QC evidence fingerprint on both checkout formats.
+# These exact revisions keep original synthesis settings, per-attempt seeds and
+# QC. New production retries record their conditioned prompt and retry phase.
+# Keep the existing contract fingerprint on both checkout formats.
 SCHEDULING_ONLY_TTS_DIGESTS = {
+    "af3d47e4a6a37257811ae7800d33a0971ccf03f6f932ce76f306add44745aaec":
+        "64cf14186bd4fab8ddbd0444830539ba453e199f01d76b6f2b4bbc9d5ed7dc55",
+    "7cb7481a601ea33ac7256623438ad314564a5ec1f2e946db9ecfe1a64f2f6f07":
+        "e5167c6a96979f424685544d1c726252a89052d17936bb1f3500309ece930e37",
     "5d2b347f2b00ea11a9a5ecfd912d75fa5fb9843126cd64e46ab051c079e18334":
         "64cf14186bd4fab8ddbd0444830539ba453e199f01d76b6f2b4bbc9d5ed7dc55",
     "d9a0bd6407f3e19cc1bb9aa2c780c0d2f5dfa5e805ff5489d1b8a781e08987f7":
         "e5167c6a96979f424685544d1c726252a89052d17936bb1f3500309ece930e37",
+}
+
+# The new opt-in preparation policy records its own recipe and still verifies
+# older edge-trim receipts exactly; previous production scopes remain usable.
+CONDITIONING_ONLY_REFERENCE_DIGESTS = {
+    "c26c086ecc6bf0fc72b0d721fe984d867a21ee730a21ee19543c00c97b8c822e":
+        "4323c23f792ad308af81a305f8fdfb07e0b176d38b69d2f9dc63cb403fd262ae",
+    "6766a71cf7464f113dcf1d2716af4f7ee99e386f62340666d641be34da7d862a":
+        "c4a6a2a2e9385217a9821feba19cb3d7efea03431a34a657caa4f73186cc3332",
 }
 
 

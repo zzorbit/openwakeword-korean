@@ -226,6 +226,91 @@ def test_another_reference_gets_its_own_same_seed_warm_qualification(tmp_path, m
     assert runtime.report["qualification_clips_added_to_training"] == 0
 
 
+def test_failed_eager_qc_skips_graph_replays_and_keeps_rng(tmp_path, monkeypatch):
+    runtime, cuda_rng, _, fast = fake_cuda_runtime(tmp_path, monkeypatch)
+    expected, expected_rng, expected_cuda = one_eager_call(runtime, cuda_rng)
+    prompt = [object()]
+    long_wave = np.tile(expected[0], 35)
+    original = runtime.model.generate_voice_clone
+
+    def generate(**kwargs):
+        assert runtime.model.model.talker.code_predictor.generate is not fast
+        original(**kwargs)
+        return [long_wave], 16000
+
+    monkeypatch.setattr(runtime.model, "generate_voice_clone", generate)
+    actual, _ = runtime.generate_voice_clone(text="춘식아", language="Korean", voice_clone_prompt=prompt)
+    assert np.array_equal(actual[0], long_wave)
+    assert torch.equal(torch.get_rng_state(), expected_rng)
+    assert torch.equal(cuda_rng.get_state(), expected_cuda)
+    assert runtime.model.stages == ["eager", "eager"]
+    assert not runtime.disabled and not runtime.checked and not runtime.eager_prompts
+    skipped = runtime.report["qualifications"][-1]
+    assert skipped["skipped"] == "technical_qc_failed"
+    assert skipped["quality_reasons"] == ["duration_outlier"]
+
+
+@pytest.mark.parametrize("during_replay", [False, True])
+def test_capacity_fallback_restores_rng_and_preserves_other_graph_prompts(tmp_path, monkeypatch, during_replay):
+    runtime, cuda_rng, eager, fast = fake_cuda_runtime(tmp_path, monkeypatch)
+    healthy, over_capacity = [object()], [object()]
+    runtime.generate_voice_clone(text="춘식아", voice_clone_prompt=healthy)
+    if during_replay:
+        runtime.generate_voice_clone(text="춘식아", voice_clone_prompt=over_capacity)
+    original = runtime.model.generate_voice_clone
+
+    def generate(**kwargs):
+        if kwargs["voice_clone_prompt"] is over_capacity and runtime.model.model.talker.code_predictor.generate is fast:
+            torch.rand(1)
+            torch.rand(1, generator=cuda_rng)
+            raise ValueError("Graph capacity exceeded")
+        return original(**kwargs)
+
+    monkeypatch.setattr(runtime.model, "generate_voice_clone", generate)
+    for _ in range(2):
+        with torch.random.fork_rng(devices=[0]):
+            expected, _ = runtime._eager({"text": "춘식아", "voice_clone_prompt": over_capacity})
+            cpu_after, gpu_after = torch.get_rng_state(), cuda_rng.get_state()
+        actual, _ = runtime.generate_voice_clone(text="춘식아", voice_clone_prompt=over_capacity)
+        assert np.array_equal(actual[0], expected[0])
+        assert torch.equal(torch.get_rng_state(), cpu_after)
+        assert torch.equal(cuda_rng.get_state(), gpu_after)
+        assert runtime.model.model.talker.code_predictor.generate is fast
+        assert runtime.model.model.talker.model.forward is fast
+
+    runtime.generate_voice_clone(text="춘식아", voice_clone_prompt=healthy)
+    assert not runtime.disabled and runtime.model.stages[-1] == "fast"
+    assert len(runtime.eager_prompts) == 1 and len(runtime.checked) == 1
+    if during_replay:
+        assert runtime.report["replay_fallbacks"][0]["scope"] == "prompt"
+    else:
+        assert runtime.report["qualifications"][-1]["fallback_scope"] == "prompt"
+
+
+def test_repeated_prompt_preparation_reuses_only_the_same_wav_and_settings(tmp_path, monkeypatch):
+    runtime, _, _, _ = fake_cuda_runtime(tmp_path, monkeypatch)
+    runtime.report["parameter_devices"] = ["cuda:0"]
+    audio = tmp_path / "reference.wav"
+    audio.write_bytes(b"reference-a")
+    made = []
+
+    def prepare(**kwargs):
+        prompt = [object()]
+        made.append(prompt)
+        return prompt
+
+    monkeypatch.setattr(runtime.model, "create_voice_clone_prompt", prepare, raising=False)
+    first = runtime.create_voice_clone_prompt(ref_audio=str(audio), ref_text="기준 문장")
+    runtime.generate_voice_clone(text="춘식아", voice_clone_prompt=first)
+    cached = runtime.create_voice_clone_prompt(ref_audio=str(audio), ref_text="기준 문장", x_vector_only_mode=False)
+    assert cached is first
+    runtime.generate_voice_clone(text="춘식아", voice_clone_prompt=cached)
+    assert len(made) == 1 and len(runtime.report["qualifications"]) == 1
+    assert runtime.create_voice_clone_prompt(ref_audio=str(audio), ref_text="다른 문장") is not first
+    audio.write_bytes(b"reference-b")
+    assert runtime.create_voice_clone_prompt(ref_audio=str(audio), ref_text="기준 문장") is not first
+
+
 def test_cpu_model_retains_original_path_without_cuda_rng_access(tmp_path, monkeypatch):
     from korean_openwakeword import tts
     import sys

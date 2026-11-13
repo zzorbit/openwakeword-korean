@@ -44,6 +44,13 @@ def _generation_evidence_sha256():
     return SCHEDULING_ONLY_TTS_DIGESTS.get(current, current)
 
 
+def _clone_reference_evidence_sha256():
+    from .call_generation_history import CONDITIONING_ONLY_REFERENCE_DIGESTS
+
+    current = digest(clone_reference.__file__)
+    return CONDITIONING_ONLY_REFERENCE_DIGESTS.get(current, current)
+
+
 def technical_qc(samples, rate):
     samples = np.asarray(samples, dtype=np.float64)
     reasons = []
@@ -172,7 +179,7 @@ def generate_references(project, split="train", limit=None, model=None):
     with writer_lock(output):
         reference_contract = {"tts": config["tts"], "families": families, "text": reference_text, "implementation_sha256": _generation_evidence_sha256(),
             "reference_preparation": {"policy": clone_reference.GENERATED_POLICY, "rules": dict(clone_reference.RULES),
-                                      "implementation_sha256": digest(clone_reference.__file__)}}
+                                      "implementation_sha256": _clone_reference_evidence_sha256()}}
         rows, generation_update = _reference_generation_journal(root, output, reference_contract)
         completed = {r["voice_family_id"]: r for r in rows}
         family_by_id = {family["family_id"]: family for family in families}
@@ -249,7 +256,7 @@ def call_generation_contract(config, split, references, pilot, method, staged_sc
         contract["clone_input_policy"] = {"policy": CALL_RECOVERY_POLICY,
             "reference_policy": clone_reference.POLICY,
             "reference_rules": dict(clone_reference.RULES),
-            "reference_implementation_sha256": digest(clone_reference.__file__),
+            "reference_implementation_sha256": _clone_reference_evidence_sha256(),
             "original_attempts": ORIGINAL_ATTEMPTS, "maximum_attempts": CLONE_ATTEMPTS}
     return contract
 
@@ -332,6 +339,8 @@ def validate_call_rows(root, config, split, references, rows, context, *, scope=
     tts_id, samples, passing, counts, verified = identity(config["tts"]), set(), {}, Counter(), set()
     scope_id = identity(scope)[:16] if scope is not None else ""
     implementation_sha = _generation_evidence_sha256() if method == "clone" else None
+    production = scope is not None and scope.get("kind") == "production"
+    old_prompt_attempts = Counter()
     for index, row in enumerate(rows):
         slot = row.get("slot")
         if type(slot) is not int or slot < 0 or not references:
@@ -364,15 +373,23 @@ def validate_call_rows(root, config, split, references, rows, context, *, scope=
             raise ValueError("Legacy generation retry budget changed")
         if method == "clone" and not historical:
             seed_parts = [config["tts"]["seed"], split, slot, attempt] + ([scope_id] if scope_id else [])
-            if (attempt >= CLONE_ATTEMPTS or row.get("attempt") != attempt
+            preparation = row.get("clone_reference_preparation")
+            policy = preparation.get("policy") if isinstance(preparation, dict) else None
+            compacted = policy == clone_reference.INTERNAL_SILENCE_POLICY
+            extended = attempt >= CLONE_ATTEMPTS
+            if (compacted and not production or extended and (not compacted or attempt >= 2 * CLONE_ATTEMPTS
+                    or old_prompt_attempts[slot] != CLONE_ATTEMPTS)
+                    or row.get("attempt") != attempt
                     or row.get("seed") != int(identity(seed_parts)[:8], 16)
                     or row.get("clone_input_policy") != CALL_RECOVERY_POLICY
-                    or row.get("retry_phase") != ("recovery" if attempt >= ORIGINAL_ATTEMPTS else "initial")
+                    or row.get("retry_phase") != ("conditioned_recovery" if extended else
+                                                  "recovery" if attempt >= ORIGINAL_ATTEMPTS else "initial")
                     or row.get("individual_human_listening") is not False
                     or row.get("generation_implementation_sha256") != expected_implementation
                     or row.get("generation_update") != expected_update):
                 raise ValueError("Prepared generation attempt policy or version changed")
-            preparation = row.get("clone_reference_preparation")
+            if policy == clone_reference.POLICY and not extended:
+                old_prompt_attempts[slot] += 1
             key = identity([reference, preparation])
             if key not in verified:
                 clone_reference.verify_clone_reference(root, reference, preparation)
@@ -394,13 +411,14 @@ def validate_call_rows(root, config, split, references, rows, context, *, scope=
     return passing, counts
 
 
-def _exhausted_slots(rows, references, target, passing, limit, split):
+def _exhausted_slots(rows, references, target, passing, limit, split, *, recovery_slots=()):
     result, by_slot = [], {}
     for row in rows:
         by_slot.setdefault(row["slot"], []).append(row)
     for slot in range(target):
         attempts = by_slot.get(slot, [])
-        if slot in passing or len(attempts) < limit:
+        slot_limit = 2 * limit if slot in recovery_slots else limit
+        if slot in passing or len(attempts) < slot_limit:
             continue
         reference = references[slot % len(references)]
         group = "학습용" if split == "train" else "공통 평가용" if split == "validation" else "최종 평가용"
@@ -414,7 +432,7 @@ def _exhausted_slots(rows, references, target, passing, limit, split):
         label = " · ".join(item for item in (group, gender, age, f"{number}번") if item)
         result.append({"split": split, "slot": slot, "label": label,
             "voice_family_id": family,
-            "attempts": len(attempts), "maximum_attempts": limit,
+            "attempts": len(attempts), "maximum_attempts": slot_limit,
             "reference_sha256": reference.get("sha256"), "automatic_retry_available": False,
             "failures": [{"sample_id": row["sample_id"], "qc": row["qc"]} for row in attempts]})
     return result
@@ -440,9 +458,11 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
     admission = snapshot_json(root, approval, "generation_policy") if not pilot else None
     if staged_scope is not None and (not pilot or method != "clone" or split == "final"):
         raise ValueError("Scoped pronunciation generation is only for staged Train or Validation calls")
+    scope_kind = staged_scope.get("kind") if isinstance(staged_scope, dict) else None
+    production = scope_kind == "production"
     if attempt_ceiling is not None or excluded_sha256:
-        if not isinstance(staged_scope, dict) or staged_scope.get("kind") != "preflight":
-            raise ValueError("Retry scheduling is only for staged preflight calls")
+        if scope_kind not in ("preflight", "production"):
+            raise ValueError("Retry scheduling is only for staged preflight or production calls")
         if attempt_ceiling is not None and (type(attempt_ceiling) is not int or not 1 <= attempt_ceiling <= CLONE_ATTEMPTS):
             raise ValueError("Invalid staged preflight attempt ceiling")
     if not isinstance(excluded_sha256, (tuple, list, set, frozenset)) or any(
@@ -492,15 +512,31 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
         ceiling = attempt_limit if attempt_ceiling is None else attempt_ceiling
         runnable = [slot for slot in pending if attempts_by_slot[slot] < ceiling]
         prepared = {}
-        if method == "clone" and runnable:
+        recovery_slots = set()
+        if production and attempt_ceiling is None:
+            # Re-open a spent slot only when all six attempts used the earlier,
+            # unconditioned prompt. Persisted rows preserve that boundary.
+            old_prompt_attempts = Counter(row["slot"] for row in rows
+                if row.get("attempt", CLONE_ATTEMPTS) < CLONE_ATTEMPTS
+                and (row.get("clone_reference_preparation") or {}).get("policy") == clone_reference.POLICY)
+            recovery_slots = {slot for slot in pending if old_prompt_attempts[slot] == CLONE_ATTEMPTS}
+        if method == "clone" and (runnable or recovery_slots):
             # Prepare/verify before model loading, and only for unfinished slots.
             report_progress("tts_prompt_preparation", "기준 목소리 복제 입력 확인", eta_eligible=False)
-            for slot in runnable:
+            for slot in [*runnable, *sorted(recovery_slots)]:
                 reference = references[slot % len(references)]
                 key = (reference["voice_family_id"], reference["sha256"])
                 if key not in prepared:
-                    prepared[key] = clone_reference.prepare_clone_reference(root, reference)
-            rows, context = call_journal_context(root, output, settings, create=True)
+                    if production:
+                        prepared[key] = clone_reference.prepare_clone_reference(root, reference, compact_internal_silence=True)
+                    else:
+                        prepared[key] = clone_reference.prepare_clone_reference(root, reference)
+            recovery_slots = {slot for slot in recovery_slots if prepared[
+                (references[slot % len(references)]["voice_family_id"], references[slot % len(references)]["sha256"])
+            ][1]["policy"] == clone_reference.INTERNAL_SILENCE_POLICY}
+            runnable.extend(slot for slot in sorted(recovery_slots) if attempts_by_slot[slot] < 2 * attempt_limit)
+            if runnable:
+                rows, context = call_journal_context(root, output, settings, create=True)
         if model is None and runnable:
             report_progress("tts_model_loading", "음성 생성 모델 준비", eta_eligible=False)
             model = _load_model(config["tts"]["clone_model" if method == "clone" else "design_model"], config["tts"], root)
@@ -514,7 +550,8 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
         for slot in runnable:
             reference = references[slot % len(references)]
             family = reference.get("voice_family_id", reference.get("family_id"))
-            for attempt in range(attempts_by_slot[slot], ceiling):
+            slot_ceiling = 2 * ceiling if slot in recovery_slots else ceiling
+            for attempt in range(attempts_by_slot[slot], slot_ceiling):
                 sample_id = f"{split}_{slot:06d}_attempt{attempt}"
                 seed_parts = [config["tts"]["seed"], split, slot, attempt]
                 if scope_id:
@@ -552,6 +589,15 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
                     path = output / (sample_id + ".wav")
                     if np.max(np.abs(samples)) > 1:
                         samples = np.clip(samples, -1, 1)  # quarantined QC-fail only, never training
+                    if production and path.exists():
+                        # An interruption can leave a WAV without its journal row.
+                        # Keep that uncommitted output before retrying its exact seed.
+                        orphan = output / "interrupted_audio" / f"{sample_id}_{digest(path)}.wav"
+                        orphan.parent.mkdir(exist_ok=True)
+                        if not orphan.exists():
+                            path.rename(orphan)
+                        elif digest(path) != digest(orphan):
+                            raise ValueError("An interrupted generation WAV differs from its archived copy")
                     sf.write(path, pcm16(samples), 16000, subtype="PCM_16")
                     sha = digest(path)
                     if sha in existing_hashes:
@@ -566,7 +612,8 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
                     "individual_human_listening": False, "created_at": now()}
                 if method == "clone":
                     row.update(attempt=attempt, seed=seed, clone_input_policy=CALL_RECOVERY_POLICY,
-                        retry_phase="recovery" if attempt >= ORIGINAL_ATTEMPTS else "initial",
+                        retry_phase=("conditioned_recovery" if attempt >= CLONE_ATTEMPTS else
+                                     "recovery" if attempt >= ORIGINAL_ATTEMPTS else "initial"),
                         generation_implementation_sha256=settings["implementation_sha256"],
                         generation_update=context["update"],
                         clone_reference_preparation=prepared[(family, reference["sha256"])][1])
@@ -608,7 +655,8 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
             write_immutable_rows(queue, reviewable)
             summary["review_queue"] = str(queue)
             summary["attempt_journal"] = str(output / "candidates.jsonl")
-        summary["exhausted_slots"] = _exhausted_slots(rows, references, target, by_slot, attempt_limit, split)
+        summary["exhausted_slots"] = _exhausted_slots(rows, references, target, by_slot, attempt_limit, split,
+                                                     recovery_slots=recovery_slots)
         if method == "clone":
             summary["clone_input_policy"] = CALL_RECOVERY_POLICY
             summary["maximum_attempts_per_slot"] = attempt_limit

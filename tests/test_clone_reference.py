@@ -78,6 +78,42 @@ def test_short_normal_edges_and_quiet_speech_are_not_tightened(tmp_path):
     assert not metadata["trimmed"] and path.samefile(tmp_path / "source.wav")
 
 
+def test_bulk_prompt_compacts_only_long_internal_quiet_and_verifies_old_receipt(tmp_path):
+    rate = 24000
+    wave = np.concatenate((np.zeros(rate), tone(.8), np.full(16 * rate, .00002),
+                           tone(.6, frequency=211), np.zeros(rate), tone(.8, frequency=275), np.zeros(rate)))
+    wave = wave.astype("float32")
+    original = reference(tmp_path, wave)
+    legacy_path, legacy = preparation.prepare_clone_reference(tmp_path, original)
+    before = files(tmp_path)
+
+    path, metadata = preparation.prepare_clone_reference(tmp_path, original, compact_internal_silence=True)
+    assert metadata["policy"] == preparation.INTERNAL_SILENCE_POLICY
+    assert metadata["retained_frame_ranges"] == [[round(.8 * rate), 2 * rate], [round(17.6 * rate), round(20.4 * rate)]]
+    assert metadata["internal_removed_s"] == pytest.approx(15.6)
+    actual, actual_rate = sf.read(path, dtype="float32")
+    assert actual_rate == rate
+    assert np.array_equal(actual, np.concatenate((wave[round(.8 * rate):2 * rate],
+                                                  wave[round(17.6 * rate):round(20.4 * rate)])))
+    assert preparation.verify_clone_reference(tmp_path, original, legacy) == legacy_path
+    assert preparation.verify_clone_reference(tmp_path, original, metadata) == path
+    assert all(files(tmp_path)[name] == sha for name, sha in before.items())
+
+    tampered = deepcopy(metadata)
+    tampered["retained_frame_ranges"][0][1] -= 1
+    with pytest.raises(ValueError):
+        preparation.verify_clone_reference(tmp_path, original, tampered)
+    assert preparation.prepare_clone_reference(tmp_path, original, compact_internal_silence=True) == (path, metadata)
+
+
+def test_bulk_prompt_without_long_quiet_retains_original_conditioning_record(tmp_path):
+    original = reference(tmp_path, np.concatenate((tone(1), np.zeros(24000, dtype="float32"), tone(1))))
+    before = files(tmp_path)
+    assert (preparation.prepare_clone_reference(tmp_path, original, compact_internal_silence=True)
+            == preparation.prepare_clone_reference(tmp_path, original))
+    assert files(tmp_path) == before
+
+
 @pytest.mark.parametrize("kind", ["silence", "nonfinite", "stereo", "clipping", "near_silence"])
 def test_invalid_sources_are_not_repaired_by_gain_downmix_or_relaxed_quality(tmp_path, kind):
     wave = tone(1.2)

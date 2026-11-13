@@ -467,8 +467,28 @@ def _audited_reference_candidate_update(previous, current):
 
 _PREFLIGHT_QUALITY_RETRY_UPDATE = "audited_preflight_quality_retry_update"
 _REFERENCE_GAP_FILTER_UPDATE = "audited_reference_candidate_gap_filter_update"
-_PRESERVED_CALL_UPDATES = {_PREFLIGHT_QUALITY_RETRY_UPDATE, _REFERENCE_GAP_FILTER_UPDATE}
+_PRODUCTION_SPEED_UPDATE = "audited_production_generation_recovery_update"
+_PRESERVED_CALL_UPDATES = {_PREFLIGHT_QUALITY_RETRY_UPDATE, _REFERENCE_GAP_FILTER_UPDATE, _PRODUCTION_SPEED_UPDATE}
 _AUDITED_CALL_GENERATION_RECOVERY_UPDATES = {
+    # Exact CRLF/LF releases, covered by clone, generation recovery and CUDA runtime regressions.
+    "bf68c3b1e395814d64b9fcaba8551a56648e46ee8852bbd177817fa8015e0fca": {
+        "kind": _PRODUCTION_SPEED_UPDATE,
+        "source_stages_sha256": "7770196a96718bedcc81d545dd48b378ff8a6d0d2f6fca8af400d2f622dbcff5",
+        "target_computation_sha256": "b80c403be0bf73b49a69a9ee3e7442833cf5c37adb32e04761cc846907f7e6ea",
+        "target_stages_sha256": "30ff20fd0bae8b14c92b6c543e2e88d32659ad757e44369186411452f08de0cf",
+        "changed_files": ("call_generation_history.py", "clone_reference.py", "pilot.py", "tts.py", "tts_runtime.py"),
+        "evidence_sha256": "f89e5d91a58325a6e88d44702416f3b064053f2325b4f1a4e6a60bf9bbf71cc5",
+        "reason": "통과한 호출어 음원을 재사용하고, 긴 내부 무음 때문에 실패한 복제 입력을 별도 사본으로 정리합니다. 다른 목소리의 GPU 가속을 유지합니다.",
+    },
+    "ebac0156df82f62724274e0db29fc13ee82e0907392827c37d08b6009acc25a7": {
+        "kind": _PRODUCTION_SPEED_UPDATE,
+        "source_stages_sha256": "6e7f2df9a3bc96ab2e8a47788c24c98e3e834a2265706f4c9ad646d085fb6f9d",
+        "target_computation_sha256": "813ae94ce15c567568782cd3c7a072016742b821998b6d3bb882c8aa06afaaf7",
+        "target_stages_sha256": "e89cbfd3048764f8ac04a647074b7ee71c1d5615f706454e3916cff17b7ce25e",
+        "changed_files": ("call_generation_history.py", "clone_reference.py", "pilot.py", "tts.py", "tts_runtime.py"),
+        "evidence_sha256": "f89e5d91a58325a6e88d44702416f3b064053f2325b4f1a4e6a60bf9bbf71cc5",
+        "reason": "통과한 호출어 음원을 재사용하고, 긴 내부 무음 때문에 실패한 복제 입력을 별도 사본으로 정리합니다. 다른 목소리의 GPU 가속을 유지합니다.",
+    },
     "2a4c393dad188c1f800a5de8bd949ab9697f9a0ebbb99b751365431d5463682f": {
         "kind": _REFERENCE_GAP_FILTER_UPDATE,
         "source_stages_sha256": "b0d24c93f0c88f94442d23a7e790c8c7ec79e670f009168595c0f0d74b48c415",
@@ -2491,7 +2511,7 @@ class StudioManager:
                 source = source if isinstance(source, dict) else {}
                 prepared = prepared if isinstance(prepared, dict) else {}
                 if (preparation.get("kind") == "clone_reference_preparation"
-                        and preparation.get("policy") == "clone_reference_edge_silence_v1"
+                        and preparation.get("policy") in ("clone_reference_edge_silence_v1", "clone_reference_internal_silence_v2")
                         and prepared.get("sha256") == revision and valid_identity
                         and isinstance(source.get("sha256"), str)
                         and re.fullmatch(r"[0-9a-f]{64}", source["sha256"])):

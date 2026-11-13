@@ -1,8 +1,8 @@
-"""Hash-bound, native-rate edge-silence conditioning for cloned speech.
+"""Hash-bound, native-rate silence conditioning for cloned speech.
 
 The selected voice, its original file and human review evidence are immutable.
-Only excessive quiet outside the first/last energy-active native frame is
-removed from a separate prompt input. This is not semantic speech detection.
+The prompt copy can remove excessive edge quiet and, when enabled for bulk
+generation, the middle of long quiet gaps. The signal check measures energy.
 """
 from pathlib import Path, PureWindowsPath
 import json
@@ -18,8 +18,10 @@ from .reference_qc import _check_wave
 
 
 POLICY = "clone_reference_edge_silence_v1"
+INTERNAL_SILENCE_POLICY = "clone_reference_internal_silence_v2"
 RULES = {"frame_ms": 20, "context_ms": 200, "minimum_removed_edge_ms": 750,
          "activity_rms": 0.0001, "format": "WAV", "subtype": "FLOAT"}
+MINIMUM_INTERNAL_GAP_MS = 2000
 _LOCK = threading.RLock()
 GENERATED_POLICY = "generated_reference_edge_silence_v1"
 
@@ -54,7 +56,7 @@ def _binding(root, path):
     return {"path": name, "sha256": digest(path)}
 
 
-def _source_plan(root, reference):
+def _source_plan(root, reference, *, compact_internal_silence=False):
     if not isinstance(reference, dict) or not isinstance(reference.get("path"), str):
         raise ValueError("복제할 기준 목소리의 원본 연결을 확인하세요.")
     try:
@@ -94,6 +96,23 @@ def _source_plan(root, reference):
             "leading_removed_s": start / rate, "trailing_removed_s": (len(mono) - end) / rate,
             "trimmed": start != 0 or end != len(mono),
             "source_scope": "Automatic native-sample edge-silence conditioning; not human review or voice replacement"}
+    if compact_internal_silence:
+        minimum_gap = round(rate * MINIMUM_INTERNAL_GAP_MS / 1000)
+        # Consecutive entries bracket a gap of below-threshold frames. Retain
+        # native samples around both ends to keep nearby quiet speech intact.
+        cuts = [[left + frame + context, right - context]
+                for left, right in zip(active, active[1:])
+                if right - left - frame >= minimum_gap]
+        if cuts:
+            kept = [[start, cuts[0][0]]]
+            kept.extend([left[1], right[0]] for left, right in zip(cuts, cuts[1:]))
+            kept.append([cuts[-1][1], end])
+            removed_frames = sum(right - left for left, right in cuts)
+            plan.update(policy=INTERNAL_SILENCE_POLICY,
+                        rules={**RULES, "minimum_internal_gap_ms": MINIMUM_INTERNAL_GAP_MS},
+                        retained_frame_ranges=kept, internal_removed_s=removed_frames / rate,
+                        prepared_duration_s=(end - start - removed_frames) / rate, trimmed=True,
+                        source_scope="Automatic native-sample edge and internal silence conditioning; not human review or voice replacement")
     return source, mono, plan
 
 
@@ -110,12 +129,18 @@ def _locations(root, plan):
     return folder, folder / "reference.wav", folder / "derivation.json"
 
 
+def _prepared_samples(samples, plan):
+    if plan["policy"] == INTERNAL_SILENCE_POLICY:
+        return np.concatenate([samples[start:end] for start, end in plan["retained_frame_ranges"]])
+    return samples[plan["start_frame"]:plan["end_frame"]]
+
+
 def _check_prepared(root, audio, samples, plan):
     try:
         actual, rate = sf.read(audio, dtype="float32", always_2d=True)
     except (OSError, RuntimeError) as error:
         raise ValueError("정리한 기준 목소리 사본을 읽지 못했습니다.") from error
-    expected = samples[plan["start_frame"]:plan["end_frame"]]
+    expected = _prepared_samples(samples, plan)
     if rate != plan["sample_rate"] or actual.shape != (len(expected), 1) or not np.array_equal(actual[:, 0], expected):
         raise ValueError("정리한 기준 목소리가 원본의 보존 구간과 다릅니다.")
     reasons, _ = _check_wave(audio)
@@ -137,9 +162,12 @@ def _verify_existing(root, samples, plan, audio, record):
 def verify_clone_reference(root, reference, metadata):
     """Verify a saved conditioning input without creating or modifying files."""
     root = Path(root).resolve()
-    if not isinstance(metadata, dict) or metadata.get("policy") != POLICY:
+    if not isinstance(metadata, dict) or metadata.get("policy") not in (POLICY, INTERNAL_SILENCE_POLICY):
         raise ValueError("기준 목소리 정리 정책이 다릅니다.")
-    source, samples, plan = _source_plan(root, reference)
+    source, samples, plan = _source_plan(root, reference,
+        compact_internal_silence=metadata["policy"] == INTERNAL_SILENCE_POLICY)
+    if metadata["policy"] != plan["policy"]:
+        raise ValueError("기준 목소리 정리 정책이 다릅니다.")
     if not plan["trimmed"]:
         expected = {**plan, "prepared": plan["source"]}
         if metadata != expected:
@@ -152,15 +180,15 @@ def verify_clone_reference(root, reference, metadata):
     return audio
 
 
-def prepare_clone_reference(root, reference):
+def prepare_clone_reference(root, reference, *, compact_internal_silence=False):
     """Return (prompt WAV path, immutable preparation metadata).
 
     A missing receipt after an interrupted atomic WAV publish is recoverable
-    only when that WAV is exactly the expected native source slice. Existing
+    only when that WAV exactly matches the expected native source ranges. Existing
     receipts or WAVs are never silently replaced if their content differs.
     """
     root = Path(root).resolve()
-    source, samples, plan = _source_plan(root, reference)
+    source, samples, plan = _source_plan(root, reference, compact_internal_silence=compact_internal_silence)
     if not plan["trimmed"]:
         return Path(_path_identity(source)), {**plan, "prepared": plan["source"]}
     folder, audio, record = _locations(root, plan)
@@ -173,7 +201,7 @@ def prepare_clone_reference(root, reference):
             if not audio.exists():
                 temporary = folder / ("reference-" + uuid.uuid4().hex + ".tmp.wav")
                 try:
-                    sf.write(temporary, samples[plan["start_frame"]:plan["end_frame"]], plan["sample_rate"],
+                    sf.write(temporary, _prepared_samples(samples, plan), plan["sample_rate"],
                              format=RULES["format"], subtype=RULES["subtype"])
                     _check_prepared(root, temporary, samples, plan)
                     temporary.replace(audio)
