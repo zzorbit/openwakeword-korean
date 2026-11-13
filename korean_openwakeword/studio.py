@@ -466,7 +466,27 @@ def _audited_reference_candidate_update(previous, current):
 
 
 _PREFLIGHT_QUALITY_RETRY_UPDATE = "audited_preflight_quality_retry_update"
+_REFERENCE_GAP_FILTER_UPDATE = "audited_reference_candidate_gap_filter_update"
+_PRESERVED_CALL_UPDATES = {_PREFLIGHT_QUALITY_RETRY_UPDATE, _REFERENCE_GAP_FILTER_UPDATE}
 _AUDITED_CALL_GENERATION_RECOVERY_UPDATES = {
+    "2a4c393dad188c1f800a5de8bd949ab9697f9a0ebbb99b751365431d5463682f": {
+        "kind": _REFERENCE_GAP_FILTER_UPDATE,
+        "source_stages_sha256": "b0d24c93f0c88f94442d23a7e790c8c7ec79e670f009168595c0f0d74b48c415",
+        "target_computation_sha256": "bf68c3b1e395814d64b9fcaba8551a56648e46ee8852bbd177817fa8015e0fca",
+        "target_stages_sha256": "7770196a96718bedcc81d545dd48b378ff8a6d0d2f6fca8af400d2f622dbcff5",
+        "changed_files": ("reference_candidates.py",),
+        "evidence_sha256": "55b6c650924a1469c97dd9cc060ad4af0c1df75e34d3644bcdd642ae25ca8093",
+        "reason": "새 기준 목소리 후보의 발화 사이에 긴 무음이 있으면 다시 생성합니다. 저장된 후보와 검수 기록은 유지합니다.",
+    },
+    "0f7c4787fafed6a085981519df9d2c1ee89818f14b5c932e823a2072e0f0e710": {
+        "kind": _REFERENCE_GAP_FILTER_UPDATE,
+        "source_stages_sha256": "7d1ff0f79014d5ae1901fb3e9d96fecd04a8ada7b4bc62c58e9c7aec635a89c1",
+        "target_computation_sha256": "ebac0156df82f62724274e0db29fc13ee82e0907392827c37d08b6009acc25a7",
+        "target_stages_sha256": "6e7f2df9a3bc96ab2e8a47788c24c98e3e834a2265706f4c9ad646d085fb6f9d",
+        "changed_files": ("reference_candidates.py",),
+        "evidence_sha256": "55b6c650924a1469c97dd9cc060ad4af0c1df75e34d3644bcdd642ae25ca8093",
+        "reason": "새 기준 목소리 후보의 발화 사이에 긴 무음이 있으면 다시 생성합니다. 저장된 후보와 검수 기록은 유지합니다.",
+    },
     # CRLF and LF releases. Evidence is the normalized pilot regression test file.
     "013c7ca9e78aecb2a4568930341f3ea2d75c4257d0241bea1ccab1d3b2a5a0db": {
         "kind": _PREFLIGHT_QUALITY_RETRY_UPDATE,
@@ -540,14 +560,20 @@ def _audited_call_generation_recovery_update(previous, current):
                 acquisition = prior["evidence_sha256"]
     if not isinstance(audit, dict):
         return None
-    preceding_retry = None
-    if audit.get("kind") == _PREFLIGHT_QUALITY_RETRY_UPDATE and audit["target_computation_sha256"] != current.get("computation_sha256"):
-        next_audit = _AUDITED_CALL_GENERATION_RECOVERY_UPDATES.get(audit["target_computation_sha256"])
-        if (next_audit and next_audit.get("kind") == _PREFLIGHT_QUALITY_RETRY_UPDATE
-                and next_audit["source_stages_sha256"] == audit["target_stages_sha256"]):
-            preceding_retry = audit["evidence_sha256"]
-            audit = {**next_audit, "source_stages_sha256": audit["source_stages_sha256"],
-                     "changed_files": set(next_audit["changed_files"]) | set(audit["changed_files"])}
+    preceding = []
+    seen = {source}
+    while audit.get("kind") in _PRESERVED_CALL_UPDATES and audit["target_computation_sha256"] != current.get("computation_sha256"):
+        intermediate = audit["target_computation_sha256"]
+        if intermediate in seen:
+            return None
+        seen.add(intermediate)
+        next_audit = _AUDITED_CALL_GENERATION_RECOVERY_UPDATES.get(intermediate)
+        if (not next_audit or next_audit.get("kind") not in _PRESERVED_CALL_UPDATES
+                or next_audit["source_stages_sha256"] != audit["target_stages_sha256"]):
+            return None
+        preceding.append(audit["evidence_sha256"])
+        audit = {**next_audit, "source_stages_sha256": audit["source_stages_sha256"],
+                 "changed_files": set(next_audit["changed_files"]) | set(audit["changed_files"])}
     old_files, new_files = previous.get("files"), current.get("files")
     if (not isinstance(old_files, dict) or not isinstance(new_files, dict)
             or identity(old_files) != source or identity(new_files) != current.get("computation_sha256")
@@ -565,7 +591,7 @@ def _audited_call_generation_recovery_update(previous, current):
             "target_computation_sha256": current["computation_sha256"],
             "evidence_sha256": audit["evidence_sha256"],
             **({"preceding_acquisition_evidence_sha256": acquisition} if acquisition else {}),
-            **({"preceding_retry_evidence_sha256": preceding_retry} if preceding_retry else {}),
+            **({"preceding_evidence_sha256": preceding} if preceding else {}),
             **({"reason": audit["reason"]} if audit.get("reason") else {})}
 
 
@@ -1385,7 +1411,7 @@ class StudioManager:
                 hard_review_update = _audited_hard_review_update(previous, comparison) if changed else None
                 candidate_update = _audited_reference_candidate_update(previous, comparison) if changed else None
                 call_recovery_update = _audited_call_generation_recovery_update(previous, comparison) if changed else None
-                if call_recovery_update and call_recovery_update.get("kind") != _PREFLIGHT_QUALITY_RETRY_UPDATE:
+                if call_recovery_update and call_recovery_update.get("kind") not in _PRESERVED_CALL_UPDATES:
                     if not self._can_update_call_generation_recovery(state):
                         return blocked("호출어 자동 복구 업데이트는 실행 중인 작업과 학습 결과를 보존하기 위해 특징 추출 전 작업에만 적용할 수 있습니다.")
                     generic_binding = self._call_recovery_generic_import(state)
@@ -1651,7 +1677,7 @@ class StudioManager:
                 "preserved": compatibility["preserves"]})
             budget_change = compatibility.get("reference_budget_change")
             recovery_update = compatibility.get("audited_call_generation_recovery_update") or {}
-            if recovery_update and recovery_update.get("kind") != _PREFLIGHT_QUALITY_RETRY_UPDATE:
+            if recovery_update and recovery_update.get("kind") not in _PRESERVED_CALL_UPDATES:
                 stage = state["plan"][state["index"]]["id"]
                 result = state.get("results", {}).get(stage, {})
                 if (state.get("status") == "waiting_input" and stage in ("pilot", "positives")

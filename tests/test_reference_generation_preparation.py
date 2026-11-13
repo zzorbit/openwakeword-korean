@@ -121,6 +121,38 @@ def test_new_candidates_use_prepared_audio_and_resume_old_records_without_genera
     assert all(digest(root/name)==sha for name,sha in before.items() if not name.endswith('progress.json'))
 
 
+def test_candidate_retries_long_internal_near_silence_with_next_saved_seed(pool, monkeypatch):
+    root, project, _, _, saved, model = pool
+    plan = candidates.plan_candidate_batch(project, saved, candidates.active_candidate_group(saved))
+    candidates.register_candidate_batch(saved, plan)
+    output = candidates.candidate_jobs(root) / plan['batch_id'] / 'audio'
+    rate = 24000
+    interrupted = np.concatenate((wave(2.7), np.full(16 * rate, .00002, dtype='float32'), wave(.9)))
+    normal_pause = np.concatenate((wave(1), np.zeros(round(.9 * rate), dtype='float32'), wave(1)))
+    seeds = []
+    monkeypatch.setattr(tts, '_seed', seeds.append)
+
+    def generate(**kwargs):
+        model.calls.append(kwargs)
+        index = len(model.calls)
+        values = interrupted if index == 1 else normal_pause if index == 2 else wave(frequency=211 + index)
+        return [values], rate
+
+    model.generate_voice_design = generate
+    rows = candidates.generate_candidate_batch(project, output, 'job', plan, [], load_model=model.load)
+    first, planned = rows[0], plan['candidates'][0]
+    assert len(rows) == candidates.BATCH_SIZE and model.loads == 1 and len(model.calls) == 6
+    assert seeds[:2] == planned['attempt_seeds'][:2]
+    assert first['candidate_id'] == planned['candidate_id'] and first['attempt'] == 1
+    assert first['seed'] == planned['attempt_seeds'][1]
+    rejected = output / 'raw' / f"{planned['candidate_id']}_attempt0.wav"
+    assert np.array_equal(sf.read(rejected, dtype='float32')[0], interrupted)
+    assert read_json(rejected.with_name(rejected.name + '.raw.json'))['source']['sha256'] == digest(rejected)
+    assert np.array_equal(sf.read(root / first['path'], dtype='float32')[0], normal_pause)
+    candidates.ingest_candidate_batch(root, saved, plan, rows)
+    assert set(saved['candidates']) == {row['candidate_id'] for row in rows}
+
+
 def test_legacy_reference_journal_keeps_old_rows_contract_and_uses_cleanup_only_for_new_rows(tmp_path,monkeypatch):
     monkeypatch.setattr(tts,'_seed',lambda seed:None)
     project=create_project(tmp_path/'project','보라야','bora')

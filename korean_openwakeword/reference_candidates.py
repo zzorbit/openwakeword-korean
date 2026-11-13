@@ -27,6 +27,7 @@ OPTIONAL_LISTENING_POLICY = "optional_candidate_listening_v1"
 _TERMINAL_CANDIDATE_QC_ERROR = "기술 검사를 통과한 서로 다른 목소리 후보를 만들지 못했습니다. 다시 시도하세요."
 BATCH_KIND = "reference_candidate_batch_v2"
 BATCH_SIZE = 5
+MAX_INTERNAL_SILENCE_S = 2.0
 GENDERS = ("man", "woman")
 AGES = ("child", "teenager", "young adult", "middle-aged", "older adult")
 GENDER_LABELS = {"man": "남성", "woman": "여성"}
@@ -329,6 +330,25 @@ def _validate_plan(plan, config):
         raise ValueError("목소리 후보의 난수가 서로 중복됩니다.")
 
 
+def _check_candidate_internal_silence(path):
+    """Reject long pauses between audible frames in the fixed reference sentence."""
+    import numpy as np
+    import soundfile as sf
+    from .clone_reference import RULES, GeneratedReferenceQualityError
+
+    samples, rate = sf.read(path, dtype="float64")
+    frame = max(1, round(rate * RULES["frame_ms"] / 1000))
+    activity_power = RULES["activity_rms"] ** 2
+    previous_end = None
+    for start in range(0, len(samples), frame):
+        window = samples[start:start + frame]
+        if np.dot(window, window) / len(window) < activity_power:
+            continue
+        if previous_end is not None and start - previous_end >= MAX_INTERNAL_SILENCE_S * rate:
+            raise GeneratedReferenceQualityError("기준 목소리 후보의 발화 사이에 긴 무음이 있습니다.")
+        previous_end = start + len(window)
+
+
 @project_storage
 def generate_candidate_batch(project, output, job_key, plan, all_hashes, *, load_model=None):
     """Generate a persisted batch, reusing a caller-supplied resident loader."""
@@ -396,6 +416,7 @@ def generate_candidate_batch(project, output, job_key, plan, all_hashes, *, load
                     try:
                         preparation = prepare_generated_reference(root,
                             {"path": raw.relative_to(root).as_posix(), "sha256": digest(raw), "generation": generation}, attempt_target)
+                        _check_candidate_internal_silence(attempt_target)
                     except GeneratedReferenceQualityError:
                         if timing is not None:
                             timing.committed(False)
