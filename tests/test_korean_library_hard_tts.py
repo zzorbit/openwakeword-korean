@@ -108,6 +108,61 @@ def test_pause_update_resumes_the_previous_frozen_hard_contract(tmp_path, monkey
     assert read_rows(output / "candidates.jsonl")[0] == first
 
 
+def test_revised_phrase_sample_review_bulk_generation_and_admission_use_the_same_scope(tmp_path, monkeypatch):
+    from korean_openwakeword import studio_steps, tts_runtime
+    from korean_openwakeword.hard_pilot import HARD_SAMPLE_REVIEW_POLICY
+
+    project = approved_project(tmp_path)
+    root = project.parent
+    model = FakeModel()
+    monkeypatch.setattr(tts_runtime, "CloneRuntime", lambda *args, **kwargs: model)
+    settings = studio_steps.preset_settings("check")
+    config = read_json(project)
+    settings.update(hard_review_policy=HARD_SAMPLE_REVIEW_POLICY,
+                    rounds=config["augmentation_rounds"], updates=config["training"]["updates"],
+                    generic_hours=config["targets"]["generic_hours"], korean_hours=config["targets"]["korean_hours"])
+    revision, phrases = "a" * 32, PHRASES[:2]
+    context = {"inputs": {"hard_phrases": phrases, "hard_phrases_approved": True, "hard_phrase_revision": revision},
+               "results": {}}
+    review_path = root / ".studio/hard_phrase_revisions" / revision
+    audio_path = root / "data/generated/hard_phrase_revisions" / revision
+
+    def complete(stage):
+        outcome = studio_steps.run_stage(project, tmp_path, settings, stage, context)
+        assert outcome["state"] == "completed"
+        context["results"][stage] = outcome
+        return outcome["result"]
+
+    complete("hard_phrases")
+    pilot = complete("hard_pilot")
+    descriptor = pilot["review"]
+    queue = Path(descriptor["queue"])
+    assert queue.parent == review_path
+    previews = read_rows(queue)
+    assert [row["text"] for row in previews] == phrases
+    assert all((root / row["path"]).parent == audio_path / "hard_pilot" for row in previews)
+    answer = review_path / "test_answers.json"
+    write_json(answer, {"kind": "content_listening_review", "wakeword": "보라야", "saved_at": "fixture",
+                "source_scope": "Human dispositions entered through the local review screen",
+                "source_manifest_sha256": descriptor["pool_sha256"], "queue_sha256": descriptor["queue_sha256"],
+                "representative_queue_sha256": descriptor["queue_sha256"], "whole_pool_policy_approved": True,
+                "synthetic_review_policy": descriptor["synthetic_review_policy"],
+                "representative_selection_sha256": descriptor["representative_selection"]["sha256"],
+                "queued_audio_sha256": {row["sample_id"]: row["sha256"] for row in previews},
+                "decisions": {row["sample_id"]: {"decision": "keep", "listened": True} for row in previews}})
+    context["inputs"].update(review_answers={"hard": {"path": str(answer), "sha256": digest(answer)}},
+                             review_results={"hard": {"state": "review_saved", "admission_pending": True}})
+    complete("hard_review")
+    bulk = complete("hard_generation")
+    assert Path(bulk["candidates"]).parent == audio_path / "hard"
+    assert Path(bulk["review"]["pool_manifest"]).parent == review_path
+    connected = complete("hard_connect")
+    assert connected["originals"] == len(phrases) * settings["hard_samples_per_phrase"]
+    assert (root / connected["admission"]["path"]).parent == review_path
+    assert not (root / "data/generated/hard").exists()
+    assert not (root / ".studio/hard_pilot_review.jsonl").exists()
+
+
 def test_balanced_100_candidate_contract_and_resume_never_loads_model(tmp_path, monkeypatch):
     project = approved_project(tmp_path)
     model = FakeModel()
