@@ -2,7 +2,8 @@
 html:has(body.story-mode),body.story-mode{margin:0!important;padding:0!important;width:100%;height:100%;overflow:hidden;background:#171a1f;color:#e3e7ec;color-scheme:dark}
 body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#363d47;--fg:#e3e7ec;--muted:#c3cbd6;--border:#424a56;--line:#343c47;--blue:#a7b8d0;--focus:#bac5d6;--primary:#292d33;--primary-hover:#363d47;--on-solid:#e9edf2;font:400 16px/24px system-ui,"Malgun Gothic",sans-serif}
 .story-source{display:none!important}
-.story-shell{--story-fade-duration:150ms;position:relative;isolation:isolate;display:block;width:100%;max-width:none;height:100dvh;min-height:0;margin:0;padding:0;background:#171a1f;overflow:hidden}
+:root{--story-fade-duration:150ms}
+.story-shell{position:relative;isolation:isolate;display:block;width:100%;max-width:none;height:100dvh;min-height:0;margin:0;padding:0;background:#171a1f;overflow:hidden}
 .story-shell *{box-sizing:border-box}
 .story-shell [hidden]{display:none!important}
 .story-atmosphere{position:absolute;inset:0;z-index:-1;pointer-events:none;isolation:isolate}
@@ -32,7 +33,7 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-settings-menu :is(button,select):focus-visible,.story-settings-trigger:focus-visible{outline:2px solid #bac5d6;outline-offset:2px}
 .story-stage{height:100%;width:100%;padding:68px 72px 28px;display:flex;align-items:center;justify-content:center}
 .story-panel{display:flex;flex-direction:column;align-items:center;gap:24px;width:min(960px,100%);height:100%;min-height:0;transition:opacity var(--story-fade-duration) ease,transform var(--story-fade-duration) ease}
-.story-panel.is-leaving{opacity:0;transform:translateY(-6px);pointer-events:none}
+.story-panel.is-leaving,html:not([data-studio-boot="ready"]) .story-panel{opacity:0;transform:translateY(-6px);pointer-events:none}
 .story-panel.is-concealed{transition:none}
 .story-panel-heading{display:grid;gap:4px;flex:none;width:min(680px,100%);margin-block-start:auto;text-align:center;word-break:keep-all;overflow-wrap:anywhere}
 .story-panel h1{font:500 26px/36px system-ui,"Malgun Gothic",sans-serif;letter-spacing:-.035em;margin:0;color:#eaedf1}
@@ -256,6 +257,8 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-loader{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:12px;color:#dce3ed;font:400 18px/26px system-ui,"Malgun Gothic",sans-serif;pointer-events:none}
 .story-loader.is-entering{animation:story-loader-reveal var(--story-fade-duration) ease-out both}
 .story-loader.is-finishing{animation:story-loader-conceal var(--story-fade-duration) ease-in both}
+html[data-studio-boot="ready"] #studio-boot{background:transparent;transition:opacity var(--story-fade-duration) ease-in,visibility var(--story-fade-duration)}
+html[data-studio-boot="ready"] #studio-boot>.story-atmosphere{display:none}
 @keyframes story-loader-reveal{from{opacity:0}to{opacity:1}}
 @keyframes story-loader-conceal{from{opacity:1}to{opacity:0}}
 .story-loading-dots{display:flex;gap:4px}
@@ -407,5 +410,5 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-history[data-kind="downloads"] .story-history-rows[data-density="tight"] .story-history-percent{font-size:12px;line-height:18px}
 .story-history[data-kind="downloads"] .story-history-rows[data-density="tight"] progress{height:4px}
 @media(max-width:600px){.story-history[data-kind="downloads"] .story-history-line{grid-template-columns:minmax(0,1fr) auto auto}.story-history[data-kind="downloads"] .story-history-line>strong{grid-column:auto}.story-history[data-kind="downloads"] .story-history-rows{gap:2px}.story-history[data-kind="downloads"] .story-history-line>span{font-size:12px}}
-@media(prefers-reduced-motion:reduce){.story-panel,.story-index,.story-index-tick,.story-shell .story-index-step,:is(.story-shell,#input-form) .story-choice-card,.story-shell .story-button{transition:none}.story-loader:not([hidden]){animation-duration:0s}.story-loading-dots i{animation:none;opacity:.7}}
+@media(prefers-reduced-motion:reduce){.story-panel,.story-index,.story-index-tick,.story-shell .story-index-step,:is(.story-shell,#input-form) .story-choice-card,.story-shell .story-button,html[data-studio-boot="ready"] #studio-boot{transition:none}.story-loader:not([hidden]){animation-duration:0s}.story-loading-dots i{animation:none;opacity:.7}}
 @media(prefers-reduced-motion:reduce){.story-progress-indicator[data-status="active"],.story-live #progress-label[data-status="active"]::after{animation:none}}

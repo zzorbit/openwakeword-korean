@@ -10,9 +10,10 @@
     const panel = $("studio-boot");
     panel?.setAttribute("role", state === "error" ? "alert" : "status");
     panel?.setAttribute("aria-busy", String(state === "loading"));
+    panel?.setAttribute("aria-hidden", String(state === "ready"));
     if ($("studio-dashboard")) $("studio-dashboard").inert = state !== "ready";
     if ($("studio-boot-title")) $("studio-boot-title").textContent = state === "error" ? "화면을 불러오지 못했습니다." : "화면을 불러오는 중...";
-    if ($("studio-boot-dots")) $("studio-boot-dots").hidden = state !== "loading";
+    if ($("studio-boot-dots")) $("studio-boot-dots").hidden = state === "error";
     if ($("studio-boot-error")) {
       $("studio-boot-error").hidden = state !== "error";
       $("studio-boot-error").textContent = state === "error" ? ["화면을 불러오지 못했습니다.", error?.message,

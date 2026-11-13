@@ -271,6 +271,13 @@ function pendingHardStorageRecipe() {
     const dotAnimation='@keyframes story-dot-rise{0%,80%,100%{opacity:.3;transform:translateY(0)}40%{opacity:1;transform:translateY(-4px)}}';
     assert.ok(critical.includes(dotAnimation));assert.ok(storyCss.includes(dotAnimation));
   });
+  await test("boot reveal uses the chapter fade and keeps the mask painted through its exit", () => {
+    const storyCss = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources/studio_story.css"), "utf8");
+    assert.match(html, /html\[data-studio-boot="ready"\] #studio-boot\{visibility:hidden;opacity:0;pointer-events:none\}/);
+    assert.match(storyCss, /\.story-panel\.is-leaving,html:not\(\[data-studio-boot="ready"\]\) \.story-panel\{opacity:0;transform:translateY\(-6px\)/);
+    assert.match(storyCss, /html\[data-studio-boot="ready"\] #studio-boot\{background:transparent;transition:opacity var\(--story-fade-duration\) ease-in,visibility var\(--story-fade-duration\)\}/);
+    assert.match(storyCss, /@media\(prefers-reduced-motion:reduce\)[^\n]+#studio-boot\{transition:none\}/);
+  });
   await test("boot first critical paint shares the exact chapter atmosphere rather than a flat backdrop",()=>{
     const critical=html.match(/<style id="studio-boot-critical">([\s\S]*?)<\/style>/)[1];
     const storyCss=fs.readFileSync(path.join(__dirname,'../korean_openwakeword/resources/studio_story.css'),'utf8');
@@ -433,7 +440,9 @@ function pendingHardStorageRecipe() {
     assert.equal(b.root.getAttribute('data-studio-boot'),'loading','ordinary renders and polls cannot reveal a child waiting for its geometry ACK');
     assert.ok(renders.length>1);assert.ok(renders.every(mode=>mode==='loading'));
     acceptView(true);await flush();assert.equal(b.root.getAttribute('data-studio-boot'),'ready');
-    assert.equal(b.elements.get('studio-dashboard').inert,false);assert.equal(b.elements.get('studio-boot-dots').hidden,true);
+    assert.equal(b.elements.get('studio-dashboard').inert,false);
+    assert.equal(b.elements.get('studio-boot').getAttribute('aria-hidden'),'true');
+    assert.equal(b.elements.get('studio-boot-dots').hidden,false,'dots stay painted inside the fading overlay');
     assert.equal(b.calls.some(call=>call.options.method==='POST'),false);
   });
   await test("boot readiness false timeout cancellation or missing API stays masked and releases its poll timer",async()=>{
