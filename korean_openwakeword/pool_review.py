@@ -14,6 +14,7 @@ import soundfile as sf
 from .common import bound_file, digest, identity, now, read_json, read_rows, resolved, write_json, writer_lock
 from .data import CATEGORIES, audit_project, source_key, validate_hard_negative
 from .hard_pilot import HARD_SAMPLE_REVIEW_POLICY
+from .hard_tts import short_clone_admission_context, verify_short_clone_admission
 from .project import load_project
 
 
@@ -30,13 +31,16 @@ def _bind_hard_implementation(root, implementation):
     except ValueError:
         from .hard_tts import __file__ as current_source
 
-        # This release only adds cooperative pause and separate output folders.
-        # Accept an upgraded file at the exact same path for these audited
-        # release pairs. Other files and all candidate evidence stay hash-bound.
+        # Permit only audited upgrades at the exact frozen source path.
+        # Recovery rows also bind their original candidate journal prefix.
         audited_prior = {"409dd788bbfdc68a2564d6b64940ea52099d49ad842f996dc0908e5dbe342e25",
-                         "91fc1bcfb0ef14e2f563416a7ebe562061cfe217c83b979e9a9a011c767c85e9"}
+                         "91fc1bcfb0ef14e2f563416a7ebe562061cfe217c83b979e9a9a011c767c85e9",
+                         "43d748a34bcc746b69852acfe3dd08269200e6174afcc94fa5a50ac08c9f0713",
+                         "53d3bb6a2d9c346cfab015caa962499ac7f0a5564c200cf55609c12f4285836c"}
         audited_current = {"43d748a34bcc746b69852acfe3dd08269200e6174afcc94fa5a50ac08c9f0713",
-                           "53d3bb6a2d9c346cfab015caa962499ac7f0a5564c200cf55609c12f4285836c"}
+                           "53d3bb6a2d9c346cfab015caa962499ac7f0a5564c200cf55609c12f4285836c",
+                           "43deed598cefa6503d105761ccb9fd7c9c2a5cb56ee700bfea402688c838bcc3",
+                           "fa9ef4a2393fcf61f7df80097cceb656339e45588a66e4843c978212e948a061"}
         if not (isinstance(implementation, dict) and set(implementation) == {"path", "sha256"}
                 and isinstance(implementation["path"], str) and implementation["sha256"] in audited_prior
                 and resolved(root, implementation["path"]) == Path(current_source).resolve()
@@ -150,18 +154,22 @@ def _synthetic_contract(root, row, config, contracts):
                     or type(contract.get("max_attempts_per_slot")) is not int
                     or contract["max_attempts_per_slot"] < 1):
                 raise ValueError("Synthetic per-phrase count/allocation does not match the declared phrase list")
-        contracts[key] = (contract, selected, frozen_binding, set())
-    contract, selected, _, seen_slots = contracts[key]
+        contracts[key] = (contract, selected, frozen_binding, set(), short_clone_admission_context(root, path.parent, contract))
+    contract, selected, _, seen_slots, short_clone = contracts[key]
     validate_hard_negative(row, config)
     if row.get("generation_contract_id") != identity(contract) or row.get("tts_settings_id") != identity(contract["tts"]):
         raise ValueError("Synthetic row generation contract/settings identity changed")
-    if row["text"] not in contract["texts"] or (row["voice_family_id"], row.get("reference_sha256")) not in selected:
+    reference = selected.get((row["voice_family_id"], row.get("reference_sha256")))
+    if row["text"] not in contract["texts"] or reference is None:
         raise ValueError("Synthetic phrase or reference was not declared in its generation contract")
+    limit = verify_short_clone_admission(root, row, reference, contract, short_clone)
     if contract["kind"] == "qwen_hard_negative_generation_contract_v2":
         from .hard_tts import _combination, _seed
         slot, attempt = row.get("slot"), row.get("attempt")
+        if row.get("short_clone_update") is None:
+            limit = contract["max_attempts_per_slot"]
         if (type(slot) is not int or not 0 <= slot < contract["original_count"]
-                or type(attempt) is not int or not 0 <= attempt < contract["max_attempts_per_slot"]):
+                or type(attempt) is not int or not 0 <= attempt < limit):
             raise ValueError("Synthetic per-phrase slot/attempt is outside the frozen generation budget")
         text, reference = _combination(slot, contract["texts"], contract["references"])
         if (row["text"] != text or row["voice_family_id"] != reference["voice_family_id"]
@@ -359,6 +367,16 @@ def hard_sample_consent(root, config, selection, queue, answers):
         raise ValueError("Hard pilot contract no longer binds one checked Train sample per phrase")
     if bound_file(root, contract["positive_policy"]) != root / "approval.json":
         raise ValueError("Hard pilot approval must bind this project's generation policy")
+    if "short_clone_policy" in contract or any("short_clone_policy" in row for row in sources):
+        short_clone = short_clone_admission_context(root, contract_path.parent, contract, pilot=True)
+        references = {(row["voice_family_id"], row["sha256"]): row for row in contract["references"]}
+        for row in sources:
+            reference = references.get((row.get("voice_family_id"), row.get("reference_sha256")))
+            if reference is None:
+                raise ValueError("Hard pilot short-clone voice is outside its frozen contract")
+            limit = verify_short_clone_admission(root, row, reference, contract, short_clone)
+            if type(row.get("attempt")) is not int or not 0 <= row["attempt"] < limit:
+                raise ValueError("Hard pilot short-clone attempt is outside its generation budget")
     _phrase_review_selection(root, selection, manifest_binding, queue_binding, sources, previews, answers,
                              policy=HARD_SAMPLE_REVIEW_POLICY)
     decisions = answers.get("decisions")

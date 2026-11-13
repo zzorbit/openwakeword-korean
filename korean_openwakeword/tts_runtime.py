@@ -67,7 +67,7 @@ class CloneRuntime:
         self.checked = {}
         self.eager_prompts = {}
         self._prompt_cache = OrderedDict()
-        self._call_limits = {}
+        self._short_clone_limits = {}
         self.disabled = backend == "eager" or expected_reuses == 1
         self.report = {"requested_backend": backend, "created_at": now(), "qualifications": [],
                        "actual_backend": "eager", "expected_utterances_per_prompt": expected_reuses,
@@ -186,21 +186,18 @@ class CloneRuntime:
         self.disabled = True
         self.report["actual_backend"] = "eager"
 
-    def generate_call(self, *, expected_reuses=None, **kwargs):
-        """Apply an early budget only to positive wakeword generation."""
-        from .tts import _call_generation_budget
+    def generate_short_clone(self, *, expected_reuses=None, retry=False, **kwargs):
+        """Apply the shared short-utterance budget without changing device selection."""
+        from .tts import _short_clone_token_limit
         self._load()
-        configured = kwargs.get("max_new_tokens")
-        effective = configured
-        if type(configured) is int:
-            if configured not in self._call_limits:
-                self._call_limits[configured] = _call_generation_budget(self.model, configured)
-            effective = self._call_limits[configured]
-        applied = effective if effective != configured else None
-        if applied is not None:
-            kwargs["max_new_tokens"] = applied
+        key = kwargs.get("max_new_tokens"), kwargs.get("text"), retry
+        if key not in self._short_clone_limits:
+            self._short_clone_limits[key] = _short_clone_token_limit(self.model, key[0], text=key[1], retry=retry)
+        limit = self._short_clone_limits[key]
+        if limit is not None:
+            kwargs["max_new_tokens"] = limit
         wavs, rate = self.generate_voice_clone(expected_reuses=expected_reuses, **kwargs)
-        return wavs, rate, applied
+        return wavs, rate, limit
 
     def generate_voice_clone(self, *, expected_reuses=None, **kwargs):
         self._load()

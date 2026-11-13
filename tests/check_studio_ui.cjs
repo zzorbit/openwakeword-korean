@@ -2117,6 +2117,18 @@ function pendingHardStorageRecipe() {
     assert.match(description, /통과한 음성은 그대로 사용합니다/);
     assert.ok(!b.calls.some(call => call.url.endsWith("/retry_generation")));
   });
+  await test("hard synthesis failures distinguish retry from editing the source phrase", async () => {
+    const project = { id: "bora", wakeword: "보라야", status: "waiting_input", stage: "hard_generation",
+      can_edit_hard_phrases: true, input: { kind: "generation_policy", retry_action: "retry_generation", description: "음성 길이 기준 이탈" } };
+    const b = browser({ initialState: { projects: [project] } }); await flush();
+    assert.equal(b.elements.get("input-title").textContent, "유사어 음성 생성 실패");
+    assert.equal(b.elements.get("input-form").hidden, true);
+    assert.match(b.elements.get("input-description").textContent, /실패한 유사어 다시 생성.*실패한 음성만 다시 생성합니다/);
+    assert.match(b.elements.get("input-description").textContent, /‘이전’을 눌러 유사어를 수정/);
+    delete project.input.retry_action; await b.tick();
+    assert.doesNotMatch(b.elements.get("input-description").textContent, /실패한 유사어 다시 생성/);
+    assert.match(b.elements.get("input-description").textContent, /‘이전’을 눌러 유사어를 수정한 뒤 다시 생성하세요/);
+  });
   await test("additional raw sources are submitted for preparation; existing receipt connection stays optional", async () => {
     const project = { id: "bora", wakeword: "보라야", status: "waiting_input", input: { kind: "material_admissions", remaining_hours: 12 } };
     const b = browser({ initialState: { projects: [project] } }); await flush();

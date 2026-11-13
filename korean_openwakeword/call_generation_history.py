@@ -14,6 +14,12 @@ BRIDGE = "preserved_clone_history_after_reference_generation_v1"
 # QC. New production retries record their conditioned prompt and retry phase.
 # Keep the existing contract fingerprint on both checkout formats.
 SCHEDULING_ONLY_TTS_DIGESTS = {
+    # Short-utterance budgets are recorded per new attempt. Existing banks
+    # keep their scope, seeds, accepted files and technical QC contract.
+    "35e797140ce4bc13235a0d9e259b129d63b7bbd66aac23fe2b1f8f624d9808bf":
+        "64cf14186bd4fab8ddbd0444830539ba453e199f01d76b6f2b4bbc9d5ed7dc55",
+    "4b80f8a5561ba98454b8e6fd8b0449301b6bf3852d6eb78b8f3af043b52bb488":
+        "e5167c6a96979f424685544d1c726252a89052d17936bb1f3500309ece930e37",
     # The positive-only runtime limit can shorten rejected suffixes. The
     # original seeds, supported passing audio and technical QC are preserved.
     "25d0243343bda89d78c29bc4df61b79d6b4855fde88a76ec63358b78cabd4e8b":
@@ -43,11 +49,15 @@ _PREVIOUS_HARD_IMPLEMENTATIONS = {
     "hard_tts.py": {"c7790a5d04f87c807f1a4f9dd29ba7caec55f3b48ce3dc660ca54b3f2b5f40bb",
                     "6b6dd2de36feb9d801355eb2c1cbedb8a3edd3bf15376d72f2cd341696d1c283",
                     "409dd788bbfdc68a2564d6b64940ea52099d49ad842f996dc0908e5dbe342e25",
-                    "91fc1bcfb0ef14e2f563416a7ebe562061cfe217c83b979e9a9a011c767c85e9"},
+                    "91fc1bcfb0ef14e2f563416a7ebe562061cfe217c83b979e9a9a011c767c85e9",
+                    "53d3bb6a2d9c346cfab015caa962499ac7f0a5564c200cf55609c12f4285836c",
+                    "43d748a34bcc746b69852acfe3dd08269200e6174afcc94fa5a50ac08c9f0713"},
     "hard_pilot.py": {"7c155ed6634c480f95c0723b281afb38c23fc70545d14034e2559a0c1b8bdc8a",
                       "e7fc3d6d1315ad1cf023ed623cb7ef916f10931cbbc172dcad8a59c8ff47a93a",
                       "154ec141c93335af08740c571a391d6f82b2b44e8c04b9ac641125f0315e7a09",
-                      "dcc43508e9c22f101f34c50eb411c94c78fdfec9b11043fc1c12c08d1bbecc18"},
+                      "dcc43508e9c22f101f34c50eb411c94c78fdfec9b11043fc1c12c08d1bbecc18",
+                      "79dbf0a72191c7bc2372d149e002490f17cec935dcd49dfa6b83476e323c39fb",
+                      "cef26cefa5d291ca003ec2e98711b929ce3ad0686512c1aee9858924091c7630"},
 }
 
 

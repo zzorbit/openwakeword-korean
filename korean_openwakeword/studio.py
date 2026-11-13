@@ -471,8 +471,10 @@ _REFERENCE_GAP_FILTER_UPDATE = "audited_reference_candidate_gap_filter_update"
 _PRODUCTION_SPEED_UPDATE = "audited_production_generation_recovery_update"
 _TTS_DEVICE_UPDATE = "audited_adaptive_tts_runtime_update"
 _HARD_PAUSE_AND_EDIT_UPDATE = "audited_hard_pause_and_phrase_edit_update"
+_SHORT_CLONE_UPDATE = "audited_short_clone_duration_update"
 _PRESERVED_CALL_UPDATES = {_PREFLIGHT_QUALITY_RETRY_UPDATE, _REFERENCE_GAP_FILTER_UPDATE,
-                           _PRODUCTION_SPEED_UPDATE, _TTS_DEVICE_UPDATE, _HARD_PAUSE_AND_EDIT_UPDATE}
+                           _PRODUCTION_SPEED_UPDATE, _TTS_DEVICE_UPDATE, _HARD_PAUSE_AND_EDIT_UPDATE,
+                           _SHORT_CLONE_UPDATE}
 _TTS_DEVICE_UPDATE_FILES = ("call_generation_history.py", "hard_pilot.py", "hard_tts.py", "pilot.py",
     "reference_candidates.py", "studio_steps.py", "tts.py", "tts_cuda_graph.py", "tts_cuda_predictor.py", "tts_runtime.py")
 _TTS_DEVICE_UPDATE_EVIDENCE = "e830e0b8b461e9cb851c891273c0d47b5f2cf3ac980228a46e57431790cfd1fd"
@@ -480,7 +482,28 @@ _TTS_DEVICE_UPDATE_REASON = "새 기준 목소리의 발화 길이를 먼저 확
 _HARD_PAUSE_AND_EDIT_FILES = ("call_generation_history.py", "hard_pilot.py", "hard_tts.py", "pool_review.py", "studio_steps.py")
 _HARD_PAUSE_AND_EDIT_EVIDENCE = "3f7d4f9cfeef96252d7096cafab5d977a0e2225b697187b30902f1eda89d6ddf"
 _HARD_PAUSE_AND_EDIT_REASON = "유사어 음성 생성은 현재 음성을 저장한 뒤 멈춥니다. 기존 자료와 판정을 보존하고, 수정한 문구는 별도 생성 기록에서 처리합니다."
+_SHORT_CLONE_UPDATE_FILES = ("call_generation_history.py", "hard_pilot.py", "hard_tts.py", "pool_review.py",
+                             "studio_steps.py", "tts.py", "tts_runtime.py")
+_SHORT_CLONE_UPDATE_REASON = "문구 길이에 맞춰 합성을 제한합니다. 통과한 음원과 검수 기록을 보존하고, 길이 제한에 걸린 유사어는 이어서 다시 생성할 수 있습니다."
 _AUDITED_CALL_GENERATION_RECOVERY_UPDATES = {
+    "73c276abd64814f55bdbe6ab300671aa4034fef59a78e2d810d3efdc22f0e58c": {
+        "kind": _SHORT_CLONE_UPDATE,
+        "source_stages_sha256": "dd49117e9e8172eb18e2dbca3923fc4477c5a69986dd9bf517389d4e66d8b908",
+        "target_computation_sha256": "8afee598ba889e37c1f674144beefb6df6a3276baa586c51ceae31101d3412c7",
+        "target_stages_sha256": "19310659eeb4919ed2a399539def3ee1419b425f5e552106b246a556ae23b187",
+        "changed_files": _SHORT_CLONE_UPDATE_FILES,
+        "evidence_sha256": "db66e04219bdc23e36dcdc87ff99ee24e2157556c56a388af7f67d64da3fad5d",
+        "reason": _SHORT_CLONE_UPDATE_REASON,
+    },
+    "02af5c377728bd3c48ee90ee4ba1187f8478044078b5b3f95d831af036528996": {
+        "kind": _SHORT_CLONE_UPDATE,
+        "source_stages_sha256": "19b4d767e708d71736d606fa63af7851fb0203c1b7a03a51a8590406c47b59f6",
+        "target_computation_sha256": "45401c91ace913d2339c4fe0986c19939b25a13122287dfd4266460469924a50",
+        "target_stages_sha256": "b3e056a7fb306cff1e033801310a19b746dd0e144ea00b4a788088aacc37300b",
+        "changed_files": _SHORT_CLONE_UPDATE_FILES,
+        "evidence_sha256": "db66e04219bdc23e36dcdc87ff99ee24e2157556c56a388af7f67d64da3fad5d",
+        "reason": _SHORT_CLONE_UPDATE_REASON,
+    },
     "e3f4a61958b1fb0b54258d20df98bf432b1ed6934f004549798f0ff24fc827fe": {
         "kind": _HARD_PAUSE_AND_EDIT_UPDATE,
         "source_stages_sha256": "b369acf83d014505cfc7cb9b5490ca7e11b5d8183b6d4a206780aed6e5b7c2c9",
@@ -1484,7 +1507,8 @@ class StudioManager:
                     generic_binding = self._call_recovery_generic_import(state)
                     if generic_binding:
                         call_recovery_update["preserved_precomputed_generic_metadata"] = generic_binding
-                if call_recovery_update and "tts.py" in call_recovery_update["changed_files"]:
+                if (call_recovery_update and "tts.py" in call_recovery_update["changed_files"]
+                        and call_recovery_update.get("kind") != _SHORT_CLONE_UPDATE):
                     generated = Path(state["project"]).parent / "data/generated"
                     if any(stage in remaining and (generated / folder / "contract.json").is_file()
                            for stage, folder in (("hard_pilot", "hard_pilot"), ("hard_generation", "hard"))):
@@ -2096,15 +2120,35 @@ class StudioManager:
         return {"accepted_count": accepted, "target_count": target, "failed_count": len(failures),
                 "retry_rounds": rounds}
 
-    def retry_generation(self, project_id):
-        return self.start(project_id, retry_pilot=True)
+    def _hard_generation_retry(self, state):
+        if state["status"] != "waiting_input" or state["index"] >= len(state["plan"]):
+            return None
+        stage = state["plan"][state["index"]]["id"]
+        if stage not in ("hard_pilot", "hard_generation"):
+            return None
+        output = state["results"].get(stage, {})
+        result = output.get("result", {})
+        if output.get("input_kind") != "generation_policy" or result.get("full_target_reached") is not False:
+            return None
+        from .hard_tts import hard_generation_recovery_available
+        journal, target = self._hard_generation_progress(state, Path(state["project"]).parent / "data", stage)
+        if not hard_generation_recovery_available(journal.parent, pilot=stage == "hard_pilot"):
+            return None
+        accepted = self._journal_counts(journal)["passed"]
+        if not 0 <= accepted < target:
+            return None
+        return {"accepted_count": accepted, "target_count": target, "failed_count": target - accepted}
 
-    def start(self, project_id, *, retry_pilot=False):
+    def retry_generation(self, project_id):
+        return self.start(project_id, retry_failed_generation=True)
+
+    def start(self, project_id, *, retry_failed_generation=False):
         with self._lock:
             state = self._load(project_id)
-            retry = self._pilot_generation_retry(state) if retry_pilot else None
-            if retry_pilot and (not retry or self._job_alive(state.get("job") or {})):
-                raise ValueError("다시 생성할 호출어 샘플이 없습니다. 현재 작업 상태를 확인하세요.")
+            pilot_retry = self._pilot_generation_retry(state) if retry_failed_generation else None
+            retry = pilot_retry or (self._hard_generation_retry(state) if retry_failed_generation else None)
+            if retry_failed_generation and (not retry or self._job_alive(state.get("job") or {})):
+                raise ValueError("다시 생성할 음성이 없습니다. 현재 작업 상태를 확인하세요.")
             if state["status"] == "completed":
                 return self.describe(state)
             self._guard_config(state)
@@ -2152,10 +2196,10 @@ class StudioManager:
             if navigation_step:
                 state["navigation_checkpoint"].update(step=navigation_step, state="running")
             self._recover_dead_locks(state)
-            if retry:
+            if pilot_retry:
                 state["inputs"]["call_pilot_quality_retry"] = {
                     "review_round": len(state["inputs"].get("call_pilot_reviews", [])),
-                    "rounds": retry["retry_rounds"] + 1,
+                    "rounds": pilot_retry["retry_rounds"] + 1,
                 }
             self._launch(state)
             return self.describe(state)
@@ -4897,8 +4941,8 @@ class StudioManager:
                               "description": result.get("message", "자료 준비가 필요합니다."),
                               "suggestions": result.get("suggestions", [])}))
             input_kind = (view.get("input") or {}).get("kind")
-            retry = self._pilot_generation_retry(state)
-            if retry and not view["migration"]:
+            retry = (self._pilot_generation_retry(state) or self._hard_generation_retry(state)) if not view["migration"] else None
+            if retry:
                 view["input"] = {**view["input"], "retry_action": "retry_generation",
                                  **{key: retry[key] for key in ("accepted_count", "target_count", "failed_count")}}
             if input_kind == "dependency_setup":

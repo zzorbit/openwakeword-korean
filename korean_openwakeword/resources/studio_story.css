@@ -38,7 +38,7 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-panel-heading{display:grid;gap:4px;flex:none;width:min(680px,100%);margin-block-start:auto;text-align:center;word-break:keep-all;overflow-wrap:anywhere}
 .story-panel h1{font:500 26px/36px system-ui,"Malgun Gothic",sans-serif;letter-spacing:-.035em;margin:0;color:#eaedf1}
 .story-subtitle{margin:0;color:var(--muted);font:400 15px/22px system-ui,"Malgun Gothic",sans-serif;white-space:pre-line}
-.story-hard-generation-summary,.story-generation-summary{display:inline-block;margin-inline-start:10px;color:var(--muted);font:400 14px/22px system-ui,"Malgun Gothic",sans-serif}
+.story-generation-summary{margin-inline-start:10px;color:var(--muted);font:400 14px/22px system-ui,"Malgun Gothic",sans-serif}
 .story-shell[data-step="phrases"] #hard-generation-counts{display:none}
 .story-panel h1:focus{outline:none}
 .story-content{width:100%;min-height:0;display:flex;flex-direction:column;align-items:center}
@@ -76,9 +76,9 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-shell .story-choice-card > strong{font-size:17px;line-height:24px;font-weight:600}
 .story-shell .story-choice-card > :is(span,p){min-height:0;margin:0;font-size:14px;line-height:20px;font-weight:400;color:#c3cbd6}
 :is(.story-shell,#input-form) .story-choice-card:has(> input:disabled){cursor:default}
-.story-shell[data-step="materials"] .story-stage{display:block;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain}
-.story-shell[data-step="materials"] .story-panel{height:auto;min-height:100%;margin-inline:auto;gap:var(--story-standard-gap,20px)}
-.story-shell[data-step="materials"] .story-content{flex:none}
+.story-shell:is([data-step="materials"],.synthesis-chapter) .story-stage{display:block;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain}
+.story-shell:is([data-step="materials"],.synthesis-chapter) .story-panel{height:auto;min-height:100%;margin-inline:auto;gap:var(--story-standard-gap,20px)}
+.story-shell:is([data-step="materials"],.synthesis-chapter) .story-content{flex:none}
 .story-materials{display:flex;flex-direction:column;flex:none;width:100%}
 .story-tool-materials{flex:none;margin-top:14px}
 .story-tool-materials .story-material-heading{flex-wrap:wrap}
@@ -161,6 +161,9 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-voice-row strong{text-align:start;font-size:18px;line-height:26px;font-weight:500}
 .story-voice-row>span{text-align:end;font-size:16px;line-height:24px;font-variant-numeric:tabular-nums}
 .story-voice-row progress{grid-column:1/-1;width:100%}
+.story-shell.synthesis-chapter .story-voice-row{grid-template-columns:minmax(0,1fr) auto}
+.story-shell.synthesis-chapter .story-voice-row strong{overflow-wrap:anywhere}
+.story-shell.synthesis-chapter .story-voice-counts,.story-shell.synthesis-chapter .story-live #input-section{flex:none}
 .story-evaluation-plan{display:grid;gap:6px;flex:none;width:min(680px,100%);align-self:center}
 .story-evaluation-plan h2{margin:0;font-size:16px;line-height:22px;font-weight:600}
 .story-evaluation-plan p{margin:0;color:var(--muted);font-size:14px;line-height:22px;white-space:pre-line;word-break:keep-all;overflow-wrap:anywhere}
@@ -198,6 +201,7 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-shell .story-live .work-section iframe#review-frame{display:block;border:0;border-radius:0;width:100%;height:0;min-height:0;max-height:100%;margin:0;flex:1 1 0;background:transparent}
 .story-shell:is([data-step="call-pilot-review"],[data-step="pronunciation"],[data-step="hard-review"]) .story-content{flex:1 1 0;min-height:0}
 .story-shell:is([data-step="call-pilot-review"],[data-step="pronunciation"],[data-step="hard-review"]) .story-live{flex:1 1 0;min-height:0;justify-content:center}
+.story-shell.synthesis-chapter[data-step="hard-review"] :is(.story-content,.story-live){flex:none}
 /* A compact review frame keeps the chapter heading and player in one centered group. */
 .story-shell.preflight-draft-review:is([data-step="call-pilot-review"],[data-step="pronunciation"],[data-step="hard-review"]) .story-stage{display:block;overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;overscroll-behavior:contain}
 .story-shell.preflight-draft-review:is([data-step="call-pilot-review"],[data-step="pronunciation"],[data-step="hard-review"]) .story-panel{height:auto;min-height:100%;margin-inline:auto}
@@ -361,6 +365,7 @@ html[data-studio-boot="ready"] #studio-boot>.story-atmosphere{display:none}
   .story-index-tick{transform:scaleX(.75)}
   .story-live .progress-text{font-size:14px;line-height:20px}
   .story-voice-row{grid-template-columns:1fr;gap:5px}
+  .story-shell.synthesis-chapter .story-voice-row{grid-template-columns:1fr}
 }
 @media(max-height:560px){
   .story-shell{--story-standard-gap:12px}

@@ -13,7 +13,7 @@ from korean_openwakeword.pilot import _passing_slots
 from test_korean_library_tts_journal import approved_project, cpu_seed
 
 
-def test_call_codec_limit_leaves_an_overlength_attempt_rejectable(monkeypatch):
+def test_short_clone_caps_overlong_attempts_without_admitting_cut_off_audio(monkeypatch):
     wrapper = type("Qwen3TTSModel", (), {"__module__": "qwen_tts.inference.qwen3_tts_model"})()
     codec = type("Qwen3TTSTokenizerV2Model", (), {
         "__module__": "qwen_tts.core.tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2"})()
@@ -22,19 +22,32 @@ def test_call_codec_limit_leaves_an_overlength_attempt_rejectable(monkeypatch):
                                 get_decode_upsample_rate=lambda: 1920)
     wrapper.model = SimpleNamespace(speech_tokenizer=tokenizer, talker=SimpleNamespace(generation_config=generation))
     monkeypatch.setattr(tts, "version", {"qwen-tts": "0.1.1", "transformers": "4.57.3"}.__getitem__)
-    limit = tts._call_generation_budget(wrapper, 256)
-    assert limit == 102 and tts._call_generation_budget(wrapper, 75) == 75
-    # The initial prefill has no codec frame. No-EOS output at the cap must
-    # exceed the duration boundary even if its actual speech fits the window.
-    wave = np.zeros((limit - 1) * 1920)
-    wave[:24000] = .1 * np.sin(np.arange(24000) / 11)
-    assert tts.technical_qc(wave, 24000)[0]["reasons"] == ["duration_outlier"]
-    assert tts.technical_qc(wave[:8 * 24000], 24000)[0]["passed"]
+    options = []
+
+    def generate(**kwargs):
+        options.append(kwargs)
+        waveform = np.zeros((kwargs["max_new_tokens"] - 1) * 1920)
+        waveform[:24000] = .1 * np.sin(np.arange(24000) / 11)
+        return [waveform], 24000
+
+    wrapper.generate_voice_clone = generate
+    (wave,), rate, limit = tts.generate_short_clone(wrapper, text="춘식아", max_new_tokens=256)
+    assert options[-1]["max_new_tokens"] == limit < 102
+    assert tts.technical_qc(wave, rate)[0]["passed"]
+    assert tts.short_clone_hit_limit(wave, rate, limit)
+    assert tts.short_clone_hit_limit(wave[:-1], rate, limit)
+    assert not tts.short_clone_hit_limit(wave[:-1920], rate, limit)
+    assert tts._short_clone_token_limit(wrapper, 256, text="조금 더 긴 유사어 문구") > limit
+    assert limit < tts._short_clone_token_limit(wrapper, 256, text="춘식아", retry=True) < 102
+    assert tts._short_clone_token_limit(wrapper, 256, text="가" * 50, retry=True) == 102
+    assert tts._short_clone_token_limit(wrapper, None, text="춘식아") == limit
+    assert tts._short_clone_token_limit(wrapper, 30, text="춘식아") == 30
+    assert tts.generate_short_clone(wrapper, text="춘식아", max_new_tokens=30)[2] == 30
     generation.forced_eos_token_id = 1
-    assert tts._call_generation_budget(wrapper, 256) == 256
+    assert tts._short_clone_token_limit(wrapper, 256) is None
     generation.forced_eos_token_id = None
     tokenizer.model = object()
-    assert tts._call_generation_budget(wrapper, 256) == 256
+    assert tts._short_clone_token_limit(wrapper, 256) is None
 
 
 def legacy_run(tmp_path, *, count=50, scoped=True, pilot=True, unknown=False,
@@ -106,6 +119,26 @@ class RecoveryModel:
         else:
             wave = .13 * np.sin(np.arange(9600) / 22) + np.random.normal(0, .002, 9600)
         return [wave], 16000
+
+
+def test_call_generation_retries_cap_hit_before_counting_technical_pass(tmp_path):
+    project = approved_project(tmp_path / "word", "clone", count=1)
+
+    class Capped(RecoveryModel):
+        def generate_short_clone(self, *, expected_reuses, retry, **kwargs):
+            self.calls += 1
+            limit = 42 if retry else 30
+            waveform = np.zeros(((limit - 2) if retry else (limit - 1)) * 1920)
+            waveform[:14400] = .1 * np.sin(np.arange(14400) / 11)
+            return [waveform], 24000, limit
+
+    model = Capped()
+    result = tts.generate(project, limit=1, pilot=True, model=model)
+    assert result["full_target_reached"] and model.calls == 2
+    first, second = read_rows(result["review_queue"])
+    assert first["qc"]["passed"] is False
+    assert first["qc"]["reasons"] == ["generation_length_limit"]
+    assert second["qc"]["passed"] is True
 
 
 def test_production_keeps_legacy_attempts_and_runs_both_banks_before_recovery(tmp_path, monkeypatch):

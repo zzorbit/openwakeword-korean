@@ -1,6 +1,7 @@
 """Candidate generation must stay reproducible, gated and separate from admission."""
 from collections import Counter
 from pathlib import Path
+import json
 
 import numpy as np
 import pytest
@@ -62,6 +63,32 @@ def no_seed_gpu(monkeypatch):
     monkeypatch.setattr(hard_tts.tts, "_seed", lambda seed: None)
 
 
+def freeze_before_short_clone(root, directory, *, pilot=False, previous_source=None):
+    """Convert fixture rows to the exact journal shape written before short limits."""
+    contract_path = directory / "contract.json"
+    contract = read_json(contract_path)
+    contract.pop("short_clone_policy")
+    previous_qc = "25d0243343bda89d78c29bc4df61b79d6b4855fde88a76ec63358b78cabd4e8b"
+    if pilot:
+        contract.update(implementation_sha256="79dbf0a72191c7bc2372d149e002490f17cec935dcd49dfa6b83476e323c39fb",
+                        technical_qc_sha256=previous_qc)
+    else:
+        contract["implementation"]["sha256"] = previous_source or "53d3bb6a2d9c346cfab015caa962499ac7f0a5564c200cf55609c12f4285836c"
+        contract["technical_qc_implementation"]["sha256"] = previous_qc
+    write_json(contract_path, contract)
+    binding = {"path": contract_path.relative_to(root).as_posix(), "sha256": digest(contract_path)}
+    journal = directory / "candidates.jsonl"
+    rows = read_rows(journal)
+    for row in rows:
+        for key in ("short_clone_policy", "short_clone_update", "generation_token_limit", "clone_reference_preparation"):
+            row.pop(key)
+        row["generation_contract"] = binding
+        if not pilot:
+            row["generation_contract_id"] = identity(contract)
+    journal.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
+    return rows
+
+
 @pytest.mark.parametrize("pilot", [False, True])
 @pytest.mark.parametrize("technical_failure", [False, True])
 def test_pause_saves_current_attempt_then_resumes_without_regenerating_it(tmp_path, pilot, technical_failure):
@@ -85,27 +112,103 @@ def test_pause_saves_current_attempt_then_resumes_without_regenerating_it(tmp_pa
     assert not (directory / ".writer.lock").exists()
     result = generate()
     assert result["full_target_reached"] and model.calls == (3 if technical_failure else 2)
-    assert read_rows(journal)[0] == before[0]
+    resumed = read_rows(journal)
+    assert resumed[0] == before[0]
+    assert [(row["slot"], row["attempt"]) for row in resumed] == (
+        [(0, 0), (1, 0), (0, 1)] if technical_failure else [(0, 0), (1, 0)])
     assert digest(project.parent / before[0]["path"]) == before[0]["sha256"]
 
 
-def test_pause_update_resumes_the_previous_frozen_hard_contract(tmp_path, monkeypatch):
+def test_pause_update_resumes_the_previous_frozen_hard_contract(tmp_path):
     project = approved_project(tmp_path)
     model = FakeModel()
     previous_source = "91fc1bcfb0ef14e2f563416a7ebe562061cfe217c83b979e9a9a011c767c85e9"
-    with monkeypatch.context() as old:
-        old.setattr(hard_tts, "digest", lambda path: previous_source if path == hard_tts.__file__ else digest(path))
-        with pytest.raises(hard_tts.HardGenerationPaused):
-            hard_tts.generate_hard(project, PHRASES, 2, model, pause_requested=lambda: model.calls >= 1)
+    with pytest.raises(hard_tts.HardGenerationPaused):
+        hard_tts.generate_hard(project, PHRASES, 2, model, pause_requested=lambda: model.calls >= 1)
     output = project.parent / "data/generated/hard"
     contract = output / "contract.json"
+    first, = freeze_before_short_clone(project.parent, output, previous_source=previous_source)
     original = digest(contract)
     assert read_json(contract)["implementation"]["sha256"] == previous_source
-    first = read_rows(output / "candidates.jsonl")[0]
     result = hard_tts.generate_hard(project, PHRASES, 2, model)
     assert result["technical_pass"] == model.calls == 2
     assert digest(contract) == original
     assert read_rows(output / "candidates.jsonl")[0] == first
+
+
+@pytest.mark.parametrize("pilot", [False, True])
+def test_recover_exhausted_legacy_length_failure_and_verify_for_admission(tmp_path, pilot):
+    from korean_openwakeword.hard_pilot import generate_hard_pilot
+
+    project = approved_project(tmp_path)
+    root = project.parent
+    revision = "d" * 32
+    phrases = PHRASES[:2]
+    output = root / "data/generated/hard_phrase_revisions" / revision / ("hard_pilot" if pilot else "hard")
+
+    def generate(model):
+        if pilot:
+            return generate_hard_pilot(project, phrases, 1, model, revision=revision)[0]
+        return hard_tts.generate_hard(project, phrases, model=model, samples_per_phrase=1, revision=revision)
+
+    class LongFirstPhrase(FakeModel):
+        def generate_voice_clone(self, **kwargs):
+            self.calls += 1
+            frames = 40000 if kwargs["text"] == phrases[0] else 16000
+            return [.1 * np.sin(np.arange(frames) * (.08 + self.calls * .002))], 16000
+
+    initial = generate(LongFirstPhrase())
+    assert initial["technical_pass"] == 1 and initial["exhausted_slots"] == [0]
+    assert initial["exhausted_slot_details"][0]["text"] == phrases[0]
+    assert not hard_tts.hard_generation_recovery_available(output, pilot=pilot)
+    before = freeze_before_short_clone(root, output, pilot=pilot)
+    journal, contract_path = output / "candidates.jsonl", output / "contract.json"
+    original_journal, original_contract = journal.read_bytes(), contract_path.read_bytes()
+    assert hard_tts.hard_generation_recovery_available(output, pilot=pilot)
+    model = FakeModel()
+    assert generate(model)["full_target_reached"] and model.calls == 1
+    assert not hard_tts.hard_generation_recovery_available(output, pilot=pilot)
+    assert journal.read_bytes().startswith(original_journal) and contract_path.read_bytes() == original_contract
+    assert all(digest(root / row["path"]) == row["sha256"] for row in before)
+    row = read_rows(journal)[-1]
+    assert (row["slot"], row["attempt"], row["technical_pass"]) == (0, 3, True)
+    contract = read_json(contract_path)
+    reference = contract["references"][0]
+    context = hard_tts.short_clone_admission_context(root, output, contract, pilot=pilot)
+    assert hard_tts.verify_short_clone_admission(root, row, reference, contract, context) == 6
+    with pytest.raises(ValueError, match="bound synthesis update journal"):
+        hard_tts.verify_short_clone_admission(root, {**row, "seed": 0}, reference, contract, context)
+    journal.write_bytes(b"\n" + journal.read_bytes())
+    with pytest.raises(ValueError, match="journal prefix changed"):
+        hard_tts.short_clone_admission_context(root, output, contract, pilot=pilot)
+
+
+@pytest.mark.parametrize("pilot", [False, True])
+def test_reject_audio_at_length_cap_even_if_speech_itself_passes_qc(tmp_path, monkeypatch, pilot):
+    from korean_openwakeword.hard_pilot import generate_hard_pilot
+
+    project = approved_project(tmp_path)
+    calls = []
+
+    def generate_short_clone(model, *, retry, expected_reuses, **kwargs):
+        calls.append((kwargs["text"], retry))
+        if len(calls) == 1:
+            waveform = np.pad(.1 * np.sin(np.arange(19200) * .06), (0, 23040))
+            assert hard_tts.tts.technical_qc(waveform, 24000)[0]["passed"]
+            return [waveform], 24000, 23
+        return (*model.generate_voice_clone(**kwargs), None)
+
+    monkeypatch.setattr(hard_tts.tts, "generate_short_clone", generate_short_clone)
+    phrases = PHRASES[:2]
+    if pilot:
+        result, _ = generate_hard_pilot(project, phrases, 1, FakeModel())
+    else:
+        result = hard_tts.generate_hard(project, phrases, model=FakeModel(), samples_per_phrase=1)
+    output = project.parent / "data/generated" / ("hard_pilot" if pilot else "hard")
+    rows = read_rows(output / "candidates.jsonl")
+    assert result["full_target_reached"] and calls == [(phrases[0], False), (phrases[1], False), (phrases[0], True)]
+    assert rows[0]["qc"]["reasons"] == ["generation_length_limit"] and rows[0]["technical_pass"] is False
+    assert rows[0]["generation_token_limit"] == 23
 
 
 def test_revised_phrase_sample_review_bulk_generation_and_admission_use_the_same_scope(tmp_path, monkeypatch):

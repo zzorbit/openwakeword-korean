@@ -571,8 +571,9 @@ def _material_review_queues(project, prepared, context, policy):
 
 def _generation_complete(summary):
     if summary.get("full_target_reached") is not True:
-        failures = summary.get("exhausted_slots") or []
+        failures = summary.get("exhausted_slot_details") or summary.get("exhausted_slots") or []
         reasons = {"duration_outlier": "음성 길이 기준 이탈", "near_silence": "거의 무음",
+                   "generation_length_limit": "합성 길이 상한 도달",
                    "does_not_fit_full_call_feature_window": "호출어 음성 구간 초과", "exact_duplicate": "중복 음원",
                    "clipping": "소리 깨짐", "resampling_clipping": "변환 후 소리 깨짐",
                    "no_active_audio": "유효한 음성 구간 없음", "empty_nonfinite_or_nonmono": "유효하지 않은 음성 출력"}

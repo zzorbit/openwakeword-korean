@@ -3241,6 +3241,36 @@ async function main() {
       assert.equal(p.shell.querySelector('.story-voice-counts').children[0],row);
     }
   });
+  await test("synthesis chapters keep the same progress elements through startup, pause, and a quality hold", () => {
+    const settings = { pilot_review_policy: "one_per_voice_before_and_after_generation_v4", hard_samples_per_phrase: 20 };
+    for (const [stage, label] of [["pilot", "호출어 샘플"], ["positives", "호출어 음성"], ["hard_generation", "유사어 음성"]]) {
+      const project = { id: stage, stage_id: stage, status: "starting", process_alive: true, settings,
+        progress: { done: 4, total: 16, unit: "완료 단계" } };
+      const p = page(project), rows = p.shell.querySelector(".story-voice-counts"), row = rows.children[0];
+      const title = row.querySelector("strong"), bar = row.querySelector("progress");
+      const indicator = title.querySelector(".story-progress-indicator");
+      const detail = title.querySelector(".story-generation-summary");
+      assert.equal(p.shell.classList.contains("synthesis-chapter"), true);
+      assert.equal(title.dataset.label, label);
+      assert.deepEqual(title.children.slice(1), [detail, indicator]);
+      assert.equal(bar.getAttribute("value"), null);
+      assert.equal(row.children[1].textContent, "준비 중");
+      assert.equal(indicator.dataset.status, "active");
+      Object.assign(project, { status: "paused", process_alive: false, progress: { done: 19, total: 20, unit: "개" } });
+      p.ui.render();
+      assert.equal(rows.children[0], row);
+      assert.equal(row.querySelector("progress"), bar);
+      assert.equal(indicator.hidden, true);
+      assert.equal(bar.value, 19);
+      assert.equal(row.children[1].textContent, "19 / 20개");
+      if (stage === "hard_generation") assert.equal(detail.textContent, "유사어 1종 · 문구당 20개 · 총 20개");
+      Object.assign(project, { status: "waiting_input", input: { kind: "generation_policy" } });
+      p.ui.render();
+      assert.equal(rows.children[0], row);
+      assert.equal(row.children[1].textContent, "19 / 20개 통과");
+      assert.equal(p.next.disabled, true);
+    }
+  });
   await test('pilot quality hold preserves accepted progress and retries only on an explicit click', async () => {
     const input = { kind: "generation_policy", retry_action: "retry_generation", accepted_count: 19, target_count: 50, failed_count: 1 };
     const project = { id: "retry-pilot", status: "waiting_input", process_alive: true, stage_id: "pilot", input,
@@ -3267,6 +3297,29 @@ async function main() {
       assert.equal(other.operation.hidden, true, "other generation-policy holds do not advertise the pilot action");
       await other.operation.fire("click");
       assert.ok(!other.calls.includes("retry_generation"));
+    }
+  });
+  await test("hard synthesis quality holds expose targeted recovery without advancing or restarting on render", async () => {
+    for (const stage of ["hard_pilot", "hard_generation"]) {
+      const project = { id: stage, stage_id: stage, status: "waiting_input", process_alive: false,
+        can_edit_hard_phrases: true, settings: { hard_review_policy: "sample_before_generation_v2" },
+        input: { kind: "generation_policy", retry_action: "retry_generation", accepted_count: 19, target_count: 20, failed_count: 1 } };
+      const p = page(project, { action: (_action, state) => { state.busy = false; return true; } });
+      const row = p.shell.querySelector(".story-voice-counts").children[0];
+      assert.equal(p.shell.classList.contains("synthesis-chapter"), true);
+      assert.equal(row.children[1].textContent, "19 / 20개 통과");
+      assert.equal(row.querySelector(".story-progress-indicator").hidden, true);
+      assert.equal(p.operation.textContent, stage === "hard_pilot" ? "실패한 샘플 다시 생성" : "실패한 유사어 다시 생성");
+      assert.equal(p.operation.hidden, false);
+      assert.equal(p.next.disabled, true);
+      await p.next.fire("click");
+      assert.equal(p.calls.some(action => ["retry_generation", "resume", "input"].includes(action)), false);
+      await p.operation.fire("click");
+      assert.equal(p.calls.filter(action => action === "retry_generation").length, 1);
+      delete project.input.retry_action;
+      p.ui.render();
+      assert.equal(p.operation.hidden, true);
+      assert.equal(p.back.disabled, false);
     }
   });
   await test('training preparation rejects unsupported records and old download toggles have no dead callback',async()=>{

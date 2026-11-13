@@ -56,7 +56,8 @@
     training: "모델 학습",
     evaluation: "성능 평가",
   };
-  const generationSteps = new Set(["voices", "call-pilot-generation", "positive-generation", "hard-generation"]);
+  const synthesisSteps = new Set(["call-pilot-generation", "positive-generation", "hard-generation"]);
+  const generationSteps = new Set(["voices", ...synthesisSteps]);
   const callReviewSteps = new Set(["call-pilot-review", "pronunciation"]);
   const pronunciationSteps = new Set([...callReviewSteps, "hard-review"]);
   const standardLayoutSteps = new Set([
@@ -234,7 +235,6 @@
     const header = node("header", undefined, "story-panel-heading");
     const heading = node("h1"); heading.id = "story-title"; heading.tabIndex = -1;
     const subtitle = node("p", undefined, "story-subtitle"); subtitle.id = "story-subtitle";
-    const hardGenerationSummary = node("span", undefined, "story-hard-generation-summary"); hardGenerationSummary.hidden = true;
     heading.setAttribute("aria-describedby", subtitle.id);
     header.append(heading, subtitle);
     panel.setAttribute("aria-labelledby", heading.id);
@@ -1340,14 +1340,19 @@
         && frame === referenceFrameElement && frame.contentWindow === referenceFrameWindow
         && (frame.getAttribute("src") || "") === referenceFrameUrl && typeof frame.contentWindow?.postMessage === "function");
     }
-    function pilotGenerationRetry(project) {
+    function generationRetryLabel(project) {
       const input = project?.input;
-      return current === "call-pilot-generation" && stageStep(project) === current && stageId(project) === "pilot"
-        && project?.status === "waiting_input" && !project.review && !(project.migration && !project.process_alive)
-        && input?.kind === "generation_policy" && input.retry_action === "retry_generation" ? input : null;
+      if (project?.status !== "waiting_input" || stageStep(project) !== current || project.review
+          || project.migration && !project.process_alive || input?.kind !== "generation_policy"
+          || input.retry_action !== "retry_generation") return "";
+      const stage = stageId(project);
+      if (stage === "pilot" && current === "call-pilot-generation" || stage === "hard_pilot" && current === "hard-review")
+        return "실패한 샘플 다시 생성";
+      if (stage === "hard_generation" && current === "hard-generation") return "실패한 유사어 다시 생성";
+      return "";
     }
     function operationAction(project) {
-      if (pilotGenerationRetry(project)) return "retry_generation";
+      if (generationRetryLabel(project)) return "retry_generation";
       if (hardReviewRevealFailed && current === "hard-review" && stageId(project) === "hard_review"
           && (preparingReviewQueue(project) || reviewingPreflight(project)) && !project.error) return "load_hard_review";
       if (repairRevealFailed && repairReviewConcealed === repairQueueKey(project) && current === "pronunciation") return "load_review";
@@ -1576,6 +1581,34 @@
       const label = progress?.activity?.label ?? (progress.kind === "studio_task_progress_v1" ? progress.label : "");
       return (typeof label === "string" && label.trim() ? label.trim().slice(0, 120) : fallback) + phaseElapsed(progress);
     }
+    function synthesisPlan(project, total) {
+      if (current !== "hard-generation") return "";
+      const phrases = project.completed_stage_views?.phrases?.phrases;
+      const phraseCount = Array.isArray(phrases) ? phrases.length : 0;
+      const perPhrase = project.settings?.hard_samples_per_phrase;
+      const knownPerPhrase = Number.isSafeInteger(perPhrase) && perPhrase > 0;
+      const knownTotal = Number.isSafeInteger(total) && total > 0;
+      const plannedTotal = knownTotal ? total : !sampleFirstHardReview(project) && knownPerPhrase ? phraseCount * perPhrase : null;
+      const countByTotal = knownTotal && knownPerPhrase && total % perPhrase === 0 ? total / perPhrase : phraseCount;
+      if (countByTotal <= 0 || !Number.isSafeInteger(plannedTotal) || plannedTotal <= 0
+          || knownPerPhrase && plannedTotal !== countByTotal * perPhrase) return "";
+      return `유사어 ${count(countByTotal)}종${knownPerPhrase ? ` · 문구당 ${count(perPhrase)}개` : ""} · 총 ${count(plannedTotal)}개`;
+    }
+    function synthesisProgress(project, label, active, completed) {
+      const progress = stageScreen(project, stageId(project)) === current ? project.progress : null;
+      const qualityHold = project.input?.kind === "generation_policy";
+      const progressCounts = progress && !/단계/.test(progress.unit || "") ? progress : null;
+      const done = (qualityHold ? project.input.accepted_count : null) ?? progressCounts?.done ?? progressCounts?.completed ?? progressCounts?.current;
+      const total = (qualityHold ? project.input.target_count : null) ?? progressCounts?.total;
+      const detail = [synthesisPlan(project, total), active ? generationActivity(progress) : ""].filter(Boolean).join(" · ");
+      if (!Number.isFinite(done) || done < 0 || !Number.isFinite(total) || total <= 0) {
+        const row = preparationRow(project, label, active);
+        if (qualityHold) row.statusText = "기술 검사 미통과";
+        return { ...row, detail };
+      }
+      const statusText = qualityHold ? `${progressAmount(done, total, "개")} 통과` : "";
+      return { label, detail, done, total, active, completed, statusText };
+    }
     function workRows(project, historical, active, completed) {
       if (connectingHard(project)) return [{ label: "유사어 학습 자료 연결", statusText: "확인 중", indeterminate: true, active: true }];
       const stage = stageId(project);
@@ -1626,17 +1659,12 @@
       if (historical) {
         if (!generationSteps.has(current)) return [];
         const view = project.completed_stage_views?.[current];
-        return view?.completed && completed && Array.isArray(view.rows)
-          ? view.rows.map(row => ({ ...row, completed: true })) : [];
+        if (!view?.completed || !completed || !Array.isArray(view.rows)) return [];
+        const detail = synthesisPlan(project, view.rows.length === 1 ? view.rows[0].total : null);
+        return view.rows.map(row => ({ ...row, ...(detail ? { detail } : {}), completed: true }));
       }
-      const retry = pilotGenerationRetry(project);
-      if (retry) {
-        const { accepted_count: accepted, target_count: target } = retry;
-        if (Number.isSafeInteger(accepted) && Number.isSafeInteger(target) && accepted >= 0 && accepted < target) {
-          return [{ label, done: accepted, total: target, statusText: `${count(accepted)} / ${count(target)}개 통과` }];
-        }
-        return [{ label, statusText: "기술 검사 미통과" }];
-      }
+      if (synthesisSteps.has(current) || current === "hard-review" && stage === "hard_pilot")
+        return [synthesisProgress(project, label, active, completed)];
       // Only an explicit, task-scoped backend preparation record identifies
       // startup. A genuine 0-update training snapshot remains numeric.
       const preparation = project.training_preparation;
@@ -1690,23 +1718,22 @@
       const row = node("div", undefined, "story-voice-row");
       const title = node("strong"), indicator = node("i", undefined, "story-progress-indicator"), amount = node("span"), bar = node("progress");
       const detail = node("span", undefined, "story-generation-summary"); detail.hidden = true;
+      const labelText = node("span");
+      title.append(labelText, detail, indicator);
       row.append(title, amount, bar);
-      return { row, title, detail, indicator, amount, bar };
+      return { row, title, labelText, detail, indicator, amount, bar };
     }
-    function updateWorkProgressRow({ title, detail, indicator, amount, bar }, { label = "자료", detail: detailText = "", done, total, unit = "개", active = false, completed = false, indeterminate = false, statusText = "" }) {
+    function updateWorkProgressRow({ title, labelText, detail, indicator, amount, bar }, { label = "자료", detail: detailText = "", done, total, unit = "개", active = false, completed = false, indeterminate = false, statusText = "" }) {
       const doneKnown = Number.isFinite(done) && done >= 0, totalKnown = Number.isFinite(total) && total > 0;
-      if (title.dataset.label !== label) { title.textContent = label; title.dataset.label = label; }
+      if (title.dataset.label !== label) { labelText.textContent = label; title.dataset.label = label; }
       detail.hidden = !detailText;
       if (detail.textContent !== detailText) detail.textContent = detailText;
-      if (current === "hard-generation" && hardGenerationSummary.parentElement !== title) title.append(hardGenerationSummary);
-      if (detail.parentElement !== title) title.append(detail);
-      if (indicator.parentElement !== title) title.append(indicator);
       updateProgressIndicator(indicator, progressStatus(active, completed));
       amount.textContent = statusText || (totalKnown ? progressAmount(done, total, unit) : quantity(done, unit));
       bar.hidden = !(doneKnown && totalKnown) && !indeterminate;
       if (indeterminate) {
         bar.removeAttribute("value"); bar.removeAttribute("max"); bar.dataset.active = String(active);
-        bar.setAttribute("aria-label", label + " · 확인 중"); return;
+        bar.setAttribute("aria-label", label + " · " + (statusText || "확인 중")); return;
       }
       if (!bar.hidden) {
         bar.max = total; bar.value = Math.min(done, total);
@@ -2363,10 +2390,16 @@
       const position = screens.indexOf(current), historical = Boolean(!preparationPending && project && (position < maximum && !liveTools || done(project.status)
         || (current === "downloads" && checkpoint?.state === "awaiting_next" && completedStep(project, "downloads"))
         || (navigation?.state === "awaiting_next" && current === navigation.step && completedNavigationStep(project, current))));
-      if (shell.dataset.step !== current && (current === "materials" || shell.dataset.step === "materials")) stage.scrollTop = 0;
+      const previousStep = shell.dataset.step;
+      const wasSynthesisChapter = shell.classList.contains("synthesis-chapter");
+      const synthesisChapter = synthesisSteps.has(current) || current === "hard-review" && reviewStage === "hard_pilot";
+      const movesScrollableChapter = previousStep !== current
+        && (current === "materials" || previousStep === "materials" || synthesisChapter);
+      if (movesScrollableChapter || wasSynthesisChapter !== synthesisChapter) stage.scrollTop = 0;
       shell.dataset.step = current; shell.dataset.model = project ? "existing" : "new";
       shell.dataset.layout = standardLayoutSteps.has(current) ? "standard" : "";
       shell.dataset.history = String(historical);
+      shell.classList.toggle("synthesis-chapter", synthesisChapter);
       shell.classList.toggle("post-repair-generating", repairProgressVisible(project));
       shell.classList.toggle("hard-connecting", connectingHard(project));
       const preparingResults = Boolean(project && current === "results" && !done(project.status) && stageStep(project) === "results");
@@ -2375,7 +2408,6 @@
       const [, title = "학습 상태", description = "현재 작업 상태를 확인해 주세요."] = definition || [];
       const needsToolChoice = waitingToolChoice(project);
       heading.textContent = title;
-      hardGenerationSummary.hidden = true; hardGenerationSummary.textContent = "";
       const savedReviewDescription = historical && pronunciationSteps.has(current);
       subtitle.textContent = savedReviewDescription ? "대표 음원과 저장된 판정을 확인합니다." : description;
       if (current === "tools" && (needsToolChoice || !project)) subtitle.textContent = "음성 생성과 모델 학습에 사용할 연산 장치를 선택하세요.";
@@ -2436,7 +2468,7 @@
       if (operation.disabled !== operationDisabled) operation.disabled = operationDisabled;
       const startsToolsAndDownloads = preparingTools && action === "start";
       const operationText = project?.status === "pausing" || preparationPausing ? "정지 대기" : ["pause", "prepare_pause"].includes(action) ? "일시정지" : ["resume", "prepare_resume"].includes(action) ? "재개"
-        : retryGeneration ? "실패한 샘플 다시 생성"
+        : retryGeneration ? generationRetryLabel(project)
         : action === "prepare_start" ? "생성 시작"
         : ["load_review", "load_hard_review"].includes(action) ? "다시 열기"
         : startsToolsAndDownloads ? "설치·다운로드 시작"
@@ -2514,21 +2546,6 @@
         $("eta").hidden = chapterActive && project.status !== "pausing" && (generation && (project.progress?.eta_eligible === false
           || current === "voices" && separateReferencePreparation(project) && rows.every(row => row.completed))
           || current === "training" && Boolean(project.training_preparation));
-        if (current === "hard-generation") {
-          const phrases = project.completed_stage_views?.phrases?.phrases;
-          const phraseCount = Array.isArray(phrases) ? phrases.length : 0;
-          const perPhrase = project.settings?.hard_samples_per_phrase;
-          const savedTotal = rows.length === 1 ? rows[0].total : null;
-          const knownTotal = Number.isSafeInteger(savedTotal) && savedTotal > 0;
-          const knownPerPhrase = Number.isSafeInteger(perPhrase) && perPhrase > 0;
-          const total = knownTotal ? savedTotal : !sampleFirstHardReview(project) && knownPerPhrase ? phraseCount * perPhrase : null;
-          const generationCount = knownTotal && knownPerPhrase && total % perPhrase === 0 ? total / perPhrase : phraseCount;
-          if (generationCount > 0 && Number.isSafeInteger(total) && total > 0
-              && (!knownPerPhrase || total === generationCount * perPhrase)) {
-            hardGenerationSummary.textContent = `유사어 ${count(generationCount)}종${knownPerPhrase ? ` · 문구당 ${count(perPhrase)}개` : ""} · 총 ${count(total)}개`;
-            hardGenerationSummary.hidden = false;
-          }
-        }
         voiceCounts.hidden = rows.length === 0;
         shell.dataset.workRows = String(!voiceCounts.hidden);
         historic.hidden = !(historical || hasDownloadRows) || frameStep || !voiceCounts.hidden || ["tools", "voices", "entry", "scale", "materials"].includes(current);

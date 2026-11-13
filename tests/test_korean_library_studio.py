@@ -858,6 +858,32 @@ def test_http_retry_generation_requires_a_failed_pilot_and_runs_only_on_explicit
     assert request["context"]["inputs"]["call_pilot_quality_retry"] == {"review_round": 0, "rounds": 2}
 
 
+def test_hard_length_recovery_uses_existing_generation_stage(manager, monkeypatch, http_server):
+    from korean_openwakeword import hard_tts
+
+    project = create(manager)
+    state = manager._load(project["id"])
+    state["index"] = next(i for i, stage in enumerate(state["plan"]) if stage["id"] == "hard_generation")
+    state["status"] = "waiting_input"
+    state["inputs"]["hard_phrases"] = ["충성"]
+    state["results"]["hard_generation"] = {"state": "waiting_input", "input_kind": "generation_policy",
+        "result": {"full_target_reached": False, "technical_pass": 19}}
+    manager._save(state)
+    journal, target = manager._hard_generation_progress(state, Path(state["project"]).parent / "data", "hard_generation")
+    monkeypatch.setattr(hard_tts, "hard_generation_recovery_available",
+                        lambda path, *, pilot: path == journal.parent and not pilot)
+    monkeypatch.setattr(manager, "_journal_counts", lambda path: {"passed": target - 1, "attempts": target + 2})
+    assert manager.describe(state)["input"]["failed_count"] == 1
+    headers = {"X-Koww-Token": manager.token}
+    prefix = f"/api/projects/{project['id']}"
+    assert http_server(prefix + "/resume", "POST", {}, headers=headers)[0] == 200
+    assert not manager.workers.items
+    assert http_server(prefix + "/retry_generation", "POST", {}, headers=headers)[0] == 200
+    request = read_json(manager.workers.items[0].request_path)
+    assert request["stage"] == "hard_generation"
+    assert "call_pilot_quality_retry" not in request["context"]["inputs"]
+
+
 def test_http_studio_state_reads_only_selected_workflow_and_preserves_full_state_api(manager, http_server, monkeypatch):
     def get(path):
         status, content, _ = http_server(path)

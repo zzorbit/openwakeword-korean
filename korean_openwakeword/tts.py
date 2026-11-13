@@ -36,6 +36,9 @@ CALL_RECOVERY_POLICY = "prepared_clone_bounded_recovery_v1"
 ORIGINAL_ATTEMPTS = 3
 CLONE_ATTEMPTS = 6
 _MAX_CALL_DURATION_S = 8
+SHORT_CLONE_POLICY = "qwen_short_clone_v1"
+_QWEN_CODEC_RATE = 24000
+_QWEN_CODEC_FRAME_SAMPLES = 1920
 _REFERENCE_PREPARATION_PREVIOUS_IMPLEMENTATIONS = {
     LEGACY_CALL_IMPLEMENTATION, "9f39f255e364f0186f8e866bfb317dbef90d6c01f3481147c04637b3d0585aee"}
 
@@ -121,31 +124,57 @@ def _load_model(model_path, config, project_root):
             warnings.warn(f"TTS model did not fit on {device}; trying the next available device.", RuntimeWarning)
 
 
-def _call_generation_budget(model, configured_max_new_tokens):
-    """Leave room for a duration-outlier result, but skip its unusable suffix."""
-    if type(configured_max_new_tokens) is not int or configured_max_new_tokens < 1:
-        return configured_max_new_tokens
+def _short_clone_token_limit(model, configured_max_new_tokens, *, text=None, retry=False):
+    """Bound short Qwen clones using the verified codec frame size."""
     if type(model).__module__ != "qwen_tts.inference.qwen3_tts_model":
-        return configured_max_new_tokens
+        return None
     try:
         if version("qwen-tts") != "0.1.1" or version("transformers") != "4.57.3":
-            return configured_max_new_tokens
+            return None
     except PackageNotFoundError:
-        return configured_max_new_tokens
+        return None
+    if configured_max_new_tokens is None:
+        configured_max_new_tokens = (getattr(model, "generate_defaults", None) or {}).get("max_new_tokens", 2048)
+    if type(configured_max_new_tokens) is not int or configured_max_new_tokens < 3:
+        return None
     core = model.model
     tokenizer = core.speech_tokenizer
     generation = core.talker.generation_config
     if (type(tokenizer.model).__module__ != "qwen_tts.core.tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2"
             or generation.forced_eos_token_id is not None or generation.num_beams != 1):
-        return configured_max_new_tokens
+        return None
     sample_rate = tokenizer.get_output_sample_rate()
     samples_per_frame = tokenizer.get_decode_upsample_rate()
-    if (sample_rate, samples_per_frame) != (24000, 1920):
-        return configured_max_new_tokens
-    # One generation step prefills without emitting a codec frame. A sequence
-    # that reaches the limit without EOS still decodes past the existing 8 s QC.
-    overlong_limit = _MAX_CALL_DURATION_S * sample_rate // samples_per_frame + 2
-    return min(configured_max_new_tokens, overlong_limit)
+    if (sample_rate, samples_per_frame) != (_QWEN_CODEC_RATE, _QWEN_CODEC_FRAME_SAMPLES):
+        return None
+    # Allow for natural cadence and padding around the speech window. A retry
+    # adds room for a later natural stop without reverting to the raw budget.
+    characters = sum(char.isalnum() for char in text) if isinstance(text, str) else 0
+    maximum_frames = _MAX_CALL_DURATION_S * sample_rate // samples_per_frame
+    frames = min(maximum_frames, 40 + 2 * characters + (12 if retry else 0))
+    return min(configured_max_new_tokens, frames + 2)
+
+
+def generate_short_clone(model, *, expected_reuses=None, retry=False, **kwargs):
+    """Use the same codec budget whether a clone runs through the runtime or directly."""
+    generate = getattr(model, "generate_short_clone", None)
+    if generate is not None:
+        return generate(expected_reuses=expected_reuses, retry=retry, **kwargs)
+    configured = kwargs.get("max_new_tokens")
+    limit = _short_clone_token_limit(model, configured, text=kwargs.get("text"), retry=retry)
+    if limit is not None:
+        kwargs["max_new_tokens"] = limit
+    wavs, rate = model.generate_voice_clone(**kwargs)
+    return wavs, rate, limit
+
+
+def short_clone_hit_limit(waveform, rate, token_limit):
+    """Reject the codec boundary when the waveform cannot prove a natural stop."""
+    # Qwen returns decoded audio and omits the stop marker. The prefill does
+    # not emit audio, so a full output can contain max_new_tokens - 1 frames.
+    # Clone reference slicing can round the output boundary by one sample.
+    return (type(token_limit) is int and rate == _QWEN_CODEC_RATE
+            and np.size(waveform) >= (token_limit - 1) * _QWEN_CODEC_FRAME_SAMPLES - 1)
 
 
 def _seed(seed):
@@ -447,6 +476,11 @@ def validate_call_rows(root, config, split, references, rows, context, *, scope=
             if key not in verified:
                 clone_reference.verify_clone_reference(root, reference, preparation)
                 verified.add(key)
+            if row.get("short_clone_policy") is not None:
+                limit = row.get("generation_token_limit")
+                if (row["short_clone_policy"] != SHORT_CLONE_POLICY or type(limit) is not int or limit < 3
+                        or ("generation_length_limit" in row["qc"]["reasons"] and row["qc"]["passed"] is not False)):
+                    raise ValueError("Short-clone generation evidence changed")
         if row.get("generation_error"):
             if (historical or method != "clone" or row["generation_error"] != {"kind": "invalid_waveform", "audio_saved": False}
                     or row.get("path") is not None or row.get("sha256") is not None
@@ -600,9 +634,8 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
         existing_hashes.update(excluded_sha256)
         # These immutable settings and retry counts are independent of output.
         generation_contract_id = context["current_id"] if method == "clone" else identity(settings)
-        generate_call = getattr(model, "generate_call", None)
         remaining = (Counter(slot % len(references) for slot in runnable)
-                     if method == "clone" and generate_call is not None else {})
+                     if method == "clone" else {})
         for slot in runnable:
             reference_index = slot % len(references)
             reference = references[reference_index]
@@ -628,10 +661,8 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
                     with generation_attempt() as timing:
                         generation = dict(text=config["wakeword"], language="Korean",
                                           voice_clone_prompt=prompts[prompt_key], **config["tts"]["generation"])
-                        if generate_call is None:
-                            wavs, rate = model.generate_voice_clone(**generation)
-                        else:
-                            wavs, rate, token_limit = generate_call(expected_reuses=remaining[reference_index], **generation)
+                        wavs, rate, token_limit = generate_short_clone(model, retry=attempt > 0,
+                            expected_reuses=remaining[reference_index], **generation)
                     axes = {k: reference.get(k, "reference_style") for k in ("style", "speed", "intonation", "vocal_effort", "call_length")}
                 else:
                     style, instruction = STYLE_OPTIONS[slot % len(STYLE_OPTIONS)]
@@ -643,6 +674,9 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
                     axes = {"style": style, "speed": speed, "intonation": "natural variation", "vocal_effort": style, "call_length": speed}
                 waveform = wavs[0] if wavs is not None and len(wavs) else []
                 qc, converted = technical_qc(waveform, rate)
+                if converted is not None and short_clone_hit_limit(waveform, rate, token_limit):
+                    qc["passed"] = False
+                    qc["reasons"].append("generation_length_limit")
                 if converted is None and method != "clone":
                     raise ValueError("Nonfinite/empty TTS output; cannot persist or silently accept")
                 path, sha, bounds = None, None, None
@@ -680,7 +714,7 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
                         generation_update=context["update"],
                         clone_reference_preparation=prepared[(family, reference["sha256"])][1])
                     if token_limit is not None:
-                        row["generation_token_limit"] = token_limit
+                        row.update(generation_token_limit=token_limit, short_clone_policy=SHORT_CLONE_POLICY)
                     if converted is None:
                         row["generation_error"] = {"kind": "invalid_waveform", "audio_saved": False}
                 if staged_scope is not None:
