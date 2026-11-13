@@ -35,6 +35,10 @@ html.compact-call-review,html.compact-call-review body{height:auto;overflow:visi
 .compact-call-review main{height:auto;min-height:0;overflow:visible}
 .compact-call-review .review-workspace{overflow:visible}
 html.compact-call-review.preflight-picker-open main{height:100dvh;min-height:0;justify-content:center}
+/* Match the chapter navigation buttons while keeping the saved judgment visible. */
+.compact-call-review .review-decisions #discard{border:0;background:var(--control);color:#e9edf2;box-shadow:none}
+.compact-call-review .review-decisions #discard[aria-pressed="true"]{background:#485462}
+.compact-call-review .review-decisions #discard:hover:not(:disabled){background:#363d47}
 /* Expanding only the picker must not switch the embedded player's spacing
    at the iframe-height breakpoints and recenter its controls by a few pixels. */
 html.listening-embedded.compact-call-review main{gap:10px}
