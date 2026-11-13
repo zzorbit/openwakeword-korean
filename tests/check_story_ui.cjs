@@ -2036,6 +2036,7 @@ async function main() {
       }});
       const wire=await wirePreflight(p,project);await wire.send({type:'koww:preflight-state',ready:true,pending:false,error:false});
       await p.next.fire('click');await p.next.fire('click');assert.equal(wire.posted.filter(row=>row.type==='koww:preflight-finalize').length,1);
+      assert.match(textOf(p.shell.querySelector('.story-loader')), /다음 단계로 이동 중/);
       project.status='paused';delete project.review;p.ui.render();assert.equal(p.ui.retainReviewFrame(project),true);
       assert.equal(resumes,0,'a poll before the save response does not authorize admission');
       await wire.send({type:'koww:preflight-finalized',workflow_action:'resume'});await p.flush();

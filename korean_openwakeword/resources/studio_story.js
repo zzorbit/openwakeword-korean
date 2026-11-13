@@ -1385,7 +1385,6 @@
         const preparation = new Promise((resolve, reject) => { intent.resolve = resolve; intent.reject = reject; });
         void preparation.catch(() => {});
         preflightResumeIntent = intent; following = true;
-        if (intent.route.phase === "post") loaderText.textContent = "검수 결과를 저장하고 있습니다...";
         const watchdog = setTimeout(() => { if (preflightResumeIntent === intent) cancelPreflightNext("다음 단계 준비 상태를 확인하지 못했습니다. 다시 진행하세요."); }, intent.route.phase === "post" ? 90000 : 45000);
         intent.watchdog = watchdog; session.timers.add(watchdog);
         void runTransition(session, () => {
