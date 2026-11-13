@@ -40,6 +40,7 @@ def enable_predictor_graph(model, exact_shapes=False):
     # The official HF loop casts next-token logits to float32 before sampling.
     module.sample_logits = lambda logits, **kw: sample_logits(logits.float(), **kw)
     predictor = model.model.talker.code_predictor
+    device = next(predictor.parameters()).device
     class CompatiblePredictorGraph(module.PredictorGraph):
         def _init_cache_layers(self):initialize_cache_layers(self)
         def _build_attention_masks(self):
@@ -48,7 +49,7 @@ def enable_predictor_graph(model, exact_shapes=False):
             self.prefill_attn={'full_attention':None}
             self.decode_attn=[{'full_attention':None} for _ in self.decode_cache_positions]
     graph = CompatiblePredictorGraph(predictor, predictor.model.config,
-        model.model.config.talker_config.hidden_size, device='cuda:0',
+        model.model.config.talker_config.hidden_size, device=device,
         dtype=torch.bfloat16, do_sample=True, top_k=50, top_p=1.0, temperature=.9)
     if exact_shapes:
         original_update=graph.static_cache.update
@@ -59,7 +60,7 @@ def enable_predictor_graph(model, exact_shapes=False):
             n=lengths[id(cache_kwargs['cache_position'])]
             return keys[:,:,:n].contiguous(),values[:,:,:n].contiguous()
         graph.static_cache.update=update
-    with torch.inference_mode():
+    with torch.cuda.device(device), torch.inference_mode():
         graph.capture()
     original = predictor.generate
     def generate(**kwargs):
@@ -81,6 +82,7 @@ def enable_exact_talker_graph(model,max_seq_len=512):
     from transformers import StaticCache
     from transformers.modeling_outputs import BaseModelOutputWithPast
     inner=model.model.talker.model;config=inner.config
+    device = next(inner.parameters()).device
     if config.sliding_window is not None:raise ValueError('Full attention required')
     original=inner.forward
     class ExactCache(StaticCache):
@@ -95,13 +97,16 @@ def enable_exact_talker_graph(model,max_seq_len=512):
     cache=ExactCache(config=config,max_cache_len=max_seq_len)
     heads=getattr(config,'num_key_value_heads',config.num_attention_heads)
     dim=getattr(config,'head_dim',config.hidden_size//config.num_attention_heads)
-    dummy=torch.zeros(1,heads,1,dim,dtype=torch.bfloat16,device='cuda:0')
+    dummy=torch.zeros(1,heads,1,dim,dtype=torch.bfloat16,device=device)
     for layer in cache.layers:layer.lazy_initialization(dummy)
-    inputs=torch.zeros(1,1,config.hidden_size,dtype=torch.bfloat16,device='cuda:0')
+    inputs=torch.zeros(1,1,config.hidden_size,dtype=torch.bfloat16,device=device)
     outputs=torch.empty_like(inputs)
-    positions=torch.zeros(3,1,1,dtype=torch.long,device='cuda:0')
-    cache_pos=torch.zeros(1,dtype=torch.long,device='cuda:0')
-    graphs={};pool=torch.cuda.graph_pool_handle();state={'prefill_pending':True}
+    positions=torch.zeros(3,1,1,dtype=torch.long,device=device)
+    cache_pos=torch.zeros(1,dtype=torch.long,device=device)
+    with torch.cuda.device(device):
+        pool=torch.cuda.graph_pool_handle()
+    graphs = {}
+    state = {'prefill_pending': True}
     def body():
         out=original(inputs_embeds=inputs,attention_mask=None,
             position_ids=positions,past_key_values=cache,cache_position=cache_pos,
@@ -119,7 +124,7 @@ def enable_exact_talker_graph(model,max_seq_len=512):
             cache.reset()
             past=kwargs['past_key_values']
             for i,layer in enumerate(past.layers):
-                indices=torch.arange(layer.keys.shape[2],device='cuda:0')
+                indices=torch.arange(layer.keys.shape[2],device=device)
                 # Populate without the exact-length return view; no result needed.
                 StaticCache.update(cache,layer.keys,layer.values,i,{'cache_position':indices})
             state['prefill_pending']=False
@@ -128,13 +133,18 @@ def enable_exact_talker_graph(model,max_seq_len=512):
         cache.logical_length=position+1
         inputs.copy_(embedded);positions.copy_(kwargs['position_ids']);cache_pos.copy_(kwargs['cache_position'])
         if position not in graphs:
-            stream=torch.cuda.Stream();stream.wait_stream(torch.cuda.current_stream())
-            with torch.cuda.stream(stream):
-                for _ in range(2):body()
-                torch.cuda.synchronize()
-                graph=torch.cuda.CUDAGraph()
-                with torch.cuda.graph(graph,pool=pool):body()
-            torch.cuda.current_stream().wait_stream(stream)
+            with torch.cuda.device(device):
+                current = torch.cuda.current_stream(device)
+                stream = torch.cuda.Stream(device=device)
+                stream.wait_stream(current)
+                with torch.cuda.stream(stream):
+                    for _ in range(2):
+                        body()
+                    torch.cuda.synchronize(device)
+                    graph = torch.cuda.CUDAGraph()
+                    with torch.cuda.graph(graph, pool=pool, stream=stream):
+                        body()
+                current.wait_stream(stream)
             graphs[position]=graph
         graphs[position].replay()
         hidden=outputs.clone()

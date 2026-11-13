@@ -1066,7 +1066,8 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         approved = _result(context, "hard_phrases")
         if approved.get("user_approved") is not True or not approved.get("phrases"):
             return _waiting("비호출 문구를 먼저 확인하고 저장하세요.", input_kind="hard_phrases")
-        model = CloneRuntime(config["tts"]["clone_model"], config["tts"], root, "auto", config["training"]["cpu_threads"])
+        model = CloneRuntime(config["tts"]["clone_model"], config["tts"], root, "auto",
+                             config["training"]["cpu_threads"], expected_reuses=1)
         per_phrase = settings["hard_samples_per_phrase"]
         summary, rows = generate_hard_pilot(project, approved["phrases"], per_phrase, model)
         incomplete = _generation_complete(summary)

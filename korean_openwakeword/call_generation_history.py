@@ -1,9 +1,4 @@
-"""Read the exact previous clone release without rewriting its frozen history.
-
-Only reference-generation and preflight review behavior changed in this release.
-The preceding clone generator and edge-conditioning rules remain valid evidence.
-This bridge pins their source fingerprints and preserves every old receipt byte.
-"""
+"""Read audited generation releases without rewriting their frozen history."""
 from copy import deepcopy
 
 from .common import digest, identity, read_json, read_rows, write_json
@@ -19,6 +14,12 @@ BRIDGE = "preserved_clone_history_after_reference_generation_v1"
 # QC. New production retries record their conditioned prompt and retry phase.
 # Keep the existing contract fingerprint on both checkout formats.
 SCHEDULING_ONLY_TTS_DIGESTS = {
+    # The positive-only runtime limit can shorten rejected suffixes. The
+    # original seeds, supported passing audio and technical QC are preserved.
+    "25d0243343bda89d78c29bc4df61b79d6b4855fde88a76ec63358b78cabd4e8b":
+        "64cf14186bd4fab8ddbd0444830539ba453e199f01d76b6f2b4bbc9d5ed7dc55",
+    "f66d7545a171067d6ae5100a1ca039929e972293233ccf53ce9f0e93b9a304c5":
+        "e5167c6a96979f424685544d1c726252a89052d17936bb1f3500309ece930e37",
     "af3d47e4a6a37257811ae7800d33a0971ccf03f6f932ce76f306add44745aaec":
         "64cf14186bd4fab8ddbd0444830539ba453e199f01d76b6f2b4bbc9d5ed7dc55",
     "7cb7481a601ea33ac7256623438ad314564a5ec1f2e946db9ecfe1a64f2f6f07":
@@ -37,6 +38,35 @@ CONDITIONING_ONLY_REFERENCE_DIGESTS = {
     "6766a71cf7464f113dcf1d2716af4f7ee99e386f62340666d641be34da7d862a":
         "c4a6a2a2e9385217a9821feba19cb3d7efea03431a34a657caa4f73186cc3332",
 }
+
+_PREVIOUS_HARD_IMPLEMENTATIONS = {
+    "hard_tts.py": {"c7790a5d04f87c807f1a4f9dd29ba7caec55f3b48ce3dc660ca54b3f2b5f40bb",
+                    "6b6dd2de36feb9d801355eb2c1cbedb8a3edd3bf15376d72f2cd341696d1c283"},
+    "hard_pilot.py": {"7c155ed6634c480f95c0723b281afb38c23fc70545d14034e2559a0c1b8bdc8a",
+                      "e7fc3d6d1315ad1cf023ed623cb7ef916f10931cbbc172dcad8a59c8ff47a93a"},
+}
+
+
+def compatible_hard_contract(actual, expected, *, pilot=False):
+    """The runtime update leaves Hard's generation and QC rules intact."""
+    if actual == expected:
+        return True
+    adjusted = deepcopy(actual)
+    if pilot:
+        keys = "implementation_sha256", "technical_qc_sha256"
+        implementation, qc = (actual.get(key) for key in keys)
+        for key in keys:
+            adjusted[key] = expected[key]
+    else:
+        keys = "implementation", "technical_qc_implementation"
+        if not all(isinstance(actual.get(key), dict) and "sha256" in actual[key] for key in keys):
+            return False
+        implementation, qc = (actual[key]["sha256"] for key in keys)
+        for key in keys:
+            adjusted[key]["sha256"] = expected[key]["sha256"]
+    name = "hard_pilot.py" if pilot else "hard_tts.py"
+    return (adjusted == expected and implementation in _PREVIOUS_HARD_IMPLEMENTATIONS[name]
+            and qc in SCHEDULING_ONLY_TTS_DIGESTS)
 
 
 def previous_contract(expected):

@@ -109,6 +109,45 @@ def test_qwen_subloaders_receive_a_local_pinned_model_not_a_remote_repo(tmp_path
     assert calls == [(str(snapshot), {"device_map": "cpu", "dtype": "float32", "attn_implementation": "sdpa"})]
 
 
+def test_qwen_auto_retries_other_devices_and_chooses_supported_precision(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    from korean_openwakeword import tts
+
+    class OutOfMemoryError(RuntimeError):
+        pass
+
+    calls, active = [], []
+
+    @contextmanager
+    def select(device):
+        active.append(device)
+        try:
+            yield
+        finally:
+            active.pop()
+
+    def load(_, *, device_map, dtype, attn_implementation):
+        calls.append((device_map, dtype, attn_implementation))
+        if device_map.startswith("cuda"):
+            raise OutOfMemoryError("insufficient memory")
+        return device_map
+
+    cuda = types.SimpleNamespace(is_available=lambda: True, current_device=lambda: 1, device_count=lambda: 2,
+        device=select, is_bf16_supported=lambda *, including_emulation: not including_emulation and active[-1] == "cuda:1",
+        OutOfMemoryError=OutOfMemoryError, empty_cache=lambda: calls.append(("empty_cache", active[-1])))
+    monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace(cuda=cuda, bfloat16="bf16", float16="fp16", float32="fp32"))
+    monkeypatch.setitem(sys.modules, "qwen_tts", types.SimpleNamespace(Qwen3TTSModel=types.SimpleNamespace(from_pretrained=load)))
+    monkeypatch.setattr(tts, "local_tts_snapshot", lambda *args: str(tmp_path))
+    with pytest.warns(RuntimeWarning, match="trying the next available device"):
+        assert tts._load_model("unused", {"device": "auto", "attention": "sdpa"}, tmp_path) == "cpu"
+    assert calls == [("cuda:1", "bf16", "sdpa"), ("empty_cache", "cuda:1"),
+                     ("cuda:0", "fp16", "sdpa"), ("empty_cache", "cuda:0"), ("cpu", "fp32", "sdpa")]
+    calls.clear()
+    with pytest.raises(OutOfMemoryError):
+        tts._load_model("unused", {"device": "cuda:0", "attention": "sdpa"}, tmp_path)
+    assert calls == [("cuda:0", "fp16", "sdpa")]
+
+
 def test_link_probe_finishes_before_parallel_snapshot_workers_and_preserves_bytes(tmp_path, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     import huggingface_hub

@@ -109,25 +109,29 @@ def test_new_candidates_use_prepared_audio_and_resume_old_records_without_genera
         assert row['technical_metrics']['duration_s'] < 2
         assert row['decoded_pcm_sha256']==row['reference_preparation']['technical_metrics']['decoded_pcm_sha256']
         assert row['seed'] in next(item for item in plan['candidates'] if item['candidate_id']==row['candidate_id'])['attempt_seeds']
-    # Simulate a fully published legacy candidate: no new preparation field is required.
+    # Simulate a fully published legacy candidate before either check was recorded.
     first=rows[0]
     record_path=root/first['candidate_record']['path']
     record=read_json(record_path);record['candidate'].pop('reference_preparation')
+    record['candidate'].pop('reference_timing_check')
     write_json(record_path,record)
     before=state(root)
     repeated=candidates.generate_candidate_batch(project,output,'job',plan,[],load_model=lambda *args:pytest.fail('Old records must not reload a model'))
     assert 'reference_preparation' not in repeated[0]
+    assert 'reference_timing_check' not in repeated[0]
     assert len(repeated)==5 and len(model.calls)==5
     assert all(digest(root/name)==sha for name,sha in before.items() if not name.endswith('progress.json'))
 
 
-def test_candidate_retries_long_internal_near_silence_with_next_saved_seed(pool, monkeypatch):
+@pytest.mark.parametrize('invalid_output', ['long_pause', 'overlong_utterance'])
+def test_candidate_retries_invalid_timing_with_next_saved_seed(pool, monkeypatch, invalid_output):
     root, project, _, _, saved, model = pool
     plan = candidates.plan_candidate_batch(project, saved, candidates.active_candidate_group(saved))
     candidates.register_candidate_batch(saved, plan)
     output = candidates.candidate_jobs(root) / plan['batch_id'] / 'audio'
     rate = 24000
-    interrupted = np.concatenate((wave(2.7), np.full(16 * rate, .00002, dtype='float32'), wave(.9)))
+    rejected_wave = (np.concatenate((wave(2.7), np.full(16 * rate, .00002, dtype='float32'), wave(.9)))
+                     if invalid_output == 'long_pause' else wave(17))
     normal_pause = np.concatenate((wave(1), np.zeros(round(.9 * rate), dtype='float32'), wave(1)))
     seeds = []
     monkeypatch.setattr(tts, '_seed', seeds.append)
@@ -135,7 +139,7 @@ def test_candidate_retries_long_internal_near_silence_with_next_saved_seed(pool,
     def generate(**kwargs):
         model.calls.append(kwargs)
         index = len(model.calls)
-        values = interrupted if index == 1 else normal_pause if index == 2 else wave(frequency=211 + index)
+        values = rejected_wave if index == 1 else normal_pause if index == 2 else wave(frequency=211 + index)
         return [values], rate
 
     model.generate_voice_design = generate
@@ -146,11 +150,26 @@ def test_candidate_retries_long_internal_near_silence_with_next_saved_seed(pool,
     assert first['candidate_id'] == planned['candidate_id'] and first['attempt'] == 1
     assert first['seed'] == planned['attempt_seeds'][1]
     rejected = output / 'raw' / f"{planned['candidate_id']}_attempt0.wav"
-    assert np.array_equal(sf.read(rejected, dtype='float32')[0], interrupted)
+    assert np.array_equal(sf.read(rejected, dtype='float32')[0], rejected_wave)
     assert read_json(rejected.with_name(rejected.name + '.raw.json'))['source']['sha256'] == digest(rejected)
     assert np.array_equal(sf.read(root / first['path'], dtype='float32')[0], normal_pause)
+    assert first['reference_timing_check']['audible_span_s'] == pytest.approx(2.9)
+    assert first['reference_timing_check']['longest_internal_pause_s'] == pytest.approx(.9)
     candidates.ingest_candidate_batch(root, saved, plan, rows)
     assert set(saved['candidates']) == {row['candidate_id'] for row in rows}
+
+
+def test_candidate_timing_excludes_edges_and_allows_longer_sentences(tmp_path):
+    rate = 24000
+    source = tmp_path / 'reference.wav'
+    sf.write(source, np.concatenate((np.zeros(6 * rate), wave(12), np.zeros(6 * rate))), rate, subtype='FLOAT')
+    with pytest.raises(preparation.GeneratedReferenceQualityError, match='너무 깁니다'):
+        candidates._check_candidate_timing(source, '오늘은 창밖으로 따뜻한 햇살이 들어옵니다.')
+    longer_sentence = '오늘은 창밖으로 따뜻한 햇살이 들어옵니다. 천천히 숨을 고르고 자연스러운 목소리로 한국어 문장을 읽습니다.'
+    metrics = candidates._check_candidate_timing(source, longer_sentence)
+    assert metrics['audible_span_s'] == pytest.approx(12.)
+    assert metrics['span_limit_s'] > metrics['audible_span_s']
+    assert metrics['longest_internal_pause_s'] == 0.
 
 
 def test_legacy_reference_journal_keeps_old_rows_contract_and_uses_cleanup_only_for_new_rows(tmp_path,monkeypatch):

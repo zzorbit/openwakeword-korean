@@ -156,7 +156,7 @@ def _pilot_synthesis_fixture(project, monkeypatch, train):
 
     model = SelectiveModel()
     monkeypatch.setattr(tts, "_seed", cpu_seed)
-    monkeypatch.setattr(tts_runtime, "CloneRuntime", lambda *args: model)
+    monkeypatch.setattr(tts_runtime, "CloneRuntime", lambda *args, **kwargs: model)
     monkeypatch.setattr(pilot, "_preflight_banks", lambda *_: {"train": train, "validation": validation})
     return model, validation, {"train_references": len(train), "validation_references": len(validation)}
 

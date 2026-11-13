@@ -26,7 +26,7 @@ def fake_cuda_runtime(tmp_path, monkeypatch, difference="none", warm_seconds=.5,
     # advance independently so a CUDA-only regression cannot escape the test.
     cuda_rng = torch.Generator(device="cpu")
     cuda_rng.manual_seed(812)
-    monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda device: None)
     monkeypatch.setattr(torch.cuda, "get_rng_state", lambda device: cuda_rng.get_state().clone())
     monkeypatch.setattr(torch.cuda, "set_rng_state", lambda state, device: cuda_rng.set_state(state.clone()))
     @contextmanager
@@ -128,7 +128,7 @@ def test_only_equivalent_warm_backend_with_five_percent_speedup_is_selected(tmp_
     assert qualification["minimum_warm_speedup_met"] is accepted
     assert qualification["graph_cold_seconds"] == 20  # Cold cost never selects the backend.
     assert qualification["graph_warm_seconds"] == warm_seconds
-    assert runtime.disabled is (not accepted)
+    assert not runtime.disabled
     if accepted:
         # The same reference is not qualified or repeated on later requests.
         runtime.generate_voice_clone(text="보라야", language="Korean", voice_clone_prompt=prompt)
@@ -136,6 +136,7 @@ def test_only_equivalent_warm_backend_with_five_percent_speedup_is_selected(tmp_
         assert runtime.model.stages[-1] == "fast"
     else:
         assert "5% faster" in qualification["reason"]
+        assert qualification["fallback_scope"] == "prompt"
         assert runtime.report["actual_backend"] == "eager"
 
 
@@ -224,6 +225,67 @@ def test_another_reference_gets_its_own_same_seed_warm_qualification(tmp_path, m
     assert len(runtime.checked) == 2
     assert all(q["accepted"] and q["minimum_warm_speedup_met"] for q in runtime.report["qualifications"])
     assert runtime.report["qualification_clips_added_to_training"] == 0
+
+
+def test_one_utterance_uses_eager_and_small_job_accounts_for_capture(tmp_path, monkeypatch):
+    runtime, _, _, _ = fake_cuda_runtime(tmp_path, monkeypatch, cold_seconds=20)
+    one = CloneRuntime("unused", {}, tmp_path, expected_reuses=1)
+    one.model = runtime.model
+    one.generate_voice_clone(text="보라야", voice_clone_prompt=[object()])
+    assert one.model.stages == ["eager"] and one.report["qualifications"] == []
+
+    prompt = [object()]
+    runtime.generate_voice_clone(text="보라야", voice_clone_prompt=prompt, expected_reuses=2)
+    qualification = runtime.report["qualifications"][0]
+    assert qualification["minimum_warm_speedup_met"]
+    assert not qualification["accepted"]
+    assert qualification["fallback_scope"] == "prompt"
+    runtime.generate_voice_clone(text="보라야", voice_clone_prompt=prompt)
+    assert runtime.model.stages[-1] == "eager"
+
+
+def test_replay_out_of_memory_returns_same_seed_from_eager_and_releases_graphs(tmp_path, monkeypatch):
+    runtime, cuda_rng, eager, fast = fake_cuda_runtime(tmp_path, monkeypatch)
+    prompt = [object()]
+    runtime.generate_voice_clone(text="보라야", voice_clone_prompt=prompt)
+    generate = runtime.model.generate_voice_clone
+
+    def out_of_memory(**kwargs):
+        if runtime.model.model.talker.code_predictor.generate is fast:
+            torch.rand(1)
+            torch.rand(1, generator=cuda_rng)
+            raise torch.cuda.OutOfMemoryError("graph allocation failed")
+        return generate(**kwargs)
+
+    with torch.random.fork_rng(devices=[0]):
+        expected, _ = runtime._eager({"text": "보라야", "voice_clone_prompt": prompt})
+        cpu_after, cuda_after = torch.get_rng_state(), cuda_rng.get_state()
+    monkeypatch.setattr(runtime.model, "generate_voice_clone", out_of_memory)
+    result, _ = runtime.generate_voice_clone(text="보라야", voice_clone_prompt=prompt)
+    assert np.array_equal(result[0], expected[0])
+    assert torch.equal(torch.get_rng_state(), cpu_after)
+    assert torch.equal(cuda_rng.get_state(), cuda_after)
+    assert runtime.model.model.talker.code_predictor.generate is eager
+    assert runtime.disabled and runtime.predictor is None and runtime.talker is None
+    assert runtime.report["replay_fallbacks"][0]["scope"] == "runtime"
+
+
+def test_reused_graph_buckets_need_only_two_exact_comparisons(tmp_path, monkeypatch):
+    runtime, cuda_rng, _, _ = fake_cuda_runtime(tmp_path, monkeypatch)
+    runtime.generate_voice_clone(text="보라야", voice_clone_prompt=[object()])
+    runtime.talker["graphs"] = {10: object()}
+    clocks = cycle((0, 1, 0, .1))
+    monkeypatch.setattr(tts_runtime, "time", SimpleNamespace(perf_counter=lambda: next(clocks)))
+    prompt = [object()]
+    expected, expected_rng, expected_cuda = one_eager_call(runtime, cuda_rng)
+    before = len(runtime.model.stages)
+    actual, _ = runtime.generate_voice_clone(text="보라야", voice_clone_prompt=prompt)
+    assert np.array_equal(actual[0], expected[0])
+    assert torch.equal(torch.get_rng_state(), expected_rng)
+    assert torch.equal(cuda_rng.get_state(), expected_cuda)
+    assert runtime.model.stages[before:] == ["eager", "fast"]
+    assert runtime.report["qualifications"][-1]["reused_graph_buckets"]
+    assert runtime.report["qualifications"][-1]["accepted"]
 
 
 def test_failed_eager_qc_skips_graph_replays_and_keeps_rng(tmp_path, monkeypatch):
@@ -317,11 +379,14 @@ def test_cpu_model_retains_original_path_without_cuda_rng_access(tmp_path, monke
     # The model loader is a fixture, so its optional Transformers dependency
     # must also be a fixture on the CPU-only [train,dev] installation.
     monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(__version__="test-fixture"))
-    eager = object()
+    calls = []
     model = SimpleNamespace(
-        model=SimpleNamespace(parameters=lambda: iter([torch.nn.Parameter(torch.zeros(1))]),
-            talker=SimpleNamespace(code_predictor=SimpleNamespace(generate=eager), model=SimpleNamespace(forward=eager))),
-        generate_voice_clone=lambda **kwargs: ([np.ones(1000)*.1], 16000))
+        model=SimpleNamespace(parameters=lambda: iter([torch.nn.Parameter(torch.zeros(1))])),
+        generate_voice_clone=lambda **kwargs: ([np.ones(1000)*.1], 16000),
+        create_voice_clone_prompt=lambda **kwargs: calls.append(kwargs) or [object()])
+    monkeypatch.setattr(tts_runtime, "_cpu_thread_budget", lambda requested: 2)
+    monkeypatch.setattr(torch, "get_num_threads", lambda: 1)
+    monkeypatch.setattr(torch, "set_num_threads", calls.append)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     def forbidden(*args, **kwargs): pytest.fail("A CPU model must not touch CUDA qualification")
     monkeypatch.setattr(torch.cuda, "get_rng_state", forbidden)
@@ -331,3 +396,46 @@ def test_cpu_model_retains_original_path_without_cuda_rng_access(tmp_path, monke
     result, rate = runtime.generate_voice_clone(text="보라야", voice_clone_prompt=[object()])
     assert rate == 16000 and np.all(result[0] == .1)
     assert runtime.disabled and runtime.report["qualifications"] == []
+    audio = tmp_path / "reference.wav"
+    audio.write_bytes(b"reference")
+    first = runtime.create_voice_clone_prompt(ref_audio=str(audio), ref_text="기준 문장")
+    assert runtime.create_voice_clone_prompt(ref_audio=str(audio), ref_text="기준 문장") is first
+    assert calls == [2, {"ref_audio": str(audio), "ref_text": "기준 문장"}]
+
+
+def test_cpu_threads_follow_process_and_blas_limits(monkeypatch):
+    monkeypatch.setattr(tts_runtime.os, "process_cpu_count", lambda: 8, raising=False)
+    if hasattr(tts_runtime.os, "sched_getaffinity"):
+        monkeypatch.setattr(tts_runtime.os, "sched_getaffinity", lambda pid: range(4))
+    monkeypatch.setenv("OMP_NUM_THREADS", "3,2")
+    monkeypatch.setenv("MKL_NUM_THREADS", "broken")
+    assert tts_runtime._cpu_thread_budget(12) == 3
+    assert tts_runtime._cpu_thread_budget(1) == 1
+
+
+def test_token_cache_reuses_exact_single_input_without_changing_batch_calls():
+    calls = []
+    model = SimpleNamespace(_tokenize_texts=lambda texts: calls.append(texts) or [object() for _ in texts])
+    tts_runtime._cache_tokenization(model)
+    first = model._tokenize_texts(["보라야"])
+    second = model._tokenize_texts(["보라야"])
+    assert first is not second and first[0] is second[0]
+    assert model._tokenize_texts(["보라야", "가영아"])[0] is not first[0]
+    assert calls == [["보라야"], ["보라야", "가영아"]]
+
+
+def test_graph_measurements_use_loaded_cuda_device(tmp_path, monkeypatch):
+    runtime, _, _, _ = fake_cuda_runtime(tmp_path, monkeypatch)
+    runtime.cuda_device = 2
+    calls = []
+    original_sync = torch.cuda.synchronize
+    original_get = torch.cuda.get_rng_state
+    original_set = torch.cuda.set_rng_state
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda device: calls.append(device) or original_sync(device))
+    monkeypatch.setattr(torch.cuda, "get_rng_state", lambda device: calls.append(device) or original_get(device))
+    monkeypatch.setattr(torch.cuda, "set_rng_state", lambda state, device: calls.append(device) or original_set(state, device))
+    prompt = [object()]
+    runtime.generate_voice_clone(text="보라야", voice_clone_prompt=prompt)
+    runtime.generate_voice_clone(text="보라야", voice_clone_prompt=prompt)
+    assert calls and set(calls) == {2}
+    assert runtime.report["qualifications"][-1]["accepted"]

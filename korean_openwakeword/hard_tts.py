@@ -168,8 +168,11 @@ def generate_hard(project, phrases, count=None, model=None, *, samples_per_phras
     with writer_lock(output):
         contract_path = output / "contract.json"
         if contract_path.exists():
-            if read_json(contract_path) != contract:
+            from .call_generation_history import compatible_hard_contract
+            saved = read_json(contract_path)
+            if not compatible_hard_contract(saved, contract):
                 raise ValueError("Hard settings/reference/code/count changed; use a versioned output/project")
+            contract = saved
         else:
             if read_rows(output / "candidates.jsonl"):
                 raise ValueError("Hard candidate journal exists without its frozen contract")

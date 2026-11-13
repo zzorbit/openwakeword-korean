@@ -1,6 +1,7 @@
 """Prepared clone inputs recover only failed slots under a bounded audit trail."""
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -10,6 +11,30 @@ from korean_openwakeword import tts
 from korean_openwakeword.common import append_row, digest, identity, read_json, read_rows, write_json
 from korean_openwakeword.pilot import _passing_slots
 from test_korean_library_tts_journal import approved_project, cpu_seed
+
+
+def test_call_codec_limit_leaves_an_overlength_attempt_rejectable(monkeypatch):
+    wrapper = type("Qwen3TTSModel", (), {"__module__": "qwen_tts.inference.qwen3_tts_model"})()
+    codec = type("Qwen3TTSTokenizerV2Model", (), {
+        "__module__": "qwen_tts.core.tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2"})()
+    generation = SimpleNamespace(forced_eos_token_id=None, num_beams=1)
+    tokenizer = SimpleNamespace(model=codec, get_output_sample_rate=lambda: 24000,
+                                get_decode_upsample_rate=lambda: 1920)
+    wrapper.model = SimpleNamespace(speech_tokenizer=tokenizer, talker=SimpleNamespace(generation_config=generation))
+    monkeypatch.setattr(tts, "version", {"qwen-tts": "0.1.1", "transformers": "4.57.3"}.__getitem__)
+    limit = tts._call_generation_budget(wrapper, 256)
+    assert limit == 102 and tts._call_generation_budget(wrapper, 75) == 75
+    # The initial prefill has no codec frame. No-EOS output at the cap must
+    # exceed the duration boundary even if its actual speech fits the window.
+    wave = np.zeros((limit - 1) * 1920)
+    wave[:24000] = .1 * np.sin(np.arange(24000) / 11)
+    assert tts.technical_qc(wave, 24000)[0]["reasons"] == ["duration_outlier"]
+    assert tts.technical_qc(wave[:8 * 24000], 24000)[0]["passed"]
+    generation.forced_eos_token_id = 1
+    assert tts._call_generation_budget(wrapper, 256) == 256
+    generation.forced_eos_token_id = None
+    tokenizer.model = object()
+    assert tts._call_generation_budget(wrapper, 256) == 256
 
 
 def legacy_run(tmp_path, *, count=50, scoped=True, pilot=True, unknown=False,
@@ -332,7 +357,11 @@ def test_current_prepost_workflow_recovers_or_reports_actual_failure_without_hum
     model = RecoveryModel(fail=fail)
     monkeypatch.setattr(tts, "_seed", cpu_seed)
     monkeypatch.setattr(pilot, "_preflight_banks", lambda *args: {"train": refs, "validation": validation})
-    monkeypatch.setattr("korean_openwakeword.tts_runtime.CloneRuntime", lambda *args: model)
+    def one_shot_runtime(*args, expected_reuses):
+        assert expected_reuses == 1
+        return model
+
+    monkeypatch.setattr("korean_openwakeword.tts_runtime.CloneRuntime", one_shot_runtime)
     before_approval = (root / "approval.json").read_bytes()
     original_journal = (output / "candidates.jsonl").read_bytes()
     result = pilot.prepare_prepost_pilot(project, {"train_references": 3, "validation_references": 2})

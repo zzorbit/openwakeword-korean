@@ -9,6 +9,7 @@ from pathlib import Path
 from .task_progress import emit as report_progress, generation_attempt
 import random
 import re
+from unicodedata import normalize
 import uuid
 
 from .common import bound_file, digest, identity, now, read_json, read_rows, resolved, snapshot_json, write_immutable_rows, write_json, writer_lock
@@ -28,6 +29,10 @@ _TERMINAL_CANDIDATE_QC_ERROR = "기술 검사를 통과한 서로 다른 목소�
 BATCH_KIND = "reference_candidate_batch_v2"
 BATCH_SIZE = 5
 MAX_INTERNAL_SILENCE_S = 2.0
+_CANDIDATE_TIMING_POLICY = "reference_candidate_timing_v1"
+_CANDIDATE_MIN_SPAN_LIMIT_S = 8.0
+_CANDIDATE_SPAN_HEADROOM_S = 2.0
+_CANDIDATE_SECONDS_PER_TEXT_CHARACTER = 0.5
 GENDERS = ("man", "woman")
 AGES = ("child", "teenager", "young adult", "middle-aged", "older adult")
 GENDER_LABELS = {"man": "남성", "woman": "여성"}
@@ -330,23 +335,34 @@ def _validate_plan(plan, config):
         raise ValueError("목소리 후보의 난수가 서로 중복됩니다.")
 
 
-def _check_candidate_internal_silence(path):
-    """Reject long pauses between audible frames in the fixed reference sentence."""
+def _check_candidate_timing(path, text):
+    """Measure the audible span of the reference sentence after edge cleanup."""
     import numpy as np
     import soundfile as sf
     from .clone_reference import RULES, GeneratedReferenceQualityError
 
     samples, rate = sf.read(path, dtype="float64")
     frame = max(1, round(rate * RULES["frame_ms"] / 1000))
-    activity_power = RULES["activity_rms"] ** 2
-    previous_end = None
-    for start in range(0, len(samples), frame):
-        window = samples[start:start + frame]
-        if np.dot(window, window) / len(window) < activity_power:
-            continue
-        if previous_end is not None and start - previous_end >= MAX_INTERNAL_SILENCE_S * rate:
-            raise GeneratedReferenceQualityError("기준 목소리 후보의 발화 사이에 긴 무음이 있습니다.")
-        previous_end = start + len(window)
+    starts = np.arange(0, len(samples), frame)
+    ends = np.minimum(starts + frame, len(samples))
+    powers = np.add.reduceat(np.square(samples), starts) / (ends - starts)
+    active = powers >= RULES["activity_rms"] ** 2
+    active_starts, active_ends = starts[active], ends[active]
+    if not len(active_starts):
+        raise GeneratedReferenceQualityError("기준 목소리 후보에서 발화 구간을 찾지 못했습니다.")
+    longest_pause = np.max(active_starts[1:] - active_ends[:-1], initial=0)
+    if longest_pause >= MAX_INTERNAL_SILENCE_S * rate:
+        raise GeneratedReferenceQualityError("기준 목소리 후보의 발화 사이에 긴 무음이 있습니다.")
+    # Allow deliberate slow delivery and a longer configured sentence. Unlike
+    # the raw file duration, this span excludes leading and trailing silence.
+    text_units = sum(character.isalnum() for character in normalize("NFC", text))
+    span_limit_s = max(_CANDIDATE_MIN_SPAN_LIMIT_S,
+        _CANDIDATE_SPAN_HEADROOM_S + text_units * _CANDIDATE_SECONDS_PER_TEXT_CHARACTER)
+    audible_span_s = float(active_ends[-1] - active_starts[0]) / rate
+    if audible_span_s > span_limit_s:
+        raise GeneratedReferenceQualityError("기준 목소리 후보의 발화가 예문 길이에 비해 너무 깁니다.")
+    return {"policy": _CANDIDATE_TIMING_POLICY, "audible_span_s": audible_span_s,
+            "span_limit_s": span_limit_s, "longest_internal_pause_s": float(longest_pause) / rate}
 
 
 @project_storage
@@ -416,7 +432,7 @@ def generate_candidate_batch(project, output, job_key, plan, all_hashes, *, load
                     try:
                         preparation = prepare_generated_reference(root,
                             {"path": raw.relative_to(root).as_posix(), "sha256": digest(raw), "generation": generation}, attempt_target)
-                        _check_candidate_internal_silence(attempt_target)
+                        timing_check = _check_candidate_timing(attempt_target, item["text"])
                     except GeneratedReferenceQualityError:
                         if timing is not None:
                             timing.committed(False)
@@ -444,6 +460,7 @@ def generate_candidate_batch(project, output, job_key, plan, all_hashes, *, load
                                    "provenance": "qwen_synthetic_reference", "human_reference_used": False,
                                    "technical_pass": True, "technical_metrics": metrics, "plan_binding": plan_binding,
                                    "reference_preparation": preparation,
+                                   "reference_timing_check": timing_check,
                                    "generation_job": job_key, "created_at": now()}
                         write_json(record, {"kind": BATCH_KIND, "candidate": row})
                         if timing is not None:
@@ -492,6 +509,8 @@ def _verify_candidate(root, row):
                 or preparation["generation"] != expected_generation
                 or preparation["technical_metrics"] != row["technical_metrics"]):
             raise ValueError("목소리 후보의 원본·검수용 음원 또는 정리 기록이 다릅니다.")
+    if "reference_timing_check" in row and row["reference_timing_check"] != _check_candidate_timing(audio, row["text"]):
+        raise ValueError("목소리 후보의 발화 길이 검사 기록이 다릅니다.")
     return audio
 
 

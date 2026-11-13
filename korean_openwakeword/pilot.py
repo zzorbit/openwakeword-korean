@@ -149,7 +149,8 @@ def prepare_pilot(project, train_count=None, *, validation_count=None, tts_backe
             from .tts import generate as generate_calls
             from .tts_runtime import CloneRuntime
             if model is None:
-                model = CloneRuntime(config["tts"]["clone_model"], config["tts"], root, tts_backend, tts_cpu_threads)
+                model = CloneRuntime(config["tts"]["clone_model"], config["tts"], root, tts_backend,
+                                     tts_cpu_threads, expected_reuses=1)
             return generate_calls(path, split, limit, True, "clone", model=model)
 
     selected, split_counts, split_bindings, missing_families, exhausted_slots = [], {}, {}, [], []
@@ -265,6 +266,7 @@ def _preflight_state(root, config, banks, prior_rounds):
 def _alternate_reference(root, config, original, round_key, load_design_model, reference_hashes):
     import soundfile as sf
     from .clone_reference import prepare_generated_reference, verify_generated_reference, GeneratedReferenceQualityError
+    from .reference_candidates import _check_candidate_timing
     from .tts import _reference_instruction, _seed
 
     family = original["voice_family_id"]
@@ -314,6 +316,7 @@ def _alternate_reference(root, config, original, round_key, load_design_model, r
         try:
             preparation = prepare_generated_reference(root,
                 {"path": raw.relative_to(root).as_posix(), "sha256": digest(raw), "generation": generation}, candidate)
+            _check_candidate_timing(candidate, original["text"])
         except GeneratedReferenceQualityError:
             continue
         sha = preparation["prepared"]["sha256"]
@@ -471,7 +474,8 @@ def prepare_prepost_pilot(project, settings, *, prior_rounds=(), quality_retry_r
                         bank[index] = reference
                         reference_hashes.add(reference["sha256"])
             design = None
-        model = CloneRuntime(config["tts"]["clone_model"], config["tts"], root, "auto", config["training"]["cpu_threads"])
+        model = CloneRuntime(config["tts"]["clone_model"], config["tts"], root, "auto",
+                             config["training"]["cpu_threads"], expected_reuses=1)
         work, attempts, exhausted = _generate_preflight_banks(
             project, root, config, banks, pending, heard_hashes, round_key, model, quality_retry_rounds)
         selected, split_counts = [], {}

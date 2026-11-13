@@ -468,8 +468,32 @@ def _audited_reference_candidate_update(previous, current):
 _PREFLIGHT_QUALITY_RETRY_UPDATE = "audited_preflight_quality_retry_update"
 _REFERENCE_GAP_FILTER_UPDATE = "audited_reference_candidate_gap_filter_update"
 _PRODUCTION_SPEED_UPDATE = "audited_production_generation_recovery_update"
-_PRESERVED_CALL_UPDATES = {_PREFLIGHT_QUALITY_RETRY_UPDATE, _REFERENCE_GAP_FILTER_UPDATE, _PRODUCTION_SPEED_UPDATE}
+_TTS_DEVICE_UPDATE = "audited_adaptive_tts_runtime_update"
+_PRESERVED_CALL_UPDATES = {_PREFLIGHT_QUALITY_RETRY_UPDATE, _REFERENCE_GAP_FILTER_UPDATE,
+                           _PRODUCTION_SPEED_UPDATE, _TTS_DEVICE_UPDATE}
+_TTS_DEVICE_UPDATE_FILES = ("call_generation_history.py", "hard_pilot.py", "hard_tts.py", "pilot.py",
+    "reference_candidates.py", "studio_steps.py", "tts.py", "tts_cuda_graph.py", "tts_cuda_predictor.py", "tts_runtime.py")
+_TTS_DEVICE_UPDATE_EVIDENCE = "e830e0b8b461e9cb851c891273c0d47b5f2cf3ac980228a46e57431790cfd1fd"
+_TTS_DEVICE_UPDATE_REASON = "새 기준 목소리의 발화 길이를 먼저 확인하고, 장치와 생성량에 맞춰 실행 방식을 선택합니다. 저장된 음원과 검수 결과는 유지합니다."
 _AUDITED_CALL_GENERATION_RECOVERY_UPDATES = {
+    "b80c403be0bf73b49a69a9ee3e7442833cf5c37adb32e04761cc846907f7e6ea": {
+        "kind": _TTS_DEVICE_UPDATE,
+        "source_stages_sha256": "30ff20fd0bae8b14c92b6c543e2e88d32659ad757e44369186411452f08de0cf",
+        "target_computation_sha256": "e3f4a61958b1fb0b54258d20df98bf432b1ed6934f004549798f0ff24fc827fe",
+        "target_stages_sha256": "b369acf83d014505cfc7cb9b5490ca7e11b5d8183b6d4a206780aed6e5b7c2c9",
+        "changed_files": _TTS_DEVICE_UPDATE_FILES,
+        "evidence_sha256": _TTS_DEVICE_UPDATE_EVIDENCE,
+        "reason": _TTS_DEVICE_UPDATE_REASON,
+    },
+    "813ae94ce15c567568782cd3c7a072016742b821998b6d3bb882c8aa06afaaf7": {
+        "kind": _TTS_DEVICE_UPDATE,
+        "source_stages_sha256": "e89cbfd3048764f8ac04a647074b7ee71c1d5615f706454e3916cff17b7ce25e",
+        "target_computation_sha256": "8eae8e3221ca4ee01f0cb71660e9b4c3ae2488410ff3c32031b4f8ff9bdbd11b",
+        "target_stages_sha256": "365e671498a4ec2184449cd7ff4f5cc8dbb15b2dddbe46a2e7ab5aaa441b5c25",
+        "changed_files": _TTS_DEVICE_UPDATE_FILES,
+        "evidence_sha256": _TTS_DEVICE_UPDATE_EVIDENCE,
+        "reason": _TTS_DEVICE_UPDATE_REASON,
+    },
     # Exact CRLF/LF releases, covered by clone, generation recovery and CUDA runtime regressions.
     "bf68c3b1e395814d64b9fcaba8551a56648e46ee8852bbd177817fa8015e0fca": {
         "kind": _PRODUCTION_SPEED_UPDATE,

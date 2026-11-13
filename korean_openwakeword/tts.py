@@ -5,9 +5,11 @@ production technical acceptance never masquerades as individual human listening.
 """
 from collections import Counter
 import hashlib
+from importlib.metadata import PackageNotFoundError, version
 import math
 import random
 import time
+import warnings
 import numpy as np
 import soundfile as sf
 from scipy.signal import resample_poly
@@ -33,6 +35,7 @@ LEGACY_CALL_IMPLEMENTATION = "a8a62455fee84260915d489aa2bccb0249ad874c9bfb249667
 CALL_RECOVERY_POLICY = "prepared_clone_bounded_recovery_v1"
 ORIGINAL_ATTEMPTS = 3
 CLONE_ATTEMPTS = 6
+_MAX_CALL_DURATION_S = 8
 _REFERENCE_PREPARATION_PREVIOUS_IMPLEMENTATIONS = {
     LEGACY_CALL_IMPLEMENTATION, "9f39f255e364f0186f8e866bfb317dbef90d6c01f3481147c04637b3d0585aee"}
 
@@ -62,7 +65,7 @@ def technical_qc(samples, rate):
     level = float(np.sqrt(np.mean(samples ** 2)))
     if level < .001:
         reasons.append("near_silence")
-    if not .25 <= duration <= 8:
+    if not .25 <= duration <= _MAX_CALL_DURATION_S:
         reasons.append("duration_outlier")
     d = math.gcd(rate, 16000)
     mono = resample_poly(samples, 16000 // d, rate // d) if rate != 16000 else samples
@@ -86,13 +89,63 @@ def _load_model(model_path, config, project_root):
     with storage_environment(project_root):
         import torch
         from qwen_tts import Qwen3TTSModel
-        device = config["device"]
-        if device == "auto":
-            device = "cuda:0" if torch.cuda.is_available() else "cpu"
         local_path = local_tts_snapshot(model_path, config, project_root)
-        return Qwen3TTSModel.from_pretrained(local_path, device_map=device,
-            dtype=torch.bfloat16 if device.startswith("cuda") else torch.float32,
-            attn_implementation=config["attention"])
+        requested = config["device"]
+        automatic = requested == "auto"
+        devices = [requested]
+        if automatic:
+            devices = ["cpu"]
+            if torch.cuda.is_available():
+                current = torch.cuda.current_device()
+                others = [index for index in range(torch.cuda.device_count()) if index != current]
+                devices[:0] = [f"cuda:{index}" for index in [current, *others]]
+
+        def load(device, dtype):
+            return Qwen3TTSModel.from_pretrained(local_path, device_map=device, dtype=dtype,
+                attn_implementation=config["attention"])
+
+        for device in devices:
+            if not device.startswith("cuda"):
+                return load(device, torch.float32)
+            # The BF16 capability check is scoped to the device receiving the model.
+            with torch.cuda.device(device):
+                dtype = torch.bfloat16 if torch.cuda.is_bf16_supported(including_emulation=False) else torch.float16
+                try:
+                    return load(device, dtype)
+                except torch.cuda.OutOfMemoryError:
+                    if not automatic:
+                        raise
+                # The failed loader's traceback can retain tensors until the
+                # except block has exited. Release the allocator cache afterwards.
+                torch.cuda.empty_cache()
+            warnings.warn(f"TTS model did not fit on {device}; trying the next available device.", RuntimeWarning)
+
+
+def _call_generation_budget(model, configured_max_new_tokens):
+    """Leave room for a duration-outlier result, but skip its unusable suffix."""
+    if type(configured_max_new_tokens) is not int or configured_max_new_tokens < 1:
+        return configured_max_new_tokens
+    if type(model).__module__ != "qwen_tts.inference.qwen3_tts_model":
+        return configured_max_new_tokens
+    try:
+        if version("qwen-tts") != "0.1.1" or version("transformers") != "4.57.3":
+            return configured_max_new_tokens
+    except PackageNotFoundError:
+        return configured_max_new_tokens
+    core = model.model
+    tokenizer = core.speech_tokenizer
+    generation = core.talker.generation_config
+    if (type(tokenizer.model).__module__ != "qwen_tts.core.tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2"
+            or generation.forced_eos_token_id is not None or generation.num_beams != 1):
+        return configured_max_new_tokens
+    sample_rate = tokenizer.get_output_sample_rate()
+    samples_per_frame = tokenizer.get_decode_upsample_rate()
+    if (sample_rate, samples_per_frame) != (24000, 1920):
+        return configured_max_new_tokens
+    # One generation step prefills without emitting a codec frame. A sequence
+    # that reaches the limit without EOS still decodes past the existing 8 s QC.
+    overlong_limit = _MAX_CALL_DURATION_S * sample_rate // samples_per_frame + 2
+    return min(configured_max_new_tokens, overlong_limit)
 
 
 def _seed(seed):
@@ -547,8 +600,12 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
         existing_hashes.update(excluded_sha256)
         # These immutable settings and retry counts are independent of output.
         generation_contract_id = context["current_id"] if method == "clone" else identity(settings)
+        generate_call = getattr(model, "generate_call", None)
+        remaining = (Counter(slot % len(references) for slot in runnable)
+                     if method == "clone" and generate_call is not None else {})
         for slot in runnable:
-            reference = references[slot % len(references)]
+            reference_index = slot % len(references)
+            reference = references[reference_index]
             family = reference.get("voice_family_id", reference.get("family_id"))
             slot_ceiling = 2 * ceiling if slot in recovery_slots else ceiling
             for attempt in range(attempts_by_slot[slot], slot_ceiling):
@@ -560,6 +617,7 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
                 seed = int(identity(seed_parts)[:8], 16)
                 _seed(seed)
                 started = time.perf_counter()
+                token_limit = None
                 if method == "clone":
                     prompt_key = (family, reference["sha256"])
                     if prompt_key not in prompts:
@@ -568,8 +626,12 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
                         prompts[prompt_key] = model.create_voice_clone_prompt(ref_audio=str(prompt_path),
                             ref_text=reference["text"], x_vector_only_mode=False)
                     with generation_attempt() as timing:
-                        wavs, rate = model.generate_voice_clone(text=config["wakeword"], language="Korean",
-                            voice_clone_prompt=prompts[prompt_key], **config["tts"]["generation"])
+                        generation = dict(text=config["wakeword"], language="Korean",
+                                          voice_clone_prompt=prompts[prompt_key], **config["tts"]["generation"])
+                        if generate_call is None:
+                            wavs, rate = model.generate_voice_clone(**generation)
+                        else:
+                            wavs, rate, token_limit = generate_call(expected_reuses=remaining[reference_index], **generation)
                     axes = {k: reference.get(k, "reference_style") for k in ("style", "speed", "intonation", "vocal_effort", "call_length")}
                 else:
                     style, instruction = STYLE_OPTIONS[slot % len(STYLE_OPTIONS)]
@@ -617,6 +679,8 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
                         generation_implementation_sha256=settings["implementation_sha256"],
                         generation_update=context["update"],
                         clone_reference_preparation=prepared[(family, reference["sha256"])][1])
+                    if token_limit is not None:
+                        row["generation_token_limit"] = token_limit
                     if converted is None:
                         row["generation_error"] = {"kind": "invalid_waveform", "audio_saved": False}
                 if staged_scope is not None:
@@ -633,6 +697,8 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
                 if qc["passed"]:
                     by_slot[slot] = row
                     break
+            if remaining:
+                remaining[reference_index] -= 1
             print(f"TTS {split}: accepted technical {len(by_slot)}/{target}; attempts {len(rows)}", flush=True)
         report_progress("tts_finalizing", "생성 음원 목록·검사 결과 저장", eta_eligible=False)
         passed = sorted(by_slot.values(), key=lambda r: r["slot"])

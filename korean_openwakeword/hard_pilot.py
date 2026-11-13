@@ -48,7 +48,8 @@ def generate_hard_pilot(project, phrases, samples_per_phrase, model):
     with writer_lock(output):
         rows = read_rows(journal)
         if contract_path.exists():
-            if read_json(contract_path) != contract:
+            from .call_generation_history import compatible_hard_contract
+            if not compatible_hard_contract(read_json(contract_path), contract, pilot=True):
                 raise ValueError("Hard pilot settings, phrase list or references changed")
         elif rows:
             raise ValueError("Hard pilot journal has no generation contract")
