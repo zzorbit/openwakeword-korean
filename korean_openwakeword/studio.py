@@ -2585,6 +2585,29 @@ class StudioManager:
         return postgeneration_repair_review(state["project"], generated,
             reference_review=state.get("inputs", {}).get("reference_voice_review"))
 
+    def _postgeneration_review_display(self, state, descriptor, rows):
+        """Open the verified representative queue without rebuilding the corpus."""
+        generated = self._effective_positive_generated(state, presentation=True)
+        metadata = (generated or {}).get("postgeneration_repair")
+        rounds = state["inputs"]["postgeneration_repair_rounds"]
+        if (not metadata or metadata != descriptor.get("postgeneration_repair")
+                or metadata.get("plan") != rounds[-1]["request"]["plan"]
+                or generated.get("queue_binding", {}).get("sha256") != descriptor["queue_sha256"]):
+            raise ValueError("다시 생성한 호출어 검수 목록의 연결이 다릅니다.")
+        binding = metadata["evidence"]
+        evidence = self._history_read(state, binding["path"], sha256=binding["sha256"])
+        carried, pending = evidence.get("carried_decisions"), evidence.get("pending_ids")
+        by_id = {row["sample_id"]: row["sha256"] for row in rows}
+        if (not isinstance(carried, dict) or not isinstance(pending, list) or not pending
+                or any(not isinstance(sample, str) for sample in pending)
+                or len(by_id) != len(rows) or len(set(pending)) != len(pending)
+                or set(pending) & carried.keys() or set(pending) | carried.keys() != by_id.keys()
+                or any(not isinstance(answer, dict) or answer.get("decision") != "keep"
+                       or answer.get("listened") is not True for answer in carried.values())):
+            raise ValueError("다시 생성한 호출어의 검수 판정 연결이 다릅니다.")
+        return {"retained_decisions": {sample: {"decision": answer["decision"], "listened": answer["listened"],
+                "audio_sha256": by_id[sample]} for sample, answer in carried.items()}, "focus_sample_ids": pending}
+
     def _start_postgeneration_repair(self, state, rows, report_binding):
         from .postgeneration_repair import prepare_postgeneration_repair
         generated = self._effective_positive_generated(state)
@@ -5152,11 +5175,7 @@ def make_studio_server(manager, port=8793):
                             for item, label in zip(payload["items"], manager._call_voice_labels(state, rows)):
                                 item.update(label)
                         if call_phase == "post" and state.get("inputs", {}).get("postgeneration_repair_rounds"):
-                            repair = manager._postgeneration_repair_review(state, review)
-                            by_id = {row["sample_id"]: row for row in rows}
-                            payload.update(retained_decisions={sample: {"decision": answer["decision"], "listened": answer["listened"],
-                                "audio_sha256": by_id[sample]["sha256"]} for sample, answer in repair.get("carried_decisions", {}).items()},
-                                focus_sample_ids=repair.get("pending_ids", []))
+                            payload.update(manager._postgeneration_review_display(state, review, rows))
                             for item, row in zip(payload["items"], rows):
                                 item["audio_sha256"] = row["sha256"]
                         if call_phase == "pre":

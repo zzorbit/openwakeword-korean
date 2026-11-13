@@ -2186,6 +2186,22 @@ function pendingHardStorageRecipe() {
     assert.equal(b.calls.filter(call => call.url.endsWith("/log")).length, before + 1);
     assert.equal(b.elements.get("connection").hidden, true);
   });
+  await test("top notice severity and action track the latest message without clearing other alerts", async () => {
+    const b = browser(); await flush();
+    const bridge = b.storyBridge, notice = b.elements.get("message"), retry = b.elements.get("studio-notice-action");
+    let opens = 0;
+    const action = { label: "다시 열기", run: () => { opens++; } };
+    bridge.message("검수 화면이 지연됐습니다.", true, {severity:"warning", action});
+    assert.equal(notice.getAttribute("role"), "status");
+    assert.equal(notice.getAttribute("data-severity"), "warning");
+    assert.equal(retry.hidden, false); assert.equal(retry.textContent, "다시 열기");
+    b.click("studio-notice-action"); assert.equal(opens, 1);
+    bridge.reviewNotice("재생하지 못했습니다.");
+    bridge.message("서버 오류", true);
+    bridge.clearNoticeAction(action);
+    assert.equal(notice.textContent, "서버 오류"); assert.equal(notice.getAttribute("role"), "alert");
+    assert.equal(retry.hidden, true); assert.equal(b.elements.get("review-error").textContent, "재생하지 못했습니다.");
+  });
   await test("evaluation validation does not poll logs or invent a score; manual log errors stay isolated", async () => {
     const project = { id: "bora", status: "running", stage: { id: "evaluation" }, progress: { done: null, total: null, phase: "validation", label: "평가 음원 검증 중" } };
     const b = browser({ initialState: { projects: [project] }, logError: true }); await flush();

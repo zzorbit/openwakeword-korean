@@ -35,9 +35,22 @@ a{color:var(--blue)}
 .studio-boot-dots i:nth-child(2){animation-delay:.15s}.studio-boot-dots i:nth-child(3){animation-delay:.3s}
 html[data-studio-boot="error"] .studio-boot-dots i{animation:none;opacity:.7;transform:none}
 @media(prefers-reduced-motion:reduce){.studio-boot-dots i{animation:none;opacity:.7}}
-#studio-boot-error{margin:12px 0 20px;color:#b9c3d0;font-size:14px;white-space:pre-wrap;overflow-wrap:anywhere}
-#studio-boot-retry{margin-top:16px;background:#292f38;border-color:#46515f;color:#e3e7ec}
-#studio-boot-retry:hover{background:#384250}
+.studio-notices{position:fixed;inset:0 0 auto;z-index:20;pointer-events:none}
+.studio-notice-stack{max-height:min(45dvh,240px);overflow:auto;overscroll-behavior:contain;pointer-events:auto}
+.studio-boot-notice{position:absolute;inset:0 0 auto;z-index:1;max-height:45dvh;overflow:auto}
+.studio-notice{--notice-fg:#d5e1ef;--notice-bg:#242c37;--notice-edge:#485970;display:flex;align-items:center;gap:10px;min-height:48px;padding:7px clamp(14px,4vw,36px);border-bottom:1px solid var(--notice-edge);background:var(--notice-bg);color:var(--notice-fg);font:500 14px/22px system-ui,"Malgun Gothic",sans-serif}
+.studio-notice:not(:has(>.notice:not([hidden]))){display:none}
+.studio-notice:has(>.notice[data-severity="warning"]){--notice-fg:#e9c88d;--notice-bg:#302a24;--notice-edge:#594936}
+.studio-notice:has(>.notice:is(.error,[data-severity="error"])){--notice-fg:#ffb4b8;--notice-bg:#392629;--notice-edge:#825057}
+.studio-notice>.notice:is(div,p){flex:1;min-width:0;max-height:none;margin:0;padding:0;border:0;border-radius:0;background:none;color:inherit;font:inherit;overflow:visible;overflow-wrap:anywhere;word-break:keep-all}
+.studio-notice-icon{display:grid;place-items:center;flex:none;width:16px;height:16px;border:1px solid currentColor;border-radius:50%;font:600 11px/1 system-ui,sans-serif}
+.studio-notice-icon::before{content:"i"}
+.studio-notice:has(>.notice[data-severity="warning"]) .studio-notice-icon::before{content:"";width:4px;height:5px;border-left:1px solid;border-bottom:1px solid;transform:translate(1px,-1px)}
+.studio-notice:has(>.notice:is(.error,[data-severity="error"])) .studio-notice-icon::before{content:"!";width:auto;height:auto;border:0;transform:none}
+.studio-notice-action{flex:none;min-height:34px;margin:0;padding:4px 11px;border:0;border-radius:5px;background:#ffffff12;color:inherit;font:inherit;font-weight:650;white-space:nowrap}
+.studio-notice-action:hover:not(:disabled){background:#ffffff21}
+.studio-notice-action:focus-visible{outline:2px solid currentColor;outline-offset:2px}
+@media(pointer:coarse){.studio-notice-action{min-height:44px}}
 .project-switch{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:24px}
 .project-switch select{max-width:230px}
 main{max-width:1080px;padding:38px 24px;margin:auto}
@@ -507,7 +520,7 @@ main.dashboard-shell{height:100dvh;width:100%;max-width:none;margin:0;padding:12
 @media(max-width:900px),(max-height:519px){
   html,body{height:auto;min-height:100%}body{overflow:auto}
   main.dashboard-shell{height:auto;min-height:100dvh;display:block;padding:14px}
-  .dashboard-shell>.notice,.dashboard-topbar{margin-bottom:10px}
+  .dashboard-topbar{margin-bottom:10px}
   .setup,.project-dashboard{display:flex;gap:12px;min-height:0}
   .setup>.page-heading{display:block}.setup>.page-heading>p:last-child{margin-top:7px}
   .setup-layout,.dashboard-layout{display:flex;flex-direction:column;gap:12px;min-height:0}

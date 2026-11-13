@@ -212,7 +212,7 @@
       if (!settingsMenu.hidden && !settingsContainer.contains(event.target)) setSettingsOpen(false);
     });
     window.addEventListener("blur", () => setSettingsOpen(false));
-    const notices = node("div", undefined, "story-notices"); notices.append($("connection"), $("message"));
+    const notices = $("studio-notices");
     const index = node("nav", undefined, "story-index"); index.setAttribute("aria-label", "진행 단계");
     const stage = node("section", undefined, "story-stage");
     const panel = node("div", undefined, "story-panel"); panel.id = "story-panel";
@@ -373,7 +373,8 @@
     const loaderDots = node("span", undefined, "story-loading-dots"); loaderDots.setAttribute("aria-hidden", "true");
     for (let i = 0; i < 3; i++) loaderDots.append(node("i"));
     const loaderText = node("span"); loader.append(loaderDots, loaderText);
-    stage.append(panel, loader); shell.append(atmosphere, toolbar, notices, index, stage);
+    stage.append(panel, loader); shell.append(atmosphere, index, stage);
+    (notices || shell).append(toolbar);
     document.body.append(shell);
     const savedReviewTransport = window.KowwListening?.enhance(savedReviewAudio, savedReviewControls, {
       play: savedReviewToggle, previous: savedReviewPrevious, next: savedReviewNext,
@@ -416,7 +417,9 @@
     let historyPlaybackWanted = false, historyPlaybackVersion = 0;
     let lastFrontier = "", lastProject = null, screens = order;
     let referenceReviewComplete = false;
-    let preparationErrorShown = false;
+    let reviewNoticeScope = "", reviewNoticeSource = null;
+    const reviewNotices = new Map();
+    const reopenReviewAction = { label: "다시 열기", run: controlJob };
     let referenceGroup = null, referenceApprovalPending = false, referenceMode = null;
     let referenceApprovalContext = null, referenceApprovalRequest = 0, boundaryNextIntent = null;
     let referenceFrameElement = null, referenceFrameWindow = null, referenceFrameUrl = "";
@@ -436,26 +439,28 @@
     function repairProgressVisible(project) {
       return current === "pronunciation" && Boolean(postRepair(project)) && (!project.review || repairReviewConcealed === repairQueueKey(project));
     }
+    function reloadReviewFrame() {
+      const frame = $("review-frame"), url = frame.getAttribute("src");
+      if (!url) return;
+      chapterFrameStates.delete(frame.id);
+      frame.setAttribute("src", url);
+    }
     function revealRepairReview(project, reload = false) {
       const queue = repairQueueKey(project); if (!queue || transitioning) return;
       repairReviewStaged = queue; repairReviewConcealed = queue; repairRevealFailed = "";
+      if (reload) bridge.clearNoticeAction?.(reopenReviewAction);
       const session = beginTransition(false); session.repairQueue = queue;
       void runTransition(session, () => {
-        if (reload) { const frame = $("review-frame"); frame.setAttribute("src", frame.getAttribute("src")); }
+        if (reload) reloadReviewFrame();
       }, () => { repairReviewConcealed = ""; });
     }
     function revealHardReview(reload = false) {
+      if (reload) bridge.clearNoticeAction?.(reopenReviewAction);
       const session = beginTransition(false);
       session.hardReviewArrival = true;
       hardReviewRevealFailed = false;
       void runTransition(session, () => {
-        if (reload) {
-          const frame = $("review-frame"), url = frame.getAttribute("src");
-          if (url) {
-            chapterFrameStates.delete("review-frame");
-            frame.setAttribute("src", url);
-          }
-        }
+        if (reload) reloadReviewFrame();
       });
     }
     function clearPreflightPicker() {
@@ -915,6 +920,50 @@
         url.hash = ""; return url.href;
       } catch { return ""; }
     }
+    function visibleNoticeFrame(project) {
+      if (!project || listening) return null;
+      if (current === "voice-listening" && project.reference_preview?.url && referencePreview.open) return $("reference-preview-frame");
+      return project.review?.queue_sha256 && !review.hidden ? $("review-frame") : null;
+    }
+    function clearReviewNotices() {
+      reviewNotices.clear(); bridge.reviewNotice?.("");
+    }
+    function syncReviewNotices(project) {
+      const frame = visibleNoticeFrame(project);
+      const scope = frame ? JSON.stringify([project.id, frame.id, project.review?.queue_sha256, chapterFrameUrl(frame)]) : "";
+      const source = frame?.contentWindow || null;
+      if (scope !== reviewNoticeScope || source !== reviewNoticeSource) {
+        reviewNoticeScope = scope; reviewNoticeSource = source;
+        clearReviewNotices();
+      }
+    }
+    function acceptReviewNotice(event, project) {
+      const notice = event.data;
+      const reference = notice.type === "koww:reference-notice";
+      const frame = visibleNoticeFrame(project);
+      if (!frame || frame.id !== (reference ? "reference-preview-frame" : "review-frame")
+        || event.origin !== window.location.origin || event.source !== frame.contentWindow || notice.project !== project.id
+        || !(reference ? ["playback", "save", "load", "generation", "hearing"] : ["playback", "save"]).includes(notice.channel)
+        || typeof notice.message !== "string" || typeof notice.url !== "string") return;
+      if (!reference && (notice.queue_sha256 !== project.review.queue_sha256
+        || notice.request != null && notice.request !== preflightRequest)) return;
+      const expected = chapterFrameUrl(frame);
+      if (!expected) return;
+      const url = new URL(expected);
+      if (notice.url !== url.pathname + url.search) return;
+      syncReviewNotices(project);
+      const text = notice.message.trim().slice(0, 480);
+      if (text) reviewNotices.set(notice.channel, text);
+      else reviewNotices.delete(notice.channel);
+      if (!reference && transitionSession && text && notice.channel === "save") transitionSession.reviewNoticeShown = true;
+      bridge.reviewNotice?.(["save", "generation", "load", "hearing", "playback"].map(channel => reviewNotices.get(channel)).find(Boolean) || "");
+    }
+    function showTransitionError(session, error, fallback) {
+      const canReopen = (session.repairQueue || session.hardReviewArrival) && isReviewReopen(operationAction(bridge.state().project));
+      if (session.reviewNoticeShown && reviewNotices.has("save")) return;
+      const severity = error?.name === "TimeoutError" ? "warning" : "error";
+      bridge.message(error?.message || fallback, true, { severity, action: canReopen ? reopenReviewAction : null });
+    }
     function destinationFrames() {
       const project = bridge.state().project;
       if (!project) return [];
@@ -955,6 +1004,7 @@
       }
     }
     for (const id of chapterFrames) $(id).addEventListener("load", () => {
+      if (id === visibleNoticeFrame(bridge.state().project)?.id) clearReviewNotices();
       refreshChapterWaiters(transitionSession, $(id));
     });
     window.addEventListener("message", event => {
@@ -984,9 +1034,17 @@
       let timer;
       const recipePending = Boolean(bridge.state().project && ["scale", "materials"].includes(current) && bridge.prepareRecipes);
       const reviewQueuePending = preparingReviewQueue(bridge.state().project);
+      const repairedReview = Boolean(current === "pronunciation" && postRepair(bridge.state().project)
+        && bridge.state().project.review);
       const timeout = new Promise((_, reject) => {
         if (!recipePending && !reviewQueuePending && !destinationFrames().some(Boolean) && !document.fonts?.ready) return;
-        timer = setTimeout(() => reject(Error("화면을 불러오는 시간이 길어지고 있습니다. 다시 이동해 주세요.")), current === "microphone" ? 45000 : 20000);
+        const waitMessage = repairedReview
+          ? "다시 생성한 음원은 저장됐습니다. 검수 화면이 열리지 않으면 ‘다시 열기’를 누르세요."
+          : session.hardReviewArrival ? "유사어 검수 화면을 불러오는 데 시간이 걸리고 있습니다."
+          : "화면을 불러오는 시간이 길어지고 있습니다. 다시 이동해 주세요.";
+        timer = setTimeout(() => {
+          const error = new Error(waitMessage); error.name = "TimeoutError"; reject(error);
+        }, repairedReview || current === "microphone" ? 45000 : 20000);
         session.timers.add(timer);
       });
       try {
@@ -1063,7 +1121,7 @@
           if (session.hardReviewArrival) hardReviewRevealFailed = true;
           if (session.repairQueue === repairQueueKey(bridge.state().project)) { repairReviewConcealed = session.repairQueue; repairRevealFailed = session.repairQueue; }
           if (session.staged) { current = session.sourceStep; following = session.sourceFollowing; historyKey = ""; render(); }
-          bridge.message(result?.error?.message || "화면을 준비하지 못했습니다. 다시 이동해 주세요.", true);
+          showTransitionError(session, result?.error, "화면을 준비하지 못했습니다. 다시 이동해 주세요.");
         }
         while (activeTransition(session)) {
           if (result?.ok && session.readyVersion !== (session.contentVersion || 0) && !await waitForChapter(session)) return;
@@ -1079,10 +1137,15 @@
           if (session.hardReviewArrival) hardReviewRevealFailed = true;
           if (session.repairQueue === repairQueueKey(bridge.state().project)) { repairReviewConcealed = session.repairQueue; repairRevealFailed = session.repairQueue; }
           if (session.staged) { current = session.sourceStep; following = session.sourceFollowing; historyKey = ""; render(); }
-          bridge.message(error?.message || "화면을 전환하지 못했습니다. 다시 시도해 주세요.", true);
+          showTransitionError(session, error, "화면을 전환하지 못했습니다. 다시 시도해 주세요.");
         }
       } finally {
-        if (activeTransition(session)) { stopTransition(); render(); heading.focus({ preventScroll: true }); }
+        if (activeTransition(session)) {
+          stopTransition(); render();
+          const retry = (session.repairQueue || session.hardReviewArrival) && isReviewReopen(operationAction(bridge.state().project));
+          const focus = retry && bridge.noticeActionVisible?.(reopenReviewAction) ? $("studio-notice-action") : retry ? operation : heading;
+          focus.focus({ preventScroll: true });
+        }
       }
     }
     let composingWakeword = false;
@@ -1243,6 +1306,7 @@
       if (["ready", "idle", "pending", "created"].includes(project.status)) return "start";
       return "";
     }
+    function isReviewReopen(action) { return action === "load_review" || action === "load_hard_review"; }
     async function controlJob() {
       const state = bridge.state(), action = operationAction(state.project);
       if (!action || transitioning || state.busy || state.project.status === "pausing"
@@ -2176,6 +2240,7 @@
         index.style.setProperty("--story-index-count", screens.length);
       }
       if (key !== projectKey) {
+        bridge.clearNoticeAction?.(reopenReviewAction);
         hardConnectionIntent = null;
         hardReviewArrivalPending = false; hardReviewRevealFailed = false;
         const createdHere = transitionSession?.createdProject === key && Boolean(key) && key !== "setup";
@@ -2297,7 +2362,9 @@
         if (next.title) next.title = "";
       }
       const action = operationAction(project);
-      operation.hidden = !action;
+      const reopen = isReviewReopen(action);
+      if (!reopen) bridge.clearNoticeAction?.(reopenReviewAction);
+      operation.hidden = !action || reopen && bridge.noticeActionVisible?.(reopenReviewAction) === true;
       const retryGeneration = action === "retry_generation";
       const preparationPausing = current === "voices" && referencePreparationNeeded(project) && project.reference_preparation.status === "pausing";
       const operationDisabled = Boolean(!action || state.busy || transitioning || project?.status === "pausing" || preparationPausing
@@ -2372,11 +2439,7 @@
         const preparationError = current === "voices" && separateReferencePreparation(project) && typeof project.reference_preparation?.error === "string"
           ? project.reference_preparation.error : "";
         const repairError = repairProgressVisible(project) && typeof repair?.error === "string" ? repair.error : "";
-        if (preparationError || repairError || preparationErrorShown) {
-          const errorText = preparationError || repairError || bridge.projectErrorText?.(project.error) || "";
-          $("project-error").textContent = errorText; $("project-error").hidden = !errorText;
-          preparationErrorShown = Boolean(preparationError || repairError);
-        }
+        bridge.projectNotice?.(historical ? "" : preparationError || repairError || bridge.projectErrorText?.(project.error) || "");
         downloads.hidden = true;
         $("progress").dataset.active = String(chapterActive);
         $("progress-label").dataset.status = progressStatus(chapterActive, chapterComplete);
@@ -2424,6 +2487,7 @@
         voiceListeningStatus.hidden = Boolean(project.reference_preview?.url);
         voiceListeningStatus.textContent = voiceListeningStatus.hidden ? "" : "저장된 목소리 듣기 자료가 없습니다.";
       }
+      if (!project) bridge.projectNotice?.("");
       if (current === "materials") {
         locationStatus.hidden = Boolean(project || state.busy || !state.recipeReady || !$("create").disabled);
         const error = state.locationError || "";
@@ -2478,6 +2542,7 @@
         }
       }
       refreshChapterWaiters(transitionSession);
+      syncReviewNotices(project);
       checkCallReviewLayoutWaiters();
     }
     wakeword.addEventListener("compositionstart", () => { composingWakeword = true; showWakewordError(""); });
@@ -2500,6 +2565,9 @@
     window.addEventListener("message", event => {
       const reviewFrame = $("review-frame"), project = bridge.state().project, message = event.data;
       const activeReview = reviewingPreflight(project), retainedFinalize = retainReviewFrame(project);
+      if (message?.type === "koww:review-notice" || message?.type === "koww:reference-notice") {
+        acceptReviewNotice(event, project); return;
+      }
       const inactiveClose = message?.type === "koww:preflight-picker" && message.open === false
         && preflightFrameWindow === reviewFrame?.contentWindow;
       const queue = activeReview ? project.review.queue_sha256 : retainedFinalize ? preflightResumeIntent.queue
@@ -2645,7 +2713,7 @@
       }
     });
     window.addEventListener("pagehide", () => { stopTransition(); pauseMedia(); });
-    return { render, retainReviewFrame, prepareInitialView, ownsDownloadRows: true };
+    return { render, retainReviewFrame, prepareInitialView, ownsDownloadRows: true, ownsProjectNotice: true };
   }
   window.KowwStory = Object.freeze({ create, definitions, stageStep, frontier, completedStep, pageCapacity, downloadCheckpoint, navigationCheckpoint });
 })();

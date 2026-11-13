@@ -102,6 +102,9 @@ function page(initialProject = null, options = {}) {
   const body = new Element("body"), legacy = new Element("main"); legacy.className = "dashboard-shell"; body.append(legacy);
   const html = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources/studio.html"), "utf8");
   for (const match of html.matchAll(/id="([^"]+)"/g)) { const item = new Element(); item.id = match[1]; legacy.append(item); }
+  body.append(registry.get("studio-notices"));
+  for (const id of ["connection", "message", "project-error", "review-error", "studio-notice-action"])
+    registry.get("studio-notices").append(registry.get(id));
   const currentCard = new Element(); currentCard.className = "current-card"; currentCard.append(registry.get("current-title")); legacy.append(currentCard);
   registry.get("migration-note").append(registry.get("migration-reason"), registry.get("migrate"));
   currentCard.append(registry.get("migration-note"));
@@ -138,6 +141,9 @@ function page(initialProject = null, options = {}) {
   }
   if (options.compactListening) vm.runInContext(listeningSource, context);
   vm.runInContext(source, context);
+  let noticeAction;
+  const actionButton = get("studio-notice-action"); actionButton.hidden = true;
+  actionButton.addEventListener("click", () => noticeAction?.run());
   const ui = context.KowwStory.create({
     state: () => state,
     materials: recipe => options.materials?.(recipe) || ({ training: [], evaluation: [] }),
@@ -162,7 +168,17 @@ function page(initialProject = null, options = {}) {
     pause: frame => calls.push("pause:" + frame.id), preview: kind => calls.push("preview:" + kind),
     refresh: () => { calls.push("refresh"); return options.refresh?.(state); },
     prepareRecipes: () => options.prepareRecipes?.(state),
-    logs: () => calls.push("logs"), installLog: options.installLog, message: text => calls.push("message:" + text),
+    logs: () => calls.push("logs"), installLog: options.installLog,
+    message: (text, error, extra) => {
+      calls.push("message:" + text);
+      noticeAction = extra?.action;
+      actionButton.hidden = !noticeAction;
+    },
+    noticeActionVisible: action => action === noticeAction && !actionButton.hidden,
+    clearNoticeAction: action => { if (action === noticeAction) { noticeAction = null; actionButton.hidden = true; } },
+    reviewNotice: text => { const notice = get("review-error"); notice.textContent = text; notice.hidden = !text; },
+    projectNotice: text => { const notice = get("project-error"); notice.textContent = text; notice.hidden = !text; },
+    projectErrorText: error => typeof error === "string" ? error : error?.message || "",
   });
   const shell = get("story-shell"), actions = shell.querySelector(".story-actions");
   const next = actions.children[2], operation = actions.children[1], back = actions.children[0];
@@ -2218,6 +2234,9 @@ async function main() {
     project.review={kind:'positive',queue_sha256:'repaired-queue',url:'/review/?project=navigated&queue=positive&rev=repaired'};
     p.ui.render();await p.flush();await frame.fire('load');frame.fakeLoadedUrl=frame.getAttribute('src');await p.flush();
     assert.equal(p.get('story-panel').inert,true,'the new queue cannot replace the generation view before its content is ready');
+    p.timers.push({callback:()=>{},at:p.now()+22000,delay:22000});
+    while(p.now()<22000){assert.equal(p.advanceTimer(),true);await p.flush();}
+    assert.equal(p.get('story-panel').inert,true,'a slow repaired queue can still become ready after the generic timeout');
     const chapter=posted.filter(row=>row.type==='koww:chapter-request').at(-1);assert.ok(chapter);
     const send=data=>p.windowEvent('message',{origin:'http://studio.local',source,data:{project:project.id,queue_sha256:'repaired-queue',request,...data}});
     await send({type:'koww:chapter-ready',request:chapter.request,url:chapter.url,status:'ready'});
@@ -2233,9 +2252,27 @@ async function main() {
     project.status='waiting_review';project.process_alive=false;project.postgeneration_repair.state='waiting_review';project.postgeneration_repair.done=50;
     project.review={kind:'positive',queue_sha256:'repaired-queue',url:'/review/?project=navigated&queue=positive&rev=repaired'};
     p.ui.render();await p.settle();assert.equal(p.get('story-panel').inert,false);assert.equal(p.get('review-section').hidden,true);
-    assert.equal(p.shell.classList.contains('post-repair-generating'),true);assert.equal(p.operation.textContent,'다시 열기');
+    assert.equal(p.shell.classList.contains('post-repair-generating'),true);assert.equal(p.operation.hidden,true);
+    const retry=p.get('studio-notice-action');
+    assert.equal(retry.hidden,false);assert.equal(retry.focused,true);
+    assert.ok(p.calls.includes('message:다시 생성한 음원은 저장됐습니다. 검수 화면이 열리지 않으면 ‘다시 열기’를 누르세요.'));
     const attempts=p.chapterRequests.length;p.ui.render();await p.flush();assert.equal(p.chapterRequests.length,attempts,'an error cannot trigger automatic reload loops');
-    await p.operation.fire('click');assert.equal(p.get('story-panel').inert,true);
+    const stale=p.chapterRequests.at(-1),frame=p.get('review-frame'),posted=[];
+    const source={postMessage:message=>posted.push(message)};frame.contentWindow=source;
+    p.ui.render();await frame.fire('load');
+    await retry.fire('click');assert.equal(p.get('story-panel').inert,true);assert.equal(retry.hidden,true);
+    assert.equal(posted.some(row=>row.type==='koww:chapter-request'),false,'reopening must wait for the new load at the same URL');
+    await replyChapter(p,stale);
+    assert.equal(p.get('story-panel').inert,true);
+    await frame.fire('load');
+    const chapter=posted.filter(row=>row.type==='koww:chapter-request').at(-1);
+    assert.ok(chapter.request>stale.data.request);
+    const request=posted.filter(row=>row.type==='koww:preflight-status').at(-1).request;
+    const send=data=>p.windowEvent('message',{origin:'http://studio.local',source,data:{project:project.id,queue_sha256:'repaired-queue',request,...data}});
+    await send({type:'koww:chapter-ready',request:chapter.request,url:chapter.url,status:'ready'});
+    await send({type:'koww:preflight-height',height:170});await send({type:'koww:preflight-state',ready:false,pending:false,error:false});
+    await p.settle();
+    assert.equal(p.get('story-panel').inert,false);assert.equal(p.get('review-section').hidden,false);
     assert.equal(p.calls.some(call=>['start','resume','input','load_review'].includes(call)),false,'reopening the review is local navigation, never a new generation request');
   });
   await test('postflight repair acknowledgement rejects an unrelated plan and cannot be used by preflight',async()=>{
@@ -2554,7 +2591,10 @@ async function main() {
     assert.equal(menu.hidden, true); assert.equal(toggle.getAttribute("aria-expanded"), "false");
     assert.equal(menu.contains(p.get("project-select")), true);
     assert.equal(menu.contains(p.get("new-project")), true);
-    assert.equal(p.shell.querySelector(".story-toolbar").children.length, 1);
+    const notices = p.get("studio-notices");
+    assert.equal(notices.querySelector(".story-toolbar").children.length, 1);
+    for (const id of ["connection", "message", "project-error", "review-error", "studio-notice-action"])
+      assert.equal(notices.contains(p.get(id)), true);
     await toggle.fire("click"); assert.equal(menu.hidden, false); assert.equal(toggle.getAttribute("aria-expanded"), "true");
     let switched = 0, created = 0;
     p.get("project-select").addEventListener("change", () => switched++);
@@ -2577,6 +2617,25 @@ async function main() {
     assert.equal(menu.hidden, true); assert.equal(toggle.focused, true); assert.equal(toggle.getAttribute("aria-expanded"), "false");
     await toggle.fire("click"); await container.fire("focusout", { relatedTarget: p.shell }); assert.equal(menu.hidden, true);
     await toggle.fire("click"); await p.windowEvent("blur"); assert.equal(menu.hidden, true, "leaving the window or focusing an embedded player dismisses the menu");
+  });
+  await test("top strip accepts errors only from the active review and clears each cause independently", async () => {
+    const project = postflightProject(), p = page(project);
+    const frame = p.get("review-frame"), strip = p.get("review-error");
+    const url = new URL(frame.getAttribute("src"), "http://studio.local");
+    const notice = {type: "koww:review-notice", project: project.id, queue_sha256: project.review.queue_sha256,
+      url: url.pathname + url.search, channel: "playback", message: "음원 재생 실패"};
+    const send = (changes = {}, envelope = {}) => p.windowEvent("message", {origin: "http://studio.local",
+      source: frame.contentWindow, data: {...notice, ...changes}, ...envelope});
+    for (const [changes, envelope] of [[{}, {origin:"https://wrong.invalid"}], [{}, {source:{}}],
+      [{queue_sha256:"stale"}, {}], [{url:notice.url + "&stale=1"}, {}], [{request:-1}, {}]]) await send(changes, envelope);
+    assert.equal(strip.textContent, "");
+    await send(); assert.equal(strip.textContent, "음원 재생 실패");
+    await send({channel:"save",message:"판정 저장 실패"}); assert.equal(strip.textContent, "판정 저장 실패");
+    await send({channel:"save",message:""}); assert.equal(strip.textContent, "음원 재생 실패");
+    await frame.fire("load"); assert.equal(strip.hidden, true);
+    await send(); assert.equal(strip.hidden, false);
+    await p.back.fire("click"); await p.settle(); assert.equal(strip.hidden, true);
+    await send(); assert.equal(strip.hidden, true);
   });
   await test("download single view keeps every live row visible at narrow and short heights", () => {
     for (const [width, height] of [[319, 540], [600, 540], [1280, 800]]) {
@@ -2746,12 +2805,13 @@ async function main() {
     assert.equal(p.get('story-panel').inert,true);assert.equal(p.get('review-section').hidden,true);
     await p.settle();
     assert.equal(p.get('story-panel').inert,false);assert.equal(p.get('review-section').hidden,true);
-    assert.equal(p.operation.textContent,'다시 열기');assert.equal(p.next.disabled,true);
+    const retry=p.get('studio-notice-action');
+    assert.equal(retry.hidden,false);assert.equal(p.operation.hidden,true);assert.equal(p.next.disabled,true);
     assert.equal(p.calls.filter(call=>call.startsWith('message:')).length,1);
     Object.assign(project,{status:'waiting_review',process_alive:false,review:queue});
     const wire=await wireHard(p,project);
-    assert.equal(p.get('review-section').hidden,true);assert.equal(p.operation.textContent,'다시 열기');
-    await p.operation.fire('click');await p.flush();
+    assert.equal(p.get('review-section').hidden,true);assert.equal(retry.hidden,false);
+    await retry.fire('click');await p.flush();
     assert.equal(wire.posted.some(row=>row.type==='koww:chapter-request'),false,'a retry cannot accept the old frame before its new load');
     await wire.frame.fire('load');await p.flush();
     const chapter=wire.posted.filter(row=>row.type==='koww:chapter-request').at(-1);assert.ok(chapter);

@@ -237,6 +237,20 @@ let reportedCandidateHeight=null,candidateHeightFrame=null,candidateHeightForce=
 const initialCandidateRequests=new Set();
 const sessionHeard=new Set();
 const candidateHearWrites=new Map();
+const referenceNotices=new Map();
+function referenceNotice(channel,message){
+  if(corpus||window.parent===window||!config.token||!project)return false;
+  try{if(window.parent.location.origin!==location.origin)return false;}catch{return false;}
+  if(!message&&!referenceNotices.has(channel))return true;
+  window.parent.postMessage({type:'koww:reference-notice',project,url:location.pathname+location.search,channel,message},location.origin);
+  if(message)referenceNotices.set(channel,message);else referenceNotices.delete(channel);
+  return true;
+}
+function showReferenceError(channel,message){errorMessage.textContent=referenceNotice(channel,message)?'':message;}
+function updateGenerationNotice(fallback){
+  if(job?.status==='failed')showReferenceError('generation',job.message||fallback);
+  else referenceNotice('generation','');
+}
 function mountListeningView(){
   if(viewMode==='list')return;
   if(viewMode)throw Error('검수 방식이 변경되었습니다. 화면을 새로고침해 주세요.');
@@ -311,6 +325,7 @@ function stop(release=false){
 window.addEventListener('message',event=>{
   if(event.origin!==location.origin||event.source!==window.parent)return;
   if(event.data?.type==='koww:reference-status'&&event.data.project===project){
+    for(const [channel,message] of referenceNotices)referenceNotice(channel,message);
     if(candidateSelectionBlocked)recoverCandidateSelection();
     if(candidateMode)syncCandidates(true);
     scheduleCandidateHeight(true);
@@ -351,12 +366,13 @@ async function playCurrent(){
   errorMessage.textContent='';setPlaying(true);
   try{await audio.play();}catch(error){
     if(version!==playbackVersion)return;
-    candidatePlaybackIntent=null;setPlaying(false);errorMessage.textContent='음원을 재생하지 못했습니다. 재생을 다시 눌러주세요.';
+    candidatePlaybackIntent=null;setPlaying(false);showReferenceError('playback','음원을 재생하지 못했습니다. 재생을 다시 눌러주세요.');
   }
 }
 function select(index,play=false){
   if(!items[index])return;
   stop();
+  referenceNotice('playback','');
   currentIndex=index;if(voice)voice.value=String(index);audio.src=items[index].audio;
   errorMessage.textContent='';if(position)position.textContent=`${pageStart+index+1} / ${total}`;
   voicePicker?.setSelected(index);
@@ -369,7 +385,11 @@ audio.addEventListener('play',()=>{
   if(!audio.paused)setPlaying(true);
 });
 audio.addEventListener('pause',()=>{if(!audio.ended&&audio.paused)setPlaying(false);});
-audio.addEventListener('error',()=>{stop();errorMessage.textContent='음원을 재생하지 못했습니다. 재생을 다시 눌러주세요.';});
+audio.addEventListener('playing',()=>{if(playbackAllowed&&!audio.paused&&!document.hidden)referenceNotice('playback','');});
+audio.addEventListener('error',()=>{
+  if(!playbackAllowed||!items[currentIndex])return;
+  stop();showReferenceError('playback','음원을 재생하지 못했습니다. 재생을 다시 눌러주세요.');
+});
 audio.addEventListener('ended',async()=>{
   const current=items[currentIndex];
   const intended=candidateMode?candidatePlaybackIntent?.id===current?.id&&candidatePlaybackIntent?.sha256===current?.sha256&&candidatePlaybackIntent?.version===playbackVersion:playing;
@@ -583,7 +603,7 @@ function applyReview(payload, nextKey){
     window.parent.postMessage?.({type:'koww:reference-review',project,complete:payload.review_complete},location.origin);
     reportedComplete=payload.review_complete;
   }
-  if(job?.status==='failed')errorMessage.textContent=job.message||'목소리를 다시 만들지 못했습니다. 다시 시도할 수 있습니다.';
+  updateGenerationNotice('목소리를 다시 만들지 못했습니다. 다시 시도할 수 있습니다.');
   syncReview();scheduleReviewPoll();
   reportReferenceLayout('legacy');
 }
@@ -705,10 +725,11 @@ async function reloadCandidateSelection(writer){
     applyReview(payload);
     if(!selectionWriterActive(writer))return;
     candidateSelectionBlocked=false;
+    referenceNotice('save','');
     errorMessage.textContent='서버에 저장된 선택 상태를 다시 불러왔습니다. 선택 상태를 확인해 주세요.';
   }catch(error){
     if(selectionWriterActive(writer)){
-      candidateSelectionBlocked=true;errorMessage.textContent='선택 저장 상태를 확인하지 못했습니다. 상태 다시 확인을 눌러 주세요.';
+      candidateSelectionBlocked=true;showReferenceError('save','선택 저장 상태를 확인하지 못했습니다. 상태 다시 확인을 눌러 주세요.');
     }
   }
 }
@@ -721,7 +742,7 @@ async function drainCandidateSelection(writer){
         if(acknowledged.has(key)===intent.selected)candidateSelectionIntents.delete(key);
         else pending.push(intent);
       }
-      if(!pending.length){saved=true;break;}
+      if(!pending.length){saved=true;referenceNotice('save','');break;}
       // Release a slot before selecting its replacement when the quota is full.
       const intent=pending.find(item=>!item.selected)||pending[0];
       const expected=!acknowledged.has(selectionKey(intent));
@@ -895,6 +916,7 @@ function applyCandidates(payload){
   if(samePlayback)currentIndex=items.findIndex(item=>item.id===previous.id);
   else{
     stop();currentIndex=0;
+    referenceNotice('playback','');
     if(items.length)audio.src=items[0].audio;else{audio.removeAttribute('src');audio.load();}
   }
   voicePicker?.close();
@@ -905,7 +927,7 @@ function applyCandidates(payload){
     reportedComplete=payload.review_complete;
   }
   reportReferenceLayout('candidate_pool_v2');
-  if(job?.status==='failed')errorMessage.textContent=job.message||'기준 목소리 후보를 생성하지 못했습니다. 다시 시도해 주세요.';
+  updateGenerationNotice('기준 목소리 후보를 생성하지 못했습니다. 다시 시도해 주세요.');
   if(!requestInitialCandidates())syncCandidates();
   scheduleReviewPoll();
 }
@@ -954,8 +976,8 @@ async function loadCandidateBatch(batch){
     const response=await fetch(url.pathname+url.search),payload=await response.json();
     if(!response.ok)throw Error(payload.error||'이전 후보를 불러오지 못했습니다.');
     if(version!==candidateLoadVersion)return;
-    errorMessage.textContent='';applyReview(payload);
-  }catch(error){if(version===candidateLoadVersion)errorMessage.textContent=error.message;}
+    errorMessage.textContent='';applyReview(payload);referenceNotice('load','');
+  }catch(error){if(version===candidateLoadVersion)showReferenceError('load',error.message);}
   finally{if(version===candidateLoadVersion){loading=false;syncCandidates();scheduleReviewPoll();}}
 }
 candidatePrevious.addEventListener('click',()=>requestCandidateDeckAction('previous'));
@@ -967,8 +989,8 @@ candidateStatusRetry.addEventListener('click',async()=>{
   try{
     const response=await fetch(candidateBatchUrl(reviewQueueUrl)),payload=await response.json();
     if(!response.ok)throw Error(payload.error||'후보 생성 상태를 확인하지 못했습니다.');
-    errorMessage.textContent='';applyReview(payload);
-  }catch(error){candidatePollPaused=true;errorMessage.textContent=error.message;}
+    errorMessage.textContent='';applyReview(payload);referenceNotice('load','');
+  }catch(error){candidatePollPaused=true;showReferenceError('load',error.message);}
   finally{loading=false;if(!requestInitialCandidates())syncCandidates();}
 });
 const reviewQueueUrl='/reference-preview/queue?project='+encodeURIComponent(project);
@@ -982,12 +1004,11 @@ function scheduleReviewPoll(){
       const response=await fetch(candidateBatchUrl(reviewQueueUrl)),payload=await response.json();
       if(candidateMode&&version!==candidateLoadVersion)return;
       if(!response.ok)throw Error(payload.error||'재생성 상태를 확인하지 못했습니다.');
-      errorMessage.textContent='';applyReview(payload);
+      errorMessage.textContent='';applyReview(payload);referenceNotice('load','');
     }catch(error){
       if(candidateMode&&version!==candidateLoadVersion)return;
-      errorMessage.textContent=error.message;
-      if(candidateMode&&++candidatePollFailures>=3){candidatePollPaused=true;syncCandidates();}
-      else scheduleReviewPoll();
+      if(candidateMode&&++candidatePollFailures>=3){candidatePollPaused=true;showReferenceError('load',error.message);syncCandidates();}
+      else{if(!reviewEnabled||window.parent===window)errorMessage.textContent=error.message;scheduleReviewPoll();}
     }
   },1200);
 }
@@ -1003,9 +1024,10 @@ function recordCandidateHearing(item){
       if(!response.ok)throw Error(payload.error||'청취 기록을 저장하지 못했습니다.');
       // Only acknowledge the heard clip. A full snapshot can contain an older selection.
       sessionHeard.add(key);
+      if(scope===candidateSelectionScope()&&!candidateSelectionBlocked)referenceNotice('hearing','');
     }catch(error){
       if(candidateMode&&editable&&scope===candidateSelectionScope()&&!errorMessage.textContent)
-        errorMessage.textContent=error.message||'청취 기록을 저장하지 못했습니다.';
+        showReferenceError('hearing',error.message||'청취 기록을 저장하지 못했습니다.');
     }
   })().finally(()=>candidateHearWrites.delete(key));
   candidateHearWrites.set(key,write);
@@ -1024,9 +1046,9 @@ async function saveReview(action,fields,nextKey){
       body:JSON.stringify({action,...fields})});
     const payload=await response.json();
     if(!response.ok)throw Error(payload.error||'검수 상태를 저장하지 못했습니다.');
-    errorMessage.textContent='';applyReview(payload,nextKey);
+    errorMessage.textContent='';applyReview(payload,nextKey);referenceNotice('save','');
     return true;
-  }catch(error){stop();errorMessage.textContent=error.message;return false;}
+  }catch(error){stop();showReferenceError(['more','regenerate'].includes(action)?'generation':'save',error.message);return false;}
   finally{
     candidateSaveAction=null;
     saving=false;

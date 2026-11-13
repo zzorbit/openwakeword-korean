@@ -1,6 +1,10 @@
 "use strict";
 (() => {
   const $ = id => document.getElementById(id);
+  function noticeText(node, text) {
+    if (node.textContent !== text) node.textContent = text;
+    node.hidden = !text;
+  }
   function bootStatus(state, error) {
     document.documentElement?.setAttribute("data-studio-boot", state);
     const panel = $("studio-boot");
@@ -11,7 +15,8 @@
     if ($("studio-boot-dots")) $("studio-boot-dots").hidden = state !== "loading";
     if ($("studio-boot-error")) {
       $("studio-boot-error").hidden = state !== "error";
-      $("studio-boot-error").textContent = state === "error" ? `${error?.message || "화면을 준비하는 중 문제가 발생했습니다."}\n다시 불러와도 저장된 작업은 유지됩니다.` : "";
+      $("studio-boot-error").textContent = state === "error" ? ["화면을 불러오지 못했습니다.", error?.message,
+        "다시 불러와도 저장된 작업은 유지됩니다."].filter(Boolean).join(" ") : "";
     }
     if ($("studio-boot-retry")) $("studio-boot-retry").hidden = state !== "error";
   }
@@ -410,10 +415,34 @@
       return await api(path, "GET", undefined, 30000);
     }
   }
-  function message(text, error = false) {
-    $("message").textContent = text || "";
-    $("message").hidden = !text;
-    $("message").className = "notice" + (error ? " error" : "");
+  const noticeActionButton = $("studio-notice-action");
+  let noticeAction = null;
+  noticeActionButton?.addEventListener("click", () => noticeAction?.run());
+  function message(text, error = false, options = {}) {
+    const notice = $("message");
+    const severity = options.severity || (error ? "error" : "info");
+    notice.className = "notice" + (severity === "error" ? " error" : "");
+    notice.setAttribute("data-severity", severity);
+    notice.setAttribute("role", severity === "error" ? "alert" : "status");
+    noticeText(notice, text || "");
+    noticeAction = text && options.action ? options.action : null;
+    if (noticeActionButton) {
+      noticeActionButton.textContent = noticeAction?.label || "";
+      noticeActionButton.hidden = !noticeAction;
+    }
+  }
+  function noticeActionVisible(action) {
+    return Boolean(noticeActionButton && !noticeActionButton.hidden && noticeAction === action);
+  }
+  function clearNoticeAction(action) {
+    if (action && noticeAction === action) message("");
+  }
+  function reviewNotice(text) {
+    const notice = $("review-error");
+    if (notice) noticeText(notice, text || "");
+  }
+  function projectNotice(text) {
+    noticeText($("project-error"), text || "");
   }
   function creationBody() {
     return requestBody({ wakeword: $("wakeword").value, advanced: { positive_originals: $("adv-originals").value, augmentation_rounds: $("adv-rounds").value, updates: $("adv-updates").value, generic_hours: $("adv-generic").value, korean_hours: $("adv-korean").value } }, selectedPreset);
@@ -1296,9 +1325,7 @@
     Object.assign($("eta").style, { whiteSpace: activityText ? "nowrap" : "", overflow: activityText ? "hidden" : "", textOverflow: activityText ? "ellipsis" : "" });
     $("eta").title = activityText;
     if ($("eta").textContent !== timingText) $("eta").textContent = timingText;
-    const errorText = projectErrorText(project.error);
-    $("project-error").hidden = !errorText;
-    $("project-error").textContent = errorText;
+    if (story?.ownsProjectNotice !== true) projectNotice(projectErrorText(project.error));
     renderDashboard(project);
     // The chapter view builds its own download list from project state.
     if (story?.ownsDownloadRows !== true) renderDownloads(project);
@@ -1315,6 +1342,7 @@
     $("create").disabled = busy || !recipeReady || !locationReady();
     if (project && !newProject) renderProject(project);
     else {
+      projectNotice("");
       dashboardProject = ""; dashboardPrompt = ""; shownDashboardView = ""; shownAudioView = "required";
       renderReferencePreview(null);
       renderHardPreview(null);
@@ -1358,6 +1386,7 @@
       if (!initial && !receivedState && delayed && selectedProject()) return;
       $("connection").hidden = false;
       $("connection").className = "notice" + (delayed ? "" : " error");
+      $("connection").setAttribute("data-severity", delayed ? "warning" : "error");
       $("connection").setAttribute("role", delayed ? "status" : "alert");
       $("connection").textContent = progressPending
         ? "진행 상태 파일을 읽지 못했습니다. 마지막으로 받은 상태를 표시하며 자동으로 다시 확인합니다."
@@ -1520,6 +1549,10 @@
       refresh,
       prepareRecipes: loadRecipes,
       message,
+      noticeActionVisible,
+      clearNoticeAction,
+      reviewNotice,
+      projectNotice,
     });
     $("create-form").addEventListener("invalid", event => {
       setupView = String(event.target?.id || "").startsWith("adv-") ? "advanced" : "basic";

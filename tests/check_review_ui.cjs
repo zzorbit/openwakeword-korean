@@ -27,7 +27,7 @@ async function screen(queue, search, saved = {}, config = {}, { playback, shared
     fetch: async (url, options) => { calls.push({ url, options }); if(queueGate)await queueGate;if(queueError)throw Error(queueError);const result=respond?await respond(url,options):{payload:options?.method === "POST" ? { state: "saved" } : queue};return { ok:result.ok!==false,json:async()=>JSON.parse(JSON.stringify(result.payload)),text:async()=>result.payload?.error||'저장 실패' }; }
   });
   context.window = context;
-  context.parent = embedded?{postMessage:(message,origin)=>parentMessages.push({message:JSON.parse(JSON.stringify(message)),origin})}:context;
+  context.parent = embedded?{location:{origin:context.location.origin},postMessage:(message,origin)=>parentMessages.push({message:JSON.parse(JSON.stringify(message)),origin})}:context;
   context.KowwChapterReady={loading:()=>readiness.push({status:'loading'}),ready:()=>readiness.push({status:'ready',title:nodes.get('title').textContent,source:audio.src}),fail:message=>readiness.push({status:'error',message})};
   if(sharedControls)context.KowwListening={
     enhance(audio,controls,options){enhanced.push({audio,controls,options});},
@@ -48,6 +48,8 @@ async function screen(queue, search, saved = {}, config = {}, { playback, shared
   for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve));
   return { nodes, calls, writes, readiness, listeners, documentEvents, document:context.document, audioEffects, parent: context.parent, classes, enhanced, pickers,parentMessages,resizeObservers,flush:async()=>{for(let i=0;i<8;i++)await new Promise(resolve=>setImmediate(resolve));} };
 }
+
+const reviewNotices=view=>view.parentMessages.filter(row=>row.message.type==='koww:review-notice');
 
 (async () => {
   assert.match(html, /href="\/audio_listening\.css"/);
@@ -394,8 +396,10 @@ async function screen(queue, search, saved = {}, config = {}, { playback, shared
   let releaseFailedNext;const failedNextState=preflightQueue(),failedNextActions=[],applyFailedNext=draftServer(failedNextState,failedNextActions);
   const failedNext=await screen(failedNextState,'?project=bora&queue=pilot',{},preConfig,{...shared,playback:count=>count===2?Promise.reject(Error('next failed')):Promise.resolve(),
     respond:(url,options)=>options&&failedNextActions.length===0?new Promise(resolve=>{releaseFailedNext=()=>resolve(applyFailedNext(url,options));}):applyFailedNext(url,options)});
-  await failedNext.nodes.get('start').onclick();finishPreflight(failedNext);await failedNext.flush();assert.match(failedNext.nodes.get('state').textContent,/재생하지 못했습니다/);
-  releaseFailedNext();await failedNext.flush();assert.match(failedNext.nodes.get('state').textContent,/재생하지 못했습니다/);assert.equal(failedNext.nodes.get('discard').disabled,false);
+  await failedNext.nodes.get('start').onclick();finishPreflight(failedNext);await failedNext.flush();
+  assert.match(reviewNotices(failedNext).at(-1).message.message,/재생하지 못했습니다/);
+  releaseFailedNext();await failedNext.flush();
+  assert.match(reviewNotices(failedNext).at(-1).message.message,/재생하지 못했습니다/);assert.equal(failedNext.nodes.get('discard').disabled,false);
   failedNext.nodes.get('discard').onclick({detail:1});await failedNext.flush();assert.equal(failedNextState.draft_decisions.two.decision,'discard');assert.equal(failedNextState.draft_decisions.two.playback_started,false);
   let releaseInitial;const initialGate=new Promise(resolve=>{releaseInitial=resolve;});const handshake=await screen(preflightQueue(),'?project=bora&queue=pilot',{},preConfig,{...shared,queueGate:initialGate});
   preMessage(handshake,'koww:preflight-status',{request:19});releaseInitial();await handshake.flush();assert.equal(handshake.parentMessages.filter(row=>row.message.type==='koww:preflight-state').at(-1).message.request,19);
@@ -577,8 +581,11 @@ async function screen(queue, search, saved = {}, config = {}, { playback, shared
   let failPost=true;const errorData=postQueue(),errorPost=await screen(errorData,'?project=bora&queue=positive',heard,postConfig,{...shared,
     respond:postResponse(errorData,()=>failPost?{ok:false,payload:{error:'일시적인 저장 오류'}}:{payload:{state:'saved',policy_approved:true}})});
   preMessage(errorPost,'koww:preflight-status');preMessage(errorPost,'koww:preflight-finalize');await errorPost.flush();
-  assert.equal(postState(errorPost).error,true);assert.match(errorPost.nodes.get('saved').textContent,/일시적인 저장 오류/);
+  assert.equal(postState(errorPost).error,true);assert.equal(errorPost.nodes.get('saved').textContent,'');
+  assert.deepEqual(reviewNotices(errorPost),[{origin:'http://127.0.0.1:8794',message:{type:'koww:review-notice',
+    project:'bora',queue_sha256:'fixed-queue',url:'/?project=bora&queue=positive',channel:'save',message:'검수 저장 실패 · 일시적인 저장 오류',request:7}}]);
   failPost=false;await errorPost.nodes.get('preflight-retry').onclick();await errorPost.flush();
+  assert.equal(reviewNotices(errorPost).at(-1).message.message,'');assert.equal(reviewNotices(errorPost).at(-1).message.channel,'save');
   assert.equal(postPosts(errorPost).length,1,'retry control restores a fresh Next without posting on its own');assert.equal(postState(errorPost).ready,true);
   preMessage(errorPost,'koww:preflight-finalize');await errorPost.flush();assert.equal(postPosts(errorPost).length,2);
   let releasePost;const latePostData=postQueue(),latePost=await screen(latePostData,'?project=bora&queue=positive',heard,postConfig,{...shared,
@@ -592,8 +599,19 @@ async function screen(queue, search, saved = {}, config = {}, { playback, shared
   skipPost.nodes.get('audio').played={length:1,start:()=>.5,end:()=>1};await skipPost.nodes.get('start').onclick();finishPreflight(skipPost,1400);await skipPost.flush();
   assert.equal(skipPost.writes.length,0);assert.equal(postState(skipPost).ready,false);assert.equal(skipPost.nodes.get('state').hidden,false);assert.match(skipPost.nodes.get('state').textContent,/건너뛴 구간/);
   const notPlayedPost=await screen(postQueue(),'?project=bora&queue=positive',{},postConfig,{...shared,actualPlaying:false});await notPlayedPost.nodes.get('start').onclick();finishPreflight(notPlayedPost,1400);await notPlayedPost.flush();assert.equal(notPlayedPost.writes.length,0);
-  const failedPostAudio=await screen(postQueue(),'?project=bora&queue=positive',{},postConfig,{...shared,playback:()=>Promise.reject(Error('device failed'))});await failedPostAudio.nodes.get('start').onclick();
-  assert.equal(failedPostAudio.nodes.get('state').hidden,false);assert.match(failedPostAudio.nodes.get('state').textContent,/재생하지 못했습니다/);assert.equal(failedPostAudio.writes.length,0);
+  const failedPostAudio=await screen(postQueue(),'?project=bora&queue=positive',{},postConfig,{...shared,
+    playback:count=>count===1?Promise.reject(Error('device failed')):Promise.resolve()});
+  await failedPostAudio.nodes.get('start').onclick();
+  assert.equal(failedPostAudio.nodes.get('state').hidden,true);assert.equal(failedPostAudio.writes.length,0);
+  assert.equal(reviewNotices(failedPostAudio).at(-1).message.channel,'playback');
+  assert.match(reviewNotices(failedPostAudio).at(-1).message.message,/재생하지 못했습니다/);
+  await failedPostAudio.nodes.get('start').onclick();
+  assert.equal(reviewNotices(failedPostAudio).at(-1).message.message,'');
+  const standaloneError=await screen(postQueue(),'?project=bora&queue=positive',{},postConfig,{...shared,embedded:false,
+    playback:()=>Promise.reject(Error('device failed'))});
+  await standaloneError.nodes.get('start').onclick();
+  assert.match(standaloneError.nodes.get('state').textContent,/재생하지 못했습니다/);
+  assert.deepEqual(reviewNotices(standaloneError),[]);
   const gesturePost=await screen(postQueue(),'?project=bora&queue=positive',{},postConfig,shared);await gesturePost.nodes.get('start').onclick();gesturePost.nodes.get('discard').onpointerdown();finishPreflight(gesturePost,1400);await gesturePost.flush();
   const gestureWrites=gesturePost.writes.length;gesturePost.nodes.get('discard').onclick({detail:1});assert.equal(gesturePost.writes.length,gestureWrites,'a gesture for the previous clip cannot reject the next clip');
   gesturePost.nodes.get('discard').onclick({detail:2});assert.equal(gesturePost.writes.length,gestureWrites,'a repeated double click cannot reject the next clip');

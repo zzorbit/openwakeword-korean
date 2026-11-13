@@ -28,6 +28,7 @@
     .studio-boot-dots i:nth-child(2){animation-delay:.15s}.studio-boot-dots i:nth-child(3){animation-delay:.3s}
     @keyframes story-dot-rise{0%,80%,100%{opacity:.3;transform:translateY(0)}40%{opacity:1;transform:translateY(-4px)}}
     html[data-studio-boot="error"] .studio-boot-dots i{animation:none;opacity:.7;transform:none}
+    html[data-studio-boot="error"] .studio-boot-status{display:none}
     .studio-boot-content [hidden]{display:none!important}
     @media(prefers-reduced-motion:reduce){.studio-boot-dots i{animation:none;opacity:.7}}
     html[data-studio-boot="ready"] #studio-boot{display:none}
@@ -42,12 +43,19 @@
 <body>
   <section id="studio-boot" class="studio-boot" role="status" aria-live="polite" aria-busy="true">
     <div class="story-atmosphere" aria-hidden="true"><div class="story-background-state story-background-previous"></div><div class="story-background-state story-background-current"></div></div>
-    <div class="studio-boot-content"><div class="studio-boot-status"><span id="studio-boot-dots" class="story-loading-dots studio-boot-dots" aria-hidden="true"><i></i><i></i><i></i></span><p id="studio-boot-title">화면을 불러오는 중...</p></div><p id="studio-boot-error" hidden></p><button id="studio-boot-retry" type="button" hidden>다시 불러오기</button><noscript><p>이 화면을 사용하려면 브라우저에서 JavaScript를 켠 뒤 새로고침하세요.</p></noscript></div>
+    <div class="studio-boot-content"><div class="studio-boot-status"><span id="studio-boot-dots" class="story-loading-dots studio-boot-dots" aria-hidden="true"><i></i><i></i><i></i></span><p id="studio-boot-title">화면을 불러오는 중...</p></div><noscript><p>이 화면을 사용하려면 브라우저에서 JavaScript를 켠 뒤 새로고침하세요.</p></noscript></div>
+    <div class="studio-notice studio-boot-notice"><span class="studio-notice-icon" aria-hidden="true"></span><p id="studio-boot-error" class="notice error" hidden></p><button id="studio-boot-retry" class="studio-notice-action" type="button" hidden>다시 불러오기</button></div>
   </section>
+  <div id="studio-notices" class="studio-notices">
+    <div class="studio-notice-stack">
+      <div class="studio-notice"><span class="studio-notice-icon" aria-hidden="true"></span><div id="connection" class="notice error" role="alert" hidden></div></div>
+      <div class="studio-notice"><span class="studio-notice-icon" aria-hidden="true"></span><div id="project-error" class="notice error" role="alert" hidden></div></div>
+      <div class="studio-notice"><span class="studio-notice-icon" aria-hidden="true"></span><div id="review-error" class="notice error" role="alert" hidden></div></div>
+      <div class="studio-notice"><span class="studio-notice-icon" aria-hidden="true"></span><div id="message" class="notice" role="status" hidden></div><button id="studio-notice-action" class="studio-notice-action" type="button" hidden></button></div>
+    </div>
+  </div>
   <main id="studio-dashboard" class="dashboard-shell" inert>
     <header class="dashboard-topbar"><div id="project-actions" hidden><div id="actions" class="actions"><button id="start" class="primary" type="button">준비·학습 시작</button><button id="resume" class="primary" type="button" hidden>이어서 진행</button><button id="pause" type="button" hidden>현재 단계 후 일시정지</button></div></div><div id="project-switch" class="project-switch" hidden><label class="sr-only" for="project-select">모델</label><select id="project-select" hidden></select><button id="new-project" class="quiet" type="button" hidden>새 호출어</button></div></header>
-    <div id="connection" class="notice error" role="alert" hidden></div>
-    <div id="message" class="notice" role="status" hidden></div>
     <section id="setup" class="setup">
       <div class="page-heading"><p class="eyebrow">새 모델</p><h1>어떤 말로 부를까요?</h1><p>호출어와 규모를 정하면 자료 준비부터 학습·시험까지 이어집니다.</p></div>
       <form id="create-form" class="setup-layout">
@@ -85,7 +93,7 @@
         <p id="current-description" class="muted"></p><div id="migration-note" class="notice" hidden><p id="migration-reason"></p><button id="migrate" type="button">업데이트 적용</button></div>
         <div id="progress-section" class="progress-section" hidden><div class="progress-text"><span id="progress-label"></span><strong id="progress-percent"></strong></div><progress id="progress" max="100" value="0" aria-label="현재 작업 진행률"></progress></div>
         <p id="eta" class="timing current-eta"></p>
-        <div id="project-error" class="notice error" hidden></div><details class="task-details"><summary>시간·재개 안내</summary><div class="timing"><span id="elapsed"></span></div><p id="resume-note" class="hint">일시정지는 현재 단계가 끝난 뒤 적용됩니다. 작업 기록은 저장되며, 서버를 다시 켜면 이어서 진행할 수 있습니다.</p></details></div>
+        <details class="task-details"><summary>시간·재개 안내</summary><div class="timing"><span id="elapsed"></span></div><p id="resume-note" class="hint">일시정지는 현재 단계가 끝난 뒤 적용됩니다. 작업 기록은 저장되며, 서버를 다시 켜면 이어서 진행할 수 있습니다.</p></details></div>
             <div id="counts" class="counts" hidden></div>
             <div id="overview-empty" class="workspace-empty"><h2>작업 현황</h2><p>현재 단계의 진행률과 준비량을 자동으로 갱신합니다.</p></div>
             </div><section id="downloads-section" class="downloads-section" aria-label="자료별 다운로드" hidden><div class="downloads-heading"><h3>자료별 다운로드</h3><span id="downloads-count"></span></div><ul id="downloads-list" class="downloads-list"></ul></section>

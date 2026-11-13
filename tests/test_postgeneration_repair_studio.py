@@ -187,13 +187,23 @@ def test_retry_http_action_and_repair_queue_expose_hash_bound_retained_answers(m
         finish_repair_worker(manager, state["id"])
         current = manager._load(state["id"])
         descriptor = current["results"]["positive_review"]["reviews"][0]
-        connection.request("GET", f"/review/queue?project={state['id']}&queue=positive&rev={descriptor['queue_sha256']}")
+        def forbidden(*args, **kwargs):
+            pytest.fail("Review GET must not reconstruct the corpus")
+
+        monkeypatch.setattr(repair, "_completed", forbidden)
+        path = f"/review/queue?project={state['id']}&queue=positive&rev={descriptor['queue_sha256']}"
+        connection.request("GET", path)
         response = connection.getresponse(); payload = json.loads(response.read())
         assert response.status == 200, payload
         assert len(payload["items"]) == 4 and len(payload["retained_decisions"]) == 3 and len(payload["focus_sample_ids"]) == 1
         by_id = {row["id"]: row for row in payload["items"]}
         assert all(answer == {"decision": "keep", "listened": True, "audio_sha256": by_id[sample]["audio_sha256"]} for sample, answer in payload["retained_decisions"].items())
         assert set(payload["focus_sample_ids"]).isdisjoint(payload["retained_decisions"])
+        evidence = bound_file(root, descriptor["postgeneration_repair"]["evidence"])
+        write_json(evidence, {**read_json(evidence), "pending_ids": []})
+        connection.request("GET", path)
+        response = connection.getresponse(); payload = json.loads(response.read())
+        assert response.status == 400 and "내역이 변경" in payload["error"]
         connection.close()
     finally:
         server.shutdown(); server.server_close(); thread.join(timeout=2)

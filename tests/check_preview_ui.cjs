@@ -62,7 +62,7 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
     getComputedStyle:element=>element===document.body?{paddingTop:`${bodyPadding.top}px`,paddingBottom:`${bodyPadding.bottom}px`}:{},
     ResizeObserver:class{constructor(callback){this.callback=callback;resizeObservers.push(this);}observe(node){this.node=node;}disconnect(){this.disconnected=true;}},
     fetch: async (url, options) => { calls.push({ url, options });if(queue)await queue;const response=respond?await respond(url,options,calls.length):{ok,payload:payload||{items,error}};return { ok:response.ok!==false,status:response.status??(response.ok===false?400:200), json: async () => JSON.parse(JSON.stringify(response.payload)) }; } });
-  context.window = context; context.parent = standalone?context:{postMessage:(message,origin)=>{
+  context.window = context; context.parent = standalone?context:{location:{origin:context.location.origin},postMessage:(message,origin)=>{
     const entry={message:JSON.parse(JSON.stringify(message)),origin};frameMessages.push(entry);
     (message.type==='koww:reference-layout'?layoutMessages:message.type==='koww:reference-height'?heightMessages:parentMessages).push(entry);
     if(autoReady&&message.type==='koww:voice-picker'&&message.open)messages.message({origin,source:context.parent,data:{type:'koww:voice-picker-ready',request:message.request}});
@@ -77,6 +77,8 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
   for (let index = 0; index < 8; index++) await new Promise(resolve => setImmediate(resolve));
   return { nodes, calls, enhancements, pickerCreations, playbackControls, document, documentEvents, messages, parentMessages,layoutMessages,heightMessages,frameMessages,resizeObservers,notifyLayout:()=>resizeObservers.forEach(observer=>observer.callback()),parent: context.parent,timers,flush:async()=>{for(let i=0;i<8;i++)await new Promise(resolve=>setImmediate(resolve));},poll:async()=>{const [id,timer]=timers.entries().next().value||[];assert.ok(timer,'a status poll is scheduled');timers.delete(id);await timer.callback();}, ready:request=>messages.message({origin:'http://127.0.0.1:8793',source:context.parent,data:{type:'koww:voice-picker-ready',request}}),resize:(nextHeight,nextRect)=>{context.innerHeight=nextHeight;if(nextRect)Object.assign(buttonRect,nextRect);messages.resize();} };
 }
+
+const referenceNotices=view=>view.frameMessages.filter(entry=>entry.message.type==='koww:reference-notice');
 
 (async () => {
   assert.match(html, /href="\/audio_listening\.css"/);
@@ -712,9 +714,11 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
     await f.finish({failure:'network'});
     assert.equal(f.writes().length,1);assert.ok(f.cards().every(card=>card.children[3].children[0].disabled));
     assert.equal(f.ui.nodes.get('reference-group-next').disabled,true);assert.equal(f.ui.nodes.get('candidate-more').disabled,true);assert.equal(f.ui.nodes.get('candidate-previous').disabled,true);
-    assert.equal(f.ui.nodes.get('candidate-retry-actions').hidden,false);assert.match(f.ui.nodes.get('error').textContent,/상태 다시 확인/);
+    assert.equal(f.ui.nodes.get('candidate-retry-actions').hidden,false);assert.equal(f.ui.nodes.get('error').textContent,'');
+    assert.equal(referenceNotices(f.ui).at(-1).message.channel,'save');assert.match(referenceNotices(f.ui).at(-1).message.message,/상태 다시 확인/);
     f.checkbox(2).change(true);assert.equal(f.writes().length,1);
     f.control.failReads=false;await f.ui.nodes.get('candidate-status-retry').handlers.click();await f.ui.flush();
+    assert.equal(referenceNotices(f.ui).at(-1).message.message,'','recovery clears only its save alert');
     assert.equal(f.writes().length,1);assert.equal(f.checkbox(0).checked,true);assert.equal(f.checkbox(1).checked,false);
     assert.equal(f.ui.nodes.get('candidate-retry-actions').hidden,true);assert.equal(f.checkbox(2).disabled,false);
   }
@@ -907,7 +911,12 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
     return {payload:emptyState};
   }});
   assert.equal(initialMore,1,'an empty category requests its initial batch exactly once');
-  assert.equal(initial.nodes.get('error').textContent,'생성 실패');assert.equal(initial.timers.size,0,'a failed job does not loop or auto-retry');
+  assert.equal(initial.nodes.get('error').textContent,'');assert.equal(initial.timers.size,0,'a failed job does not loop or auto-retry');
+  assert.deepEqual(referenceNotices(initial).at(-1),{origin:'http://127.0.0.1:8793',message:{type:'koww:reference-notice',
+    project:'bora',url:'/reference-preview/?project=bora',channel:'generation',message:'생성 실패'}});
+  const initialNoticeCount=referenceNotices(initial).length;
+  initial.messages.message({origin:'http://127.0.0.1:8793',source:initial.parent,data:{type:'koww:reference-status',project:'bora'}});
+  assert.equal(referenceNotices(initial).length,initialNoticeCount+1,'the parent can recover a notice sent before its frame load event');
   assert.equal(initial.nodes.get('candidate-more').disabled,false,'a failure leaves an explicit retry available');
   initial.nodes.get('candidate-more').handlers.click();await initial.flush();assert.equal(initialMore,2);
   const preparingState={...structuredClone(initialCandidateState),items:[],accepted:[],editable:false,
@@ -941,11 +950,15 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
     pollReads++;if(pollReads>1&&!pollAvailable)return {ok:false,payload:{error:'상태 연결 끊김'}};
     return {payload:interruptedState};
   }});
-  await interrupted.poll();await interrupted.poll();await interrupted.poll();
+  await interrupted.poll();await interrupted.poll();assert.deepEqual(referenceNotices(interrupted),[],'short-lived polling errors do not surface');
+  await interrupted.poll();
   assert.equal(interrupted.timers.size,0,'repeated queue failures stop polling instead of retrying forever');
   assert.equal(interrupted.nodes.get('candidate-retry-actions').hidden,false);
-  assert.equal(interrupted.nodes.get('error').textContent,'상태 연결 끊김');
+  assert.equal(interrupted.nodes.get('error').textContent,'');
+  assert.equal(referenceNotices(interrupted).at(-1).message.channel,'load');
+  assert.equal(referenceNotices(interrupted).at(-1).message.message,'상태 연결 끊김');
   pollAvailable=true;interrupted.nodes.get('candidate-status-retry').handlers.click();await interrupted.flush();
+  assert.equal(referenceNotices(interrupted).at(-1).message.message,'');
   assert.equal(interrupted.nodes.get('candidate-retry-actions').hidden,true);assert.equal(interrupted.timers.size,1,'manual status retry resumes the existing job');
   const incomplete=await screen('reference-preview',[],{config:candidateConfig,payload:initialCandidateState});
   const incompleteAudio=incomplete.nodes.get('audio');incomplete.nodes.get('candidate-list').children[0].children[0].handlers.click();
@@ -953,6 +966,21 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
   assert.equal(incomplete.calls.length,1,'seeking to the end cannot mark a candidate heard');
   assert.equal(incomplete.nodes.get('candidate-list').children[0].children[3].children[0].disabled,false,'partial listening does not block explicit selection');
   assert.equal(incomplete.nodes.get('error').textContent,'처음부터 끝까지 들은 경우에만 청취 완료로 기록합니다.');
+  assert.deepEqual(referenceNotices(incomplete),[],'a skipped-interval hint remains beside its audio');
+  const failedCandidateAudio=await screen('reference-preview',[],{config:candidateConfig,payload:initialCandidateState,
+    playback:count=>count===1?Promise.reject(Error('device failed')):Promise.resolve()});
+  failedCandidateAudio.nodes.get('candidate-list').children[0].children[0].handlers.click();await failedCandidateAudio.flush();
+  assert.equal(failedCandidateAudio.nodes.get('error').textContent,'');
+  assert.equal(referenceNotices(failedCandidateAudio).at(-1).message.channel,'playback');
+  assert.match(referenceNotices(failedCandidateAudio).at(-1).message.message,/재생하지 못했습니다/);
+  failedCandidateAudio.nodes.get('candidate-list').children[0].children[0].handlers.click();await failedCandidateAudio.flush();
+  failedCandidateAudio.nodes.get('audio').handlers.playing();
+  assert.equal(referenceNotices(failedCandidateAudio).at(-1).message.message,'');
+  const standaloneCandidate=await screen('reference-preview',[],{config:candidateConfig,payload:initialCandidateState,standalone:true,
+    playback:()=>Promise.reject(Error('device failed'))});
+  standaloneCandidate.nodes.get('candidate-list').children[0].children[0].handlers.click();await standaloneCandidate.flush();
+  assert.match(standaloneCandidate.nodes.get('error').textContent,/재생하지 못했습니다/);
+  assert.deepEqual(referenceNotices(standaloneCandidate),[]);
   const endedRaceState=structuredClone(initialCandidateState);
   const endedRace=await screen('reference-preview',[],{config:candidateConfig,respond:async(url,options)=>{
     if(options){const action=JSON.parse(options.body);assert.equal(action.action,'hear');endedRaceState.items.find(item=>item.id===action.id).heard=true;}
@@ -1031,7 +1059,9 @@ async function screen(mode, items, { error, ok = true, playback, height = 144, w
   assert.deepEqual(failureReports.slice(-2),[false,true],'a rejected approval restores explicit next-button retry instead of leaving it pending');
   assert.equal(failedApproval.nodes.get('candidate-deck').hidden,false);
   assert.deepEqual(failedApproval.nodes.get('candidate-list').children,cardsBeforeFailure,'a rejected approval restores the same selected cards');
-  assert.equal(failedApproval.nodes.get('error').textContent,'검수 저장 실패');
+  assert.equal(failedApproval.nodes.get('error').textContent,'');
+  assert.equal(referenceNotices(failedApproval).at(-1).message.channel,'save');
+  assert.equal(referenceNotices(failedApproval).at(-1).message.message,'검수 저장 실패');
   assert.deepEqual(failedApproval.parentMessages.filter(({message})=>message.type==='koww:reference-approved').at(-1).message,
     {type:'koww:reference-approved',project:'bora',group:approvalState.active_group,request:19,success:false,complete:false});
   const finalApprovalState=structuredClone(approvalState);
