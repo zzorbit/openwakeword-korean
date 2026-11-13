@@ -851,10 +851,10 @@
       if (boundaryNextIntent?.session === session) boundaryNextIntent = null;
       if (session) { session.cancel(); session.waiters?.clear(); for (const timer of session.timers) clearTimeout(timer); }
       transitioning = false; creationPending = false; loader.hidden = true;
-      loader.classList.remove("is-finishing");
+      loader.classList.remove("is-entering", "is-finishing");
       index.classList.remove("is-transitioning"); index.inert = false;
       clearIndexMagnification();
-      panel.classList.remove("is-leaving"); panel.inert = false; panel.removeAttribute("aria-busy");
+      panel.classList.remove("is-leaving", "is-concealed"); panel.inert = false; panel.removeAttribute("aria-busy");
     }
     function activeTransition(session) { return transitionSession === session; }
     function beginTransition(backwards, initial = false) {
@@ -866,7 +866,7 @@
       clearIndexMagnification();
       panel.inert = true; panel.setAttribute("aria-busy", "true"); if (!initial) panel.classList.add("is-leaving");
       loaderText.textContent = backwards ? "전 단계로 이동 중" : "다음 단계로 이동 중";
-      if (!initial) loader.hidden = false;
+      if (!initial) { loader.classList.add("is-entering"); loader.hidden = false; }
       return session;
     }
     function cssMilliseconds(value) {
@@ -1138,6 +1138,10 @@
         if (!await waitForLoadingPaint(session.aborted) || !activeTransition(session)) return;
         const hold = waitForDuration(session, minimumLoadingMs);
         const content = (async () => {
+          const departed = await waitForMotion(panel, session);
+          if (!activeTransition(session)) return { ok: false };
+          // A canceled motion must still conceal the source before replacing its contents.
+          if (!departed) panel.classList.add("is-concealed");
           pauseMedia();
           if (!activeTransition(session)) return { ok: false };
           if (await prepare?.() === false) return { ok: false, cancelled: true };
@@ -1160,6 +1164,7 @@
         while (activeTransition(session)) {
           if (result?.ok && session.readyVersion !== (session.contentVersion || 0) && !await waitForChapter(session)) return;
           const version = session.contentVersion || 0;
+          loader.classList.remove("is-entering");
           loader.classList.add("is-finishing");
           if (!await waitForMotion(loader, session)) return;
           if (version === (session.contentVersion || 0) || !result?.ok) break;

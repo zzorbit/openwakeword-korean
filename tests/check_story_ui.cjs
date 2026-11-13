@@ -56,7 +56,7 @@ function page(initialProject = null, options = {}) {
       this.classList = {
         contains: name => this.className.split(/\s+/).includes(name),
         add: name => { this.className = [...new Set([...this.className.split(/\s+/).filter(Boolean), name])].join(" "); },
-        remove: name => { this.className = this.className.split(/\s+/).filter(value => value !== name).join(" "); },
+        remove: (...names) => { this.className = this.className.split(/\s+/).filter(value => !names.includes(value)).join(" "); },
         toggle: (name, force) => { if (force) this.classList.add(name); else this.classList.remove(name); },
       };
     }
@@ -514,9 +514,38 @@ async function main() {
       cancel() { this.playState = "idle"; reject(new Error("Animation canceled")); } };
     return animation;
   }
+  await test("chapter exit and loading entry start together and keep the source until its fade completes", async () => {
+    let leaving;
+    const p = page(null, { animations: element => {
+      if (element.id !== "story-panel" || !element.classList.contains("is-leaving")) return [];
+      leaving = motion(element, 150); return [leaving];
+    } });
+    const loader = p.shell.querySelector(".story-loader"), panel = p.get("story-panel");
+    for (const [control, source, destination, cancel] of [[p.next, "entry", "tools", false], [p.back, "tools", "entry", true]]) {
+      const start = p.now();
+      await control.fire("click");
+      assert.equal(p.shell.dataset.step, source);
+      assert.equal(panel.inert, true);
+      assert.equal(loader.hidden, false);
+      assert.equal(loader.classList.contains("is-entering"), true);
+      p.elapse(150);
+      if (cancel) leaving.cancel(); else leaving.finish();
+      await p.flush();
+      assert.equal(p.shell.dataset.step, destination);
+      assert.equal(panel.classList.contains("is-leaving"), true);
+      assert.equal(panel.classList.contains("is-concealed"), cancel);
+      await p.settle();
+      assert.equal(p.now() - start, 800, "the exit runs within the existing loading hold");
+      assert.equal(loader.hidden, true);
+      assert.equal(loader.classList.contains("is-entering"), false);
+      assert.equal(panel.classList.contains("is-concealed"), false);
+      assert.equal(panel.inert, false);
+    }
+  });
   await test("both directions hold the visible notice for 800 ms and wait for its conceal animation", async () => {
     const phases = [];
     const p = page(null, { getComputedStyle: () => ({ animationDuration: "240ms" }), animations: element => {
+      if (!element.classList.contains("is-finishing")) return [];
       const animation = motion(element, 240); phases.push(animation);
       return [animation, motion({}, Infinity)]; // An infinite child effect cannot hold the parent transition.
     } });
@@ -548,6 +577,7 @@ async function main() {
   await test("slow animation completion is never replaced by the nominal CSS duration", async () => {
     const phases = [];
     const p = page(null, { getComputedStyle: () => ({ animationDuration: "240ms" }), animations: element => {
+      if (!element.classList.contains("is-finishing")) return [];
       const animation = motion(element, 800); phases.push(animation); return [animation];
     } });
     await p.next.fire("click");
@@ -567,7 +597,10 @@ async function main() {
   });
   await test("a missing finite completion signal is recovered by finishing the notice exit", async () => {
     const phases = [];
-    const p = page(null, { animations: element => { const animation = motion(element, 200); phases.push(animation); return [animation]; } });
+    const p = page(null, { animations: element => {
+      if (!element.classList.contains("is-finishing")) return [];
+      const animation = motion(element, 200); phases.push(animation); return [animation];
+    } });
     await p.next.fire("click");
     assert.equal(p.shell.querySelector(".story-loader").hidden, false);
     p.advanceTimer(); await p.flush();
@@ -591,7 +624,10 @@ async function main() {
   await test("model changes and page hiding cancel stale animations and queued watchdogs", async () => {
     for (const cancel of ["model", "pagehide"]) {
       const phases = [];
-      const p = page(null, { animations: element => { const animation = motion(element, 200); phases.push(animation); return [animation]; } });
+      const p = page(null, { animations: element => {
+        if (!element.classList.contains("is-finishing")) return [];
+        const animation = motion(element, 200); phases.push(animation); return [animation];
+      } });
       await p.next.fire("click"); p.advanceTimer(); await p.flush(); const staleWatchdog = p.timers.at(-1).callback;
       if (cancel === "model") { p.state.project = { id: "different-model", status: "running", stage_id: "features" }; p.ui.render(); }
       else await p.windowEvent("pagehide");
@@ -605,7 +641,10 @@ async function main() {
   });
   await test("a canceled motion restores controls without an unhandled finished rejection", async () => {
     const phases = [];
-    const p = page(null, { animations: element => { const animation = motion(element, 200); phases.push(animation); return [animation]; } });
+    const p = page(null, { animations: element => {
+      if (!element.classList.contains("is-finishing")) return [];
+      const animation = motion(element, 200); phases.push(animation); return [animation];
+    } });
     await p.next.fire("click"); p.advanceTimer(); await p.flush(); phases[0].cancel(); await p.flush();
     assert.equal(p.shell.dataset.step, "tools"); assert.equal(p.get("story-panel").inert, false);
     assert.equal(p.shell.querySelector(".story-loader").hidden, true);
