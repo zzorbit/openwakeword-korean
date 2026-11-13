@@ -28,7 +28,7 @@ def _release_paths(repository):
     yield from (Path(name) for name in ROOT_FILES)
     yield from (Path("docs", name) for name in GUIDES)
     yield from (Path("scripts", name) for name in (
-        "Use-ProjectStorage.ps1", "Start-Web.ps1", "Start-Web.cmd",
+        "Use-ProjectStorage.ps1", "Start-Web.ps1", "Start-Web.cmd", "Stop-Web.ps1", "Stop-Web.cmd",
         "package_library.py", "check_browser.py"))
     patterns = (
         "korean_openwakeword/*.py",

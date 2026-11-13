@@ -4,8 +4,10 @@ import json
 import os
 from pathlib import Path
 import shutil
+import socket
 import subprocess
 import sys
+import time
 from zipfile import ZipFile
 
 import pytest
@@ -80,7 +82,7 @@ def launcher(tmp_path):
     install = tmp_path / "web install"
     scripts = install / "scripts"
     scripts.mkdir(parents=True)
-    for name in ("Start-Web.cmd", "Start-Web.ps1", "Use-ProjectStorage.ps1"):
+    for name in ("Start-Web.cmd", "Start-Web.ps1", "Stop-Web.cmd", "Stop-Web.ps1", "Use-ProjectStorage.ps1"):
         shutil.copyfile(ROOT / "scripts" / name, scripts / name)
     wheels = tmp_path / "wheel house"
     wheels.mkdir()
@@ -150,3 +152,54 @@ def test_start_web_retries_incomplete_dependency_install(launcher, tmp_path):
     second = run_cmd(cmd, ["-NoBrowser"], cwd=tmp_path, env=env)
     assert second.returncode == 0, (second.stdout, second.stderr)
     assert_launched(log, install, install, port=8793, count=1)
+
+
+def test_stop_web_cmd_stops_only_the_web_server_for_its_workspace(launcher, tmp_path):
+    install, scripts, _, _, env = launcher
+    stop = install / "Stop-Web.cmd"
+    shutil.copyfile(scripts / stop.name, stop)
+    workspace = tmp_path / "separate workspace"
+    workspace.mkdir()
+    logs = workspace / ".koww-studio"
+    lease = logs / "server.json"
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        port = reservation.getsockname()[1]
+
+    with (workspace / "server.log").open("wb") as log:
+        server = subprocess.Popen([sys.executable, "-m", "korean_openwakeword", "web",
+            "--workspace", str(workspace), "--port", str(port), "--no-browser"],
+            cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+        try:
+            deadline = time.monotonic() + 15
+            while not lease.is_file() and server.poll() is None and time.monotonic() < deadline:
+                time.sleep(.05)
+            assert lease.is_file(), (workspace / "server.log").read_bytes()
+            untouched = install / ".koww-studio"
+            untouched.mkdir()
+            shutil.copyfile(lease, untouched / lease.name)
+            (untouched / "server.lock").touch()
+            not_running = run_cmd(stop, [], cwd=tmp_path, env=env)
+            assert not_running.returncode == 0 and b"already stopped" in not_running.stdout
+            assert server.poll() is None
+
+            original_lease = lease.read_bytes()
+            mismatched = json.loads(original_lease)
+            mismatched["creation_identity"] = "1"
+            lease.write_text(json.dumps(mismatched), encoding="utf-8")
+            args = ["-Workspace", str(workspace)]
+            denied = run_cmd(stop, args, cwd=tmp_path, env=env)
+            assert denied.returncode != 0 and b"does not match" in denied.stderr
+            assert server.poll() is None
+
+            lease.write_bytes(original_lease)
+            stopped = run_cmd(stop, args, cwd=tmp_path, env=env)
+            assert stopped.returncode == 0 and b"has stopped" in stopped.stdout, (stopped.stdout, stopped.stderr)
+            server.wait(timeout=5)
+            assert lease.read_bytes() == original_lease
+            repeat = run_cmd(stop, args, cwd=tmp_path, env=env)
+            assert repeat.returncode == 0 and b"already stopped" in repeat.stdout
+        finally:
+            if server.poll() is None:
+                server.terminate()
+                server.wait(timeout=5)

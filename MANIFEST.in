@@ -16,6 +16,7 @@ prune .venv
 prune scripts
 include scripts/Use-ProjectStorage.ps1
 include scripts/Start-Web.ps1 scripts/Start-Web.cmd
+include scripts/Stop-Web.ps1 scripts/Stop-Web.cmd
 include scripts/package_library.py
 include scripts/check_browser.py
 recursive-include tests test_*.py check_*.cjs
