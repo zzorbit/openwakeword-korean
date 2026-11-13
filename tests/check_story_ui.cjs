@@ -701,7 +701,7 @@ async function main() {
       reference_counts: { train: 20, validation: 30 }, reference_preview: { count: 50, train: 20, validation: 30, url: "/reference-preview/" } };
   };
   await test("every explicit story boundary waits for proven completion and next releases the next real group once", async () => {
-    for (const [step] of navigationGroups.slice(0, -1).filter(([step]) => step !== "voices")) {
+    for (const [step] of navigationGroups.slice(0, -1).filter(([step]) => !["voices", "hard-generation"].includes(step))) {
       const project = navigationProject(step), target = navigationGroups[navigationGroups.findIndex(([id]) => id === step) + 1][0];
       const p = page(project, { action: (_action, state) => {
         state.project.navigation_checkpoint = { policy: "explicit_story_v1", state: "running", step: target };
@@ -2946,30 +2946,92 @@ async function main() {
     return project;
   };
   async function wireHard(p,project){const wire=await wirePreflight(p,project);wire.sendHard=data=>wire.send({phase:'hard',...data});return wire;}
-  await test('hard pilot keeps the notice through same-chapter queue preparation and offers local recovery after timeout',async()=>{
-    const project=hardProject(true),queue=project.review;
-    Object.assign(project,{stage_id:'hard_pilot',status:'running',process_alive:true});delete project.review;
-    const p=page(project);assert.equal(p.shell.dataset.step,'hard-review');
-    project.stage_id='hard_review';p.ui.render();await p.flush();p.advanceTimer();await p.flush();
-    assert.equal(p.get('story-panel').inert,true);assert.equal(p.get('review-section').hidden,true);
-    await p.settle();
-    assert.equal(p.get('story-panel').inert,false);assert.equal(p.get('review-section').hidden,true);
-    const retry=p.get('studio-notice-action');
-    assert.equal(retry.hidden,false);assert.equal(p.operation.hidden,true);assert.equal(p.next.disabled,true);
-    assert.equal(p.calls.filter(call=>call.startsWith('message:')).length,1);
-    Object.assign(project,{status:'waiting_review',process_alive:false,review:queue});
-    const wire=await wireHard(p,project);
-    assert.equal(p.get('review-section').hidden,true);assert.equal(retry.hidden,false);
-    await retry.fire('click');await p.flush();
-    assert.equal(wire.posted.some(row=>row.type==='koww:chapter-request'),false,'a retry cannot accept the old frame before its new load');
-    await wire.frame.fire('load');await p.flush();
-    const chapter=wire.posted.filter(row=>row.type==='koww:chapter-request').at(-1);assert.ok(chapter);
-    await wire.sendHard({type:'koww:chapter-ready',request:chapter.request,url:chapter.url,status:'ready'});
-    await wire.sendHard({type:'koww:preflight-height',height:170});
-    await wire.sendHard({type:'koww:preflight-state',ready:false,pending:false,error:false});
-    await p.settle();assert.equal(p.get('story-panel').inert,false);assert.equal(p.get('review-section').hidden,false);
-    assert.equal(p.next.disabled,true);
-    assert.equal(p.calls.some(call=>['start','resume','input','load_hard_review'].includes(call)),false);
+  await test("bulk hard review stays covered until its current queue and player layout have painted", async () => {
+    for (const via of ["next", "poll"]) {
+      const project = navigationProject("hard-generation");
+      project.settings = { hard_review_policy: "one_per_phrase_v1" };
+      const queue = { queue_id: "hard", queue_sha256: "current-hard-queue", url: "/review/?project=navigated&queue=hard" };
+      const enterReview = () => Object.assign(project, { stage_id: "hard_review", status: "ready",
+        process_alive: false, navigation_checkpoint: { policy: "explicit_story_v1", step: "hard-review", state: "running" } });
+      if (via === "poll") Object.assign(project, { stage_id: "hard_generation", status: "running",
+        process_alive: true, navigation_checkpoint: { policy: "explicit_story_v1", step: "hard-generation", state: "running" } });
+      const p = page(project, { paintFrames: "manual", action: (action, state) => {
+        assert.equal(action, "resume");
+        state.busy = false;
+        enterReview();
+        p.ui.render();
+      } });
+      const loader = p.shell.querySelector(".story-loader"), panel = p.get("story-panel");
+      assert.equal(p.shell.dataset.step, "hard-generation");
+      if (via === "next") await p.next.fire("click");
+      else { enterReview(); p.ui.render(); }
+      await p.advanceFrame();
+      await p.advanceFrame();
+      await p.flush();
+      assert.equal(p.shell.dataset.step, "hard-review");
+      assert.equal(p.advanceTimer(), true);
+      await p.flush();
+      while (await p.advanceFrame()) {}
+      assert.equal(loader.hidden, false, "the notice minimum cannot reveal a review with no queue");
+      assert.equal(panel.inert, true);
+      assert.equal(p.get("review-section").hidden, true);
+
+      project.status = "running"; project.process_alive = true; p.ui.render();
+      assert.equal(panel.inert, true);
+      Object.assign(project, { status: "waiting_review", process_alive: false,
+        review: { ...queue, queue_id: "pilot", queue_sha256: "previous-queue", url: "/review/?project=navigated&queue=pilot" } });
+      p.ui.render(); await p.flush();
+      while (await p.advanceFrame()) {}
+      assert.equal(loader.hidden, false, "a previous chapter's queue cannot reveal the hard review");
+      project.review = queue;
+      const wire = await wireHard(p, project);
+      const chapter = wire.posted.filter(row => row.type === "koww:chapter-request").at(-1);
+      assert.ok(chapter, "the destination iframe must acknowledge its current document");
+      await wire.sendHard({ type: "koww:chapter-ready", request: chapter.request - 1, url: chapter.url, status: "ready" });
+      await wire.sendHard({ type: "koww:preflight-height", height: 170 });
+      await wire.sendHard({ type: "koww:preflight-state", ready: false, pending: false, error: false, queue_sha256: "previous-queue" });
+      assert.equal(loader.hidden, false);
+      await wire.sendHard({ type: "koww:chapter-ready", request: chapter.request, url: chapter.url, status: "ready" });
+      assert.equal(loader.hidden, false, "a frame acknowledgement without current player state must not reveal the chapter");
+      await wire.sendHard({ type: "koww:preflight-state", ready: false, pending: false, error: false });
+      assert.equal(loader.hidden, false, "the matched layout must paint before removing the notice");
+      while (await p.advanceFrame()) {}
+      assert.equal(loader.hidden, true);
+      assert.equal(panel.inert, false);
+      assert.equal(p.get("review-section").hidden, false);
+      assert.equal(p.next.disabled, true, "loading the player does not approve audio");
+      assert.equal(p.calls.filter(call => call === "resume").length, via === "next" ? 1 : 0);
+    }
+  });
+  await test("hard review offers local recovery after a timeout for both generation paths", async () => {
+    for (const sampleFirst of [false, true]) {
+      const project = hardProject(sampleFirst), queue = project.review;
+      Object.assign(project, { stage_id: sampleFirst ? "hard_pilot" : "hard_generation", status: "running", process_alive: true });
+      delete project.review;
+      const p = page(project);
+      assert.equal(p.shell.dataset.step, sampleFirst ? "hard-review" : "hard-generation");
+      project.stage_id = "hard_review"; p.ui.render(); await p.flush(); p.advanceTimer(); await p.flush();
+      assert.equal(p.get("story-panel").inert, true); assert.equal(p.get("review-section").hidden, true);
+      await p.settle();
+      assert.equal(p.shell.dataset.step, "hard-review");
+      assert.equal(p.get("story-panel").inert, false); assert.equal(p.get("review-section").hidden, true);
+      const retry = p.get("studio-notice-action");
+      assert.equal(retry.hidden, false); assert.equal(p.operation.hidden, true); assert.equal(p.next.disabled, true);
+      assert.equal(p.calls.filter(call => call.startsWith("message:")).length, 1);
+      Object.assign(project, { status: "waiting_review", process_alive: false, review: queue });
+      const wire = await wireHard(p, project);
+      assert.equal(p.get("review-section").hidden, true); assert.equal(retry.hidden, false);
+      await retry.fire("click"); await p.flush();
+      assert.equal(wire.posted.some(row => row.type === "koww:chapter-request"), false, "a retry cannot accept the old frame before its new load");
+      await wire.frame.fire("load"); await p.flush();
+      const chapter = wire.posted.filter(row => row.type === "koww:chapter-request").at(-1); assert.ok(chapter);
+      await wire.sendHard({ type: "koww:chapter-ready", request: chapter.request, url: chapter.url, status: "ready" });
+      await wire.sendHard({ type: "koww:preflight-height", height: 170 });
+      await wire.sendHard({ type: "koww:preflight-state", ready: false, pending: false, error: false });
+      await p.settle(); assert.equal(p.get("story-panel").inert, false); assert.equal(p.get("review-section").hidden, false);
+      assert.equal(p.next.disabled, true);
+      assert.equal(p.calls.some(call => ["start", "resume", "input", "load_hard_review"].includes(call)), false);
+    }
   });
   function finishHardProcessing(project,sampleFirst){
     project.status='paused';project.process_alive=false;delete project.review;

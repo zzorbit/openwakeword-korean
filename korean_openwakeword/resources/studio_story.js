@@ -714,11 +714,21 @@
       return Boolean(reviewingPreflight(project) && preflightHeightReceived && preflightStateReceived
         && preflightState?.queue_sha256 === project.review.queue_sha256);
     }
+    function currentPronunciationStage(project) {
+      const route = callReviewRoute(project);
+      return Boolean(route && current === stageStep(project) && stageId(project) === route.stage);
+    }
+    function reviewQueueMounted(project) {
+      return reviewingPreflight(project) && !review.hidden
+        && chapterFrameUrl($("review-frame")) === chapterUrl(project.review.url);
+    }
     function preparingReviewQueue(project) {
-      const stage = current === "call-pilot-review" && twoPhasePositiveReview(project) ? "pilot_review"
-        : current === "hard-review" && sampleFirstHardReview(project) ? "hard_review" : "";
-      return Boolean(stage && current === stageStep(project) && stageId(project) === stage && !project.error && !project.input
-        && (running(project.status) || project.status === "waiting_review" && !reviewingPreflight(project)));
+      // The worker can enter the stage before publishing the queue. The
+      // transition still owns the view until that queue mounts its player.
+      return Boolean(currentPronunciationStage(project) && !project.error && !project.input && !project.migration
+        && !repairProgressVisible(project)
+        && (running(project.status) || ["ready", "waiting_review"].includes(project.status))
+        && !reviewQueueMounted(project));
     }
     function preparingPhraseForm(project) {
       if (current !== "phrases" || stageStep(project) !== current || stageId(project) !== "hard_phrases"
@@ -928,8 +938,7 @@
       clearTimeout(timer); session.timers.delete(timer);
       return result && activeTransition(session);
     }
-    function chapterFrameUrl(frame) {
-      const value = frame?.getAttribute("src");
+    function chapterUrl(value) {
       if (!value) return "";
       try {
         const url = new URL(value, window.location.href || window.location.origin + "/");
@@ -937,6 +946,7 @@
         url.hash = ""; return url.href;
       } catch { return ""; }
     }
+    function chapterFrameUrl(frame) { return chapterUrl(frame?.getAttribute("src")); }
     function visibleNoticeFrame(project) {
       if (!project || listening) return null;
       if (current === "voice-listening" && project.reference_preview?.url && referencePreview.open) return $("reference-preview-frame");
@@ -986,7 +996,8 @@
       if (!project) return [];
       if (current === "voice-listening" && project.reference_preview?.url) return [$("reference-preview-frame")];
       if (["results", "microphone"].includes(current) && !results.hidden) return [$("result-frame")];
-      if (!review.hidden && historic.hidden && project.review) return [$("review-frame")];
+      if (!review.hidden && historic.hidden && project.review
+        && (!currentPronunciationStage(project) || reviewQueueMounted(project))) return [$("review-frame")];
       return [];
     }
     function requestChapterFrame(session, waiter) {
@@ -1061,6 +1072,7 @@
       const recipePending = Boolean(bridge.state().project && ["scale", "materials"].includes(current) && bridge.prepareRecipes);
       const repairedReview = Boolean(current === "pronunciation" && postRepair(bridge.state().project)
         && bridge.state().project.review);
+      if (current === "hard-review" && currentPronunciationStage(bridge.state().project)) session.hardReviewArrival = true;
       const timeout = new Promise((_, reject) => { rejectTimeout = reject; });
       function armTimeout() {
         if (timer !== undefined) return;
@@ -1091,9 +1103,8 @@
             if (preparingReviewQueue(project)) {
               armTimeout();
               const reviewStage = stageId(project);
-              const queueAvailable = next => !running(next.status) && !next.error && reviewingPreflight(next) && !review.hidden;
-              if (!await waitForChapterState(session, next => current === step && stageId(next) === reviewStage
-                  && (preparingReviewQueue(next) || queueAvailable(next)), queueAvailable)) return false;
+              if (!await waitForChapterState(session, next => current === step && stageId(next) === reviewStage,
+                next => !preparingReviewQueue(next))) return false;
             }
             refreshChapterWaiters(session);
             if (session.waiters.size) armTimeout();
@@ -1165,7 +1176,8 @@
         if (!result?.ok && !result?.cancelled) {
           if (session.hardReviewArrival) hardReviewRevealFailed = true;
           if (session.repairQueue === repairQueueKey(bridge.state().project)) { repairReviewConcealed = session.repairQueue; repairRevealFailed = session.repairQueue; }
-          if (session.staged) { current = session.sourceStep; following = session.sourceFollowing; historyKey = ""; render(); }
+          if (session.staged && !session.hardReviewArrival) { current = session.sourceStep; following = session.sourceFollowing; historyKey = ""; }
+          if (session.staged) render();
           showTransitionError(session, result?.error, "화면을 준비하지 못했습니다. 다시 이동해 주세요.");
         }
         while (activeTransition(session)) {
@@ -1182,7 +1194,8 @@
         if (activeTransition(session)) {
           if (session.hardReviewArrival) hardReviewRevealFailed = true;
           if (session.repairQueue === repairQueueKey(bridge.state().project)) { repairReviewConcealed = session.repairQueue; repairRevealFailed = session.repairQueue; }
-          if (session.staged) { current = session.sourceStep; following = session.sourceFollowing; historyKey = ""; render(); }
+          if (session.staged && !session.hardReviewArrival) { current = session.sourceStep; following = session.sourceFollowing; historyKey = ""; }
+          if (session.staged) render();
           showTransitionError(session, error, "화면을 전환하지 못했습니다. 다시 시도해 주세요.");
         }
       } finally {
@@ -1305,7 +1318,6 @@
     }
     function callReviewRoute(project) {
       if (current === "hard-review") {
-        if (project?.review?.queue_id && project.review.queue_id !== "hard") return null;
         const sampleFirst = sampleFirstHardReview(project);
         return { phase: "hard", step: current, stage: "hard_review", target: sampleFirst ? "hard-generation" : "features",
           destinationStages: sampleFirst ? ["hard_generation", "hard_connect"] : ["features"],
@@ -1314,7 +1326,6 @@
       }
       if (!twoPhasePositiveReview(project)) return null;
       if (current === "call-pilot-review") {
-        if (project.review?.queue_id && project.review.queue_id !== "pilot") return null;
         return { phase: "pre", step: current, stage: "pilot_review", target: "positive-generation",
           destinationStages: ["positives", "positive_review"], retainStages: ["pilot", "pilot_review", "positives", "positive_review"] };
       }
@@ -1323,9 +1334,12 @@
       return null;
     }
     function reviewingPreflight(project) {
-      const route = callReviewRoute(project);
-      return Boolean(project && route && current === stageStep(project) && stageId(project) === route.stage && !done(project.status)
-        && project.review?.queue_sha256);
+      if (project?.status !== "waiting_review" || !currentPronunciationStage(project)) return false;
+      const { phase } = callReviewRoute(project);
+      const queue = phase === "hard" ? "hard" : phase === "pre" ? "pilot" : "positive";
+      const descriptor = project?.review;
+      return Boolean((descriptor?.queue_id || descriptor?.kind) === queue
+        && descriptor?.queue_sha256 && chapterUrl(descriptor.url));
     }
     function preflightReady(project) {
       return Boolean(reviewingPreflight(project) && preflightState?.ready && !preflightFinalizePending && !preflightCommitted
@@ -2517,6 +2531,7 @@
         const frameStep = !preparingResults && ["results", "microphone"].includes(current) && Boolean(project.results?.url || project.results_url);
         results.hidden = !frameStep || !(project.results?.url || project.results_url);
         review.hidden = historical || frameStep || !project.review || running(project.status) || repairProgressVisible(project)
+          || currentPronunciationStage(project) && !reviewingPreflight(project)
           || current === "hard-review" && hardReviewRevealFailed;
         const dependencySetup = project.input?.kind === "dependency_setup";
         input.hidden = historical || frameStep || !project.input || running(project.status) || dependencySetup && current !== "tools";
@@ -2615,8 +2630,8 @@
         $("hard-preview").hidden = listening !== "hard";
       }
       if (transitionSession) {
-        const queueKey = preparingReviewQueue(project) || reviewingPreflight(project)
-          ? JSON.stringify([project.id, current, stageId(project), project.review?.queue_sha256 || ""]) : "";
+        const queueKey = currentPronunciationStage(project)
+          ? [project.id, current, stageId(project), project.review?.queue_sha256 || "", reviewQueueMounted(project)] : null;
         const contentKey = JSON.stringify([queueKey, preparingPhraseForm(project), destinationFrames().map(frame => frame?.id)]);
         if (transitionSession.contentKey !== contentKey) {
           transitionSession.contentKey = contentKey;
