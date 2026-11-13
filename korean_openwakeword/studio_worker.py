@@ -15,6 +15,26 @@ from .storage import storage_environment
 from .project import load_project
 
 
+def _hard_stage(request, request_path, run_stage):
+    from .hard_tts import HardGenerationPaused
+
+    pause_path = request_path.parent / "pause.json"
+
+    def pause_requested():
+        try:
+            return read_json(pause_path).get("task_id") == request["task_id"] if pause_path.exists() else False
+        except FileNotFoundError:
+            return False
+
+    try:
+        if not pause_requested():
+            return run_stage(request["project"], request["workspace"], request["settings"], request["stage"],
+                             request.get("context", {}), pause_requested=pause_requested)
+    except HardGenerationPaused:
+        pass
+    return {"state": "paused"}
+
+
 def _task_progress_writer(request, directory, request_sha256):
     """Best-effort display hints; receipt and artifact writes remain strict."""
     owner_path = directory / "owner.json"
@@ -256,8 +276,11 @@ def _execute(request_path):
         else:
             preparation = nullcontext()
         with storage_environment(Path(request["project"]).parent), result_audio, preparation, task_progress(report):
-            result["result"] = run_stage(request["project"], request["workspace"], request["settings"],
-                                         request["stage"], request.get("context", {}))
+            if request["stage"] in ("hard_pilot", "hard_generation"):
+                result["result"] = _hard_stage(request, request_path, run_stage)
+            else:
+                result["result"] = run_stage(request["project"], request["workspace"], request["settings"],
+                                             request["stage"], request.get("context", {}))
         after = load_project(request["project"])[1]
         if after != before:
             if request["stage"] not in ("data_connect", "hard_connect"):

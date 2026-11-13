@@ -166,7 +166,8 @@ function page(initialProject = null, options = {}) {
       if (["results", "mic"].includes(view) && (project?.results?.url || project?.results_url)) frameSource("result-frame", view === "mic" ? project.results?.mic_url || `/mic/${project.id}/` : project.results?.url || project.results_url);
       const phraseInput = project?.status === "waiting_input" && project.input?.kind === "hard_phrases" ? project.input : null;
       if (phraseInput && phraseInput !== renderedPhraseInput && options.mountPhraseFields !== false) {
-        const fields = (phraseInput.suggestions?.length ? phraseInput.suggestions : [""]).map(value => Object.assign(new Element("input"), { value }));
+        const values = phraseInput.phrases || phraseInput.suggestions || [];
+        const fields = (values.length ? values : [""]).map(value => Object.assign(new Element("input"), { value }));
         get("hard-phrase-fields").replaceChildren(...fields);
         renderedPhraseInput = phraseInput;
       }
@@ -1448,6 +1449,38 @@ async function main() {
       if(!fast){assert.equal(resumes,0);assert.equal(p.get("story-panel").inert,true);complete();p.ui.render();await p.flush();}
       await p.settle();assert.equal(resumes,1);assert.equal(p.shell.dataset.step,"hard-generation");assert.equal(p.get("story-panel").inert,false);
       p.ui.render();await p.flush();assert.equal(resumes,1,"polling cannot replay the released boundary");
+    }
+  });
+  await test("Previous waits for a generation pause and opens the saved phrases for editing", async () => {
+    for (const [stage, restoredStatus] of [["hard_generation", "paused"], ["hard_pilot", "paused"], ["hard_generation", "waiting_input"]]) {
+      const project = navigationProject("phrases"), sample = stage === "hard_pilot";
+      const previous = sample ? "hard-review" : "hard-generation";
+      const checkpoint = { policy: "explicit_story_v1", step: previous, state: "running" };
+      Object.assign(project, { status: "pausing", stage_id: stage, process_alive: true, navigation_checkpoint: checkpoint });
+      if (sample) project.settings = { hard_review_policy: "sample_before_generation_v2" };
+      const p = page(project, { action: (action, state) => {
+        assert.equal(action, "edit_hard_phrases");
+        Object.assign(project, { status: "waiting_input", stage_id: "hard_phrases", can_edit_hard_phrases: false,
+          navigation_checkpoint: { ...checkpoint, step: "phrases" },
+          input: { kind: "hard_phrases", phrases: ["보아야", "나나야"], editing_paused_generation: true } });
+        state.busy = false; p.ui.render(); return true;
+      }, input: () => {
+        Object.assign(project, { status: restoredStatus, stage_id: stage, navigation_checkpoint: checkpoint, can_edit_hard_phrases: true });
+        delete project.input; p.ui.render(); return true;
+      } });
+      assert.equal(p.shell.dataset.step, previous);
+      assert.equal(p.back.disabled, true);
+      Object.assign(project, { status: "paused", process_alive: false, can_edit_hard_phrases: true });
+      p.ui.render(); assert.equal(p.back.disabled, false);
+      await p.back.fire("click"); await p.settle();
+      assert.equal(p.shell.dataset.step, "phrases");
+      assert.equal(p.next.disabled, false);
+      assert.deepEqual(p.get("hard-phrase-fields").children.map(field => field.value), ["보아야", "나나야"]);
+      assert.deepEqual(p.calls.filter(call => call === "edit_hard_phrases" || call === "resume"), ["edit_hard_phrases"]);
+      await p.next.fire("click"); await p.settle();
+      assert.equal(p.shell.dataset.step, previous);
+      if (restoredStatus === "paused") assert.equal(p.operation.textContent, "재개");
+      assert.equal(p.calls.includes("resume"), false, "saving the same phrases preserves the pause");
     }
   });
   await test("phrase saved intent cannot release a changed project hidden document or unrelated checkpoint stage",async()=>{

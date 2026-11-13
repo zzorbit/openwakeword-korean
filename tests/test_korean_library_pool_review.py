@@ -638,6 +638,26 @@ def test_synthetic_category_basis_can_come_from_verified_generation_contract(syn
     assert _approve(synthetic_pool)["source_count"] == 16
 
 
+def test_hard_implementation_accepts_only_audited_same_path_update(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from korean_openwakeword import hard_tts, pool_review
+
+    previous_sha = "91fc1bcfb0ef14e2f563416a7ebe562061cfe217c83b979e9a9a011c767c85e9"
+    module_path = Path(hard_tts.__file__).resolve()
+    binding = {"path": str(module_path), "sha256": previous_sha}
+    pool_review._bind_hard_implementation(tmp_path, binding)
+    with pytest.raises(ValueError, match="changed bound file"):
+        pool_review._bind_hard_implementation(tmp_path, {**binding, "sha256": "0" * 64})
+    sibling = tmp_path / "hard_tts.py"
+    sibling.write_bytes(module_path.read_bytes())
+    with pytest.raises(ValueError, match="changed bound file"):
+        pool_review._bind_hard_implementation(tmp_path, {**binding, "path": str(sibling)})
+    monkeypatch.setattr(pool_review, "digest", lambda path: "0" * 64)
+    with pytest.raises(ValueError, match="changed bound file"):
+        pool_review._bind_hard_implementation(tmp_path, binding)
+
+
 @pytest.mark.parametrize("per_phrase", [False, True])
 @pytest.mark.parametrize("representative_only", [False, True])
 def test_fresh_generated_references_review_pilot_and_hard_pool_need_no_manifest_rewrite(tmp_path, monkeypatch, per_phrase, representative_only):

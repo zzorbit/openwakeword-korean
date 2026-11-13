@@ -41,14 +41,18 @@ CONDITIONING_ONLY_REFERENCE_DIGESTS = {
 
 _PREVIOUS_HARD_IMPLEMENTATIONS = {
     "hard_tts.py": {"c7790a5d04f87c807f1a4f9dd29ba7caec55f3b48ce3dc660ca54b3f2b5f40bb",
-                    "6b6dd2de36feb9d801355eb2c1cbedb8a3edd3bf15376d72f2cd341696d1c283"},
+                    "6b6dd2de36feb9d801355eb2c1cbedb8a3edd3bf15376d72f2cd341696d1c283",
+                    "409dd788bbfdc68a2564d6b64940ea52099d49ad842f996dc0908e5dbe342e25",
+                    "91fc1bcfb0ef14e2f563416a7ebe562061cfe217c83b979e9a9a011c767c85e9"},
     "hard_pilot.py": {"7c155ed6634c480f95c0723b281afb38c23fc70545d14034e2559a0c1b8bdc8a",
-                      "e7fc3d6d1315ad1cf023ed623cb7ef916f10931cbbc172dcad8a59c8ff47a93a"},
+                      "e7fc3d6d1315ad1cf023ed623cb7ef916f10931cbbc172dcad8a59c8ff47a93a",
+                      "154ec141c93335af08740c571a391d6f82b2b44e8c04b9ac641125f0315e7a09",
+                      "dcc43508e9c22f101f34c50eb411c94c78fdfec9b11043fc1c12c08d1bbecc18"},
 }
 
 
 def compatible_hard_contract(actual, expected, *, pilot=False):
-    """The runtime update leaves Hard's generation and QC rules intact."""
+    """Runtime, pause and output-scope updates keep Hard's generation/QC rules intact."""
     if actual == expected:
         return True
     adjusted = deepcopy(actual)

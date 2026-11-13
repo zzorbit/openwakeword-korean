@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 
 from korean_openwakeword import studio, studio_steps
-from korean_openwakeword.common import digest, identity, read_json
-from test_korean_library_studio import create, manager  # noqa: F401
+from korean_openwakeword.common import append_row, digest, identity, read_json
+from test_korean_library_studio import create, http_server, manager  # noqa: F401
 
 
 @pytest.mark.parametrize("preset,per_phrase", [("check", 20), ("trial", 100), ("production", 500)])
@@ -104,3 +104,120 @@ def test_release_audit_rejects_any_unlisted_computational_change(monkeypatch):
     current["files"]["tts.py"] = "unreviewed"
     current["computation_sha256"] = audit["target_computation_sha256"] = identity(current["files"])
     assert studio._audited_hard_per_phrase_update(previous, current) is None
+
+
+def stopped_hard_generation(manager, *, status="paused", legacy=False, stage="hard_generation"):
+    project = create(manager, navigation_checkpoints=True)
+    state = manager._load(project["id"])
+    state["settings"]["hard_review_policy"] = "one_per_phrase_v1" if legacy else studio_steps.HARD_SAMPLE_REVIEW_POLICY
+    state["plan"] = studio_steps.workflow_plan(state["settings"])
+    state["execution_contract"].update(settings_sha256=identity(state["settings"]), plan_sha256=identity(state["plan"]))
+    state.update(status=status, index=next(i for i, row in enumerate(state["plan"]) if row["id"] == stage))
+    state["navigation_checkpoint"].update(step="hard-review" if stage == "hard_pilot" else "hard-generation", state="running")
+    phrases = ["보리야", "돌아와"]
+    state["inputs"].update(hard_phrases=phrases, hard_phrases_approved=True,
+                          review_answers={"hard": {"path": "previous answer"}, "positive": {"path": "positive answer"}})
+    state["results"]["hard_phrases"] = {"state": "completed", "result": {"phrases": phrases}}
+    if status == "waiting_input":
+        state["results"][stage] = {"state": "waiting_input", "input_kind": "generation_policy"}
+    manager._save(state)
+    return state
+
+
+@pytest.mark.parametrize("stage", ["hard_pilot", "hard_generation"])
+def test_hard_pause_stops_at_the_saved_candidate_and_resumes_same_scope(manager, stage):
+    state = stopped_hard_generation(manager, stage=stage)
+    project_id = state["id"]
+    manager.start(project_id)
+    active = manager._load(project_id)
+    marker = Path(active["job"]["directory"]) / "pause.json"
+    assert manager.pause(project_id)["status"] == "pausing"
+    assert read_json(marker)["task_id"] == active["job"]["task_id"]
+    root = Path(state["project"]).parent
+    journal = root / "data/generated" / ("hard_pilot" if stage == "hard_pilot" else "hard") / "candidates.jsonl"
+    journal.parent.mkdir(parents=True)
+    append_row(journal, {"technical_pass": True})
+    result_path = manager.workers.items[0].finish({"state": "paused"})
+    manager.tick()
+    view = manager.describe(manager._load(project_id))
+    assert view["stage_id"] == stage and view["status"] == "paused"
+    assert view["progress"]["done"] == 1 and view["can_edit_hard_phrases"]
+    assert manager._load(project_id)["history"][-1]["sha256"] == digest(result_path)
+    manager.start(project_id)
+    assert len(manager.workers.items) == 2
+    resumed = manager._load(project_id)
+    assert resumed["job"]["stage"] == stage and not (Path(resumed["job"]["directory"]) / "pause.json").exists()
+    assert digest(journal)
+
+
+@pytest.mark.parametrize("status", ["paused", "waiting_input", "error", "interrupted"])
+def test_unchanged_hard_phrase_edit_restores_original_scope_without_launch(manager, status):
+    state = stopped_hard_generation(manager, status=status)
+    project_id = state["id"]
+    assert manager.describe(state)["can_edit_hard_phrases"]
+    opened = manager.edit_hard_phrases(project_id)
+    assert opened["status"] == "waiting_input" and opened["stage_id"] == "hard_phrases"
+    assert opened["input"]["editing_paused_generation"] and opened["input"]["phrases"] == state["inputs"]["hard_phrases"]
+    assert opened["navigation_checkpoint"] == {"policy": "explicit_story_v1", "step": "phrases", "state": "running"}
+    assert manager.edit_hard_phrases(project_id)["input"] == opened["input"]
+    with pytest.raises(ValueError, match="유사어"):
+        manager.submit_input(project_id, {"admissions": ["irrelevant"]})
+    restored = manager.submit_input(project_id, {"phrases": opened["input"]["phrases"]})
+    assert restored["status"] == status and restored["stage_id"] == "hard_generation"
+    assert restored["navigation_checkpoint"] == state["navigation_checkpoint"]
+    after = manager._load(project_id)
+    assert "hard_phrase_edit" not in after and "hard_phrase_history" not in after
+    assert after["results"] == state["results"] and after["inputs"] == state["inputs"]
+    assert not manager.workers.items
+
+
+def test_hard_phrase_http_edit_preserves_old_audio_and_restarts_only_revised_scope(manager, http_server):
+    import json
+
+    state = stopped_hard_generation(manager, legacy=True, stage="hard_review")
+    root = Path(state["project"]).parent
+    audio = root / "data/generated/hard/previous.wav"
+    audio.parent.mkdir(parents=True)
+    audio.write_bytes(b"old clip")
+    old_sha256 = digest(audio)
+    state["last_job"] = {"stage": "hard_generation"}
+    state["navigation_checkpoint"]["state"] = "awaiting_next"
+    state["results"]["hard_generation"] = {"state": "completed", "result": {"technical_pass": 40}}
+    manager._save(state)
+    prefix = f"/api/projects/{state['id']}"
+    headers = {"X-Koww-Token": manager.token}
+    assert http_server(prefix + "/edit_hard_phrases", "POST", {})[0] == 403
+    code, content, _ = http_server(prefix + "/edit_hard_phrases", "POST", {}, headers=headers)
+    assert code == 200 and json.loads(content)["input"]["editing_paused_generation"]
+    assert not manager.workers.items
+    updated = ["보리야", "기다려"]
+    code, content, _ = http_server(prefix + "/input", "POST", {"phrases": updated}, headers=headers)
+    assert code == 200 and json.loads(content)["status"] == "running"
+    request = read_json(manager.workers.items[0].request_path)
+    assert request["stage"] == "hard_phrases"
+    assert request["context"]["inputs"]["hard_phrases"] == updated
+    assert len(request["context"]["inputs"]["hard_phrase_revision"]) == 32
+    assert request["context"]["inputs"]["review_answers"] == {"positive": {"path": "positive answer"}}
+    assert "hard_generation" not in request["context"]["results"]
+    archived = manager._load(state["id"])["hard_phrase_history"][-1]
+    assert archived["review_answers"] == {"path": "previous answer"}
+    assert archived["results"]["hard_generation"] == state["results"]["hard_generation"]
+    assert digest(audio) == old_sha256
+
+
+@pytest.mark.parametrize("blocked", ["running", "pausing", "admitted", "final", "features"])
+def test_hard_phrase_edit_rejects_running_or_admitted_projects(manager, blocked):
+    state = stopped_hard_generation(manager, stage="features" if blocked == "features" else "hard_generation")
+    root = Path(state["project"]).parent
+    if blocked in ("running", "pausing"):
+        state["status"] = blocked
+    elif blocked == "admitted":
+        from korean_openwakeword.project import load_project
+        _, config = load_project(state["project"])
+        (root / config["manifests"]["hard_negative"]).write_bytes(b"admitted source")
+    elif blocked == "final":
+        (root / "final_lock.json").write_bytes(b"locked final")
+    manager._save(state)
+    assert not manager.describe(state).get("can_edit_hard_phrases")
+    with pytest.raises(ValueError, match="일시정지"):
+        manager.edit_hard_phrases(state["id"])

@@ -380,7 +380,10 @@
     // Inactive controls stay connected so their drafts survive navigation.
     content.append(entry, savedEntry, toolPicker, scale, savedScale, materials, live, voiceListening);
     const footer = node("div", undefined, "story-actions");
-    const back = button("이전", "story-button", () => navigate(screens.indexOf(current) - 1));
+    const back = button("이전", "story-button", () => {
+      const project = bridge.state().project;
+      return navigate(canReturnToPhraseEditor(project) ? screens.indexOf("phrases") : screens.indexOf(current) - 1);
+    });
     const operation = button("일시정지", "story-button story-operation", controlJob); operation.hidden = true;
     const next = button("다음", "story-button", advance);
     footer.append(back, operation, next); panel.append(header, content, footer);
@@ -508,6 +511,10 @@
       const intent = boundaryNextIntent; if (!intent) return;
       const state = bridge.state(), project = state.project, checkpoint = navigationCheckpoint(project), stage = stageId(project);
       if (!activeTransition(intent.session) || project?.id !== intent.project || document.hidden) { cancelBoundaryNext(); return; }
+      if (intent.saved && !state.busy && intent.route.editingPausedGeneration && project.can_edit_hard_phrases === true
+        && project.input?.editing_paused_generation !== true) {
+        finishBoundaryNext(intent, stageStep(project)); return;
+      }
       if (project.error || ["failed", "error", "interrupted", "stopped", "cancelled"].includes(project.status) || project.migration && !project.process_alive) {
         cancelBoundaryNext("작업 상태를 확인한 뒤 다시 진행하세요."); return;
       }
@@ -1204,8 +1211,20 @@
         if (error) { wakeword.focus(); return false; }
       }
       const backwards = position < screens.indexOf(current), target = screens[position];
+      if (!automatic && backwards && awaitingPhrasePause(state.project)) return false;
       if (!automatic) hardConnectionIntent = null;
       const session = beginTransition(backwards);
+      if (!automatic && backwards && target === "phrases" && canReturnToPhraseEditor(state.project)) {
+        void runTransition(session, async () => {
+          if (!canReturnToPhraseEditor(bridge.state().project) || await bridge.action("edit_hard_phrases") === false) return false;
+          const latest = bridge.state().project;
+          if (latest?.id !== session.project || latest.status !== "waiting_input"
+            || stageId(latest) !== "hard_phrases" || latest.input?.kind !== "hard_phrases"
+            || latest.input.editing_paused_generation !== true)
+            throw Error("유사어 입력 화면을 열지 못했습니다. 현재 작업 상태를 확인한 뒤 다시 시도하세요.");
+        }, () => { current = target; following = true; historyPage = 0; historyKey = ""; });
+        return true;
+      }
       following = automatic || (state.project && (target === stageStep(state.project) || position === frontier(state.project)));
       void runTransition(session, undefined, () => { current = target; historyPage = 0; historyKey = ""; });
       return true;
@@ -1222,6 +1241,12 @@
       return Boolean(project && current === "phrases" && stageId(project) === "hard_phrases"
         && project.status === "waiting_input" && project.input?.kind === "hard_phrases"
         && !project.review && !project.migration && project.process_alive !== true && typeof bridge.input === "function");
+    }
+    function canReturnToPhraseEditor(project) {
+      return project?.can_edit_hard_phrases === true && current === stageStep(project);
+    }
+    function awaitingPhrasePause(project) {
+      return project?.status === "pausing" && ["hard_generation", "hard_pilot"].includes(stageId(project)) && current === stageStep(project);
     }
     function canStartDataPreparation(project) {
       const navigation = navigationCheckpoint(project), download = downloadCheckpoint(project);
@@ -1437,6 +1462,7 @@
       if (editingPhrases(project)) {
         const inputKey = JSON.stringify(project.input);
         beginBoundaryNext(project, { step: "phrases", sourceStage: "hard_phrases", inputKey,
+          editingPausedGeneration: project.input.editing_paused_generation === true,
           target: sampleFirstHardReview(project) ? "hard-review" : "hard-generation", destinationStages: ["hard_pilot", "hard_generation", "hard_review"] }, async () => {
           const saved = await bridge.input();
           const latest = bridge.state().project;
@@ -2383,7 +2409,7 @@
       updateIndexDistances();
       if (!transitioning) {
         back.hidden = position === 0;
-        const backDisabled = Boolean(state.busy || position === 0);
+        const backDisabled = Boolean(state.busy || position === 0 || awaitingPhrasePause(project));
         if (back.disabled !== backDisabled) back.disabled = backDisabled;
         next.hidden = current === "microphone";
         let nextDisabled = Boolean(!project

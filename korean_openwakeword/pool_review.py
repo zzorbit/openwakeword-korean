@@ -24,6 +24,26 @@ def _binding(root, entry):
     return path, {"path": str(path), "sha256": entry["sha256"]}
 
 
+def _bind_hard_implementation(root, implementation):
+    try:
+        _binding(root, implementation)
+    except ValueError:
+        from .hard_tts import __file__ as current_source
+
+        # This release only adds cooperative pause and separate output folders.
+        # Accept an upgraded file at the exact same path for these audited
+        # release pairs. Other files and all candidate evidence stay hash-bound.
+        audited_prior = {"409dd788bbfdc68a2564d6b64940ea52099d49ad842f996dc0908e5dbe342e25",
+                         "91fc1bcfb0ef14e2f563416a7ebe562061cfe217c83b979e9a9a011c767c85e9"}
+        audited_current = {"43d748a34bcc746b69852acfe3dd08269200e6174afcc94fa5a50ac08c9f0713",
+                           "53d3bb6a2d9c346cfab015caa962499ac7f0a5564c200cf55609c12f4285836c"}
+        if not (isinstance(implementation, dict) and set(implementation) == {"path", "sha256"}
+                and isinstance(implementation["path"], str) and implementation["sha256"] in audited_prior
+                and resolved(root, implementation["path"]) == Path(current_source).resolve()
+                and digest(current_source) in audited_current):
+            raise
+
+
 def _stratum(row):
     dataset = row.get("dataset_id")
     if not isinstance(dataset, str) or not dataset.strip():
@@ -89,7 +109,7 @@ def _synthetic_contract(root, row, config, contracts):
             raise ValueError("Synthetic Hard Negative contract must use Train synthetic-only clone references")
         if identity(contract.get("tts")) != identity(config["tts"]):
             raise ValueError("Synthetic generation settings differ from the frozen project settings")
-        _binding(root, contract.get("implementation"))
+        _bind_hard_implementation(root, contract.get("implementation"))
         references = contract.get("references")
         if not isinstance(references, list) or not references or not isinstance(contract.get("texts"), list) or not contract["texts"]:
             raise ValueError("Synthetic contract needs actual references and declared phrases")

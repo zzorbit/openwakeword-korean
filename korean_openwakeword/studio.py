@@ -253,7 +253,8 @@ def _lock_paths(root):
     """Known writer directories only; don't walk hundreds of thousands of WAVs."""
     roots = (root / "features", root / "runs", root / "data", root / ".studio")
     patterns = (".writer.lock", "*/.writer.lock", "*/*/.writer.lock", "*/*/*/.writer.lock")
-    return [path for base in roots if base.exists() for pattern in patterns for path in base.glob(pattern)]
+    revision_locks = (root / "data/generated/hard_phrase_revisions").glob("*/*/.writer.lock")
+    return [path for base in roots if base.exists() for pattern in patterns for path in base.glob(pattern)] + list(revision_locks)
 
 
 def _implementation():
@@ -469,13 +470,35 @@ _PREFLIGHT_QUALITY_RETRY_UPDATE = "audited_preflight_quality_retry_update"
 _REFERENCE_GAP_FILTER_UPDATE = "audited_reference_candidate_gap_filter_update"
 _PRODUCTION_SPEED_UPDATE = "audited_production_generation_recovery_update"
 _TTS_DEVICE_UPDATE = "audited_adaptive_tts_runtime_update"
+_HARD_PAUSE_AND_EDIT_UPDATE = "audited_hard_pause_and_phrase_edit_update"
 _PRESERVED_CALL_UPDATES = {_PREFLIGHT_QUALITY_RETRY_UPDATE, _REFERENCE_GAP_FILTER_UPDATE,
-                           _PRODUCTION_SPEED_UPDATE, _TTS_DEVICE_UPDATE}
+                           _PRODUCTION_SPEED_UPDATE, _TTS_DEVICE_UPDATE, _HARD_PAUSE_AND_EDIT_UPDATE}
 _TTS_DEVICE_UPDATE_FILES = ("call_generation_history.py", "hard_pilot.py", "hard_tts.py", "pilot.py",
     "reference_candidates.py", "studio_steps.py", "tts.py", "tts_cuda_graph.py", "tts_cuda_predictor.py", "tts_runtime.py")
 _TTS_DEVICE_UPDATE_EVIDENCE = "e830e0b8b461e9cb851c891273c0d47b5f2cf3ac980228a46e57431790cfd1fd"
 _TTS_DEVICE_UPDATE_REASON = "새 기준 목소리의 발화 길이를 먼저 확인하고, 장치와 생성량에 맞춰 실행 방식을 선택합니다. 저장된 음원과 검수 결과는 유지합니다."
+_HARD_PAUSE_AND_EDIT_FILES = ("call_generation_history.py", "hard_pilot.py", "hard_tts.py", "pool_review.py", "studio_steps.py")
+_HARD_PAUSE_AND_EDIT_EVIDENCE = "3f7d4f9cfeef96252d7096cafab5d977a0e2225b697187b30902f1eda89d6ddf"
+_HARD_PAUSE_AND_EDIT_REASON = "유사어 음성 생성은 현재 음성을 저장한 뒤 멈춥니다. 기존 자료와 판정을 보존하고, 수정한 문구는 별도 생성 기록에서 처리합니다."
 _AUDITED_CALL_GENERATION_RECOVERY_UPDATES = {
+    "e3f4a61958b1fb0b54258d20df98bf432b1ed6934f004549798f0ff24fc827fe": {
+        "kind": _HARD_PAUSE_AND_EDIT_UPDATE,
+        "source_stages_sha256": "b369acf83d014505cfc7cb9b5490ca7e11b5d8183b6d4a206780aed6e5b7c2c9",
+        "target_computation_sha256": "73c276abd64814f55bdbe6ab300671aa4034fef59a78e2d810d3efdc22f0e58c",
+        "target_stages_sha256": "dd49117e9e8172eb18e2dbca3923fc4477c5a69986dd9bf517389d4e66d8b908",
+        "changed_files": _HARD_PAUSE_AND_EDIT_FILES,
+        "evidence_sha256": _HARD_PAUSE_AND_EDIT_EVIDENCE,
+        "reason": _HARD_PAUSE_AND_EDIT_REASON,
+    },
+    "7e38de47a3ef2dc51cc683796ba233a4e8333274d1d0c6af3ea0d2ce3ef772e9": {
+        "kind": _HARD_PAUSE_AND_EDIT_UPDATE,
+        "source_stages_sha256": "b47b0802625e1cae0987b487ec2b649440d10e50083c0d02f505af74c37e1492",
+        "target_computation_sha256": "02af5c377728bd3c48ee90ee4ba1187f8478044078b5b3f95d831af036528996",
+        "target_stages_sha256": "19b4d767e708d71736d606fa63af7851fb0203c1b7a03a51a8590406c47b59f6",
+        "changed_files": _HARD_PAUSE_AND_EDIT_FILES,
+        "evidence_sha256": _HARD_PAUSE_AND_EDIT_EVIDENCE,
+        "reason": _HARD_PAUSE_AND_EDIT_REASON,
+    },
     "b80c403be0bf73b49a69a9ee3e7442833cf5c37adb32e04761cc846907f7e6ea": {
         "kind": _TTS_DEVICE_UPDATE,
         "source_stages_sha256": "30ff20fd0bae8b14c92b6c543e2e88d32659ad757e44369186411452f08de0cf",
@@ -2015,6 +2038,9 @@ class StudioManager:
             elif phase == "paused" and stage == "references" and self._reference_preparation_required(state):
                 state.update(status="paused", auto_continue=False,
                              next_action="현재 후보 묶음을 저장했습니다. 재개하면 남은 분류를 준비합니다.")
+            elif phase == "paused" and stage in ("hard_pilot", "hard_generation"):
+                state.update(status="paused", auto_continue=False,
+                             next_action="완료한 음성을 저장했습니다. 재개하면 남은 음성을 생성합니다.")
             else:
                 state.update(status="error", error="지원하지 않는 단계 종료 상태: " + str(phase))
         state.setdefault("history", []).append({"stage": job["stage"], "started_at": job["started_at"],
@@ -2140,12 +2166,20 @@ class StudioManager:
             if self._reference_preparation_job_alive(state):
                 return self.prepare_pause(project_id)
             state["auto_continue"] = False
-            if (self._reference_preparation_required(state) and self._job_alive(state.get("job") or {})
-                    and (state.get("job") or {}).get("stage") == "references"):
-                write_json(Path(state["project"]).parent / ".studio/reference-candidates/preparation/pause.json",
-                           {"task_id": state["job"]["task_id"], "requested_at": now()})
-            if self._job_alive(state.get("job") or {}):
-                state.update(status="pausing", next_action="현재 단계를 완료한 뒤 일시정지합니다. 자료를 강제로 끊지 않습니다.")
+            job = state.get("job") or {}
+            if self._job_alive(job):
+                if job["stage"] in ("hard_pilot", "hard_generation"):
+                    write_json(Path(job["directory"]) / "pause.json", {"task_id": job["task_id"], "requested_at": now()})
+                    next_action = "현재 생성 중인 음성을 저장한 뒤 일시정지합니다."
+                else:
+                    if job["stage"] == "references" and self._reference_preparation_required(state):
+                        write_json(Path(state["project"]).parent / ".studio/reference-candidates/preparation/pause.json",
+                                   {"task_id": job["task_id"], "requested_at": now()})
+                    next_action = "현재 단계를 완료한 뒤 일시정지합니다. 자료를 강제로 끊지 않습니다."
+                state.update(status="pausing", next_action=next_action)
+            elif job.get("stage") in ("hard_pilot", "hard_generation") and self._finish_job(state):
+                if state["status"] == "ready":
+                    state.update(status="paused", next_action="이어서 진행을 누르면 재개합니다.")
             elif state["status"] not in ("completed", "waiting_review", "waiting_input"):
                 state.update(status="paused", next_action="이어서 진행을 누르면 재개합니다.")
             self._save(state)
@@ -2236,11 +2270,77 @@ class StudioManager:
             with service._lock:
                 service._close()
 
+    def _can_edit_hard_phrases(self, state):
+        plan, index = state["plan"], state["index"]
+        status = state["status"]
+        if (status not in ("paused", "waiting_input", "interrupted", "error") or state.get("hard_phrase_edit")
+                or index >= len(plan) or not (self._history_result(state, "hard_phrases") or {}).get("phrases")):
+            return False
+        job = state.get("job") or {}
+        if job and (status not in ("interrupted", "error") or self._job_alive(job)):
+            return False
+        stage, results = plan[index]["id"], state.get("results", {})
+        result = results.get(stage, {})
+        if status == "waiting_input" and result.get("input_kind") != "generation_policy":
+            return False
+        # An old worker may finish bulk generation after a pause request.
+        # Allow the edit at the next boundary only before review or admission starts.
+        after_generation = (status == "paused" and stage in ("hard_review", "hard_connect") and stage not in results
+                            and (state.get("last_job") or {}).get("stage") == "hard_generation")
+        if (stage not in ("hard_pilot", "hard_generation") and not after_generation) or "hard_connect" in results:
+            return False
+        root, config = load_project(state["project"])
+        manifest = resolved(root, config["manifests"]["hard_negative"])
+        return not (root / "final_lock.json").exists() and (not manifest.exists() or manifest.stat().st_size == 0)
+
+    def edit_hard_phrases(self, project_id):
+        with self._lock:
+            state = self._load(project_id)
+            if state["status"] == "waiting_input" and state.get("hard_phrase_edit"):
+                return self.describe(state)
+            if not self._can_edit_hard_phrases(state):
+                raise ValueError("유사어 음성 생성이 일시정지된 뒤에 문구를 수정할 수 있습니다.")
+            self._guard_config(state)
+            if state.get("job"):
+                self._recover_dead_locks(state)
+            index = next(i for i, stage in enumerate(state["plan"]) if stage["id"] == "hard_phrases")
+            saved = self._history_result(state, "hard_phrases")
+            state["hard_phrase_edit"] = {key: state.get(key) for key in
+                                         ("status", "index", "navigation_checkpoint", "next_action", "input_submitted", "error", "job")}
+            state["hard_phrase_edit"]["phrases"] = saved["phrases"]
+            if state.get("navigation_checkpoint"):
+                state["navigation_checkpoint"] = {**state["navigation_checkpoint"], "step": "phrases", "state": "running"}
+            state.update(index=index, status="waiting_input", auto_continue=False, input_submitted=False, error=None, job=None,
+                         next_action="유사어를 수정한 뒤 다음을 누르세요.")
+            self._save(state)
+            return self.describe(state)
+
+    def _apply_hard_phrase_edit(self, state, phrases):
+        edit = state.pop("hard_phrase_edit", None)
+        if not edit:
+            return True
+        if phrases == edit["phrases"]:
+            state.update({key: value for key, value in edit.items() if key != "phrases"})
+            state["auto_continue"] = False
+            return False
+        inputs = state["inputs"]
+        replaced = {stage: state["results"].pop(stage) for stage in
+                    ("hard_phrases", "hard_pilot", "hard_review", "hard_generation") if stage in state["results"]}
+        old_records = {key: inputs.get(key, {}).pop("hard", None) for key in ("review_answers", "review_results")}
+        state.setdefault("hard_phrase_history", []).append({"previous_revision": inputs.get("hard_phrase_revision"),
+            "phrases": edit["phrases"], "results": replaced,
+            **({"previous_job": edit["job"]} if edit.get("job") else {}),
+            **{key: record for key, record in old_records.items() if record}})
+        inputs["hard_phrase_revision"] = uuid.uuid4().hex
+        return True
+
     def submit_input(self, project_id, payload):
         with self._lock:
             state = self._load(project_id)
             if state["status"] != "waiting_input":
                 raise ValueError("현재 입력을 기다리는 단계가 아닙니다.")
+            if state.get("hard_phrase_edit") and set(payload) != {"phrases"}:
+                raise ValueError("수정할 유사어 문구를 입력하세요.")
             defer_dependency_install = payload.get("defer_dependency_install", False)
             if type(defer_dependency_install) is not bool:
                 raise ValueError("학습 도구 설치 연기 설정은 참 또는 거짓으로 지정하세요.")
@@ -2258,12 +2358,19 @@ class StudioManager:
                 self._save(state)
                 return self.describe(state)
             if "phrases" in payload:
+                if state["plan"][state["index"]]["id"] != "hard_phrases":
+                    raise ValueError("유사어 문구를 입력하는 단계가 아닙니다.")
                 phrases = payload["phrases"]
                 if not isinstance(phrases, list) or not phrases or any(not isinstance(p, str) for p in phrases):
                     raise ValueError("유사어를 한 줄에 하나씩 입력하세요.")
                 from .hard_tts import _phrases
                 _, config = load_project(state["project"])
                 phrases = _phrases(phrases, config["wakeword"])
+                if state.get("hard_phrase_edit"):
+                    self._guard_config(state)
+                    if not self._apply_hard_phrase_edit(state, phrases):
+                        self._save(state)
+                        return self.describe(state)
                 state["inputs"].update(hard_phrases=phrases, hard_phrases_approved=True)
             elif "admissions" in payload:
                 admissions = payload["admissions"]
@@ -4107,10 +4214,12 @@ class StudioManager:
             raise ValueError("저장된 발음 확인의 호출어가 다릅니다.")
         policy = answer.get("synthetic_review_policy")
         if step == "hard-review" and policy in ("one_per_phrase_v1", HARD_SAMPLE_REVIEW_POLICY):
-            selection_path = ".studio/hard_representative_selection_v1.json"
-            if policy == HARD_SAMPLE_REVIEW_POLICY:
-                pilot = self._history_result(state, "hard_pilot") or {}
-                selection_path = pilot["review"]["representative_selection"]["path"]
+            result = self._history_result(state, "hard_pilot" if policy == HARD_SAMPLE_REVIEW_POLICY else "hard_generation") or {}
+            selection_path = result.get("review", {}).get("representative_selection", {}).get("path")
+            if not selection_path and policy == "one_per_phrase_v1":
+                selection_path = ".studio/hard_representative_selection_v1.json"
+            if not selection_path:
+                raise ValueError("저장된 유사어 대표 선정 기록이 없습니다.")
             selection = self._history_read(state, selection_path, sha256=answer["representative_selection_sha256"])
             if (selection.get("policy") != answer["synthetic_review_policy"]
                     or selection.get("source_manifest", {}).get("sha256") != answer.get("source_manifest_sha256")):
@@ -4537,6 +4646,8 @@ class StudioManager:
                     progress={"done": index, "total": len(plan), "unit": "완료 단계"},
                     elapsed_seconds=timing["total_seconds"], timing=timing,
                     migration=self._migration_view(state), eta_seconds=None)
+        if not view["migration"] and self._can_edit_hard_phrases(state):
+            view["can_edit_hard_phrases"] = True
         preview_counts = {split: self._journal_counts(Path(state["project"]).parent / "data/references" / split / "references.jsonl")["passed"]
                           for split in ("train", "validation")}
         candidate_selection = state.get("reference_voice_review_policy") == "candidate_pool_v2"
@@ -4644,17 +4755,8 @@ class StudioManager:
                         pilot_targets = [state["settings"][f"{split}_references"] for split in splits]
                     total = sum(pilot_targets) if pilot_targets else 24
                 elif job["stage"] in ("hard_pilot", "hard_generation"):
-                    from .studio_steps import hard_generation_budget
-                    phrases = state.get("inputs", {}).get("hard_phrases", [])
-                    if job["stage"] == "hard_pilot":
-                        total = len(phrases)
-                        paths = [folder / "generated/hard_pilot/candidates.jsonl"]
-                    else:
-                        approved = self._history_result(state, "hard_review") or {}
-                        total = approved.get("total") if state["settings"].get("hard_review_policy") == HARD_SAMPLE_REVIEW_POLICY else None
-                        if total is None:
-                            total = hard_generation_budget(state["settings"], phrases)["total"]
-                        paths = [folder / "generated/hard/candidates.jsonl"]
+                    journal, total = self._hard_generation_progress(state, folder, job["stage"])
+                    paths = [journal]
                 else:
                     bank = "pilot" if state["settings"].get("pilot_review_policy") == POSTGEN_PILOT_POLICY else "generated"
                     paths = [folder / bank / split / "candidates.jsonl" for split in ("train", "validation")]
@@ -4722,6 +4824,14 @@ class StudioManager:
                 estimate = self._progress_eta(state, job, current)
                 if view["eta_seconds"] is None:
                     view["eta_seconds"] = estimate
+        stage_result = state.get("results", {}).get(stage["id"], {})
+        generation_held = state["status"] == "waiting_input" and stage_result.get("input_kind") == "generation_policy"
+        if not job and (state["status"] == "paused" or generation_held) and stage["id"] in ("hard_pilot", "hard_generation"):
+            journal, total = self._hard_generation_progress(state, Path(state["project"]).parent / "data", stage["id"])
+            counts = self._journal_counts(journal)
+            view["progress"] = {"done": counts["passed"], "total": total, "unit": "개",
+                                "label": "발음 확인용 유사어 생성 완료" if stage["id"] == "hard_pilot" else "유사어 음성 생성 완료"}
+            view["counts"] = {"tts_generated": counts["attempts"], "technical_passed": counts["passed"]}
         repair_progress = self._postgeneration_repair_view(state)
         if repair_progress is not None:
             view["postgeneration_repair"] = repair_progress
@@ -4780,9 +4890,12 @@ class StudioManager:
                               "url": f"/review/?project={state['id']}&queue={quote(r['id'])}" + revision}
         if state["status"] == "waiting_input":
             result = state["results"].get(stage["id"], {})
-            view["input"] = result.get("input", {"kind": result.get("input_kind", "diagnostic"),
-                                                   "description": result.get("message", "자료 준비가 필요합니다."),
-                                                   "suggestions": result.get("suggestions", [])})
+            edit = state.get("hard_phrase_edit")
+            view["input"] = ({"kind": "hard_phrases", "phrases": edit["phrases"], "suggestions": edit["phrases"],
+                              "editing_paused_generation": True} if edit else result.get("input", {
+                              "kind": result.get("input_kind", "diagnostic"),
+                              "description": result.get("message", "자료 준비가 필요합니다."),
+                              "suggestions": result.get("suggestions", [])}))
             input_kind = (view.get("input") or {}).get("kind")
             retry = self._pilot_generation_retry(state)
             if retry and not view["migration"]:
@@ -4880,6 +4993,20 @@ class StudioManager:
         else:
             total = settings["train_references"] + settings["validation_references"]
         return (preflight_journals if stage == "pilot" else [journals.get(split) for split in ("train", "validation")]), total
+
+    def _hard_generation_progress(self, state, folder, stage):
+        from .hard_tts import hard_phrase_scope
+        from .studio_steps import hard_generation_budget
+        inputs = state["inputs"]
+        phrases = inputs.get("hard_phrases", [])
+        output = hard_phrase_scope(folder / "generated", inputs.get("hard_phrase_revision"))
+        if stage == "hard_pilot":
+            return output / "hard_pilot/candidates.jsonl", len(phrases)
+        approved = self._history_result(state, "hard_review") or {}
+        total = approved.get("total") if state["settings"].get("hard_review_policy") == HARD_SAMPLE_REVIEW_POLICY else None
+        if total is None:
+            total = hard_generation_budget(state["settings"], phrases)["total"]
+        return output / "hard/candidates.jsonl", total
 
     def _journal_counts(self, path):
         """Incremental line scanning; UI polling never re-reads the full pool."""
@@ -5364,6 +5491,7 @@ def make_studio_server(manager, port=8793):
                     if action == "retry_postgeneration":
                         return self.respond(manager.retry_postgeneration(project_id, payload))
                     methods = {"start": manager.start, "resume": manager.start, "pause": manager.pause,
+                               "edit_hard_phrases": manager.edit_hard_phrases,
                                "retry_generation": manager.retry_generation,
                                "prepare_start": manager.prepare_start, "prepare_pause": manager.prepare_pause,
                                "prepare_resume": manager.prepare_resume,

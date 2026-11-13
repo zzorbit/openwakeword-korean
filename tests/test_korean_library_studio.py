@@ -1245,6 +1245,28 @@ def worker_request(tmp_path, stage="frontend"):
     return path, request
 
 
+@pytest.mark.parametrize("stage", ["hard_pilot", "hard_generation"])
+def test_worker_uses_only_its_own_hard_generation_pause_request(tmp_path, monkeypatch, stage):
+    from korean_openwakeword import studio_steps, studio_worker
+    from korean_openwakeword.hard_tts import check_generation_pause
+
+    path, request = worker_request(tmp_path, stage)
+    marker = path.with_name("pause.json")
+    write_json(marker, {"task_id": "stale-task"})
+    calls = []
+
+    def generate(*args, pause_requested):
+        assert not pause_requested()
+        calls.append(args[3])
+        write_json(marker, {"task_id": request["task_id"]})
+        check_generation_pause(pause_requested)
+        pytest.fail("A matching pause request must exit before another attempt")
+
+    monkeypatch.setattr(studio_steps, "run_stage", generate)
+    assert studio_worker.execute(path) == 0 and calls == [stage]
+    assert read_json(request["result_path"])["result"] == {"state": "paused"}
+
+
 def test_worker_rejects_changed_configuration_before_running(tmp_path, monkeypatch):
     from korean_openwakeword import studio_steps, studio_worker
     path, request = worker_request(tmp_path)

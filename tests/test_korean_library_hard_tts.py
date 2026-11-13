@@ -62,6 +62,52 @@ def no_seed_gpu(monkeypatch):
     monkeypatch.setattr(hard_tts.tts, "_seed", lambda seed: None)
 
 
+@pytest.mark.parametrize("pilot", [False, True])
+@pytest.mark.parametrize("technical_failure", [False, True])
+def test_pause_saves_current_attempt_then_resumes_without_regenerating_it(tmp_path, pilot, technical_failure):
+    from korean_openwakeword.hard_pilot import generate_hard_pilot
+
+    project = approved_project(tmp_path)
+    model = FakeModel(long_first=technical_failure)
+    phrases = PHRASES[:2]
+    revision = "c" * 32
+    if pilot:
+        generate = lambda **options: generate_hard_pilot(project, phrases, 4, model, revision=revision, **options)[0]
+    else:
+        generate = lambda **options: hard_tts.generate_hard(project, phrases, 2, model, revision=revision, **options)
+    directory = project.parent / "data/generated/hard_phrase_revisions" / revision / ("hard_pilot" if pilot else "hard")
+    with pytest.raises(hard_tts.HardGenerationPaused):
+        generate(pause_requested=lambda: model.calls >= 1)
+    journal = directory / "candidates.jsonl"
+    before = read_rows(journal)
+    assert len(before) == model.calls == 1 and before[0]["technical_pass"] is not technical_failure
+    assert digest(project.parent / before[0]["path"]) == before[0]["sha256"]
+    assert not (directory / ".writer.lock").exists()
+    result = generate()
+    assert result["full_target_reached"] and model.calls == (3 if technical_failure else 2)
+    assert read_rows(journal)[0] == before[0]
+    assert digest(project.parent / before[0]["path"]) == before[0]["sha256"]
+
+
+def test_pause_update_resumes_the_previous_frozen_hard_contract(tmp_path, monkeypatch):
+    project = approved_project(tmp_path)
+    model = FakeModel()
+    previous_source = "91fc1bcfb0ef14e2f563416a7ebe562061cfe217c83b979e9a9a011c767c85e9"
+    with monkeypatch.context() as old:
+        old.setattr(hard_tts, "digest", lambda path: previous_source if path == hard_tts.__file__ else digest(path))
+        with pytest.raises(hard_tts.HardGenerationPaused):
+            hard_tts.generate_hard(project, PHRASES, 2, model, pause_requested=lambda: model.calls >= 1)
+    output = project.parent / "data/generated/hard"
+    contract = output / "contract.json"
+    original = digest(contract)
+    assert read_json(contract)["implementation"]["sha256"] == previous_source
+    first = read_rows(output / "candidates.jsonl")[0]
+    result = hard_tts.generate_hard(project, PHRASES, 2, model)
+    assert result["technical_pass"] == model.calls == 2
+    assert digest(contract) == original
+    assert read_rows(output / "candidates.jsonl")[0] == first
+
+
 def test_balanced_100_candidate_contract_and_resume_never_loads_model(tmp_path, monkeypatch):
     project = approved_project(tmp_path)
     model = FakeModel()

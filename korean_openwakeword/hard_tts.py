@@ -25,6 +25,23 @@ MAX_ORIGINALS = 100_000
 MAX_ATTEMPTS = 3
 
 
+def hard_phrase_scope(base, revision):
+    if revision is None:
+        return base
+    if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{32}", revision):
+        raise ValueError("Invalid Hard phrase revision")
+    return base / "hard_phrase_revisions" / revision
+
+
+class HardGenerationPaused(Exception):
+    """Stop before another synthesis attempt while preserving the journal."""
+
+
+def check_generation_pause(pause_requested):
+    if pause_requested is not None and pause_requested():
+        raise HardGenerationPaused
+
+
 def _phrases(values, wakeword):
     if not isinstance(values, (list, tuple)) or not values:
         raise ValueError("Provide at least one distinct Korean non-call phrase")
@@ -60,12 +77,13 @@ def _seed(config, slot, attempt, phrase, reference):
                          phrase, reference["voice_family_id"], reference["sha256"]])[:8], 16)
 
 
-def _validate_existing(root, output, rows, contract, config, phrases, references, count):
+def _validate_existing(root, output, rows, contract, config, phrases, references, count, pause_requested):
     passed, ids, combinations, hashes = {}, set(), set(), set()
     contract_binding = {"path": (output / "contract.json").relative_to(root).as_posix(),
                         "sha256": digest(output / "contract.json")}
     attempts = Counter()
     for row in rows:
+        check_generation_pause(pause_requested)
         slot, attempt = row.get("slot"), row.get("attempt")
         if type(slot) is not int or not 0 <= slot < count or type(attempt) is not int or not 0 <= attempt < MAX_ATTEMPTS:
             raise ValueError("Invalid Hard candidate slot/attempt")
@@ -106,7 +124,8 @@ def _validate_existing(root, output, rows, contract, config, phrases, references
 
 
 @project_storage
-def generate_hard(project, phrases, count=None, model=None, *, samples_per_phrase=None):
+def generate_hard(project, phrases, count=None, model=None, *, samples_per_phrase=None,
+                  revision=None, pause_requested=None):
     """Create candidate-only originals, independently of Hard batch draws.
 
     New callers specify ``samples_per_phrase``; the total is the number of
@@ -119,6 +138,7 @@ def generate_hard(project, phrases, count=None, model=None, *, samples_per_phras
     loading. ``candidates.jsonl`` is the authoritative per-attempt journal;
     generation never publishes training admission or listening decisions.
     """
+    check_generation_pause(pause_requested)
     root, config = load_project(project)
     if samples_per_phrase is not None:
         if count is not None:
@@ -148,7 +168,7 @@ def generate_hard(project, phrases, count=None, model=None, *, samples_per_phras
             reference.get("split") != "train" or not reference.get("voice_family_id") or not reference.get("text")):
             raise ValueError("Hard generation accepts only approved Qwen synthetic Train references")
         bound_file(root, reference)
-    output = root / "data" / "generated" / "hard"
+    output = hard_phrase_scope(root / "data/generated", revision) / "hard"
     dataset_id = "qwen_" + config["project_id"] + "_hard_v1"
     contract = {"kind": "qwen_hard_negative_generation_contract_v1", "word": config["wakeword"],
         "split": "train", "human_reference_used": False, "method": "clone", "tts": config["tts"],
@@ -179,13 +199,14 @@ def generate_hard(project, phrases, count=None, model=None, *, samples_per_phras
             write_json(contract_path, contract)
         contract_binding = {"path": contract_path.relative_to(root).as_posix(), "sha256": digest(contract_path)}
         rows = read_rows(output / "candidates.jsonl")
-        passed, attempts, hashes = _validate_existing(root, output, rows, contract, config, phrases, references, count)
+        passed, attempts, hashes = _validate_existing(root, output, rows, contract, config, phrases, references, count, pause_requested)
         pending = [slot for slot in range(count) if slot not in passed and attempts[slot] < MAX_ATTEMPTS]
         if model is None and pending:
             report_progress("tts_model_loading", "음성 생성 모델 준비", eta_eligible=False)
             model = tts._load_model(config["tts"]["clone_model"], config["tts"], root)
         prompts = {}
         for slot in pending:
+            check_generation_pause(pause_requested)
             phrase, reference = _combination(slot, phrases, references)
             family = reference["voice_family_id"]
             prompt_key = (family, reference["sha256"])
@@ -194,6 +215,7 @@ def generate_hard(project, phrases, count=None, model=None, *, samples_per_phras
                 prompts[prompt_key] = model.create_voice_clone_prompt(ref_audio=str(resolved(root, reference["path"])),
                     ref_text=reference["text"], x_vector_only_mode=False)
             for attempt in range(attempts[slot], MAX_ATTEMPTS):
+                check_generation_pause(pause_requested)
                 sample_id = f"hard_train_{slot:06d}_attempt{attempt}"
                 seed = _seed(config, slot, attempt, phrase, reference)
                 tts._seed(seed)
@@ -240,6 +262,7 @@ def generate_hard(project, phrases, count=None, model=None, *, samples_per_phras
                     passed[slot] = row
                     break
             print(f"TTS Hard: technical {len(passed)}/{count}; attempts {len(rows)}; content approval pending", flush=True)
+        check_generation_pause(pause_requested)
         report_progress("tts_finalizing", "유사어 음원 목록·검사 결과 저장", eta_eligible=False)
         accepted = sorted(passed.values(), key=lambda r: r["slot"])
         summary = {"kind": "qwen_hard_negative_candidate_summary_v1", "target_originals": count,

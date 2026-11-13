@@ -603,11 +603,13 @@ def _next_directory(base, marker, accept=None):
     return candidate, False
 
 
-def _hard_queue(project, workspace, policy=None):
+def _hard_queue(project, workspace, policy=None, *, revision=None):
+    from .hard_tts import hard_phrase_scope
+
     root, config = load_project(project)
     if policy not in (None, "one_per_phrase_v1"):
         raise ValueError("Unsupported Hard representative review policy")
-    candidates = read_rows(root / "data/generated/hard/candidates.jsonl")
+    candidates = read_rows(hard_phrase_scope(root / "data/generated", revision) / "hard/candidates.jsonl")
     latest = {r["slot"]: r for r in candidates if r.get("technical_pass") is True}
     rows = sorted(latest.values(), key=lambda r: r["slot"])
     if not rows:
@@ -672,7 +674,7 @@ def _hard_queue(project, workspace, policy=None):
                               pool_sha256=digest(sources), **extra)
 
 
-def run_stage(project, workspace, settings, stage_id, context=None):
+def run_stage(project, workspace, settings, stage_id, context=None, *, pause_requested=None):
     """Execute one actual operation; call in an isolated durable worker.
 
     ``context`` contains prior stage results and explicit user input. The
@@ -1060,6 +1062,7 @@ def run_stage(project, workspace, settings, stage_id, context=None):
 
     if stage_id == "hard_pilot":
         from .hard_pilot import generate_hard_pilot, publish_hard_pilot_review
+        from .hard_tts import hard_phrase_scope
         from .tts_runtime import CloneRuntime
         if settings.get("hard_review_policy") != HARD_SAMPLE_REVIEW_POLICY:
             raise ValueError("Hard pilot stage requires the sample-first review policy")
@@ -1069,7 +1072,11 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         model = CloneRuntime(config["tts"]["clone_model"], config["tts"], root, "auto",
                              config["training"]["cpu_threads"], expected_reuses=1)
         per_phrase = settings["hard_samples_per_phrase"]
-        summary, rows = generate_hard_pilot(project, approved["phrases"], per_phrase, model)
+        revision = context.get("inputs", {}).get("hard_phrase_revision")
+        workspace = hard_phrase_scope(workspace, revision)
+        workspace.mkdir(parents=True, exist_ok=True)
+        summary, rows = generate_hard_pilot(project, approved["phrases"], per_phrase, model,
+                                            revision=revision, pause_requested=pause_requested)
         incomplete = _generation_complete(summary)
         if incomplete:
             return incomplete
@@ -1078,11 +1085,14 @@ def run_stage(project, workspace, settings, stage_id, context=None):
             [descriptor["queue"], descriptor["pool_manifest"], root / descriptor["representative_selection"]["path"]])
 
     if stage_id == "hard_generation":
-        from .hard_tts import generate_hard
+        from .hard_tts import generate_hard, hard_phrase_scope
         from .tts_runtime import CloneRuntime
         approved = _result(context, "hard_phrases")
         if approved.get("user_approved") is not True or not approved.get("phrases"):
             return _waiting("비호출 문구를 먼저 확인하고 저장하세요.", input_kind="hard_phrases")
+        revision = context.get("inputs", {}).get("hard_phrase_revision")
+        workspace = hard_phrase_scope(workspace, revision)
+        workspace.mkdir(parents=True, exist_ok=True)
         phrases = approved["phrases"]
         sample_first = settings.get("hard_review_policy") == HARD_SAMPLE_REVIEW_POLICY
         if sample_first:
@@ -1098,9 +1108,11 @@ def run_stage(project, workspace, settings, stage_id, context=None):
         model = CloneRuntime(config["tts"]["clone_model"], config["tts"], root, "auto", config["training"]["cpu_threads"])
         if settings.get("hard_generation_policy") == "per_phrase_v1":
             summary = generate_hard(project, phrases, model=model,
-                                    samples_per_phrase=settings["hard_samples_per_phrase"])
+                                    samples_per_phrase=settings["hard_samples_per_phrase"],
+                                    revision=revision, pause_requested=pause_requested)
         else:
-            summary = generate_hard(project, phrases, settings["hard_originals"], model=model)
+            summary = generate_hard(project, phrases, settings["hard_originals"], model=model,
+                                    revision=revision, pause_requested=pause_requested)
         incomplete = _generation_complete(summary)
         if incomplete:
             return incomplete
@@ -1109,7 +1121,7 @@ def run_stage(project, workspace, settings, stage_id, context=None):
                           key=lambda row: row["slot"])
             sources = _publish_rows(workspace / "hard_sources_after_sample_review.jsonl", rows)
             return _completed({**summary, "review": {"pool_manifest": str(sources), "pool_sha256": digest(sources)}}, [sources])
-        descriptor = _hard_queue(project, workspace, settings.get("hard_review_policy"))
+        descriptor = _hard_queue(project, workspace, settings.get("hard_review_policy"), revision=revision)
         return _completed({**summary, "review": descriptor}, [descriptor["queue"], descriptor["pool_manifest"]])
 
     if stage_id == "hard_review":
@@ -1123,13 +1135,19 @@ def run_stage(project, workspace, settings, stage_id, context=None):
                 gate["result"].update(approved_phrases=phrases, excluded_phrases=scope["excluded_phrases"],
                                       **hard_generation_budget(settings, phrases))
             return gate
-        return _review_gate(root, [_hard_queue(project, workspace, settings.get("hard_review_policy"))], context)
+        from .hard_tts import hard_phrase_scope
+        revision = context.get("inputs", {}).get("hard_phrase_revision")
+        workspace = hard_phrase_scope(workspace, revision)
+        return _review_gate(root, [_hard_queue(project, workspace, settings.get("hard_review_policy"), revision=revision)], context)
 
     if stage_id == "hard_connect":
         from .data import validate_admission
+        from .hard_tts import hard_phrase_scope
         sample_first = settings.get("hard_review_policy") == HARD_SAMPLE_REVIEW_POLICY
+        revision = context.get("inputs", {}).get("hard_phrase_revision")
+        workspace = hard_phrase_scope(workspace, revision)
         descriptor = (_result(context, "hard_pilot")["review"] if sample_first else
-                      _hard_queue(project, workspace, settings.get("hard_review_policy")))
+                      _hard_queue(project, workspace, settings.get("hard_review_policy"), revision=revision))
         if not _saved_review(root, descriptor, context):
             return {"state": "waiting_review", "reviews": [descriptor]}
         pool = _result(context, "hard_generation")["review"] if sample_first else descriptor

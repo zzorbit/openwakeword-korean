@@ -10,14 +10,15 @@ HARD_SAMPLE_REVIEW_POLICY = "sample_before_generation_v2"
 
 
 @project_storage
-def generate_hard_pilot(project, phrases, samples_per_phrase, model):
+def generate_hard_pilot(project, phrases, samples_per_phrase, model, *, revision=None, pause_requested=None):
     import numpy as np
     import soundfile as sf
 
     from . import tts
     from .audio import pcm16
-    from .hard_tts import MAX_ATTEMPTS, _phrases
+    from .hard_tts import MAX_ATTEMPTS, _phrases, check_generation_pause, hard_phrase_scope
 
+    check_generation_pause(pause_requested)
     root, config = load_project(project)
     if (root / "final_lock.json").exists():
         raise ValueError("Final is frozen; create a separate project for new Hard candidates")
@@ -38,7 +39,7 @@ def generate_hard_pilot(project, phrases, samples_per_phrase, model):
             raise ValueError("Hard generation accepts only approved Qwen synthetic Train references")
         bound_file(root, reference)
 
-    output = root / "data/generated/hard_pilot"
+    output = hard_phrase_scope(root / "data/generated", revision) / "hard_pilot"
     contract_path = output / "contract.json"
     journal = output / "candidates.jsonl"
     contract = {"kind": HARD_SAMPLE_REVIEW_POLICY, "word": config["wakeword"], "phrases": phrases,
@@ -58,6 +59,7 @@ def generate_hard_pilot(project, phrases, samples_per_phrase, model):
         binding = {"path": contract_path.relative_to(root).as_posix(), "sha256": digest(contract_path)}
         passed, attempts, hashes = {}, Counter(), set()
         for row in rows:
+            check_generation_pause(pause_requested)
             slot, attempt = row.get("slot"), row.get("attempt")
             if (type(slot) is not int or not 0 <= slot < len(phrases) or type(attempt) is not int
                     or attempt != attempts[slot] or attempt >= MAX_ATTEMPTS or slot in passed):
@@ -81,6 +83,7 @@ def generate_hard_pilot(project, phrases, samples_per_phrase, model):
         for slot, phrase in enumerate(phrases):
             if slot in passed or attempts[slot] >= MAX_ATTEMPTS:
                 continue
+            check_generation_pause(pause_requested)
             reference = references[slot % len(references)]
             family = reference["voice_family_id"]
             if family not in prompts:
@@ -88,6 +91,7 @@ def generate_hard_pilot(project, phrases, samples_per_phrase, model):
                 prompts[family] = model.create_voice_clone_prompt(ref_audio=str(bound_file(root, reference)),
                     ref_text=reference["text"], x_vector_only_mode=False)
             for attempt in range(attempts[slot], MAX_ATTEMPTS):
+                check_generation_pause(pause_requested)
                 sample_id = f"hard_pilot_{slot:06d}_attempt{attempt}"
                 seed = int(identity([config["tts"]["seed"], HARD_SAMPLE_REVIEW_POLICY, phrase, family, attempt])[:8], 16)
                 tts._seed(seed)
@@ -126,6 +130,7 @@ def generate_hard_pilot(project, phrases, samples_per_phrase, model):
                     passed[slot] = row
                     break
             print(f"TTS Hard review samples: {len(passed)}/{len(phrases)}", flush=True)
+        check_generation_pause(pause_requested)
         report_progress("tts_finalizing", "유사어 검수 목록 준비", eta_eligible=False)
         accepted = [passed[slot] for slot in sorted(passed)]
         return {"target_originals": len(phrases), "technical_pass": len(accepted), "attempts": sum(attempts.values()),
