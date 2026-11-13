@@ -1506,8 +1506,8 @@
     }
     return recipeTask;
   }
-  async function prepareCurrentView() {
-    if (!story || typeof story.prepareInitialView !== "function" || await story.prepareInitialView() !== true)
+  async function prepareCurrentView(minimum) {
+    if (!story || typeof story.prepareInitialView !== "function" || await story.prepareInitialView(minimum) !== true)
       throw new Error("첫 화면의 준비 상태를 확인하지 못했습니다. 다시 불러오세요.");
   }
   async function openView(load, focus) {
@@ -1640,16 +1640,29 @@
   }
   async function boot() {
     bootStatus("loading");
+    const storyApi = window.KowwStory;
+    let timer, finishMinimum, cancelled = false;
+    const minimum = new Promise(resolve => { finishMinimum = resolve; });
+    // Load data under the notice while its shared minimum display time runs.
     try {
+      if (storyApi?.waitForLoadingPaint) void storyApi.waitForLoadingPaint(minimum).then(painted => {
+        if (painted && !cancelled) timer = setTimeout(finishMinimum, storyApi.minimumLoadingMs);
+      });
+      else finishMinimum();
       await initializeStudio();
-      await prepareCurrentView();
+      await prepareCurrentView(minimum);
       bootStatus("ready");
+      startPolling();
     } catch (error) {
       stopPolling();
       cancelLocationPreview();
       recipeReady = false;
       message("화면을 불러오지 못했습니다. " + error.message, true);
       bootStatus("error", error);
+    } finally {
+      cancelled = true;
+      clearTimeout(timer);
+      finishMinimum(false);
     }
   }
   window.KowwStudio = Object.freeze({ duration, bytes, storageEstimate, storageBudget, eta, progressValue, requestBody, wakewordError, localUrl, webUrl });

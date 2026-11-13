@@ -14,7 +14,7 @@ async function test(name, action) {
   await action(); tests.push(name);
 }
 
-function browser({ noBoot = false, withStory = true, storyOwnsDownloadRows = false, storyError, onStoryRender, onStoryPrepare, storyPrepareMissing = false, retainReviewFrame,initialState, stateError, stateResponse, recipeResponse, recipeError = false, recipeOverrides = {}, recipeList, recipeDirectory = "F:\\test\\models", locationResponse, createdDirectory, logResponse = "ready", logError = false } = {}) {
+function browser({ noBoot = false, withStory = true, storyOwnsDownloadRows = false, storyError, onStoryRender, onStoryPrepare, storyPrepareMissing = false, retainReviewFrame,initialState, stateError, stateResponse, recipeResponse, recipeError = false, recipeOverrides = {}, recipeList, recipeDirectory = "F:\\test\\models", locationResponse, createdDirectory, logResponse = "ready", logError = false, bootClock } = {}) {
   const elements = new Map(), windowEvents = new Map(), calls = [], intervals = [], clearedIntervals = [];
   class Element {
     constructor(tag = "div") { this.tagName = tag; this.value = ""; this.textContent = ""; this.children = []; this.handlers = {}; this.attributes = {}; this.style = {}; this.hidden = false; this.disabled = false; this.open = false; this.srcWrites = 0; }
@@ -62,18 +62,35 @@ function browser({ noBoot = false, withStory = true, storyOwnsDownloadRows = fal
     }
     throw new Error("Unexpected route " + url);
   };
-  const context = vm.createContext({ document: doc, fetch, URL, AbortController, console, setTimeout, clearTimeout, setInterval: callback => { intervals.push(callback); return intervals.length; }, clearInterval(id) { clearedIntervals.push(id); } });
+  const loadingTimers = new Set();
+  function setTimer(callback, delay) {
+    if (delay !== 800) return setTimeout(callback, delay);
+    const timer = { callback, delay }; loadingTimers.add(timer);
+    const complete = () => { if (loadingTimers.delete(timer)) callback(); };
+    if (bootClock) bootClock.hold = complete;
+    else queueMicrotask(complete);
+    return timer;
+  }
+  const context = vm.createContext({ document: doc, fetch, URL, AbortController, console, setTimeout: setTimer,
+    clearTimeout: timer => { if (!loadingTimers.delete(timer)) clearTimeout(timer); },
+    setInterval: callback => { intervals.push(callback); return intervals.length; }, clearInterval(id) { clearedIntervals.push(id); } });
   let storyBridge, storyPreparations = 0;
-  if (withStory) context.KowwStory = { create(bridge) { if (storyError) throw storyError; storyBridge = bridge;
+  if (withStory) context.KowwStory = { minimumLoadingMs: 800, waitForLoadingPaint: () => bootClock?.paint || Promise.resolve(true),
+    create(bridge) { if (storyError) throw storyError; storyBridge = bridge;
     const view={ render() { onStoryRender?.(bridge, root); },ownsDownloadRows:storyOwnsDownloadRows,retainReviewFrame:project=>retainReviewFrame?.(project) };
-    if(!storyPrepareMissing)view.prepareInitialView=()=>{storyPreparations++;return onStoryPrepare?onStoryPrepare(bridge,root):Promise.resolve(true);};
+    if (!storyPrepareMissing) view.prepareInitialView = async minimum => {
+      storyPreparations++;
+      const ready = onStoryPrepare ? await onStoryPrepare(bridge, root) : true;
+      if (ready === true) await minimum;
+      return ready;
+    };
     return view;
   } };
   context.window = context; context.location = new URL("http://127.0.0.1:8800/"); context.KOWW_STUDIO_TEST = noBoot;
   context.addEventListener = (name, handler) => windowEvents.set(name, handler);
   let reloads = 0; context.location.reload = () => { reloads++; };
   vm.runInContext(script, context);
-  return { elements, calls, state, intervals, clearedIntervals, root, helpers: context.KowwStudio, get reloads() { return reloads; }, get storyBridge() { return storyBridge; }, get storyPreparations(){return storyPreparations;}, click: id => elements.get(id).handlers.click(), submit: id => elements.get(id).handlers.submit({ preventDefault() {} }),
+  return { elements, calls, state, intervals, clearedIntervals, root, loadingTimers, helpers: context.KowwStudio, get reloads() { return reloads; }, get storyBridge() { return storyBridge; }, get storyPreparations(){return storyPreparations;}, click: id => elements.get(id).handlers.click(), submit: id => elements.get(id).handlers.submit({ preventDefault() {} }),
     fireWindow: (name, event) => windowEvents.get(name)(event),
     async tick() {
       for (const [index, tick] of intervals.entries()) if (!clearedIntervals.includes(index + 1)) await tick();
@@ -300,6 +317,41 @@ function pendingHardStorageRecipe() {
     assert.equal(b.intervals.length, 1);
     assert.equal(b.storyPreparations,1);
     assert.equal(b.calls.some(call => call.options.method === "POST"), false);
+  });
+  await test("initial loading stays visible for the shared minimum and overlaps slow preparation", async () => {
+    const initialState = { projects: [{ id: "bora", wakeword: "보라야", status: "paused", stage: "pilot" }] };
+    for (const slow of [false, true]) {
+      let paint, acceptView;
+      const bootClock = { paint: new Promise(resolve => { paint = resolve; }) };
+      const b = browser({ initialState, bootClock, onStoryPrepare: () => slow
+        ? new Promise(resolve => { acceptView = resolve; }) : true });
+      await flush();
+      assert.equal(b.storyPreparations, 1, "the loader paint does not defer preparation");
+      assert.equal(b.loadingTimers.size, 0, "the minimum starts after the loading screen paints");
+      assert.equal(b.root.getAttribute("data-studio-boot"), "loading");
+      paint(true); await flush();
+      assert.equal(b.loadingTimers.size, 1);
+      assert.equal(b.root.getAttribute("data-studio-boot"), "loading");
+      b.fireWindow("pagehide"); b.fireWindow("pageshow", { persisted: true });
+      bootClock.hold(); await flush();
+      if (slow) {
+        assert.equal(b.root.getAttribute("data-studio-boot"), "loading");
+        acceptView(true); await flush();
+      }
+      assert.equal(b.root.getAttribute("data-studio-boot"), "ready");
+      assert.equal(b.intervals.filter((_, index) => !b.clearedIntervals.includes(index + 1)).length, 1);
+    }
+  });
+  await test("an initial loading error displays recovery immediately and clears the minimum timer", async () => {
+    let rejectView;
+    const bootClock = {}, b = browser({ bootClock,
+      onStoryPrepare: () => new Promise((_, reject) => { rejectView = reject; }) });
+    await flush(); assert.equal(b.loadingTimers.size, 1);
+    rejectView(new Error("첫 화면 준비 실패")); await flush();
+    assert.equal(b.root.getAttribute("data-studio-boot"), "error");
+    assert.equal(b.loadingTimers.size, 0);
+    bootClock.hold(); await flush();
+    assert.equal(b.root.getAttribute("data-studio-boot"), "error");
   });
   await test("saved project opens first, switching fetches its detail, and creation fetches recipes only once", async () => {
     const reply = value => ({ ok: true, status: 200, text: async () => JSON.stringify(value) });

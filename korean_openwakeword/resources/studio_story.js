@@ -1,6 +1,21 @@
 "use strict";
 /* Presentation adapter. Worker state and all human decisions stay authoritative. */
 (() => {
+  const minimumLoadingMs = 800;
+  async function waitForLoadingPaint(aborted) {
+    if (document.hidden || typeof requestAnimationFrame !== "function") return true;
+    let frame, onVisibility;
+    const painted = new Promise(resolve => {
+      onVisibility = () => { if (document.hidden) resolve(true); };
+      document.addEventListener?.("visibilitychange", onVisibility);
+      // Let the first frame paint the notice before starting its minimum hold.
+      frame = requestAnimationFrame(() => { frame = requestAnimationFrame(() => resolve(true)); });
+    });
+    const ready = await Promise.race([painted, aborted]);
+    document.removeEventListener?.("visibilitychange", onVisibility);
+    if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(frame);
+    return ready;
+  }
   const definitions = [
     ["entry", "호출어 입력", "‘보라야’와 같은 한국어 호출어를 입력해 주세요."],
     ["tools", "학습 도구 준비", "CPU 또는 NVIDIA GPU에서 학습에 사용할 실행 환경을 준비합니다."],
@@ -844,7 +859,7 @@
     function activeTransition(session) { return transitionSession === session; }
     function beginTransition(backwards, initial = false) {
       cancelReferenceApproval();
-      const session = { timers: new Set(), sourceStep: current, sourceFollowing: following, project: bridge.state().project?.id || "", waiters: new Map() };
+      const session = { initial, timers: new Set(), sourceStep: current, sourceFollowing: following, project: bridge.state().project?.id || "", waiters: new Map() };
       session.aborted = new Promise(resolve => { session.cancel = () => resolve(false); });
       transitionSession = session; transitioning = true;
       if (!initial) index.classList.add("is-transitioning"); index.inert = true;
@@ -853,20 +868,6 @@
       loaderText.textContent = backwards ? "전 단계로 이동 중" : "다음 단계로 이동 중";
       if (!initial) loader.hidden = false;
       return session;
-    }
-    async function waitForTransitionPaint(session) {
-      if (!activeTransition(session) || document.hidden || typeof requestAnimationFrame !== "function") return activeTransition(session);
-      let frame, onVisibility;
-      const painted = new Promise(resolve => {
-        onVisibility = () => { if (document.hidden) resolve(true); };
-        document.addEventListener?.("visibilitychange", onVisibility);
-        // The first frame can paint the notice before the second starts work.
-        frame = requestAnimationFrame(() => { frame = requestAnimationFrame(() => resolve(true)); });
-      });
-      const ready = await Promise.race([painted, session.aborted]);
-      document.removeEventListener?.("visibilitychange", onVisibility);
-      if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(frame);
-      return ready && activeTransition(session);
     }
     function cssMilliseconds(value) {
       return String(value || "0s").split(",").map(part => {
@@ -1111,7 +1112,7 @@
         session.waiters.clear();
       }
     }
-    async function prepareInitialView() {
+    async function prepareInitialView(minimum) {
       // Boot has no user navigation intent. Build the authoritative current
       // chapter, then hold its reveal until child geometry and paint settle.
       stopTransition();
@@ -1120,16 +1121,22 @@
       render();
       const session = beginTransition(false, true);
       try {
-        if (!await waitForChapter(session)) throw Error("화면 준비가 중단됐습니다. 다시 불러와 주세요.");
-        return true;
+        if (await waitForChapter(session)) {
+          if (minimum) await Promise.race([minimum, session.aborted]);
+          while (activeTransition(session)) {
+            if (session.readyVersion === (session.contentVersion || 0)) return true;
+            if (!await waitForChapter(session)) break;
+          }
+        }
+        throw Error("화면 준비가 중단됐습니다. 다시 불러와 주세요.");
       } finally {
         if (activeTransition(session)) { stopTransition(); render(); }
       }
     }
     async function runTransition(session, prepare, commit) {
       try {
-        if (!await waitForTransitionPaint(session)) return;
-        const hold = waitForDuration(session, 800);
+        if (!await waitForLoadingPaint(session.aborted) || !activeTransition(session)) return;
+        const hold = waitForDuration(session, minimumLoadingMs);
         const content = (async () => {
           pauseMedia();
           if (!activeTransition(session)) return { ok: false };
@@ -2739,8 +2746,13 @@
         frame.contentWindow.postMessage({ type: "koww:voice-picker-ready", request: event.data.request }, origin);
       }
     });
-    window.addEventListener("pagehide", () => { stopTransition(); pauseMedia(); });
+    window.addEventListener("pagehide", event => {
+      // A cached document resumes the same first-view preparation on return.
+      if (!(event?.persisted && transitionSession?.initial)) stopTransition();
+      pauseMedia();
+    });
     return { render, retainReviewFrame, prepareInitialView, ownsDownloadRows: true, ownsProjectNotice: true };
   }
-  window.KowwStory = Object.freeze({ create, definitions, stageStep, frontier, completedStep, pageCapacity, downloadCheckpoint, navigationCheckpoint });
+  window.KowwStory = Object.freeze({ create, definitions, stageStep, frontier, completedStep, pageCapacity, downloadCheckpoint,
+    navigationCheckpoint, minimumLoadingMs, waitForLoadingPaint });
 })();

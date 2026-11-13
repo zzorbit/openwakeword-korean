@@ -2350,6 +2350,26 @@ async function main() {
     await wire.send({type:'koww:preflight-height',height:170});await wire.send({type:'koww:preflight-state',ready:false,pending:false,error:false});
     await prepared;assert.equal(result,true);assert.equal(p.calls.includes('resume'),false);
   });
+  await test("initial readiness rechecks a changed frame before the minimum hold ends", async () => {
+    const project = { id: "finished", status: "completed", wakeword: "보라야", results: { url: "/results/finished/" } };
+    const p = page(project, { chapterReady: false });
+    let finishMinimum, result;
+    const minimum = new Promise(resolve => { finishMinimum = resolve; });
+    const prepared = p.ui.prepareInitialView(minimum).then(value => { result = value; });
+    const frame = p.get("result-frame");
+    await frame.fire("load");
+    await replyChapter(p);
+    assert.equal(result, undefined);
+    await p.windowEvent("pagehide", { persisted: true });
+    assert.equal(p.get("story-panel").inert, true);
+    project.results.url = "/results/finished/?updated=1"; p.ui.render(); await p.flush();
+    finishMinimum(); await p.flush();
+    assert.equal(result, undefined);
+    const updated = p.chapterRequests.at(-1);
+    assert.match(updated.data.url, /updated=1$/);
+    await replyChapter(p, updated); await prepared;
+    assert.equal(result, true); assert.equal(p.get("story-panel").inert, false);
+  });
   await test('initial readiness fails rather than revealing incomplete geometry after timeout or project exchange',async()=>{
     for(const change of ['timeout','project']){
       const project=postflightProject(),p=page(project),wire=await wirePreflight(p,project);
