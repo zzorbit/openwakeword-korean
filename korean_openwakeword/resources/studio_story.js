@@ -685,8 +685,8 @@
     let chapterRequestSequence = 0;
     const chapterFrames = ["reference-preview-frame", "review-frame", "result-frame"];
     const chapterFrameStates = new Map();
-    const callReviewLayoutWaiters = new Set();
-    function checkCallReviewLayoutWaiters() { for (const check of [...callReviewLayoutWaiters]) check(); }
+    const chapterStateWaiters = new Set();
+    function checkChapterStateWaiters() { for (const check of [...chapterStateWaiters]) check(); }
     function callReviewLayoutReady() {
       const project = bridge.state().project;
       return Boolean(reviewingPreflight(project) && preflightHeightReceived && preflightStateReceived
@@ -698,27 +698,36 @@
       return Boolean(stage && current === stageStep(project) && stageId(project) === stage && !project.error && !project.input
         && (running(project.status) || project.status === "waiting_review" && !reviewingPreflight(project)));
     }
-    async function waitForReviewState(session, stillCurrent, isReady) {
+    function preparingPhraseForm(project) {
+      if (current !== "phrases" || stageStep(project) !== current || stageId(project) !== "hard_phrases"
+        || shell.dataset.history === "true" || project.error || project.migration || project.review) return false;
+      if (running(project.status)) return true;
+      if (project.status !== "waiting_input") return false;
+      if (!project.input) return true;
+      return project.input.kind === "hard_phrases" && (input.hidden || $("input-form").hidden
+        || $("hard-phrase-editor").hidden || !$("hard-phrase-fields").firstElementChild);
+    }
+    async function waitForChapterState(session, stillCurrent, isReady) {
       let check;
       const ready = new Promise((resolve, reject) => {
         check = () => {
           if (!activeTransition(session)) { resolve(false); return; }
           const project = bridge.state().project;
-          if (project?.id !== session.project || !stillCurrent(project)) {
-            reject(Error("검수 화면이 바뀌었습니다. 다시 불러와 주세요.")); return;
+          if (project?.id !== (session.createdProject || session.project) || !stillCurrent(project)) {
+            reject(Error("불러오던 화면이 바뀌었습니다. 다시 이동해 주세요.")); return;
           }
           if (isReady(project)) resolve(true);
         };
-        callReviewLayoutWaiters.add(check); check();
+        chapterStateWaiters.add(check); check();
       });
       try { return await Promise.race([ready, session.aborted]); }
-      finally { callReviewLayoutWaiters.delete(check); }
+      finally { chapterStateWaiters.delete(check); }
     }
     async function waitForCallReviewLayout(session) {
       const project = bridge.state().project;
       if (!reviewingPreflight(project)) return true;
       const step = current, reviewStage = stageId(project);
-      return waitForReviewState(session, next => current === step && stageId(next) === reviewStage && reviewingPreflight(next),
+      return waitForChapterState(session, next => current === step && stageId(next) === reviewStage && reviewingPreflight(next),
         callReviewLayoutReady);
     }
     function cancelReferenceApproval() {
@@ -977,6 +986,7 @@
       const state = chapterFrameStates.get(waiter.id);
       waiter.resolve?.(false);
       waiter.promise = new Promise((resolve, reject) => { waiter.resolve = resolve; waiter.reject = reject; });
+      void waiter.promise.catch(() => {}); // A newly shown frame can reply before the next readiness pass.
       waiter.ready = false; waiter.generation = state?.generation;
       waiter.frame = state?.frame; waiter.source = state?.source; waiter.url = state?.url;
       waiter.request = ++chapterRequestSequence;
@@ -990,6 +1000,7 @@
         request: waiter.request, url: state.url }, window.location.origin);
     }
     function refreshChapterWaiters(session, loadedFrame) {
+      const frames = session?.waitingForFrames && activeTransition(session) ? destinationFrames() : [];
       for (const id of chapterFrames) {
         const frame = $(id), url = chapterFrameUrl(frame), previous = chapterFrameStates.get(id), previousGeneration = previous?.generation;
         let state = previous;
@@ -1000,7 +1011,13 @@
         if (frame === loadedFrame) { state.loaded = Boolean(url); state.generation++; }
         if (session && activeTransition(session) && state.generation !== previousGeneration) session.contentVersion = (session.contentVersion || 0) + 1;
         const waiter = session?.waiters.get(id);
-        if (waiter && activeTransition(session) && waiter.generation !== state.generation) requestChapterFrame(session, waiter);
+        if (!frame || !frames.includes(frame)) {
+          if (waiter) { waiter.resolve(false); session.waiters.delete(id); }
+        } else if (!waiter) {
+          frame.setAttribute("loading", "eager");
+          const destination = { id, project: bridge.state().project.id };
+          session.waiters.set(id, destination); requestChapterFrame(session, destination);
+        } else if (waiter.generation !== state.generation) requestChapterFrame(session, waiter);
       }
     }
     for (const id of chapterFrames) $(id).addEventListener("load", () => {
@@ -1031,48 +1048,55 @@
       return activeTransition(session);
     }
     async function waitForChapter(session) {
-      let timer;
+      let timer, rejectTimeout;
+      const step = current;
       const recipePending = Boolean(bridge.state().project && ["scale", "materials"].includes(current) && bridge.prepareRecipes);
-      const reviewQueuePending = preparingReviewQueue(bridge.state().project);
       const repairedReview = Boolean(current === "pronunciation" && postRepair(bridge.state().project)
         && bridge.state().project.review);
-      const timeout = new Promise((_, reject) => {
-        if (!recipePending && !reviewQueuePending && !destinationFrames().some(Boolean) && !document.fonts?.ready) return;
+      const timeout = new Promise((_, reject) => { rejectTimeout = reject; });
+      function armTimeout() {
+        if (timer !== undefined) return;
         const waitMessage = repairedReview
           ? "다시 생성한 음원은 저장됐습니다. 검수 화면이 열리지 않으면 ‘다시 열기’를 누르세요."
           : session.hardReviewArrival ? "유사어 검수 화면을 불러오는 데 시간이 걸리고 있습니다."
           : "화면을 불러오는 시간이 길어지고 있습니다. 다시 이동해 주세요.";
         timer = setTimeout(() => {
-          const error = new Error(waitMessage); error.name = "TimeoutError"; reject(error);
+          const error = new Error(waitMessage); error.name = "TimeoutError"; rejectTimeout(error);
         }, repairedReview || current === "microphone" ? 45000 : 20000);
         session.timers.add(timer);
-      });
+      }
       try {
         const ready = (async () => {
-          const project = bridge.state().project?.id || "";
+          if (recipePending || document.fonts?.ready) armTimeout();
           if (recipePending) {
             await bridge.prepareRecipes();
             if (!activeTransition(session)) return false;
           }
-          if (reviewQueuePending) {
-            const step = current, reviewStage = stageId(bridge.state().project);
-            const queueAvailable = next => !running(next.status) && !next.error && reviewingPreflight(next) && !review.hidden;
-            if (!await waitForReviewState(session, next => current === step && stageId(next) === reviewStage
-                && (preparingReviewQueue(next) || queueAvailable(next)), queueAvailable)) return false;
-          }
-          refreshChapterWaiters(session);
-          for (const frame of destinationFrames().filter(Boolean)) {
-            frame.setAttribute("loading", "eager");
-            const waiter = { id: frame.id, project };
-            session.waiters.set(frame.id, waiter); requestChapterFrame(session, waiter);
-          }
+          session.waitingForFrames = true;
           while (activeTransition(session)) {
+            const project = bridge.state().project;
+            if (preparingPhraseForm(project)) {
+              armTimeout();
+              if (!await waitForChapterState(session, next => current === step && stageStep(next) === step,
+                next => !preparingPhraseForm(next))) return false;
+            }
+            if (preparingReviewQueue(project)) {
+              armTimeout();
+              const reviewStage = stageId(project);
+              const queueAvailable = next => !running(next.status) && !next.error && reviewingPreflight(next) && !review.hidden;
+              if (!await waitForChapterState(session, next => current === step && stageId(next) === reviewStage
+                  && (preparingReviewQueue(next) || queueAvailable(next)), queueAvailable)) return false;
+            }
+            refreshChapterWaiters(session);
+            if (session.waiters.size) armTimeout();
             await Promise.all([...session.waiters.values()].map(waiter => waiter.promise));
             if (!await waitForCallReviewLayout(session)) return false;
             const version = session.contentVersion || 0;
             if (!await chapterPaint(session)) return false;
+            const latest = bridge.state().project;
             if ([...session.waiters.values()].every(waiter => waiter.ready)
-              && (!reviewingPreflight(bridge.state().project) || callReviewLayoutReady())
+              && !preparingPhraseForm(latest) && !preparingReviewQueue(latest)
+              && (!reviewingPreflight(latest) || callReviewLayoutReady())
               && version === (session.contentVersion || 0)) {
               session.readyVersion = session.contentVersion || 0; return true;
             }
@@ -1081,7 +1105,10 @@
         })();
         return await Promise.race([ready, timeout, session.aborted]);
       } finally {
-        clearTimeout(timer); session.timers.delete(timer); session.waiters.clear();
+        clearTimeout(timer); session.timers.delete(timer);
+        session.waitingForFrames = false;
+        for (const waiter of session.waiters.values()) waiter.resolve(false);
+        session.waiters.clear();
       }
     }
     async function prepareInitialView() {
@@ -1221,7 +1248,7 @@
         const responseReady = next => failed(next) || advanced(next);
         if (!responseReady(bridge.state().project)) {
           const ready = await Promise.race([
-            waitForReviewState(session, () => true, responseReady),
+            waitForChapterState(session, () => true, responseReady),
             waitForDuration(session, 20000).then(ended => {
               if (ended) throw Error("다음 단계의 상태를 확인하지 못했습니다. 다시 진행하세요.");
               return false;
@@ -2535,14 +2562,15 @@
       if (transitionSession) {
         const queueKey = preparingReviewQueue(project) || reviewingPreflight(project)
           ? JSON.stringify([project.id, current, stageId(project), project.review?.queue_sha256 || ""]) : "";
-        if ((transitionSession.reviewQueueKey || "") !== queueKey) {
-          transitionSession.reviewQueueKey = queueKey;
+        const contentKey = JSON.stringify([queueKey, preparingPhraseForm(project), destinationFrames().map(frame => frame?.id)]);
+        if (transitionSession.contentKey !== contentKey) {
+          transitionSession.contentKey = contentKey;
           transitionSession.contentVersion = (transitionSession.contentVersion || 0) + 1;
         }
       }
       refreshChapterWaiters(transitionSession);
       syncReviewNotices(project);
-      checkCallReviewLayoutWaiters();
+      checkChapterStateWaiters();
     }
     wakeword.addEventListener("compositionstart", () => { composingWakeword = true; showWakewordError(""); });
     wakeword.addEventListener("compositionend", () => { composingWakeword = false; showWakewordError(bridge.wakewordError(wakeword.value)); });
@@ -2610,7 +2638,7 @@
         }
         preflightHeightReceived = true;
         shell.classList.add("preflight-draft-review");shell.style.setProperty("--preflight-content-height", height);
-        checkCallReviewLayoutWaiters(); return;
+        checkChapterStateWaiters(); return;
       }
       if (message.type === "koww:preflight-state" && typeof message.ready === "boolean" && typeof message.pending === "boolean" && typeof message.error === "boolean") {
         preflightState = { queue_sha256: message.queue_sha256, ready: message.ready && !message.pending && !message.error };
@@ -2618,7 +2646,7 @@
         shell.classList.add("preflight-draft-review");
         if (message.error) { preflightFinalizePending = false; if (preflightResumeIntent?.phase === "finalizing") cancelPreflightNext("검수 저장 상태를 확인한 뒤 다시 진행하세요."); }
         else if (!preflightResumeIntent && message.ready && !message.pending) preflightFinalizePending = false;
-        checkCallReviewLayoutWaiters(); render(); return;
+        checkChapterStateWaiters(); render(); return;
       }
       if (message.type === "koww:preflight-finalized" && ["resume", "none", "retry", "repair"].includes(message.workflow_action) && preflightFinalizePending && !preflightCommitted) {
         const intent = preflightResumeIntent;

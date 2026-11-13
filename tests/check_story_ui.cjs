@@ -120,6 +120,7 @@ function page(initialProject = null, options = {}) {
   if (options.fonts) document.fonts = options.fonts;
   const state = { project: initialProject, recipes: [], selectedPreset: "check", recipeReady: true, busy: false,
     dependencySetup: options.dependencySetup || { recommended_backend: "cpu", packages: { cpu: [], cu128: [] } } };
+  let renderedPhraseInput;
   const windowHandlers = {};
   const chapterRequests = [];
   const context = vm.createContext({ document, console, URL, location: { origin: "http://studio.local", href: "http://studio.local/" }, innerWidth: options.width || 1200, innerHeight: options.height || 900, matchMedia: query => ({ matches: options.matchMedia?.(query) ?? false }),
@@ -163,6 +164,12 @@ function page(initialProject = null, options = {}) {
       if (view === "review" && mode === "reference" && project?.reference_preview?.url) frameSource("reference-preview-frame", project.reference_preview.url);
       if (view === "review" && mode === "required" && project?.review?.url) frameSource("review-frame", project.review.url);
       if (["results", "mic"].includes(view) && (project?.results?.url || project?.results_url)) frameSource("result-frame", view === "mic" ? project.results?.mic_url || `/mic/${project.id}/` : project.results?.url || project.results_url);
+      const phraseInput = project?.status === "waiting_input" && project.input?.kind === "hard_phrases" ? project.input : null;
+      if (phraseInput && phraseInput !== renderedPhraseInput && options.mountPhraseFields !== false) {
+        const fields = (phraseInput.suggestions?.length ? phraseInput.suggestions : [""]).map(value => Object.assign(new Element("input"), { value }));
+        get("hard-phrase-fields").replaceChildren(...fields);
+        renderedPhraseInput = phraseInput;
+      }
       options.view?.(view, mode, state);
     },
     pause: frame => calls.push("pause:" + frame.id), preview: kind => calls.push("preview:" + kind),
@@ -658,7 +665,9 @@ async function main() {
       const project = navigationProject(step), target = navigationGroups[navigationGroups.findIndex(([id]) => id === step) + 1][0];
       const p = page(project, { action: (_action, state) => {
         state.project.navigation_checkpoint = { policy: "explicit_story_v1", state: "running", step: target };
-        state.project.status = "running"; p.ui.render();
+        state.project.status = target === "phrases" ? "waiting_input" : "running";
+        if (target === "phrases") state.project.input = { kind: "hard_phrases", suggestions: [] };
+        p.ui.render();
         assert.equal(p.shell.dataset.step, step, "a busy release response cannot commit the next screen early");
         assert.equal(p.shell.querySelector(".story-loader").hidden, false);
         state.busy = false; p.ui.render();
@@ -668,7 +677,7 @@ async function main() {
       await p.next.fire("click"); await p.next.fire("click");
       assert.equal(p.calls.filter(call => call === "resume").length, 1); assert.equal(p.timers.length, 1);
       assert.equal(p.timers[0].delay, 800); await p.settle(); assert.equal(p.shell.dataset.step, target);
-      assert.equal(p.next.textContent, "다음"); assert.equal(p.next.disabled, true);
+      assert.equal(p.next.textContent, "다음"); assert.equal(p.next.disabled, target !== "phrases");
     }
   });
   await test("a slow Next request starts after notice paint and remains covered until the destination is ready", async () => {
@@ -1120,7 +1129,7 @@ async function main() {
     while (await p.advanceFrame()) {}
     await p.settle();
     assert.equal(p.calls.some(call => ["start", "resume"].includes(call)), false);
-    assert.equal(p.get("hard-phrase-fields").children[0], draft);
+    assert.equal(p.get("hard-phrase-fields").children.at(-1), draft);
   });
   await test("phrase input validation and save errors keep the live fields available for a deliberate retry", async () => {
     let fail = false;
@@ -1130,7 +1139,7 @@ async function main() {
     assert.equal(p.shell.dataset.step, "phrases"); assert.equal(p.next.disabled, false);
     fail = true; await p.next.fire("click"); await p.settle();
     assert.ok(p.calls.includes("message:저장 연결 오류")); assert.equal(p.next.disabled, false);
-    assert.equal(p.get("hard-phrase-fields").children[0], draft); assert.equal(draft.value, "직접수정"); assert.equal(draft.focused, true);
+    assert.equal(p.get("hard-phrase-fields").children.at(-1), draft); assert.equal(draft.value, "직접수정"); assert.equal(draft.focused, true);
     assert.equal(p.calls.some(call => ["start", "resume"].includes(call)), false);
   });
   await test("phrase input next never submits off-route diagnostics reviews migration or an active worker", async () => {
@@ -2127,6 +2136,30 @@ async function main() {
     project.status='waiting_input';project.process_alive=false;project.input={kind:'hard_phrases',suggestions:[]};p.ui.render();await p.settle();
     assert.equal(p.shell.dataset.step,'phrases');assert.equal(p.get('story-panel').inert,false);assert.equal(p.calls.some(call=>call.startsWith('message:')),false);
   });
+  await test("Next from a saved pronunciation review waits for the phrase form to mount", async () => {
+    const project = postflightProject();
+    finishPostflightProcessing(project);
+    const p = page(project, { mountPhraseFields: false, action: (action, state) => {
+      assert.equal(action, "resume");
+      project.navigation_checkpoint = { policy: "explicit_story_v1", step: "phrases", state: "running" };
+      project.status = "running"; project.process_alive = true; state.busy = false; p.ui.render();
+    } });
+    const loader = p.shell.querySelector(".story-loader"), panel = p.get("story-panel");
+    assert.equal(p.shell.dataset.step, "pronunciation"); assert.equal(p.next.disabled, false);
+    await p.next.fire("click"); p.advanceTimer(); await p.flush();
+    assert.equal(p.shell.dataset.step, "phrases"); assert.equal(loader.hidden, false);
+    assert.equal(panel.classList.contains("is-leaving"), true);
+    project.status = "waiting_input"; project.process_alive = false;
+    project.input = { kind: "hard_phrases", suggestions: ["보나야"] };
+    p.ui.render(); await p.flush();
+    assert.equal(loader.hidden, false, "an input payload alone cannot reveal an empty form");
+    const field = p.element("input"); field.value = "보나야"; p.get("hard-phrase-fields").append(field);
+    p.ui.render(); await p.settle();
+    assert.equal(loader.hidden, true); assert.equal(panel.inert, false);
+    assert.equal(p.get("input-section").hidden, false); assert.equal(p.next.disabled, false);
+    assert.equal(p.get("hard-phrase-fields").firstElementChild, field);
+    assert.equal(p.calls.filter(call => call === "resume").length, 1);
+  });
   await test('postflight save acknowledgement releases its timeout while a real corpus admission worker remains active',async()=>{
     const project=postflightProject();let p,resumes=0;
     p=page(project,{refresh:state=>{state.project.status='paused';delete state.project.review;},action:(_action,state)=>{
@@ -2756,6 +2789,29 @@ async function main() {
       await replyChapter(p); await p.settle(); assert.equal(p.shell.dataset.step, target);
       assert.equal(p.shell.querySelector(".story-loader").hidden, true); assert.equal(p.calls.includes("start"), false);
     }
+  });
+  await test("chapter readiness waits for a result frame that appears during the destination paint", async () => {
+    const project = navigationProject("evaluation");
+    const p = page(project, { chapterReady: false, paintFrames: "manual", action: (_action, state) => {
+      project.status = "running";
+      project.navigation_checkpoint = { policy: "explicit_story_v1", step: "results", state: "running" };
+      state.busy = false; p.ui.render();
+    } });
+    const loader = p.shell.querySelector(".story-loader");
+    await p.next.fire("click"); await p.advanceFrame(); await p.advanceFrame();
+    assert.equal(p.shell.dataset.step, "results");
+    assert.equal(p.chapterRequests.length, 0);
+    project.status = "completed"; project.results = { url: "/results/navigated/" };
+    p.ui.render(); await p.flush();
+    while (await p.advanceFrame()) {}
+    p.advanceTimer(); await p.flush();
+    assert.equal(loader.hidden, false);
+    const request = p.chapterRequests.at(-1);
+    assert.equal(request.frame.id, "result-frame");
+    await replyChapter(p, request);
+    while (await p.advanceFrame()) {}
+    await p.settle();
+    assert.equal(loader.hidden, true); assert.equal(p.get("story-panel").inert, false);
   });
   await test("chapter readiness also waits for required pronunciation review content", async () => {
     const project = { id: "reviewing", status: "waiting_review", stage_id: "pilot", wakeword: "보라야",
