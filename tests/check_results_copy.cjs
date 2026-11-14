@@ -23,12 +23,13 @@ test("both frozen result layouts support the shared picker and playback controls
   assert.match(css, /data-audio-view="reactions"\] \.audio-player\.listen-player\{display:contents/);
   assert.match(css, /data-audio-view="settings"\] \.playback-controls\{display:none/);
 });
-test("report navigation omits the repeated evaluation scope and keeps the four results tabs", () => {
+test("report navigation keeps only model comparison, noise results, and audio", () => {
   for (const name of ["results.html", "results_paged.html"]) {
     const html = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources", name), "utf8");
     const navigation = html.match(/<nav class="dashboard-tabs"[^>]*>([\s\S]*?)<\/nav>/)[1];
-    assert.deepEqual([...navigation.matchAll(/id="results-tab-([^"]+)"/g)].map(match => match[1]), ["models", "conditions", "audio", "criteria"]);
+    assert.deepEqual([...navigation.matchAll(/id="results-tab-([^"]+)"/g)].map(match => match[1]), ["models", "conditions", "audio"]);
     assert.doesNotMatch(html, /평가 정보|scope-disclosure|id="scope"/);
+    assert.doesNotMatch(html, /results-(?:tab|panel)-criteria|searchCriteria/);
     assert.match(html, /id="noiseCoverage"/);
   }
 });
@@ -56,9 +57,15 @@ test("both report layouts put the comparison metrics in the models panel", () =>
   }
 });
 const fullText = element => [element.textContent, ...element.children.map(fullText)].filter(Boolean).join(" ");
+const overviewHelpRows = elements => elements.get("overview-help-content").children
+  .find(node => node.className === "overview-help-models")?.children
+  .map(row => row.children.map(cell => cell.textContent)) ?? [];
 const displayedAcousticConditions = () => ["moderate", "strong"].flatMap(reverb_condition =>
   [10, 5, 0].flatMap(snr_db => ["environment", "music", "competing_speech"].map(category =>
     ({reverb_condition, category, snr_db}))));
+const archivedAcousticConditions = () => ["none", "moderate", "strong"].flatMap(reverb_condition => [10, 5].flatMap(snr_db =>
+  ["environment", "music", "competing_speech"].map(category => ({reverb_condition, category, snr_db})))).concat(
+  ["moderate", "strong"].map(reverb_condition => ({reverb_condition, category: "clean", snr_db: null})));
 function browser({dashboard = false, fetch} = {}) {
   class Element {
     constructor(tag = "div") { this.tagName = tag; this.children = []; this.value = ""; this.textContent = ""; this.disabled = false; this.attributes = {}; this.dataset = {}; this.style = {}; this.listeners = new Map(); this.open = false; }
@@ -86,7 +93,7 @@ function browser({dashboard = false, fetch} = {}) {
     hidePopover() { this.open = false; this.dispatch("toggle", {newState: "closed"}); }
   }
   const elements = new Map();
-  for (const id of ["responses", "scores", "condition-model", "condition-reverb", "condition-clean", "conditions", "storySummary", "overview-source", "overview-model", "storySummaryMetrics", "searchCriteria", "searchCriteriaNote", "condition-snr", "conditionMetrics", "overview-help", "overview-help-title", "overview-help-content", "overview-help-close"]) {
+  for (const id of ["responses", "scores", "condition-model", "condition-reverb", "condition-clean", "conditions", "storySummary", "overview-source", "overview-model", "storySummaryMetrics", "condition-snr", "conditionMetrics", "overview-help", "overview-help-title", "overview-help-content", "overview-help-close"]) {
     elements.set(id, new Element());
   }
   const headers = ["hard", "worst", "fa", "latency", "settings"].map(key => {
@@ -98,7 +105,7 @@ function browser({dashboard = false, fetch} = {}) {
   for (const id of ["storySummary", "responses", "scores", "conditions"]) elements.get(id).tBodies = [new Element("tbody")];
   elements.get("condition-snr").value = "10";
   if (dashboard) {
-    for (const name of ["models", "conditions", "audio", "criteria"])
+    for (const name of ["models", "conditions", "audio"])
       for (const kind of ["tab", "panel"]) elements.set(`results-${kind}-${name}`, new Element());
     elements.set("audio", Object.assign(new Element("audio"), {src: "unchanged.wav", currentTime: 2.5}));
   }
@@ -164,14 +171,18 @@ test("dashboard tabs switch one panel without replacing audio or resetting the c
 });
 test("dashboard tabs support keyboard navigation", () => {
   const {ui, elements} = browser({dashboard: true});
-  let prevented = false;
-  elements.get("results-tab-models").onkeydown({key: "ArrowLeft", preventDefault() { prevented = true; }});
-  assert.equal(prevented, true); assert.equal(ui.dashboardState().view, "criteria");
-  assert.equal(elements.get("results-tab-criteria").focused, true);
-  elements.get("results-tab-models").onkeydown({key: "End", preventDefault() {}});
-  assert.equal(ui.dashboardState().view, "criteria");
-  assert.equal(elements.get("results-tab-criteria").tabIndex, 0);
-  assert.equal(elements.get("results-tab-models").tabIndex, -1);
+  const tab = name => elements.get(`results-tab-${name}`);
+  for (const [from, key, to] of [["models", "ArrowLeft", "audio"], ["audio", "ArrowRight", "models"],
+    ["models", "ArrowRight", "conditions"], ["conditions", "End", "audio"], ["audio", "Home", "models"]]) {
+    let prevented = false;
+    tab(from).onkeydown({key, preventDefault() { prevented = true; }});
+    assert.equal(prevented, true);
+    assert.equal(ui.dashboardState().view, to);
+    assert.equal(tab(to).focused, true);
+    assert.equal(tab(to).attributes["aria-selected"], "true");
+    assert.equal(tab(to).tabIndex, 0);
+    assert.equal(tab(from).tabIndex, -1);
+  }
 });
 test("legacy reports label stable model numbers without changing source order", () => {
   const {ui} = browser(), report = {models: [{id: "member10", kind: "single"}, {id: "member2", kind: "single"}, {id: "mean", kind: "ensemble"}]};
@@ -508,6 +519,7 @@ test("the detection menu, desktop and mobile headings, and help use the selected
   assert.equal(title(), "기본 감지 기준");
   assert.match(content(), /성능 평가.*설정|평가 당시.*설정/s);
   assert.doesNotMatch(content(), /시간당 1회 이하|오호출이 가장 적은/);
+  assert.deepEqual(overviewHelpRows(elements), []);
   const baselineHelp = content();
   assert.equal(rows("storySummary")[3][7], "0.5 · 1회");
   assert.equal(compactMetric()[1].textContent, "0.5 · 1회");
@@ -617,18 +629,16 @@ test("fixed worst-case help describes its definition even when legacy records la
   assert.match(content, /배경 소리별 감지율을 같은 비중으로 평균/);
   assert.doesNotMatch(content, /환경소음|음악·전자음|다른 사람 말소리|가장 낮았던 시험 조건|[0-9.]+%/);
 });
-test("criteria summarize the archived selection conditions without reusing the display aggregate label", () => {
+test("recommendation help describes the archived selection conditions without reusing the display aggregate label", () => {
   const {ui, elements, headers} = browser(), report = sample();
-  const policy = [
-    {reverb_condition: "strong", category: "music", snr_db: 0},
-    {reverb_condition: "none", category: "competing_speech", snr_db: 5}
-  ];
-  report.runtime_recommendations = {search_policy: {hard_conditions: policy}, recommendation_criteria: {fa_per_hour: 1}};
+  report.runtime_recommendations = {schema_version: 1, method: "joint_cached_hard_conditions_v4",
+    search_policy: {hard_conditions: archivedAcousticConditions()}, recommendation_criteria: {fa_per_hour: 1},
+    candidates: [{id: "mean", runtime: {threshold: .8, consecutive_frames: 1}, metrics: {}}]};
   ui.renderSummary(report);
   const content = elements.get("overview-help-content");
-  const criteria = elements.get("searchCriteria");
-  assert.equal(fullText(criteria.children.at(-1)), "우선 비교 소음·울림 시험 평균 · 2가지");
-  assert.match(elements.get("searchCriteriaNote").textContent, /기록된 소음·울림 시험 조건/);
+  headers[4].dispatch("click");
+  assert.deepEqual(overviewHelpRows(elements).at(-1), ["우선 비교", "소음·울림 시험 평균 · 20가지"]);
+  assert.match(fullText(content), /추천 비교에 기록된 소음·울림 시험 조건/);
   headers[0].dispatch("click");
   assert.equal(content.children[1].textContent, "총 18가지 조건의 감지율을 같은 비중으로 평균합니다.");
 });
@@ -639,20 +649,17 @@ test("selection help links to the displayed average only for the exact condition
     recommendation_criteria: {fa_per_hour: 1},
     candidates: [{id: "mean", runtime: {threshold: .85, consecutive_frames: 1}, metrics: {}}]};
   report.runtime_recommendations = recommendation;
-  const precedence = () => fullText(elements.get("searchCriteria").children.at(-1));
-  const note = () => elements.get("searchCriteriaNote").textContent;
   const help = () => { headers[4].dispatch("click"); return fullText(elements.get("overview-help-content")); };
   ui.renderSummary(report);
-  assert.equal(precedence(), "우선 비교 강한 소음·울림 · 18가지");
-  assert.match(note(), /모델 비교의 ‘강한 소음·울림’과 같은 18가지 조건/);
   assert.match(help(), /모델 비교의 ‘강한 소음·울림’과 같은 18가지 조건/);
+  assert.deepEqual(overviewHelpRows(elements).at(-1), ["우선 비교", "강한 소음·울림 · 18가지"]);
 
   const conditions = recommendation.search_policy.hard_conditions;
   conditions[0] = {...conditions[0], reverb_condition: "none"};
   ui.renderSummary(report);
-  assert.equal(precedence(), "우선 비교 소음·울림 시험 평균 · 18가지");
-  assert.doesNotMatch(note(), /같은 18가지/);
   assert.match(help(), /추천 비교에 기록된 소음·울림 시험 조건/);
+  assert.doesNotMatch(fullText(elements.get("overview-help-content")), /같은 18가지/);
+  assert.deepEqual(overviewHelpRows(elements).at(-1), ["우선 비교", "소음·울림 시험 평균 · 18가지"]);
 });
 test("missing displayed acoustic conditions never borrow a different-runtime baseline or archived average", () => {
   const {ui, elements, rows} = browser(), report = sample();
@@ -703,15 +710,41 @@ test("fixed worst-case values prefer the original measured conditions and exclud
   ui.renderSummary(report);
   assert.equal(rows("storySummary")[3][4], "50.00%");
 });
-test("story criteria disclose the recorded recommendation policy instead of inventing defaults for historical reports", () => {
-  const {ui, elements} = browser(), report = sample();
+test("recommended detection help discloses the recorded search and protection criteria on desktop and mobile", () => {
+  const {ui, elements, headers} = browser(), report = sample();
+  const policy = {threshold_step: .01, coarse_thresholds: Array.from({length: 99}, (_, index) => (index + 1) / 100),
+    consecutive_frames: [1, 2, 3, 4, 5, 6], hard_conditions: displayedAcousticConditions()};
+  const criteria = {clean_recall: .98, fa_per_hour: 1, latency_p95_s: .5, minimum_negative_hours: 20};
+  const recommendation = {schema_version: 1, search_policy: policy, recommendation_criteria: criteria,
+    candidates: [{id: "mean", runtime: {threshold: .9, consecutive_frames: 3}, metrics: {}}]};
+  report.runtime_recommendations = recommendation;
   ui.renderSummary(report);
-  assert.equal(elements.get("searchCriteria").children[0].children[1].textContent, "기록 없음");
-  report.runtime_recommendations = {schema_version: 1, search_policy: {threshold_step: .01, consecutive_frames: [1, 2, 3, 4, 5, 6]},
-    recommendation_criteria: {clean_recall: .98, fa_per_hour: 1, latency_p95_s: .5}, candidates: []};
+  headers[4].dispatch("click");
+  const expected = [
+    ["감지 기준 범위", "0.01~0.99 · 0.01 간격"], ["연속 감지 수", "1~6회 비교"],
+    ["조용할 때 감지율", "98.00% 이상"], ["오호출 허용량", "시간당 1회 이하"],
+    ["반응 시간", "95%가 0.5초 이내"], ["비호출 평가 시간", "20시간 이상"],
+    ["우선 비교", "강한 소음·울림 · 18가지"]
+  ];
+  assert.deepEqual(overviewHelpRows(elements), expected);
+  elements.get("overview-help-close").dispatch("click");
+  elements.get("storySummaryMetrics").children[6].children[0].children[0].dispatch("click");
+  assert.deepEqual(overviewHelpRows(elements), expected);
+
+  delete policy.coarse_thresholds;
+  delete criteria.minimum_negative_hours;
   ui.renderSummary(report);
-  const cells = elements.get("searchCriteria").children.map(row => row.children[1].textContent);
-  assert.deepEqual(cells.slice(0, 5), ["0.01", "1~6회 비교", "98.00% 이상", "시간당 1회 이하", "95%가 0.5초 이내"]);
+  headers[4].dispatch("click");
+  const partial = new Map(overviewHelpRows(elements));
+  assert.equal(partial.get("감지 기준 간격"), "0.01");
+  assert.equal(partial.has("비호출 평가 시간"), false);
+
+  delete recommendation.search_policy;
+  delete recommendation.recommendation_criteria;
+  ui.renderSummary(report);
+  headers[4].dispatch("click");
+  assert.ok(overviewHelpRows(elements).every(([, value]) => value === "기록 없음"));
+  assert.doesNotMatch(fullText(elements.get("overview-help-content")), /98|0\.01|18가지|20시간|시간당 1회/);
 });
 test("compact condition rows use the same stored cells as the full table for each noise selection", () => {
   const {ui, elements} = browser(), report = sample(), before = JSON.stringify(report);
@@ -730,13 +763,11 @@ async function testArchivedDiagnosticLoading() {
   }]));
   original.reverb_conditions = acousticCells(.5);
   report.runtime_recommendations = {schema_version: 1, report_diagnostics_pending: true,
-    search_policy: {hard_conditions: [...displayedAcousticConditions(),
-      {reverb_condition: "none", category: "music", snr_db: 10},
-      {reverb_condition: "strong", category: "clean", snr_db: null}]},
-    recommendation_criteria: {fa_per_hour: 1},
+    search_policy: {hard_conditions: archivedAcousticConditions()},
+    recommendation_criteria: {fa_per_hour: 1, minimum_negative_hours: 20},
     candidates: [{id: "mean", runtime: {threshold: .9, consecutive_frames: 3}, metrics: {}}]};
   let requests = 0, resolveResponse;
-  const {ui, rows, elements} = browser({fetch(url) {
+  const {ui, rows, elements, headers} = browser({fetch(url) {
     assert.equal(url, "report-diagnostics.json");
     requests += 1;
     return new Promise(resolve => { resolveResponse = resolve; });
@@ -745,23 +776,34 @@ async function testArchivedDiagnosticLoading() {
   ui.renderSummary(report);
   assert.equal(requests, 1);
   assert.deepEqual(rows("storySummary")[3].slice(3, 5), ["계산 중", "계산 중"]);
-  assert.equal(fullText(elements.get("searchCriteria").children.at(-1)), "우선 비교 소음·울림 시험 평균 · 20가지");
+  headers[4].dispatch("click");
+  assert.deepEqual(overviewHelpRows(elements).at(-1), ["우선 비교", "소음·울림 시험 평균 · 20가지"]);
   const source = elements.get("overview-source");
   source.value = "baseline";
   source.onchange();
   assert.deepEqual(rows("storySummary")[3].slice(3, 5), ["50.00%", "50.00%"]);
+  assert.equal(elements.get("overview-help").open, false);
+  headers[4].dispatch("click");
+  assert.deepEqual(overviewHelpRows(elements), []);
   const projection = JSON.parse(JSON.stringify(report.runtime_recommendations));
   delete projection.report_diagnostics_pending;
   projection.search_policy.hard_conditions = displayedAcousticConditions();
+  projection.recommendation_criteria.minimum_negative_hours = 30;
   projection.candidates[0].metrics.reverb_conditions = acousticCells(.3);
   resolveResponse({ok: true, json: async () => projection});
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(source.value, "baseline");
   assert.deepEqual(rows("storySummary")[3].slice(3, 5), ["50.00%", "50.00%"]);
-  assert.equal(fullText(elements.get("searchCriteria").children.at(-1)), "우선 비교 강한 소음·울림 · 18가지");
+  assert.equal(elements.get("overview-help").open, false);
+  headers[4].dispatch("click");
+  assert.deepEqual(overviewHelpRows(elements), []);
   source.value = "recommended";
   source.onchange();
   assert.deepEqual(rows("storySummary")[3].slice(3, 5), ["30.00%", "30.00%"]);
+  headers[4].dispatch("click");
+  const criteria = new Map(overviewHelpRows(elements));
+  assert.equal(criteria.get("우선 비교"), "강한 소음·울림 · 18가지");
+  assert.equal(criteria.get("비호출 평가 시간"), "30시간 이상");
 }
 testArchivedDiagnosticLoading().then(() => console.log(`${cases.length + 1} result presentation tests passed`)).catch(error => {
   console.error(error);

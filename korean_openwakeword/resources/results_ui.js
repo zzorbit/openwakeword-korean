@@ -13,6 +13,7 @@
   const worstReverb = "strong";
   const worstSnr = 0;
   const detectionLabels = {baseline: "기본 감지 기준", recommended: "추천 감지 기준"};
+  const resultsTabs = ["models", "conditions", "audio"];
   const reportDiagnostics = new WeakSet();
   let dashboardView = "models";
   let compactAudio = null;
@@ -38,10 +39,10 @@
     });
   }
   function dashboard(view, focus = false) {
-    if (!["models", "conditions", "audio", "criteria"].includes(view)) return;
+    if (!resultsTabs.includes(view)) return;
     if (view !== "audio") resultClipPicker?.close();
     if (view !== "models") overviewHelp?.hide();
-    dashboardView = view; activateTabs("results", ["models", "conditions", "audio", "criteria"], view, focus);
+    dashboardView = view; activateTabs("results", resultsTabs, view, focus);
   }
   function bindTabs(prefix, names, select) {
     names.forEach(name => {
@@ -67,7 +68,7 @@
   function initDashboard() {
     if (!$("results-tab-models")) return;
     if (typeof window !== "undefined" && window.parent && window.parent !== window) document.body?.classList?.add("embedded");
-    bindTabs("results", ["models", "conditions", "audio", "criteria"], dashboard);
+    bindTabs("results", resultsTabs, dashboard);
     dashboard(dashboardView);
     for (const view of ["player", "reactions", "settings"]) {
       const tab = $(`audio-view-${view}`);
@@ -182,7 +183,6 @@
   }
   function renderSummary(report) {
     renderOverview(report);
-    renderCriteria(report);
     const recommendation = report.runtime_recommendations;
     if (recommendation?.report_diagnostics_pending && !reportDiagnostics.has(report)) {
       reportDiagnostics.add(report);
@@ -196,42 +196,35 @@
         if (report.runtime_recommendations !== recommendation) return;
         report.runtime_recommendations = result;
         renderOverview(report);
-        renderCriteria(report);
       });
     }
   }
-  function renderCriteria(report) {
-    const target = $("searchCriteria");
-    if (!target) return;
-    const recommendation = report.runtime_recommendations;
+  function recommendationDetails(recommendation, matchesDisplay) {
     const search = recommendation?.search_policy;
     const criteria = recommendation?.recommendation_criteria;
+    if (!search && !criteria) return [];
     const conditionCount = Array.isArray(search?.hard_conditions) ? search.hard_conditions.length : 0;
     const hasConditionPriority = conditionCount > 0 || recommendation?.candidates?.some(row => row.metrics?.hard_conditions);
-    const matchesDisplay = matchesDisplayedConditions(search?.hard_conditions);
+    const thresholds = Array.isArray(search?.coarse_thresholds) ? search.coarse_thresholds.filter(finite) : [];
+    const step = finite(search?.threshold_step) ? String(search.threshold_step) : null;
+    const min = Math.min(...thresholds), max = Math.max(...thresholds);
+    const thresholdRange = min === max ? String(min) : `${min}~${max}`;
     const counts = Array.isArray(search?.consecutive_frames) ? search.consecutive_frames : [];
     const consecutive = counts.length && counts.every((value, index) => Number.isInteger(value) && value > 0 && (!index || value === counts[index - 1] + 1));
     const values = [
-      ["감지 기준 간격", finite(search?.threshold_step) ? String(search.threshold_step) : "기록 없음"],
+      thresholds.length
+        ? ["감지 기준 범위", step && min !== max ? `${thresholdRange} · ${step} 간격` : thresholdRange]
+        : ["감지 기준 간격", step ?? "기록 없음"],
       ["연속 감지 수", consecutive ? counts.length === 1 ? `${counts[0]}회` : `${counts[0]}~${counts[counts.length - 1]}회 비교` : counts.length ? counts.map(value => `${value}회`).join(" · ") : "기록 없음"],
       ["조용할 때 감지율", finite(criteria?.clean_recall) ? `${percent(criteria.clean_recall)} 이상` : "기록 없음"],
       ["오호출 허용량", finite(criteria?.fa_per_hour) ? `시간당 ${criteria.fa_per_hour}회 이하` : "기록 없음"],
       ["반응 시간", finite(criteria?.latency_p95_s) ? `95%가 ${criteria.latency_p95_s}초 이내` : "기록 없음"],
+      ...(finite(criteria?.minimum_negative_hours) ? [["비호출 평가 시간", `${criteria.minimum_negative_hours}시간 이상`]] : []),
       ["우선 비교", hasConditionPriority
         ? `${matchesDisplay ? "강한 소음·울림" : "소음·울림 시험 평균"}${conditionCount ? ` · ${conditionCount}가지` : ""}`
         : "기록 없음"]
     ];
-    target.replaceChildren();
-    for (const [name, value] of values) appendMetric(target, name, value);
-    const note = $("searchCriteriaNote");
-    if (note) {
-      if (matchesDisplay) {
-        note.textContent = `추천 설정을 비교할 때는 모델 비교의 ‘강한 소음·울림’과 같은 ${strongConditionCount}가지 조건의 평균 감지율을 사용합니다.`;
-      } else {
-        note.textContent = criteria ? "추천 설정을 비교할 때는 평가에 기록된 소음·울림 시험 조건의 평균 감지율을 사용합니다."
-          : "이 평가에는 추천 기준이 기록되지 않았습니다.";
-      }
-    }
+    return values.map(([label, value]) => ({label, value}));
   }
   function appendMetric(list, label, value, rowClass) {
     const item = document.createElement("div"), term = document.createElement("dt"), description = document.createElement("dd");
@@ -337,6 +330,7 @@
     if (!table || !source || !modelSelect) return;
     const calibration = report.runtime_recommendations;
     const matchesDisplay = matchesDisplayedConditions(calibration?.search_policy?.hard_conditions);
+    const recordedCriteria = recommendationDetails(calibration, matchesDisplay);
     const sharedHelp = metricHelp(calibration?.recommendation_criteria);
     overviewHelp ??= createOverviewHelp();
     const candidates = calibration?.schema_version === 1 && Array.isArray(calibration.candidates) ? calibration.candidates : [];
@@ -400,10 +394,11 @@
         ...sharedHelp,
         fa: {title: "오호출/시간", paragraphs: ["호출어가 없는 음원에서 호출어를 잘못 감지한 횟수를 1시간 기준으로 환산한 값입니다.",
           ...(finite(recommendationLimit) ? [`감지 기준을 추천할 때 오호출 상한은 시간당 ${recommendationLimit}회입니다.`] : [])]},
-        settings: {title: settingsLabel, paragraphs: [
+        settings: {title: settingsLabel, models: compareSettings ? recordedCriteria : [], paragraphs: [
           "앞 숫자는 감지 점수의 임계값이고, 뒤의 횟수는 그 점수 이상이 연속으로 나와야 하는 횟수입니다.",
           ...(compareSettings
-            ? ["모델마다 저장된 평가 점수에 여러 감지 기준을 적용해 비교했습니다.", ...selection]
+            ? ["모델마다 저장된 평가 점수에 여러 감지 기준을 적용해 비교했습니다.", ...selection,
+              ...(!recordedCriteria.length ? ["이 평가에는 추천 기준이 기록되지 않았습니다."] : [])]
             : ["이 보고서의 성능 평가에 사용한 설정입니다."])
         ]}
       };
