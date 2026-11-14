@@ -24,7 +24,7 @@ function browser(tuples, {deferPages = false, pageFailure = false, indexFailure 
     setAttribute(name, value) { this.attributes[name] = value; }
   }
   for (const match of (staticViewer ? staticHtml : pagedHtml).matchAll(/id="([^"]+)"/g)) elements.set(match[1], new Element());
-  for (const id of ["summary", "conditions", "responses", "scores", "recommendations", "targetComparison"]) elements.get(id).tBodies = [new Element("tbody")];
+  for (const id of ["storySummary", "conditions", "responses", "scores"]) elements.get(id).tBodies = [new Element("tbody")];
   for (const value of ["none", "moderate", "strong"]) { const option = new Element("option"); option.value = value; elements.get("reverb").append(option); }
   elements.get("reverb").value = "none"; elements.get("category").value = "all";
   const row = (tuple, sourceIndex) => ({sample_id: tuple[0], path: `audio/${sourceIndex}.wav`, sha256: `sha${sourceIndex}`, kind: tuple[1], category: tuple[2], snr_db: tuple[3], reverb_condition: tuple[4], original_id: tuple[5], original_order: tuple[6], duration_s: tuple[7], calls: tuple[1] === "positive" ? [{start_s: 2, end_s: 3}] : [], noise_eval_label: "시험 배경", results: {mean: {success: true, false_activations: 0, max_score: 0.999, clean_score_drop: 0.01, latency_s: 0.08}}});
@@ -134,7 +134,7 @@ const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "posi
     b.elements.get("results-tab-audio").onclick();
     await b.elements.get("start").onclick(); await b.helper.move(127, true);
     const source = b.elements.get("audio").src, pauses = b.elements.get("audio").pauses, calls = b.calls.length;
-    b.elements.get("results-tab-models").onclick(); b.elements.get("model-tab-targets").onclick();
+    b.elements.get("results-tab-models").onclick();
     b.elements.get("results-tab-conditions").onclick(); b.elements.get("results-tab-audio").onclick();
     assert.equal(b.helper.state().continuous, true); assert.equal(b.helper.state().index, 127);
     assert.equal(b.elements.get("audio").src, source); assert.equal(b.elements.get("audio").pauses, pauses);
@@ -258,14 +258,17 @@ const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "posi
     assert.deepEqual(b.calls, ["viewer_v1_fix/viewer-index.json", "http://127.0.0.1/results/bora/viewer_v1_fix/clips/page-000000.json"]);
     assert.equal(b.elements.get("audio").src, "audio/0.wav");
   });
-  await test("reported model counts and conditional statistics remain unchanged", async () => {
+  await test("reported model results and measured noise conditions remain available", async () => {
     const report = {wakeword: "보라야", selected_candidate: "member2", candidate_definitions: [{id: "member1", kind: "single"}, {id: "member2", kind: "single"}], models: [{id: "member2", rank: 1, kind: "single", primary: {successes: 42, calls: 45, recall: 42 / 45, latency_p95_s: 0.2}, clean: {recall: 1}, noise_cell_mean: 0.9, negative: {events: 3, hours: 30, fa_per_hour: 0.1}, conditions: {"environment:10": {successes: 10, calls: 12, recall: 10 / 12}}, reverb_conditions: {strong: {conditions: {"music:5": {successes: 7, calls: 8, recall: 7 / 8}}}}}], candidate_adoptions: {member2: {passed: false, reasons: ["FA/hour target failed or unmeasured"]}}};
     const frozen = JSON.stringify(report);
     const b = browser([tuple(0)], {report}); await b.helper.boot();
-    const summary = b.elements.get("summary").tBodies[0].children[0].children;
-    assert.equal(summary[1].textContent, "모델 2"); assert.equal(summary[2].textContent, "93.33%\n42 / 45회");
-    assert.equal(summary[5].textContent, "0.100회\n3회 / 30.00시간"); assert.equal(summary[7].textContent, "미달");
-    assert.equal(summary[6].textContent, "0.20초");
+    const comparison = b.elements.get("storySummary").tBodies[0].children[0].children;
+    assert.equal(comparison[0].textContent, "모델 2");
+    assert.match(comparison[1].children.map(node => node.textContent).join(" "), /93.33%/);
+    assert.equal(comparison[4].textContent, "0.100회");
+    assert.match(comparison[4].children.map(node => node.textContent).join(" "), /3회.*30/);
+    assert.equal(comparison[5].textContent, "0.20초");
+    assert.equal(comparison[8].textContent, "미달");
     assert.equal(b.elements.get("conditions").tBodies[0].children.length, 3);
     assert.equal(b.elements.get("conditions").tBodies[0].children[0].children[3].textContent, "83.33%\n10 / 12회");
     b.elements.get("condition-reverb").value = "strong"; b.elements.get("condition-reverb").onchange();

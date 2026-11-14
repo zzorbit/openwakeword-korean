@@ -10,33 +10,39 @@
 <button id="results-tab-criteria" type="button" role="tab" aria-controls="results-panel-criteria" aria-selected="false" tabindex="-1">기준</button>
 </nav>
 <div class="dashboard-content">
-<section id="results-panel-models" class="workspace-panel models-panel" role="tabpanel" tabindex="0" aria-labelledby="results-tab-models">
-<div class="story-overview">
-<div class="overview-controls"><label for="overview-source" class="sr-only">비교할 결과</label><select id="overview-source" aria-label="비교할 결과"></select><label for="overview-model" class="sr-only">요약을 볼 모델</label><select id="overview-model" aria-label="요약을 볼 모델"></select></div>
-<table id="storySummary" class="story-summary"><thead><tr><th scope="col">모델</th><th scope="col">조용할 때</th><th scope="col">강한 소음·울림</th><th scope="col">오호출 / 시간</th><th scope="col">감지 기준 · 연속</th></tr></thead><tbody></tbody></table><dl id="storySummaryMetrics" class="story-summary-metrics"></dl><p id="overview-note" class="table-note"></p>
-</div><details class="result-full-details"><summary>상세 결과</summary><div class="result-detail-content">
-<nav class="model-tabs" role="tablist" aria-label="모델 비교 항목">
-<button id="model-tab-recommendations" type="button" role="tab" aria-controls="model-panel-recommendations" aria-selected="true">추천 감지 설정</button>
-<button id="model-tab-evaluation" type="button" role="tab" aria-controls="model-panel-evaluation" aria-selected="false" tabindex="-1">평가 당시 성능</button>
-<button id="model-tab-targets" type="button" role="tab" aria-controls="model-panel-targets" aria-selected="false" tabindex="-1">목표 비교</button>
-</nav>
-<div id="model-panel-recommendations" class="model-panel" role="tabpanel" tabindex="0" aria-labelledby="model-tab-recommendations">
-<section id="runtimeRecommendations" aria-labelledby="recommendation-title" hidden>
-<h2 id="recommendation-title" class="sr-only">모델별 추천 감지 설정</h2>
-<div class="scroll"><table id="recommendations"><thead><tr><th>모델</th><th>추천 여부</th><th>감지 기준</th><th>연속 감지</th><th>조용할 때</th><th>강소음·울림 평균</th><th>최약 조건</th><th>시간당 오작동</th><th>기존 평가 목표</th></tr></thead><tbody></tbody></table></div>
-<details class="recommendation-info"><summary>추천·평가 안내</summary><div class="disclosure-content"><p id="recommendationScope" class="section-hint"></p><p id="recommendationNote" class="table-note"></p><details id="recommendationFailures" hidden><summary>충족하지 못한 기준</summary><div id="recommendationReasons" class="table-note"></div></details></div></details>
-</section></div>
-<div id="model-panel-evaluation" class="model-panel" role="tabpanel" tabindex="0" aria-labelledby="model-tab-evaluation" hidden>
-<h2 id="summary-title" class="sr-only">모델별 성능</h2>
-<div class="scroll"><table id="summary"><thead><tr><th>순위</th><th>모델</th><th>종합 성공률</th><th>조용할 때</th><th>소음 평균</th><th>시간당 오작동</th><th title="호출이 끝난 뒤, 감지된 호출의 95%가 이 시간 안에 반응했습니다.">반응 시간</th><th>목표 충족</th></tr></thead><tbody></tbody></table></div>
-<details class="evaluation-info"><summary>집계 기준</summary><div class="disclosure-content"><p id="baselineRuntime" class="table-note" hidden></p><p id="candidateStatus" class="selected-model"></p><p id="denominators" class="table-note"></p></div></details>
+<section id="results-panel-models" class="workspace-panel models-panel" role="tabpanel" aria-labelledby="results-tab-models">
+<div class="overview-controls">
+<label for="overview-source" class="sr-only">비교할 결과</label><select id="overview-source"></select>
+<label for="overview-model" class="sr-only">비교할 모델</label><select id="overview-model"></select>
 </div>
-<div id="model-panel-targets" class="model-panel" role="tabpanel" tabindex="0" aria-labelledby="model-tab-targets" hidden>
-<div class="panel-heading"><h2>목표와 결과 비교</h2><div id="targetControls" class="controls"><label>모델 <select id="target-model"></select></label></div></div>
-<p id="criteriaSummary" class="table-note"></p><p id="criteriaNote" class="table-note"></p><div id="candidateReasons" class="reason-list"></div>
-<div class="scroll"><table id="targetComparison"><thead><tr><th>항목</th><th>목표</th><th>실제 결과</th><th>판정</th></tr></thead><tbody></tbody></table></div>
-</div></div></details></section>
-<section id="results-panel-criteria" class="workspace-panel criteria-panel" role="tabpanel" tabindex="0" aria-labelledby="results-tab-criteria" hidden><h2 class="sr-only">감지 설정 추천 기준</h2><dl id="searchCriteria" class="search-criteria"></dl><p id="searchCriteriaNote" class="table-note"></p></section>
+<div class="scroll model-comparison" role="region" aria-label="모델 비교 결과" tabindex="0">
+<table id="storySummary" class="story-summary">
+<thead><tr>
+<th scope="col">모델</th>
+<th scope="col">조용할 때</th>
+<th scope="col">강한 소음·울림 평균</th>
+<th scope="col">최약 조건</th>
+<th scope="col">시간당 오호출</th>
+<th scope="col" title="호출을 마친 시점을 기준으로 감지된 호출의 95%가 이 시간 안에 반응했습니다.">반응 시간</th>
+<th scope="col">감지 기준</th>
+<th scope="col">연속 감지</th>
+<th scope="col">기존 평가 목표</th>
+</tr></thead>
+<tbody></tbody>
+</table>
+<dl id="storySummaryMetrics" class="story-summary-metrics"></dl>
+<p id="overview-note" class="table-note"></p>
+</div>
+</section>
+<section id="results-panel-criteria" class="workspace-panel criteria-panel" role="tabpanel" tabindex="0" aria-labelledby="results-tab-criteria" hidden>
+<h2>감지 설정 추천 기준</h2>
+<dl id="searchCriteria" class="search-criteria"></dl>
+<p id="searchCriteriaNote" class="table-note"></p>
+<div class="evaluation-criteria" hidden>
+<h2>기존 평가 목표</h2>
+<dl id="evaluationCriteria" class="search-criteria"></dl>
+</div>
+</section>
 <section id="results-panel-conditions" class="workspace-panel conditions-panel" role="tabpanel" tabindex="0" aria-labelledby="results-tab-conditions" hidden>
 <div class="panel-heading"><h2 id="conditions-title">소음 크기별 성공률</h2><div class="controls"><label>모델 <select id="condition-model"></select></label><label>공간 울림 <select id="condition-reverb"></select></label><label class="condition-snr-control">소음 크기 <select id="condition-snr"><option value="20">아주 작음</option><option value="15">작음</option><option value="10" selected>중간</option><option value="5">큼</option><option value="0">목소리와 같음</option></select></label></div><details class="conditions-help"><summary>표 안내</summary><div class="disclosure-content"><p id="condition-clean" class="clean-result"></p><p class="table-note">각 칸은 성공률과 감지 횟수 / 시험 횟수입니다. 소음 크기는 목소리를 기준으로 표시합니다.</p></div></details></div>
 
