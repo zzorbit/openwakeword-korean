@@ -60,12 +60,12 @@
     if (typeof window !== "undefined" && window.parent && window.parent !== window) document.body?.classList?.add("embedded");
     bindTabs("results", resultsTabs, dashboard);
     dashboard(dashboardView);
-    for (const view of ["player", "reactions", "settings"]) {
+    for (const view of ["player", "reactions"]) {
       const tab = $(`audio-view-${view}`);
       if (tab) tab.onclick = () => {
         if (view !== "player") resultClipPicker?.close();
         $("results-panel-audio")?.setAttribute?.("data-audio-view", view);
-        for (const name of ["player", "reactions", "settings"]) $(`audio-view-${name}`)?.setAttribute?.("aria-pressed", String(name === view));
+        for (const name of ["player", "reactions"]) $(`audio-view-${name}`)?.setAttribute?.("aria-pressed", String(name === view));
       };
     }
   }
@@ -492,57 +492,141 @@
     if (clip.kind === "negative") return `호출어 없는 음원 · ${noiseLabel(clip.category)}`;
     return `${clip.original_order ? `음성 ${clip.original_order}` : "호출어 음성"} · ${noiseLabel(clip.category)}`;
   }
-  function mountClipPicker(move, labelAt, pageSize) {
+  function buildClipFolders(rows, describe = row => row) {
+    const root = new Map();
+    const reverbOrder = ["none", "moderate", "strong"];
+    const orderOf = (values, value) => values.includes(value) ? values.indexOf(value) : values.length;
+    const group = (parent, key, label, order, continuous = false) => {
+      if (!parent.has(key)) parent.set(key, {order, children: new Map(), refs: [], view: {label, continuous}});
+      return parent.get(key);
+    };
+    let preferred, preferredOrder = Infinity;
+    rows.forEach((row, index) => {
+      const clip = describe(row);
+      const {kind, category, original_order, original_id, noise_section} = clip;
+      const reverb = clip.reverb_condition || "none";
+      let leaf;
+      if (kind === "negative") {
+        const negative = group(root, "negative", "호출어 없는 음원", categories.length + 2);
+        leaf = group(negative.children, category, noiseLabel(category), orderOf(categories, category));
+      } else if (kind === "positive" && category === "clean") {
+        const clean = group(root, "clean", "배경음 없는 호출어", categories.length + 1);
+        leaf = group(clean.children, reverb, reverbLabel(reverb), orderOf(reverbOrder, reverb));
+      } else if (kind === "positive") {
+        const noise = group(root, "noise:" + category, noiseLabel(category), orderOf(categories, category));
+        const room = group(noise.children, reverb, reverbLabel(reverb), orderOf(reverbOrder, reverb));
+        const snr = clip.snr_db == null || clip.snr_db === "" ? NaN : Number(clip.snr_db);
+        const label = Number.isFinite(snr) ? snrLabel(snr) : "소음 크기 미기록";
+        leaf = group(room.children, snr, label, Number.isFinite(snr) ? -snr : Infinity, true);
+        const categoryOrder = orderOf(categories, category);
+        if (reverb === "none" && snr === 10 && categoryOrder < preferredOrder) {
+          preferred = leaf.view; preferredOrder = categoryOrder;
+        }
+      } else return;
+      leaf.refs.push({index, order: Number(original_order) || 0, original: String(original_id ?? ""), section: Number(noise_section) || 0});
+    });
+    function finish(groups) {
+      return [...groups.values()].sort((a, b) => a.order - b.order).map(({children, refs, view}) => {
+        if (children.size) {
+          view.folders = finish(children);
+          view.count = view.folders.reduce((total, folder) => total + folder.count, 0);
+        } else {
+          refs.sort((a, b) => a.order - b.order || a.original.localeCompare(b.original) || a.section - b.section || a.index - b.index);
+          view.clips = refs.map(row => row.index);
+          view.count = view.clips.length;
+        }
+        return view;
+      });
+    }
+    const folders = finish(root);
+    let first = folders[0];
+    while (first?.folders) first = first.folders[0];
+    return {folders, defaultFolder: preferred || first || null};
+  }
+  function mountClipPicker(library, selectClip, labelAt, pageSize = 100) {
     const listening = window.KowwListening, container = $("result-clip-picker");
     if (!listening?.createPicker || !container) return null;
-    const pager = $("clip-list-pager"), previous = $("clip-list-prev"), next = $("clip-list-next");
-    const play = $("resume"), controls = play.parentElement;
-    let page = 0, renderedPage = -1, length = 0, selected = -1, extraLabel = "";
+    const list = $("result-clip-picker-list"), paths = new Map();
+    function indexPaths(folders, trail = []) {
+      for (const folder of folders) {
+        const path = [...trail, folder];
+        paths.set(folder, path);
+        if (folder.folders) indexPaths(folder.folders, path);
+      }
+    }
+    indexPaths(library.folders);
+    let trail = [], page = null, selectedFolder = null, selectedClip = -1, entries = [];
     const picker = listening.createPicker({
       container, button: $("result-clip-picker-button"), label: $("result-clip-picker-label"),
-      popup: $("result-clip-picker-popup"), list: $("result-clip-picker-list"),
-      onSelect: offset => move(page * pageSize + offset),
+      popup: $("result-clip-picker-popup"), list,
+      onSelect: offset => entries[offset].run(),
+      onOpenChange: (open, request) => {
+        if (!open) return;
+        trail = []; page = null; render(); picker.reveal(request);
+      },
     });
     resultClipPicker = picker;
     container.hidden = false;
     $("clipTitle").hidden = true;
     $("results-panel-audio").classList.add("listen-voice-compact");
-    pager.hidden = true;
-    controls.after(pager);
-    listening.enhance($("audio"), controls, {
+    const play = $("resume");
+    listening.enhance($("audio"), play.parentElement, {
       play, previous: $("prev"), next: $("next"), volume: $("result-volume"),
     });
 
-    function render() {
-      const start = page * pageSize, end = Math.min(length, start + pageSize);
-      const localIndex = !extraLabel && selected >= start && selected < end ? selected - start : -1;
-      const display = extraLabel || (length ? labelAt(selected) : "선택한 조건의 음원 없음");
-      if (renderedPage !== page) {
-        const entries = [];
-        for (let position = start; position < end; position++) {
-          const label = labelAt(position);
-          entries.push({label, fullLabel: `${count(position + 1)}번째 음원 · ${label}`});
-        }
-        picker.setItems(entries, localIndex, display);
-        renderedPage = page;
-      } else {
-        picker.setSelected(localIndex, display);
-      }
-      pager.hidden = length <= pageSize;
-      previous.disabled = page === 0;
-      next.disabled = end >= length;
-      $("clip-list-position").textContent = `${count(start + 1)}–${count(end)} / ${count(length)}`;
-      if (extraLabel) $("queue").textContent = "추가 음원";
+    function selectedEntry() {
+      const folder = trail.at(-1);
+      return folder && folder === selectedFolder ? entries.findIndex(entry => entry.position === selectedClip) : -1;
     }
-    previous.onclick = () => { if (!previous.disabled) { page--; render(); } };
-    next.onclick = () => { if (!next.disabled) { page++; render(); } };
-    return (total, index, extra = "", reset = false) => {
-      if (reset || total !== length) renderedPage = -1;
-      if (reset || total !== length || index !== selected) page = Math.floor(index / pageSize);
-      length = total;
-      selected = index;
-      extraLabel = extra;
-      render();
+    function selectedLabel() {
+      return selectedFolder ? labelAt(selectedFolder.clips[selectedClip]) : "시험 음원 없음";
+    }
+    function openFolder(folder, activePage = null) {
+      trail = paths.get(folder); page = activePage; render();
+    }
+    function goUp() {
+      const previous = page ?? trail.at(-1);
+      if (page === null) trail = trail.slice(0, -1);
+      page = null; render(previous);
+    }
+    function render(restore = null) {
+      const folder = trail.at(-1);
+      const pathLabel = trail.map(part => part.label).join(" › ");
+      list.setAttribute("aria-label", pathLabel || "평가 음원 폴더");
+      entries = [];
+      if (folder) entries.push({kind: "back", label: "상위 폴더", detailLabel: folder.label,
+        fullLabel: "상위 폴더 · 현재 " + pathLabel, run: goUp});
+      const folders = folder ? folder.folders : library.folders;
+      if (folders) {
+        for (const child of folders) entries.push({kind: "folder", label: child.label, fullLabel: `폴더 · ${child.label}`,
+          badge: `${count(child.count)}개`, target: child, run: () => openFolder(child)});
+        if (!folder && selectedFolder) entries.push({kind: "folder", label: "현재 음원 폴더", detailLabel: selectedFolder.label,
+          fullLabel: `현재 음원 폴더 · ${paths.get(selectedFolder).map(part => part.label).join(" › ")}`,
+          run: () => openFolder(selectedFolder, selectedFolder.count > pageSize ? Math.floor(selectedClip / pageSize) : null)});
+      } else if (folder.count > pageSize && page === null) {
+        for (let start = 0; start < folder.count; start += pageSize) {
+          const range = start / pageSize;
+          const label = `${count(start + 1)}–${count(Math.min(folder.count, start + pageSize))}번`;
+          entries.push({kind: "folder", label, target: range, run: () => { page = range; render(); }});
+        }
+      } else {
+        const start = (page ?? 0) * pageSize;
+        const end = Math.min(folder.count, start + pageSize);
+        for (let position = start; position < end; position++) {
+          const label = labelAt(folder.clips[position]);
+          entries.push({kind: "clip", label, fullLabel: `${count(position + 1)}번째 음원 · ${label}`, position,
+            voiceNumber: `${count(position + 1)}번`, run: () => selectClip(folder, position)});
+        }
+      }
+      const selected = selectedEntry();
+      const active = restore === null ? selected : entries.findIndex(entry => entry.target === restore);
+      const options = entries.map(entry => ({...entry, keepOpenOnSelect: entry.kind !== "clip"}));
+      picker.setItems(options, selected, selectedLabel(), {keepOpen: true, activeIndex: Math.max(0, active)});
+    }
+    render();
+    return (folder, index) => {
+      selectedFolder = folder; selectedClip = index;
+      picker.setSelected(selectedEntry(), selectedLabel());
     };
   }
   initDashboard();
@@ -551,7 +635,7 @@
     if (event.key === "Escape") document.querySelectorAll?.("details[open]")?.forEach(detail => { detail.open = false; });
   });
   const api = {modelLabel, noiseLabel, snrLabel, reverbLabel, renderSummary, renderConditions, renderResponses, clipLabel,
-    dashboard, mountClipPicker, dashboardState: () => ({view: dashboardView})};
+    dashboard, buildClipFolders, mountClipPicker, dashboardState: () => ({view: dashboardView})};
   if (typeof window !== "undefined") window.KowwResultsUI = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })();

@@ -9,8 +9,9 @@ const staticHtml = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/
 const flush = async () => { for (let count = 0; count < 8; count++) await new Promise(resolve => setImmediate(resolve)); };
 const tests = [];
 async function test(name, run) { await run(); tests.push(name); }
-function browser(tuples, {deferPages = false, pageFailure = false, indexFailure = false, invalidIndex = false, summaryFailure = false, autoBoot = false, readinessHook = true, staticViewer = false, viewportHeight, playback, enhance, createPicker, indexPath = "viewer-index.json", report = {wakeword: "보라야", models: []}} = {}) {
+function browser(tuples, {deferPages = false, pageFailure = false, indexFailure = false, invalidIndex = false, summaryFailure = false, autoBoot = false, readinessHook = true, staticViewer = false, playback, indexPath = "viewer-index.json", report = {wakeword: "보라야", models: []}} = {}) {
   const elements = new Map(), calls = [], deferred = new Map(), listeners = {}, parentWindow = {}, readiness = [];
+  const picker = {folder: null, index: -1};
   class Element {
     constructor(tag = "div") { this.tagName = tag; this.children = []; this.value = ""; this.textContent = ""; this.disabled = false; this.src = ""; this.plays = 0; this.pauses = 0; this.attributes = {}; this.paused = true; this.ended = false; this.volume = 1; this.playbackRate = 1; }
     append(...nodes) { this.children.push(...nodes); }
@@ -25,10 +26,7 @@ function browser(tuples, {deferPages = false, pageFailure = false, indexFailure 
   }
   const html = staticViewer ? staticHtml : pagedHtml;
   for (const match of html.matchAll(/id="([^"]+)"/g)) elements.set(match[1], new Element());
-  for (const [tag, id] of html.matchAll(/<details\b[^>]*id="([^"]+)"[^>]*>/g)) elements.get(id).open = /\sopen(?:\s|=|>)/.test(tag);
   for (const id of ["storySummary", "conditions", "responses"]) elements.get(id).tBodies = [new Element("tbody")];
-  for (const value of ["none", "moderate", "strong"]) { const option = new Element("option"); option.value = value; elements.get("reverb").append(option); }
-  elements.get("reverb").value = "none"; elements.get("category").value = "all";
   const row = (tuple, sourceIndex) => ({sample_id: tuple[0], path: `audio/${sourceIndex}.wav`, sha256: `sha${sourceIndex}`, kind: tuple[1], category: tuple[2], snr_db: tuple[3], reverb_condition: tuple[4], original_id: tuple[5], original_order: tuple[6], duration_s: tuple[7], calls: tuple[1] === "positive" ? [{start_s: 2, end_s: 3}] : [], noise_eval_label: "시험 배경", results: {mean: {success: true, false_activations: 0, max_score: 0.999, clean_score_drop: 0.01, latency_s: 0.08}}});
   const page = number => ({start: number * 128, clips: tuples.slice(number * 128, (number + 1) * 128).map((tuple, offset) => row(tuple, number * 128 + offset))});
   const context = vm.createContext({document: {getElementById: id => elements.get(id), createElement: tag => new Element(tag)}, console, fetch: async url => {
@@ -42,31 +40,40 @@ function browser(tuples, {deferPages = false, pageFailure = false, indexFailure 
   context.window = context; context.location = new URL("http://127.0.0.1/results/bora/"); context.URL = URL; context.KOWW_RESULTS_TEST = !autoBoot;
   if (readinessHook) context.KowwChapterReady = {
     loading: () => readiness.push({status: "loading"}),
-    ready: () => readiness.push({status: "ready", title: elements.get("clipTitle").textContent, source: elements.get("audio").src, listCount: elements.get("item").children.length}),
+    ready: () => readiness.push({status: "ready", title: elements.get("clipTitle").textContent, source: elements.get("audio").src,
+      listCount: picker.folder?.clips.length ?? 0}),
     fail: message => readiness.push({status: "failed", message}),
   };
-  if (enhance) context.KowwListening = {enhance, createPicker};
   elements.get("resume").parentElement = {after() {}};
   elements.get("results-panel-audio").classList = {add() {}};
-  context.innerHeight = viewportHeight;
   context.parent = parentWindow; context.addEventListener = (name, listener) => { listeners[name] = listener; };
   context.KOWW_RESULTS = {report, clips: staticViewer ? tuples.map(row) : undefined, viewer: {schema_version: 1, index_path: indexPath, page_size: 128}};
   vm.runInContext(presentation, context);
+  context.KowwResultsUI.mountClipPicker = (library, choose, labelAt, pageSize = 100) => {
+    Object.assign(picker, {library, choose, labelAt, pageSize});
+    return (folder, index) => Object.assign(picker, {folder, index});
+  };
   if (summaryFailure) context.KowwResultsUI.renderSummary = () => { throw new Error("결과 요약 오류"); };
   vm.runInContext(staticViewer ? staticScript : script, context);
-  return {elements, calls, deferred, readiness, helper: context.KowwResults,
-    resize(height) { context.innerHeight = height; listeners.resize?.(); },
+  return {elements, calls, deferred, readiness, picker, helper: context.KowwResults,
     message: extra => listeners.message({origin: context.location.origin, source: parentWindow, data: {type: "koww:pause"}, ...extra})};
 }
-const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "positive", ["environment", "music", "competing_speech"][index % 3], 10, "none", `original_${Math.floor(index / 3)}`, Math.floor(index / 3) + 1, 4]; for (const [key, field] of Object.entries(overrides)) value[Number(key)] = field; return value; };
+const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "positive", "environment", 10, "none", `original_${Math.floor(index / 3)}`, Math.floor(index / 3) + 1, 4]; for (const [key, field] of Object.entries(overrides)) value[Number(key)] = field; return value; };
+const allLeaves = folders => Array.from(folders).flatMap(folder => folder.folders ? allLeaves(folder.folders) : [folder]);
+const folderFor = (viewer, sourceIndex) => allLeaves(viewer.picker.library.folders).find(folder => folder.clips.includes(sourceIndex));
+const chooseClip = (viewer, sourceIndex) => {
+  const folder = folderFor(viewer, sourceIndex);
+  assert.ok(folder, `no folder found for clip ${sourceIndex}`);
+  return viewer.picker.choose(folder, folder.clips.indexOf(sourceIndex));
+};
 
 (async () => {
-  await test("paged chapter readiness waits for the initial detail, filters and list without playing audio", async () => {
+  await test("paged chapter readiness waits for the initial detail and folder without playing audio", async () => {
     const b = browser([tuple(0), tuple(1)], {deferPages: true});
     const boot = b.helper.boot(); await flush();
     assert.deepEqual(b.readiness, [{status: "loading"}], "metadata alone cannot finish the chapter transition");
     assert.equal(b.elements.get("audio").plays, 0);
-    assert.equal(b.elements.get("item").children.length, 2);
+    assert.equal(b.picker.library.defaultFolder.clips.length, 2);
     assert.equal(b.elements.get("playState").textContent, "");
     b.deferred.get(0)(); await boot;
     assert.deepEqual(b.readiness.map(value => value.status), ["loading", "ready"]);
@@ -76,11 +83,19 @@ const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "posi
     assert.equal(b.elements.get("playState").textContent, "");
     await b.helper.move(1); assert.equal(b.readiness.length, 2, "later detail browsing does not restart chapter readiness");
   });
-  await test("an empty initial results filter is ready without fetching a detail page", async () => {
-    const b = browser([tuple(0, {1: "negative"})]); await b.helper.boot();
+  await test("an empty result is ready without fetching a detail page", async () => {
+    const b = browser([]); await b.helper.boot();
     assert.deepEqual(b.readiness.map(value => value.status), ["loading", "ready"]);
     assert.equal(b.calls.length, 1); assert.equal(b.elements.get("audio").plays, 0);
     assert.match(b.readiness[1].title, /오디오가 없습니다/);
+  });
+  await test("a report with only negative recordings opens the first recorded clip", async () => {
+    const b = browser([tuple(0, {1: "negative"})]); await b.helper.boot();
+    assert.deepEqual(b.readiness.map(value => value.status), ["loading", "ready"]);
+    assert.equal(b.readiness[1].source, "audio/0.wav");
+    assert.match(b.readiness[1].title, /호출어 없는 음원/);
+    assert.equal(b.picker.folder.continuous, false);
+    assert.equal(b.elements.get("audio").plays, 0);
   });
   await test("a cancelled first detail cannot announce a completed results chapter", async () => {
     const b = browser([tuple(0)], {deferPages: true});
@@ -115,22 +130,21 @@ const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "posi
       assert.equal(b.elements.has("condition-clean"), false);
     }
   });
-  await test("112137 clips load one detail page and keep selectors bounded", async () => {
+  await test("112137 clips load only the first detail page and remain reachable from folders", async () => {
     const tuples = Array.from({length: 112137}, (_, index) => tuple(index));
     for (let index = 110000; index < tuples.length; index++) tuples[index] = tuple(index, {1: "negative", 2: "environment"});
     const b = browser(tuples); await b.helper.boot();
     assert.equal(b.helper.state().queueLength, 110000);
     assert.deepEqual(b.calls, ["viewer-index.json", "http://127.0.0.1/results/bora/clips/page-000000.json"]);
-    assert.equal(b.elements.get("item").children.length, 100);
-    assert.equal(b.elements.get("extra").children.length, 100);
+    assert.equal(b.picker.pageSize, 100);
+    assert.equal(allLeaves(b.picker.library.folders).reduce((total, folder) => total + folder.clips.length, 0), tuples.length);
   });
   await test("continuous playback crosses detail and selector pages without skipping audio", async () => {
     const b = browser(Array.from({length: 400}, (_, index) => tuple(index))); await b.helper.boot();
     await b.elements.get("start").onclick(); await b.helper.move(127, true); await b.elements.get("audio").onended();
     assert.equal(b.helper.state().index, 128); assert.equal(b.elements.get("audio").src, "audio/128.wav");
-    assert.equal(b.elements.get("item").children.length, 100);
-    assert.equal(b.elements.get("item").value, "128");
-    assert.equal(b.elements.get("clipTitle").textContent, "음성 43 · 다른 사람 말소리");
+    assert.equal(b.picker.index, 128);
+    assert.equal(b.elements.get("clipTitle").textContent, "음성 43 · 환경소음");
   });
   await test("dashboard navigation keeps continuous audio and the current queue position", async () => {
     const b = browser(Array.from({length: 400}, (_, index) => tuple(index))); await b.helper.boot();
@@ -144,46 +158,23 @@ const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "posi
     assert.equal(b.calls.length, calls);
     await b.elements.get("audio").onended(); assert.equal(b.helper.state().index, 128);
   });
-  await test("compact listening subviews preserve actual playback, filters and the current result", async () => {
+  await test("compact listening subviews preserve actual playback and the current folder", async () => {
     const b = browser(Array.from({length: 400}, (_, index) => tuple(index))); await b.helper.boot();
     await b.elements.get("start").onclick(); await b.helper.move(127, true);
     const source = b.elements.get("audio").src, pauses = b.elements.get("audio").pauses, calls = b.calls.length;
     b.elements.get("audio-view-reactions").onclick();
     assert.equal(b.elements.get("results-panel-audio").attributes["data-audio-view"], "reactions");
-    b.elements.get("audio-view-settings").onclick(); b.elements.get("audio-view-player").onclick();
+    b.elements.get("audio-view-player").onclick();
     assert.equal(b.elements.get("audio-view-player").attributes["aria-pressed"], "true");
     assert.equal(b.helper.state().continuous, true); assert.equal(b.helper.state().index, 127);
     assert.equal(b.elements.get("audio").src, source); assert.equal(b.elements.get("audio").pauses, pauses); assert.equal(b.calls.length, calls);
     await b.elements.get("audio").onended(); assert.equal(b.helper.state().index, 128);
   });
-  await test("audio filters start closed and preserve their open state and playback across responsive views", async () => {
-    for (const staticViewer of [false, true]) {
-      const b = browser([tuple(0), tuple(1)], {viewportHeight: 680, staticViewer});
-      if (b.helper) await b.helper.boot();
-      const audio = b.elements.get("audio"), filter = b.elements.get("audio-filter-details");
-      assert.equal(filter.open, false);
-      assert.equal(b.elements.has("clip-select-details"), false);
-      await b.elements.get("resume").onclick();
-      const source = audio.src, calls = b.calls.length;
-      filter.open = true;
-      for (const height of [404, 680, 320]) {
-        b.resize(height);
-        b.elements.get("audio-view-settings").onclick();
-        assert.equal(filter.open, true);
-        b.elements.get("audio-view-player").onclick();
-        assert.equal(audio.paused, false);
-        assert.equal(audio.src, source);
-        assert.equal(b.calls.length, calls);
-      }
-      filter.open = false; b.resize(680);
-      assert.equal(filter.open, false);
-    }
-  });
-  await test("only a same-origin exact parent can pause audio without resetting its queue or filters", async () => {
+  await test("only a same-origin exact parent can pause audio without resetting the active folder", async () => {
     const b = browser(Array.from({length: 400}, (_, index) => tuple(index))); await b.helper.boot();
     await b.elements.get("start").onclick(); await b.helper.move(127, true);
     const audio = b.elements.get("audio"), source = audio.src, pauses = audio.pauses, calls = b.calls.length;
-    const filters = ["snr", "category", "reverb"].map(id => b.elements.get(id).value);
+    const folder = b.picker.folder;
     b.message({origin: "https://unrelated.example"});
     b.message({source: {}});
     b.message({data: {type: "something-else"}});
@@ -192,7 +183,7 @@ const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "posi
     b.message();
     assert.equal(audio.pauses, pauses + 1); assert.equal(b.helper.state().continuous, false);
     assert.equal(b.helper.state().index, 127); assert.equal(audio.src, source);
-    assert.deepEqual(["snr", "category", "reverb"].map(id => b.elements.get(id).value), filters);
+    assert.equal(b.picker.folder, folder);
     assert.equal(b.calls.length, calls);
     await audio.onended(); assert.equal(b.helper.state().index, 127);
     await b.elements.get("resume").onclick(); assert.equal(b.helper.state().continuous, true);
@@ -200,14 +191,13 @@ const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "posi
   });
   await test("static exports also retain the current clip when their parent pauses continuous listening", async () => {
     const b = browser(Array.from({length: 9}, (_, index) => tuple(index)), {staticViewer: true});
-    await b.elements.get("start").onclick();
-    b.elements.get("item").value = "2"; b.elements.get("item").onchange(); await flush();
+    await chooseClip(b, 2); await b.elements.get("resume").onclick();
     const audio = b.elements.get("audio"), source = audio.src, pauses = audio.pauses;
     b.message({origin: "https://unrelated.example"}); assert.equal(audio.pauses, pauses);
     b.message(); assert.equal(audio.pauses, pauses + 1);
-    audio.onended(); assert.equal(audio.src, source); assert.equal(b.elements.get("item").value, "2");
+    audio.onended(); assert.equal(audio.src, source); assert.equal(b.picker.index, 2);
     await b.elements.get("resume").onclick(); assert.equal(audio.src, source);
-    audio.onended(); await flush(); assert.notEqual(audio.src, source); assert.equal(b.elements.get("item").value, "3");
+    audio.onended(); await flush(); assert.notEqual(audio.src, source); assert.equal(b.picker.index, 3);
     assert.equal(b.calls.length, 0);
   });
   await test("only two detail pages are retained with LRU eviction", async () => {
@@ -230,24 +220,28 @@ const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "posi
     const old = b.helper.move(128); const newer = b.helper.move(256); await flush();
     b.deferred.get(2)(); await newer; b.deferred.get(1)(); await old;
     assert.equal(b.elements.get("audio").src, "audio/256.wav");
-    assert.equal(b.elements.get("clipTitle").textContent, "음성 86 · 음악·전자음");
+    assert.equal(b.elements.get("clipTitle").textContent, "음성 86 · 환경소음");
   });
-  await test("filter changes reject stale audio, and all selected conditions remain available", async () => {
+  await test("choosing a different folder ignores a stale audio response and stops autoplay", async () => {
     const tuples = Array.from({length: 400}, (_, index) => tuple(index));
     tuples[256][3] = 5; tuples[256][4] = "strong";
     const b = browser(tuples, {deferPages: true}); const boot = b.helper.boot(); await flush(); b.deferred.get(0)(); await boot;
-    const old = b.helper.move(128); await flush();
-    b.elements.get("snr").value = "5"; b.elements.get("reverb").value = "strong";
-    const changed = b.helper.rebuild(); await flush(); b.deferred.get(2)(); await changed; b.deferred.get(1)(); await old;
+    await b.elements.get("resume").onclick();
+    const old = b.helper.move(128, true); await flush();
+    const changed = chooseClip(b, 256); await flush(); b.deferred.get(2)(); await changed; b.deferred.get(1)(); await old;
     assert.equal(b.helper.state().queueLength, 1); assert.equal(b.elements.get("audio").src, "audio/256.wav");
+    assert.equal(b.picker.folder, folderFor(b, 256));
+    assert.equal(b.helper.state().continuous, false);
+    assert.equal(b.elements.get("audio").paused, true);
   });
-  await test("Clean and negative browsing is paginated and loads only selected detail", async () => {
+  await test("selecting a negative clip requests only its detail page", async () => {
     const tuples = Array.from({length: 500}, (_, index) => tuple(index, {1: index > 0 ? "negative" : "positive"}));
     const b = browser(tuples); await b.helper.boot(); const before = b.calls.length;
-    b.elements.get("extra-next").onclick(); assert.equal(b.calls.length, before);
-    assert.equal(b.elements.get("extra").children.length, 100);
-    b.elements.get("extra").value = "130"; await b.elements.get("extra").onchange();
-    assert.equal(b.helper.state().source, "extra"); assert.equal(b.elements.get("audio").src, "audio/131.wav");
+    assert.equal(folderFor(b, 131).clips.length, 499);
+    await chooseClip(b, 131);
+    assert.deepEqual(b.calls.slice(before), ["http://127.0.0.1/results/bora/clips/page-000001.json"]);
+    assert.equal(b.picker.folder, folderFor(b, 131));
+    assert.equal(b.elements.get("audio").src, "audio/131.wav");
     assert.equal(b.elements.get("responses").tBodies[0].children[0].children[1].textContent, "오작동 0회");
   });
   await test("detail failure stays a recoverable inline error", async () => {
@@ -284,67 +278,23 @@ const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "posi
   });
   for (const staticViewer of [false, true]) {
     const mode = staticViewer ? "static" : "paged";
-    await test(`${mode} shared picker browses bounded pages without changing audio and selects the correct clip`, async () => {
-      const picker = {
-        mounts: 0, closed: 0,
-        setItems(entries, index, label) { this.entries = entries; this.mounts++; this.setSelected(index, label); },
-        setSelected(index, label) { this.index = index; this.label = label; },
-        close() { this.closed++; },
-      };
-      let choose, transport;
-      const items = Array.from({length: 321}, (_, i) => tuple(i));
-      items[320][2] = "clean";
-      const b = browser(items, {staticViewer,
-        createPicker: options => { choose = options.onSelect; return picker; },
-        enhance: (audio, controls, options) => { transport = options; },
-      });
+    await test(`${mode} picker selects the visible clip and switches folders without playing`, async () => {
+      const items = Array.from({length: 321}, (_, i) => tuple(i, i === 320 ? {2: "clean"} : {}));
+      const b = browser(items, {staticViewer});
       if (b.helper) await b.helper.boot();
-      assert.equal(transport.volume, b.elements.get("result-volume"));
-      assert.equal(picker.entries.length, 100);
-      assert.equal(picker.index, 0);
-      const audio = b.elements.get("audio"), calls = b.calls.length;
-      audio.currentTime = 2.25;
-      b.elements.get("clip-list-next").onclick();
-      assert.equal(picker.index, -1);
-      assert.match(picker.entries[0].fullLabel, /^101번째 음원/);
-      assert.equal(audio.src, "audio/0.wav");
-      assert.equal(audio.currentTime, 2.25);
-      assert.equal(b.calls.length, calls);
-      await choose(2);
-      assert.equal(audio.src, "audio/102.wav");
-      assert.equal(picker.index, 2);
-      await choose(3);
-      assert.equal(picker.mounts, 2, "selecting within a page keeps its options in place");
-      b.elements.get("extra").value = staticViewer ? "clip_320" : "0";
-      await b.elements.get("extra").onchange();
-      assert.equal(audio.src, "audio/320.wav");
-      assert.equal(picker.index, -1);
-      assert.match(picker.label, /조용한 환경/);
-      assert.equal(b.elements.get("queue").textContent, "추가 음원");
-      b.elements.get("results-tab-conditions").onclick();
-      assert.equal(picker.closed, 1);
-    });
-    await test(`${mode} C-style list stays at five global rows and browsing pages never fetches or changes playback`, async () => {
-      let mounted = 0;
-      const b = browser(Array.from({length: 320}, (_, i) => tuple(i)), {staticViewer, enhance: () => { mounted++; }});
-      if (b.helper) await b.helper.boot();
-      assert.equal(mounted, 1);
-      const list = b.elements.get("clip-list"), audio = b.elements.get("audio"); audio.currentTime = 2.25;
-      assert.equal(list.children.length, 5); assert.equal(list.children[0].attributes["data-number"], "1");
-      assert.equal(list.children[0].attributes["aria-current"], "true");
-      assert.ok(list.children[0].attributes["aria-label"].includes("음성"));
-      const source = audio.src, calls = b.calls.length;
-      b.elements.get("clip-list-next").onclick();
-      assert.equal(list.children.length, 5); assert.equal(list.children[0].attributes["data-number"], "6");
-      assert.equal(b.elements.get("clip-list-position").textContent, "2 / 64");
-      assert.equal(audio.src, source); assert.equal(audio.currentTime, 2.25); assert.equal(audio.plays, 0); assert.equal(b.calls.length, calls);
-      await list.children[0].onclick();
-      assert.equal(audio.src, "audio/5.wav"); assert.equal(list.children[0].attributes["aria-current"], "true");
-      b.elements.get("item").value = "299"; await b.elements.get("item").onchange();
-      assert.equal(audio.src, "audio/299.wav"); assert.equal(list.children.length, 5);
-      assert.equal(list.children[0].attributes["data-number"], "296"); assert.equal(list.children[4].attributes["data-number"], "300");
-      assert.equal(list.children[4].attributes["aria-current"], "true"); assert.equal(mounted, 1);
-      if (b.helper) assert.ok(b.elements.get("item").children.length <= 100);
+      const audio = b.elements.get("audio"), initial = b.picker.folder;
+      assert.equal(b.picker.pageSize, 100);
+      assert.equal(initial.clips.length, 320);
+      assert.equal(b.picker.index, 0);
+      assert.match(b.picker.labelAt(102), /음성 35 · 환경소음/);
+      await chooseClip(b, 102);
+      assert.equal(audio.src, "audio/102.wav"); assert.equal(b.picker.index, 102);
+      assert.equal(b.picker.folder, initial);
+      await chooseClip(b, 320);
+      assert.equal(audio.src, "audio/320.wav"); assert.equal(b.picker.index, 0);
+      assert.equal(b.picker.folder, folderFor(b, 320));
+      assert.match(b.picker.labelAt(320), /조용한 환경/);
+      assert.equal(audio.plays, 0);
     });
     await test(`${mode} transport toggles actual playback and resumes the current position without new source or gain`, async () => {
       const b = browser([tuple(0), tuple(1)], {staticViewer}); if (b.helper) await b.helper.boot();
@@ -371,10 +321,10 @@ const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "posi
       assert.equal(audio.src, "audio/1.wav"); assert.equal(notice.textContent, "");
       await toggle.onclick(); assert.equal(notice.textContent, "");
     });
-    await test(`${mode} transport plays the selected extra without jumping back to the main queue`, async () => {
-      const b = browser([tuple(0), tuple(1, {1: "negative"})], {staticViewer}); if (b.helper) await b.helper.boot();
-      b.elements.get("extra").value = staticViewer ? "clip_1" : "0";
-      await b.elements.get("extra").onchange();
+    await test(`${mode} transport plays a negative clip once and never advances into a different folder`, async () => {
+      const b = browser([tuple(0), tuple(1, {1: "negative"}), tuple(2, {1: "negative"})], {staticViewer});
+      if (b.helper) await b.helper.boot();
+      await chooseClip(b, 1);
       const audio = b.elements.get("audio"), source = audio.src;
       assert.equal(b.elements.get("playState").textContent, "");
       audio.currentTime = 1.25;
@@ -383,16 +333,14 @@ const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "posi
       await audio.onended(); assert.equal(audio.src, source); assert.equal(b.elements.get("resume").textContent, "재생");
       assert.equal(b.elements.get("playState").textContent, "");
     });
-    await test(`${mode} keeps model reactions available without score and file controls`, async () => {
+    await test(`${mode} keeps model reactions available for another folder`, async () => {
       const b = browser([tuple(0), tuple(1, {1: "negative"})], {staticViewer}); if (b.helper) await b.helper.boot();
       for (const id of ["original", "original-go", "clipInfo", "scores", "sample-id", "download", "hash"]) {
         assert.equal(b.elements.has(id), false);
       }
       const reaction = () => b.elements.get("responses").tBodies[0].children[0].children.map(cell => cell.textContent);
       assert.deepEqual(reaction().slice(1), ["감지", "0.08초"]);
-      b.elements.get("audio-view-settings").onclick();
-      b.elements.get("extra").value = staticViewer ? "clip_1" : "0";
-      await b.elements.get("extra").onchange();
+      await chooseClip(b, 1);
       b.elements.get("audio-view-reactions").onclick();
       assert.deepEqual(reaction().slice(1), ["오작동 0회", "—"]);
       assert.equal(b.elements.get("audio").src, "audio/1.wav");

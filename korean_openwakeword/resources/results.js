@@ -1,73 +1,133 @@
 /* Portable frozen result viewer: no API, no inference, no hidden audio gain. */
 "use strict";
 (() => {
-const chapter=window.KowwChapterReady;
-chapter?.loading();
-try {
-const {report,clips}=window.KOWW_RESULTS;
-const ui=window.KowwResultsUI;
-const $=id=>document.getElementById(id);
-const labels={clean:"Clean",environment:"환경소음",music:"음악·전자음",competing_speech:"다른 사람 말소리"};
-$("title").textContent=`${report.wakeword} · 성능 시험 결과`;
-ui.renderSummary(report);
-ui.renderConditions(report);
-let queue=[],index=0,continuous=false,token=0,currentSource="main",currentClip=null,playing=false,loading=false,listPage=0;
-const audio=$("audio");
-const clipPicker=ui.mountClipPicker?.(move, position=>ui.clipLabel(queue[position]), 100);
-function transport(){const active=playing||loading;$("resume").textContent=active?"일시정지":"재생";$("resume").setAttribute("aria-pressed",String(active));$("resume").setAttribute("aria-busy",String(loading));$("resume").disabled=!currentClip&&!queue.length;}
-function stop(){continuous=false;token++;loading=false;playing=false;audio.pause();transport();}
-const opt=(select,value,text)=>{const o=document.createElement("option");o.value=value;o.textContent=text;select.append(o);};
-function renderList(reset=false){
-  if(clipPicker){
-    clipPicker(queue.length,index,currentSource==="extra"&&currentClip?ui.clipLabel(currentClip):"",reset);
-    return;
+  const chapter = window.KowwChapterReady;
+  const $ = id => document.getElementById(id);
+  chapter?.loading();
+  try {
+    const {report, clips} = window.KOWW_RESULTS;
+    const ui = window.KowwResultsUI;
+    const audio = $("audio");
+    const library = ui.buildClipFolders(clips);
+    let folder = null, index = 0, continuous = false;
+    let token = 0, playRequest = null, playing = false, loading = false;
+
+    $("title").textContent = `${report.wakeword} · 성능 시험 결과`;
+    ui.renderSummary(report);
+    ui.renderConditions(report);
+    const updatePicker = ui.mountClipPicker?.(library, selectFolder, sourceIndex => ui.clipLabel(clips[sourceIndex]));
+    if (!updatePicker) {
+      window.KowwListening?.enhance(audio, $("resume").parentElement, {
+        play: $("resume"), previous: $("prev"), next: $("next"),
+      });
+    }
+
+    function transport() {
+      const active = playing || loading;
+      $("resume").textContent = active ? "일시정지" : "재생";
+      $("resume").setAttribute("aria-pressed", String(active));
+      $("resume").setAttribute("aria-busy", String(loading));
+      $("resume").disabled = !folder;
+    }
+
+    function stop() {
+      token++;
+      continuous = false; playRequest = null; loading = false; playing = false;
+      audio.pause();
+      transport();
+    }
+
+    function progress() {
+      const length = folder?.clips.length || 0;
+      $("queue").textContent = length ? `${(index + 1).toLocaleString("ko-KR")} / ${length.toLocaleString("ko-KR")}` : "목록 없음";
+      $("prev").disabled = index <= 0;
+      $("next").disabled = index + 1 >= length;
+      updatePicker?.(folder, index);
+    }
+
+    async function playCurrent() {
+      if (!folder) return;
+      const mine = ++token;
+      playRequest = mine; loading = true;
+      $("playState").textContent = "";
+      transport();
+      try {
+        await audio.play();
+        if (mine !== token) {
+          if (playRequest === null) audio.pause();
+          return;
+        }
+        loading = false; playing = audio.paused === false;
+        transport();
+      } catch (error) {
+        if (mine !== token) return;
+        continuous = false; playRequest = null; loading = false; playing = false;
+        transport();
+        $("playState").textContent = `재생 실패: ${error.message}. 재생을 다시 눌러주세요.`;
+      }
+    }
+
+    function move(position, autoplay = continuous) {
+      if (!Number.isInteger(position) || !folder || position < 0 || position >= folder.clips.length) return;
+      stop();
+      index = position;
+      continuous = autoplay && folder.continuous;
+      const clip = clips[folder.clips[index]];
+      audio.src = clip.path;
+      $("clipTitle").textContent = ui.clipLabel(clip);
+      $("playState").textContent = "";
+      ui.renderResponses(report, clip);
+      progress();
+      return autoplay ? playCurrent() : true;
+    }
+
+    function selectFolder(nextFolder, position = 0) {
+      if (!Number.isInteger(position) || !nextFolder?.clips || position < 0 || position >= nextFolder.clips.length) return;
+      if (nextFolder === folder) return move(position);
+      folder = nextFolder;
+      return move(position, false);
+    }
+
+    $("start").onclick = () => move(0, true);
+    $("resume").onclick = () => {
+      if (playing || loading || audio.paused === false) return stop();
+      if (!folder) return;
+      continuous = folder.continuous;
+      return playCurrent();
+    };
+    $("pause").onclick = stop;
+    $("prev").onclick = () => move(index - 1);
+    $("next").onclick = () => move(index + 1);
+    audio.onplay = () => { playing = true; transport(); $("playState").textContent = ""; };
+    audio.onpause = () => {
+      if (audio.ended || audio.paused === false) return;
+      playing = false;
+      if (!loading) { continuous = false; playRequest = null; }
+      transport();
+    };
+    audio.onended = () => {
+      playing = false; loading = false; playRequest = null;
+      if (continuous && index + 1 < folder.clips.length) return move(index + 1, true);
+      continuous = false;
+      transport();
+    };
+    audio.onerror = () => {
+      token++;
+      continuous = false; playRequest = null; loading = false; playing = false;
+      transport();
+      $("playState").textContent = "오디오를 불러올 수 없습니다. 파일 경로와 서버 상태를 확인하세요.";
+    };
+
+    if (library.defaultFolder) selectFolder(library.defaultFolder);
+    else {
+      $("clipTitle").textContent = "시험한 오디오가 없습니다.";
+      progress(); transport();
+    }
+    chapter?.ready();
+  } catch (error) {
+    const message = error?.message || "평가 자료를 불러오지 못했습니다.";
+    const status = $("playState");
+    if (status) status.textContent = message;
+    chapter?.fail(message);
   }
-  const pages=Math.max(1,Math.ceil(queue.length/5));listPage=Math.min(listPage,pages-1);const rows=[];
-  for(let position=listPage*5;position<Math.min(queue.length,(listPage+1)*5);position++){
-    const clip=queue[position],button=document.createElement("button"),title=document.createElement("span"),badge=document.createElement("span"),label=ui.clipLabel(clip);
-    button.type="button";button.className="voice-row";button.setAttribute("data-number",String(position+1));button.setAttribute("aria-current",String(currentSource==="main"&&position===index));button.setAttribute("aria-label",`${position+1}. ${label}`);
-    title.className="listen-row-title";title.textContent=label;badge.className="listen-badge";badge.textContent=String(position+1);button.append(title,badge);button.onclick=()=>move(position);rows.push(button);
-  }
-  $("clip-list").replaceChildren(...rows);$("clip-list-position").textContent=`${listPage+1} / ${pages}`;$("clip-list-prev").disabled=listPage===0;$("clip-list-next").disabled=listPage+1>=pages;
-}
-const levels=[...new Set(clips.filter(c=>c.kind==="positive"&&c.category!=="clean").map(c=>c.snr_db))].sort((a,b)=>b-a);
-levels.forEach(s=>opt($("snr"),s,ui.snrLabel(s)));
-if(levels.includes(10))$("snr").value="10";
-for(const option of $("reverb").options)option.disabled=!clips.some(c=>c.kind==="positive"&&(c.reverb_condition||"none")===option.value);
-function rebuild(){stop();currentSource="main";queue=clips.filter(c=>c.kind==="positive"&&c.category!=="clean"&&Number(c.snr_db)===Number($("snr").value)&&($("category").value==="all"||c.category===$("category").value)&&(c.reverb_condition||"none")===$("reverb").value);queue.sort((a,b)=>(a.original_order||0)-(b.original_order||0)||String(a.original_id).localeCompare(String(b.original_id))||["environment","music","competing_speech"].indexOf(a.category)-["environment","music","competing_speech"].indexOf(b.category)||(a.noise_section||0)-(b.noise_section||0));index=0;$("item").replaceChildren();queue.forEach((c,i)=>opt($("item"),i,`${i+1} · 음성 ${c.original_order||c.original_id} · ${labels[c.category]} · 구간 ${c.noise_section||1}`));if(queue.length)show(queue[0]);else{currentClip=null;audio.removeAttribute("src");$("responses").tBodies[0].replaceChildren();$("clipTitle").textContent="선택한 조건으로 시험한 오디오가 없습니다.";}$("playState").textContent="";progress(true);transport();}
-function progress(reset=false){$("queue").textContent=queue.length?`${(index+1).toLocaleString("ko-KR")} / ${queue.length.toLocaleString("ko-KR")}`:"목록 없음";$("prev").disabled=index<=0;$("next").disabled=index>=queue.length-1;$("item").value=String(index);listPage=Math.floor(index/5);renderList(reset);}
-function show(c){currentClip=c;audio.src=c.path;$("clipTitle").textContent=ui.clipLabel(c);ui.renderResponses(report,c);}
-async function playCurrent(resume=false){
-  if((!resume&&!queue.length)||(resume&&!currentClip))return;
-  const mine=++token;loading=true;$("playState").textContent="";transport();
-  if(!resume){currentSource="main";show(queue[index]);}
-  progress();
-  try{await audio.play();if(mine!==token){if(!continuous)audio.pause();return;}loading=false;playing=audio.paused===false;transport();}
-  catch(e){if(mine!==token)return;continuous=false;loading=false;playing=false;transport();$("playState").textContent=`재생 실패: ${e.message}. 재생을 다시 눌러주세요.`;}
-}
-function move(position){if(!Number.isInteger(position)||position<0||position>=queue.length)return;index=position;currentSource="main";if(continuous)return playCurrent();token++;audio.pause();playing=false;loading=false;show(queue[index]);progress();transport();$("playState").textContent="";}
-$("start").onclick=()=>{index=0;continuous=true;return playCurrent();};
-$("resume").onclick=()=>{if(playing||loading||audio.paused===false)return stop();continuous=currentSource==="main";return playCurrent(true);};
-$("pause").onclick=stop;
-audio.onplay=()=>{playing=true;transport();$("playState").textContent="";};
-audio.onpause=()=>{if(audio.ended)return;playing=false;if(!loading)continuous=false;transport();};
-audio.onended=()=>{playing=false;loading=false;if(continuous&&currentSource==="main"&&index+1<queue.length){index++;return playCurrent();}continuous=false;transport();};
-audio.onerror=()=>{continuous=false;token++;loading=false;playing=false;transport();$("playState").textContent="오디오를 불러올 수 없습니다. 파일 경로와 서버 상태를 확인하세요.";};
-$("prev").onclick=()=>move(index-1);$("next").onclick=()=>move(index+1);
-if(!clipPicker){
-  $("clip-list-prev").onclick=()=>{if(listPage>0){listPage--;renderList();}};
-  $("clip-list-next").onclick=()=>{if((listPage+1)*5<queue.length){listPage++;renderList();}};
-}
-$("item").onchange=()=>move(Number($("item").value));
-$("snr").onchange=rebuild;$("category").onchange=rebuild;$("reverb").onchange=rebuild;
-clips.filter(c=>c.category==="clean"||c.kind==="negative").forEach(c=>opt($("extra"),c.sample_id,ui.clipLabel(c)));
-$("extra").onchange=()=>{const c=clips.find(c=>c.sample_id===$("extra").value);if(c){stop();currentSource="extra";show(c);transport();renderList();$("playState").textContent="";}};
-rebuild();
-if(!clipPicker)window.KowwListening?.enhance(audio,$("resume").parentElement,{play:$("resume"),previous:$("prev"),next:$("next")});
-chapter?.ready();
-} catch(error) {
-  const message=error?.message||"평가 자료를 불러오지 못했습니다.";
-  const status=document.getElementById("playState");if(status)status.textContent=message;
-  chapter?.fail(message);
-}
 })();

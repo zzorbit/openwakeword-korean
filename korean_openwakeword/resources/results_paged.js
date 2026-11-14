@@ -5,57 +5,38 @@
   const {report, viewer} = window.KOWW_RESULTS;
   const ui = window.KowwResultsUI;
   const $ = id => document.getElementById(id);
-  const labels = {clean: "조용한 원본", environment: "환경소음", music: "음악·전자음", competing_speech: "다른 사람 말소리"};
-  const OPTION_LIMIT = 100, EXTRA_LIMIT = 99, CACHE_LIMIT = 2;
+  const OPTION_LIMIT = 100, CACHE_LIMIT = 2;
   const cache = new Map(), pending = new Map();
   const audio = $("audio");
-  let metadata = [], queue = [], extras = [], extraPage = 0;
-  let index = 0, continuous = false, token = 0, optionPage = -1, currentSource = "main";
-  let requestedIndex = null, loadedIndex = null, playing = false, loading = false, listPage = 0, listeningEnhanced = false;
-  let clipPicker;
-  const option = (select, value, text) => { const node = document.createElement("option"); node.value = String(value); node.textContent = text; select.append(node); };
-  function pickerLabel(position) {
-    const clip = metadata[queue[position]];
-    return ui.clipLabel({kind: clip[1], category: clip[2], original_order: clip[6]});
+  let metadata = [], folder = null, index = 0, continuous = false;
+  let token = 0, playRequest = null, loadedIndex = null, playing = false, loading = false;
+  let updatePicker, selection;
+
+  function describe([, kind, category, snr_db, reverb_condition, original_id, original_order]) {
+    return {kind, category, snr_db, reverb_condition, original_id, original_order};
   }
-  function renderList(reset = false, extraLabel = "추가 음원") {
-    if (clipPicker) {
-      clipPicker(queue.length, index, currentSource === "extra" ? extraLabel : "", reset);
-      return;
-    }
-    const pages = Math.max(1, Math.ceil(queue.length / 5)); listPage = Math.min(listPage, pages - 1);
-    const rows = [];
-    for (let position = listPage * 5; position < Math.min(queue.length, (listPage + 1) * 5); position++) {
-      const button = document.createElement("button"), title = document.createElement("span"), badge = document.createElement("span");
-      const label = pickerLabel(position);
-      button.type = "button"; button.className = "voice-row"; button.setAttribute("data-number", String(position + 1));
-      button.setAttribute("aria-current", String(currentSource === "main" && position === index)); button.setAttribute("aria-label", `${position + 1}. ${label}`);
-      title.className = "listen-row-title"; title.textContent = label; badge.className = "listen-badge"; badge.textContent = String(position + 1);
-      button.append(title, badge); button.onclick = () => move(position); rows.push(button);
-    }
-    $("clip-list").replaceChildren(...rows); $("clip-list-position").textContent = `${listPage + 1} / ${pages}`;
-    $("clip-list-prev").disabled = listPage === 0; $("clip-list-next").disabled = listPage + 1 >= pages;
-  }
+
   function transport() {
     const active = playing || loading;
     $("resume").textContent = active ? "일시정지" : "재생";
     $("resume").setAttribute("aria-pressed", String(active));
     $("resume").setAttribute("aria-busy", String(loading));
-    $("resume").disabled = loadedIndex === null && !queue.length;
+    $("resume").disabled = !folder;
   }
+
   function stop() {
-    continuous = false; token++; loading = false; playing = false; audio.pause(); transport();
+    token++;
+    continuous = false; playRequest = null; loading = false; playing = false;
+    audio.pause();
+    transport();
   }
-  function summary() {
-    $("title").textContent = `${report.wakeword} · 성능 시험 결과`;
-    ui.renderSummary(report);
-    ui.renderConditions(report);
-  }
+
   async function json(path) {
     const response = await fetch(path);
     if (!response.ok) throw new Error(`평가 자료를 불러오지 못했습니다 (${response.status}).`);
     return response.json();
   }
+
   async function detail(sourceIndex) {
     const page = Math.floor(sourceIndex / viewer.page_size);
     let rows;
@@ -77,130 +58,151 @@
     if (!clip || clip.sample_id !== metadata[sourceIndex][0]) throw new Error("평가 자료 목록과 오디오가 일치하지 않습니다.");
     return clip;
   }
-  function show(clip) {
-    audio.src = clip.path;
-    $("clipTitle").textContent = ui.clipLabel(clip);
-    ui.renderResponses(report, clip);
+
+  function progress() {
+    const length = folder?.clips.length || 0;
+    $("queue").textContent = length ? `${(index + 1).toLocaleString("ko-KR")} / ${length.toLocaleString("ko-KR")}` : "목록 없음";
+    $("prev").disabled = index <= 0;
+    $("next").disabled = index + 1 >= length;
+    updatePicker?.(folder, index);
   }
-  function progress(reset = false) {
-    $("queue").textContent = queue.length ? `${(index + 1).toLocaleString("ko-KR")} / ${queue.length.toLocaleString("ko-KR")}` : "목록 없음";
-    $("prev").disabled = index <= 0; $("next").disabled = index >= queue.length - 1;
-    const page = Math.floor(index / OPTION_LIMIT);
-    if (page !== optionPage) {
-      optionPage = page; $("item").replaceChildren();
-      for (let position = page * OPTION_LIMIT; position < Math.min(queue.length, (page + 1) * OPTION_LIMIT); position++) { const clip = metadata[queue[position]]; option($("item"), position, `${position + 1} · 음성 ${clip[6] || clip[5]} · ${labels[clip[2]] || clip[2]}`); }
-    }
-    $("item").value = String(index);
-    listPage = Math.floor(index / 5); renderList(reset);
-  }
-  async function activate(sourceIndex, autoplay = false, source = "main") {
-    const mine = ++token; loading = true; playing = false; currentSource = source; requestedIndex = sourceIndex;
-    audio.pause(); transport();
+
+  async function activate(sourceIndex, {autoplay = false, resume = false} = {}) {
+    const mine = ++token;
+    loading = true; playing = false; playRequest = null;
+    if (!resume) audio.pause();
     $("playState").textContent = "";
+    transport();
     try {
-      const clip = await detail(sourceIndex);
-      if (mine !== token) return false;
-      show(clip); loadedIndex = sourceIndex;
-      if (source === "extra" && clipPicker) renderList(false, ui.clipLabel(clip));
-      if (autoplay) {
-        await audio.play();
-        if (mine !== token) { if (!continuous) audio.pause(); return false; }
+      if (!resume) {
+        const clip = await detail(sourceIndex);
+        if (mine !== token) return false;
+        audio.src = clip.path;
+        loadedIndex = sourceIndex;
+        $("clipTitle").textContent = ui.clipLabel(clip);
+        ui.renderResponses(report, clip);
       }
-      loading = false; playing = audio.paused === false; transport();
+      if (autoplay) {
+        playRequest = mine;
+        await audio.play();
+        if (mine !== token) {
+          if (playRequest === null) audio.pause();
+          return false;
+        }
+      }
+      loading = false; playing = audio.paused === false;
+      transport();
       return true;
-    } catch (error) { if (mine === token) { continuous = false; loading = false; playing = false; transport(); $("playState").textContent = error.message + " 다시 선택하거나 재생을 눌러주세요."; } return false; }
+    } catch (error) {
+      if (mine === token) {
+        continuous = false; playRequest = null; loading = false; playing = false;
+        transport();
+        $("playState").textContent = error.message + " 다시 선택하거나 재생을 눌러주세요.";
+      }
+      return false;
+    }
   }
-  async function playLoaded() {
-    const mine = ++token; loading = true; $("playState").textContent = ""; transport();
-    try {
-      // Resuming the current file must preserve its real playback position.
-      await audio.play();
-      if (mine !== token) { if (!continuous) audio.pause(); return; }
-      loading = false; playing = audio.paused === false; transport();
-    } catch (error) { if (mine === token) { continuous = false; loading = false; playing = false; transport(); $("playState").textContent = error.message + " 재생을 다시 눌러주세요."; } }
-  }
+
   function move(position, autoplay = continuous) {
-    if (!Number.isInteger(position) || position < 0 || position >= queue.length) return;
-    index = position; continuous = autoplay; currentSource = "main"; progress(); return activate(queue[index], autoplay);
+    if (!Number.isInteger(position) || !folder || position < 0 || position >= folder.clips.length) return;
+    index = position;
+    continuous = autoplay && folder.continuous;
+    progress();
+    selection = activate(folder.clips[index], {autoplay});
+    return selection;
   }
-  function rebuild() {
-    stop(); requestedIndex = null; loadedIndex = null; currentSource = "main"; optionPage = -1;
-    queue = [];
-    for (let position = 0; position < metadata.length; position++) { const clip = metadata[position]; if (clip[1] === "positive" && clip[2] !== "clean" && Number(clip[3]) === Number($("snr").value) && ($("category").value === "all" || clip[2] === $("category").value) && (clip[4] || "none") === $("reverb").value) queue.push(position); }
-    const categoryOrder = ["environment", "music", "competing_speech"];
-    queue.sort((left, right) => { const a = metadata[left], b = metadata[right]; return (a[6] || 0) - (b[6] || 0) || String(a[5]).localeCompare(String(b[5])) || categoryOrder.indexOf(a[2]) - categoryOrder.indexOf(b[2]) || left - right; });
-    index = 0; progress(true);
-    if (queue.length) return activate(queue[0]);
-    audio.removeAttribute("src"); transport(); $("responses").tBodies[0].replaceChildren(); $("clipTitle").textContent = "선택한 조건으로 시험한 오디오가 없습니다."; $("playState").textContent = "";
-    return true;
+
+  function selectFolder(nextFolder, position = 0) {
+    if (!Number.isInteger(position) || !nextFolder?.clips || position < 0 || position >= nextFolder.clips.length) return;
+    if (nextFolder === folder) return move(position);
+    folder = nextFolder;
+    return move(position, false);
   }
-  function renderExtras() {
-    const start = extraPage * EXTRA_LIMIT, end = Math.min(extras.length, start + EXTRA_LIMIT);
-    $("extra").replaceChildren(); option($("extra"), "", "추가 자료 선택");
-    for (let position = start; position < end; position++) { const clip = metadata[extras[position]]; option($("extra"), position, `${position + 1} · ${ui.clipLabel({kind:clip[1],category:clip[2],original_order:clip[6]})}`); }
-    $("extra-range").textContent = extras.length ? `${start + 1}–${end} / ${extras.length}개` : "추가 자료 없음";
-    $("extra-prev").disabled = extraPage <= 0; $("extra-next").disabled = end >= extras.length;
-  }
+
   function bind() {
-    $("start").onclick = () => { continuous = true; return move(0, true); };
+    $("start").onclick = () => move(0, true);
     $("resume").onclick = () => {
       if (playing || loading || audio.paused === false) return stop();
-      continuous = currentSource === "main";
-      if (loadedIndex !== null && loadedIndex === requestedIndex) return playLoaded();
-      if (requestedIndex !== null) return activate(requestedIndex, true, currentSource);
-      return move(index, true);
+      if (!folder) return;
+      continuous = folder.continuous;
+      const sourceIndex = folder.clips[index];
+      return activate(sourceIndex, {autoplay: true, resume: loadedIndex === sourceIndex});
     };
     $("pause").onclick = stop;
+    $("prev").onclick = () => move(index - 1);
+    $("next").onclick = () => move(index + 1);
     audio.onplay = () => { playing = true; transport(); $("playState").textContent = ""; };
-    audio.onpause = () => { if (audio.ended) return; playing = false; if (!loading) continuous = false; transport(); };
-    audio.onended = () => {
-      playing = false; loading = false;
-      if (continuous && currentSource === "main" && index + 1 < queue.length) return move(index + 1, true);
-      continuous = false; transport();
+    audio.onpause = () => {
+      if (audio.ended || audio.paused === false) return;
+      playing = false;
+      if (!loading) { continuous = false; playRequest = null; }
+      transport();
     };
-    audio.onerror = () => { continuous = false; token++; loading = false; playing = false; transport(); $("playState").textContent = "오디오를 불러올 수 없습니다. 파일 경로와 서버 상태를 확인하세요."; };
-    $("prev").onclick = () => move(index - 1); $("next").onclick = () => move(index + 1);
-    if (!listeningEnhanced) clipPicker = ui.mountClipPicker?.(move, pickerLabel, OPTION_LIMIT);
-    if (!clipPicker) {
-      $("clip-list-prev").onclick = () => { if (listPage > 0) { listPage--; renderList(); } };
-      $("clip-list-next").onclick = () => { if ((listPage + 1) * 5 < queue.length) { listPage++; renderList(); } };
-    }
-    $("item").onchange = () => move(Number($("item").value));
-    for (const id of ["snr", "category", "reverb"]) $(id).onchange = rebuild;
-    $("extra-prev").onclick = () => { if (extraPage > 0) { extraPage--; renderExtras(); } };
-    $("extra-next").onclick = () => { if ((extraPage + 1) * EXTRA_LIMIT < extras.length) { extraPage++; renderExtras(); } };
-    $("extra").onchange = () => { if ($("extra").value === "") return; const position = Number($("extra").value); if (Number.isInteger(position) && extras[position] !== undefined) { continuous = false; currentSource = "extra"; renderList(); return activate(extras[position], false, "extra"); } };
-    if (!listeningEnhanced && window.KowwListening) {
-      if (!clipPicker) window.KowwListening.enhance(audio, $("resume").parentElement, {play: $("resume"), previous: $("prev"), next: $("next")});
-      listeningEnhanced = true;
-    }
+    audio.onended = () => {
+      playing = false; loading = false; playRequest = null;
+      if (continuous && index + 1 < folder.clips.length) return move(index + 1, true);
+      continuous = false;
+      transport();
+    };
+    audio.onerror = () => {
+      if (loadedIndex !== folder?.clips[index]) return;
+      loadedIndex = null;
+      token++;
+      continuous = false; playRequest = null; loading = false; playing = false;
+      transport();
+      $("playState").textContent = "오디오를 불러올 수 없습니다. 파일 경로와 서버 상태를 확인하세요.";
+    };
   }
+
   async function boot() {
     chapter?.loading();
     try {
-      summary(); bind();
+      $("title").textContent = `${report.wakeword} · 성능 시험 결과`;
+      ui.renderSummary(report);
+      ui.renderConditions(report);
+      bind();
       if (viewer?.schema_version !== 1 || !Number.isInteger(viewer.page_size) || viewer.page_size < 1 || viewer.page_size > 128) throw new Error("지원하지 않는 평가 화면 형식입니다.");
       const data = await json(viewer.index_path);
       if (data.schema_version !== 1 || !Array.isArray(data.clips)) throw new Error("평가 목록 형식이 올바르지 않습니다.");
       metadata = data.clips;
-      const levels = new Set(), reverbGroups = new Set();
-      for (let position = 0; position < metadata.length; position++) { const clip = metadata[position]; if (clip[1] === "positive") { reverbGroups.add(clip[4] || "none"); if (clip[2] !== "clean") levels.add(clip[3]); } if (clip[2] === "clean" || clip[1] === "negative") extras.push(position); }
-      [...levels].sort((a, b) => b - a).forEach(level => option($("snr"), level, ui.snrLabel(level)));
-      if (levels.has(10)) $("snr").value = "10";
-      for (const node of $("reverb").options) node.disabled = !reverbGroups.has(node.value);
-      renderExtras();
-      const displayed = await rebuild();
-      if (!displayed) {
-        chapter?.fail($("playState").textContent || "평가 화면 준비가 중단되었습니다. 다시 열어 주세요.");
-        return false;
+      const library = ui.buildClipFolders(metadata, describe);
+      updatePicker = ui.mountClipPicker?.(library, selectFolder, sourceIndex => ui.clipLabel(describe(metadata[sourceIndex])), OPTION_LIMIT);
+      if (!updatePicker) {
+        window.KowwListening?.enhance(audio, $("resume").parentElement, {
+          play: $("resume"), previous: $("prev"), next: $("next"),
+        });
+      }
+      if (library.defaultFolder) {
+        selectFolder(library.defaultFolder);
+        let displayed, observed;
+        // A selection made while the default clip is loading also prepares the chapter.
+        do {
+          observed = selection;
+          displayed = await observed;
+        } while (observed !== selection);
+        if (!displayed) {
+          chapter?.fail($("playState").textContent || "평가 화면 준비가 중단되었습니다. 다시 열어 주세요.");
+          return false;
+        }
+      } else {
+        folder = null; index = 0; loadedIndex = null;
+        stop();
+        audio.removeAttribute("src");
+        $("responses").tBodies[0].replaceChildren();
+        $("clipTitle").textContent = "시험한 오디오가 없습니다.";
+        $("playState").textContent = "";
+        progress();
       }
       chapter?.ready();
       return true;
-    } catch(error) {
+    } catch (error) {
       chapter?.fail(error?.message || "평가 자료를 불러오지 못했습니다.");
       throw error;
     }
   }
-  window.KowwResults = {boot, detail, rebuild, move, state: () => ({index, queueLength: queue.length, cachePages: [...cache.keys()], pendingPages: [...pending.keys()], source: currentSource, continuous}), OPTION_LIMIT, CACHE_LIMIT};
+  window.KowwResults = {boot, detail, move, selectFolder, state: () => ({
+    folder, index, queueLength: folder?.clips.length || 0,
+    cachePages: [...cache.keys()], pendingPages: [...pending.keys()], continuous,
+  }), OPTION_LIMIT, CACHE_LIMIT};
   if (!window.KOWW_RESULTS_TEST) boot().catch(error => { $("playState").textContent = error.message; });
 })();

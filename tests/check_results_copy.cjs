@@ -8,20 +8,18 @@ test("both frozen result layouts support the shared picker and playback controls
   for (const name of ["results.html", "results_paged.html"]) {
     const html = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources", name), "utf8");
     assert.match(html, /results\.css[\s\S]*audio_listening\.css/);
-    for (const className of ["listen-player", "listen-heading", "listen-title", "listen-position", "listen-audio", "listen-controls", "listen-select"]) assert.ok(html.includes(className), name + " " + className);
+    for (const className of ["listen-player", "listen-heading", "listen-title", "listen-position", "listen-audio", "listen-controls"]) assert.ok(html.includes(className), name + " " + className);
     assert.match(html, /id="start"[^>]*hidden/); assert.match(html, /id="pause"[^>]*hidden/);
     const controls = html.match(/<div class="playback-controls listen-controls">([\s\S]*?)<\/div>/)[1];
     assert.deepEqual([...controls.matchAll(/id="([^"]+)"/g)].map(match => match[1]), ["prev", "resume", "next", "result-volume"]);
     assert.match(html, /id="result-clip-picker-button"[^>]*aria-controls="result-clip-picker-list"/);
-    assert.match(html, /id="item" hidden class="listen-select" aria-label=/);
-    for (const id of ["clip-list", "clip-list-prev", "clip-list-next", "clip-list-position"]) assert.ok(html.includes(`id="${id}"`));
-    assert.match(html, /class="listen-workspace results-listening-workspace"/);
+    assert.match(html, /id="result-clip-picker-popup"/);
+    assert.match(html, /class="listening-grid results-listening-main"/);
     assert.match(html, /src="listening_player\.js"[\s\S]*src="results(?:_paged)?\.js"/);
     assert.doesNotMatch(html, /data-value="(?:keep|discard|review)"/);
   }
   const css = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources/results.css"), "utf8");
-  assert.match(css, /data-audio-view="reactions"\] \.audio-player\.listen-player\{display:contents/);
-  assert.match(css, /data-audio-view="settings"\] \.playback-controls\{display:none/);
+  assert.match(css, /data-audio-view="reactions"\] \.audio-player\{display:contents/);
 });
 test("report navigation keeps only model comparison, noise results, and audio", () => {
   for (const name of ["results.html", "results_paged.html"]) {
@@ -45,21 +43,15 @@ test("noise and audio panels retain labelled controls without the extra disclosu
     assert.doesNotMatch(html, /표 안내|시험에 쓴 배경 소리|condition-clean|conditions-help|noiseCoverage|coverage-details/);
   }
 });
-test("audio tools contain the filter and extra clips without the score and file disclosure", () => {
+test("the audio folder picker replaces separate filter, extra and list controls", () => {
   for (const name of ["results.html", "results_paged.html"]) {
     const html = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources", name), "utf8");
     const audio = html.slice(html.indexOf('id="results-panel-audio"'));
-    const tools = audio.slice(audio.indexOf('class="audio-details'));
-    const filter = tools.match(/<details\b([^>]*id="audio-filter-details"[^>]*)>\s*<summary[^>]*>소음·울림 선택<\/summary>([\s\S]*?)<\/details>/);
-    const extra = tools.match(/<summary[^>]*>조용한 원본 · 호출어 없는 오디오<\/summary>([\s\S]*?)<\/details>/);
-    assert.ok(filter, `${name} audio filter belongs to the tools`);
-    assert.doesNotMatch(filter[1], /\sopen(?:\s|=|$)/);
-    for (const id of ["snr", "category", "reverb"]) assert.match(filter[2], new RegExp(`id="${id}"`));
-    assert.ok(extra, `${name} extra clips disclosure`);
-    assert.match(extra[1], /id="extra"/);
-    for (const id of ["original", "original-go", "clipInfo", "scores", "sample-id", "download", "hash"]) {
+    for (const id of ["audio-filter-details", "snr", "category", "reverb", "extra", "extra-prev", "extra-next",
+      "item", "clip-list", "clip-list-prev", "clip-list-next", "original", "original-go", "clipInfo", "scores", "sample-id", "download", "hash"]) {
       assert.doesNotMatch(audio, new RegExp(`id="${id}"`));
     }
+    assert.match(audio, /class="clip-heading[^>]*>[\s\S]*?id="result-clip-picker-button"/);
     assert.match(audio, /id="responses"/);
     assert.doesNotMatch(audio, /clip-select-details|음성 번호 · 정보|상세 점수와 파일 정보/);
     assert.match(audio, /id="playState"[^>]*role="status"[^>]*>\s*<\/p>/);
@@ -347,6 +339,38 @@ test("audio titles avoid internal filenames and do not claim a negative clip con
   const {ui} = browser();
   assert.equal(ui.clipLabel({kind: "positive", category: "environment", original_order: 12, sample_id: "opaque-file"}), "음성 12 · 환경소음");
   assert.equal(ui.clipLabel({kind: "negative", category: "music", original_order: 12}), "호출어 없는 음원 · 음악·전자음");
+});
+test("audio folders reach every saved clip once and prefer the common dry 10 dB condition", () => {
+  const {ui} = browser();
+  const rows = [
+    {kind: "positive", category: "environment", reverb_condition: "strong", snr_db: 0, original_order: 2},
+    {kind: "positive", category: "environment", reverb_condition: "none", snr_db: 10, original_order: 3},
+    {kind: "positive", category: "environment", reverb_condition: "none", snr_db: "10.0", original_order: 1},
+    {kind: "positive", category: "music", reverb_condition: "moderate", snr_db: 15, original_order: 1},
+    {kind: "positive", category: "competing_speech", reverb_condition: "none", snr_db: 5, original_order: 1},
+    {kind: "positive", category: "clean", reverb_condition: "none", snr_db: null, original_order: 1},
+    {kind: "positive", category: "clean", reverb_condition: "moderate", original_order: 1},
+    {kind: "negative", category: "environment", snr_db: null},
+    {kind: "negative", category: "music", snr_db: null},
+    {kind: "negative", category: "competing_speech", snr_db: null},
+    {kind: "negative", category: "unlisted"}
+  ];
+  const saved = JSON.stringify(rows), catalog = ui.buildClipFolders(rows);
+  const leaves = folders => Array.from(folders).flatMap(folder => folder.folders ? leaves(folder.folders) : [folder]);
+  assert.equal(catalog.folders.length, 5);
+  assert.deepEqual(Array.from(catalog.defaultFolder.clips), [2, 1]);
+  const listed = leaves(catalog.folders).flatMap(folder => Array.from(folder.clips));
+  assert.deepEqual(listed.sort((a, b) => a - b), rows.map((_, index) => index));
+  assert.ok(leaves(catalog.folders).every(folder => folder.clips.length));
+  assert.equal(JSON.stringify(rows), saved);
+
+  const fallback = ui.buildClipFolders([rows[0], rows[5]]);
+  assert.deepEqual(Array.from(fallback.defaultFolder.clips), [0]);
+  const cleanOnly = ui.buildClipFolders([rows[5]]);
+  assert.deepEqual(Array.from(cleanOnly.defaultFolder.clips), [0]);
+  const empty = ui.buildClipFolders([]);
+  assert.equal(empty.folders.length, 0);
+  assert.equal(empty.defaultFolder, null);
 });
 test("missing, invalid and cache-only recommendations are presented honestly", () => {
   const {ui, rows, elements, headers} = browser(), report = sample(), model = report.models[0];

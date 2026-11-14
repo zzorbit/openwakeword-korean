@@ -228,8 +228,9 @@
 
     function choose(index) {
       if (!open || !ready || !rows[index]) return;
+      const keepOpen = rows[index].keepOpenOnSelect;
       onSelect(index);
-      close(true);
+      if (!keepOpen) close(true);
     }
 
     function setSelected(index, unselectedLabel = "") {
@@ -256,14 +257,15 @@
       row.element.setAttribute("aria-label", value ? `${row.fullLabel} · ${value}` : row.fullLabel);
     }
 
-    function setItems(entries, selectedIndex = 0, unselectedLabel = "") {
-      close();
+    function setItems(entries, selectedIndex = 0, unselectedLabel = "", {keepOpen = false, activeIndex = selectedIndex} = {}) {
+      if (!keepOpen) close();
       selected = -1; active = 0;
       rows = entries.map((entry, index) => {
         const element = document.createElement("div");
         const group = document.createElement("span");
         element.id = `${optionPrefix}-${index}`;
         element.className = "voice-picker-option";
+        if (entry.kind) element.setAttribute("data-entry-kind", entry.kind);
         element.setAttribute("role", "option");
         element.setAttribute("aria-selected", "false");
         const fullLabel = entry.fullLabel || entry.label;
@@ -285,13 +287,18 @@
         }
         element.addEventListener("click", () => choose(index));
         element.addEventListener("pointermove", () => { if (active !== index) highlight(index); });
-        return {element, label: entry.label, fullLabel};
+        return {element, label: entry.label, fullLabel, keepOpenOnSelect: entry.keepOpenOnSelect};
       });
       list.replaceChildren(...rows.map(row => row.element));
       list.removeAttribute("aria-activedescendant");
       entries.forEach((entry, index) => { if (entry.badge) setBadge(index, entry.badge); });
       button.disabled = rows.length === 0;
       setSelected(rows.length ? selectedIndex : -1, unselectedLabel);
+      if (keepOpen && open) {
+        list.scrollTop = 0;
+        if (ready) position();
+        highlight(activeIndex);
+      }
     }
 
     const selectionKeys = ["ArrowDown", "ArrowUp", "Home", "End"];
