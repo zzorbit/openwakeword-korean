@@ -9,6 +9,7 @@
   const levels = [20, 15, 10, 5, 0];
   const strongReverbs = ["moderate", "strong"];
   const strongSnrs = [10, 5, 0];
+  const strongConditionCount = strongReverbs.length * strongSnrs.length * categories.length;
   const worstReverb = "strong";
   const worstSnr = 0;
   const detectionLabels = {baseline: "기본 감지 기준", recommended: "추천 감지 기준"};
@@ -155,6 +156,12 @@
     return validSettings(left) && validSettings(right) && Object.keys(left).length === Object.keys(right).length
       && Object.entries(left).every(([key, value]) => right[key] === value);
   }
+  function matchesDisplayedConditions(conditions) {
+    if (!Array.isArray(conditions) || conditions.length !== strongConditionCount) return false;
+    const declared = new Set(conditions.map(cell => JSON.stringify([cell?.reverb_condition, cell?.category, cell?.snr_db])));
+    return strongReverbs.every(room => categories.every(category =>
+      strongSnrs.every(snr => declared.has(JSON.stringify([room, category, snr])))));
+  }
   function acousticRecall(metric, matchingMetric, rooms, snrs) {
     if (!metric) return undefined;
     const sources = [metric, matchingMetric].filter(Boolean).map(record => ({
@@ -189,6 +196,7 @@
         if (report.runtime_recommendations !== recommendation) return;
         report.runtime_recommendations = result;
         renderOverview(report);
+        renderCriteria(report);
       });
     }
   }
@@ -200,6 +208,7 @@
     const criteria = recommendation?.recommendation_criteria;
     const conditionCount = Array.isArray(search?.hard_conditions) ? search.hard_conditions.length : 0;
     const hasConditionPriority = conditionCount > 0 || recommendation?.candidates?.some(row => row.metrics?.hard_conditions);
+    const matchesDisplay = matchesDisplayedConditions(search?.hard_conditions);
     const counts = Array.isArray(search?.consecutive_frames) ? search.consecutive_frames : [];
     const consecutive = counts.length && counts.every((value, index) => Number.isInteger(value) && value > 0 && (!index || value === counts[index - 1] + 1));
     const values = [
@@ -208,14 +217,21 @@
       ["조용할 때 감지율", finite(criteria?.clean_recall) ? `${percent(criteria.clean_recall)} 이상` : "기록 없음"],
       ["오호출 허용량", finite(criteria?.fa_per_hour) ? `시간당 ${criteria.fa_per_hour}회 이하` : "기록 없음"],
       ["반응 시간", finite(criteria?.latency_p95_s) ? `95%가 ${criteria.latency_p95_s}초 이내` : "기록 없음"],
-      ["우선 비교", hasConditionPriority ? `소음·울림 시험 평균${conditionCount ? ` · ${conditionCount}가지` : ""}` : "기록 없음"]
+      ["우선 비교", hasConditionPriority
+        ? `${matchesDisplay ? "강한 소음·울림" : "소음·울림 시험 평균"}${conditionCount ? ` · ${conditionCount}가지` : ""}`
+        : "기록 없음"]
     ];
     target.replaceChildren();
     for (const [name, value] of values) appendMetric(target, name, value);
     const note = $("searchCriteriaNote");
-    if (note) note.textContent = criteria
-      ? "추천 설정을 비교할 때는 평가에 기록된 소음·울림 시험 조건의 평균 감지율을 사용합니다."
-      : "이 평가에는 추천 기준이 기록되지 않았습니다.";
+    if (note) {
+      if (matchesDisplay) {
+        note.textContent = `추천 설정을 비교할 때는 모델 비교의 ‘강한 소음·울림’과 같은 ${strongConditionCount}가지 조건의 평균 감지율을 사용합니다.`;
+      } else {
+        note.textContent = criteria ? "추천 설정을 비교할 때는 평가에 기록된 소음·울림 시험 조건의 평균 감지율을 사용합니다."
+          : "이 평가에는 추천 기준이 기록되지 않았습니다.";
+      }
+    }
   }
   function appendMetric(list, label, value, rowClass) {
     const item = document.createElement("div"), term = document.createElement("dt"), description = document.createElement("dd");
@@ -292,7 +308,7 @@
     return {
       hard: {title: "강한 소음·울림", paragraphs: [
         `울림: ${strongReverbs.map(reverbLabel).join(", ")}\n소음 크기: 호출어보다 10 dB 또는 5 dB 작게, 또는 호출어와 같은 크기 (SNR ${strongSnrs.map(level => `${level} dB`).join(", ")})`,
-        `총 ${strongReverbs.length * strongSnrs.length * categories.length}가지 조건의 감지율을 같은 비중으로 평균합니다.`
+        `총 ${strongConditionCount}가지 조건의 감지율을 같은 비중으로 평균합니다.`
       ]},
       worst: {title: "최악 조건", paragraphs: [
         `울림: ${reverbLabel(worstReverb)}\n소음 크기: 호출어와 같은 크기 (SNR ${worstSnr} dB)`,
@@ -320,6 +336,7 @@
     const table = body("storySummary"), source = $("overview-source"), modelSelect = $("overview-model");
     if (!table || !source || !modelSelect) return;
     const calibration = report.runtime_recommendations;
+    const matchesDisplay = matchesDisplayedConditions(calibration?.search_policy?.hard_conditions);
     const sharedHelp = metricHelp(calibration?.recommendation_criteria);
     overviewHelp ??= createOverviewHelp();
     const candidates = calibration?.schema_version === 1 && Array.isArray(calibration.candidates) ? calibration.candidates : [];
@@ -373,8 +390,10 @@
       const compareSettings = source.value === "recommended";
       const settingsLabel = compareSettings ? detectionLabels.recommended : detectionLabels.baseline;
       const recommendationLimit = calibration?.recommendation_criteria?.fa_per_hour;
+      const selectionMetric = matchesDisplay ? `모델 비교의 ‘강한 소음·울림’과 같은 ${strongConditionCount}가지 조건`
+        : "추천 비교에 기록된 소음·울림 시험 조건";
       const selection = finite(recommendationLimit) ? [
-        `다른 추천 조건을 충족하는 설정 중 오호출이 시간당 ${recommendationLimit}회 이하인 후보를 먼저 봅니다. 그중 추천 비교에 기록된 소음·울림 시험 조건에서 평균 감지율이 가장 높은 설정을 추천합니다.`,
+        `다른 추천 조건을 충족하는 설정 중 오호출이 시간당 ${recommendationLimit}회 이하인 후보를 먼저 봅니다. 그중 ${selectionMetric}에서 평균 감지율이 가장 높은 설정을 추천합니다.`,
         "상한 이내에 드는 후보가 없으면, 다른 추천 조건을 충족한 설정 중 오호출이 가장 적은 설정을 추천합니다."
       ] : [];
       const explanations = {

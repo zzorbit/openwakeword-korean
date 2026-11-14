@@ -440,9 +440,13 @@ _COMPUTE_DISPATCH_COMPATIBLE_DIGESTS = {
     },
 }
 
-# These versions add report-only SNR 0 diagnostics after gate selection.
-# Their search, thresholds, and evaluation checkpoints remain compatible.
+# These changes leave trained models and score caches compatible. The revised
+# recommendation search has its own policy-keyed output and resume journal.
 _CALIBRATION_REPORT_COMPATIBLE_DIGESTS = {
+    "d36f7a00a20040b451df74846254094e993342c316f917cdc9c2741fcde0a8bd":
+        "247affb60a241181eab12f8c2932f40444437409550c8e4dc2ae56297f48f2b1",
+    "08b9936c561013f6c8afe8ba923e801082b913e163504f273a22648688240155":
+        "56dd92a3ecae2347cad0135d49377e80b7533584a9d9a9d59c4c1c5b0ec4fdd2",
     "17b43d547f62ec5946672a880c44948046072c709494b1a138ad941698c45218":
         "247affb60a241181eab12f8c2932f40444437409550c8e4dc2ae56297f48f2b1",
     "64419394ad173ad9722b7740cd256ebb33622c81e9734e8604eb6a8e3dfb89c9":
@@ -5372,10 +5376,10 @@ class StudioManager:
             return None
         root = Path(state["project"]).resolve().parent
         report = Path(evaluation) / "report.json"
-        from .calibration import (LEGACY_SEARCH_POLICY, SEARCH_POLICY, read_recommendation,
+        from .calibration import (LEGACY_SEARCH_POLICY, PREVIOUS_SEARCH_POLICY, SEARCH_POLICY, read_recommendation,
                                   recommendation_is_available, report_recommendation)
         prefix = "studio_runtime_recommendations_" + digest(report)[:16] + "_"
-        for policy in (SEARCH_POLICY, LEGACY_SEARCH_POLICY):
+        for policy in (SEARCH_POLICY, PREVIOUS_SEARCH_POLICY, LEGACY_SEARCH_POLICY):
             directory = root / "reports" / (prefix + identity(policy)[:12])
             if (directory / "receipt.json").is_file():
                 recommendation = read_recommendation(state["project"], bundle, evaluation, directory, verify_inputs=False)

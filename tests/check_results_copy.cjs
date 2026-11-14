@@ -56,6 +56,9 @@ test("both report layouts put the comparison metrics in the models panel", () =>
   }
 });
 const fullText = element => [element.textContent, ...element.children.map(fullText)].filter(Boolean).join(" ");
+const displayedAcousticConditions = () => ["moderate", "strong"].flatMap(reverb_condition =>
+  [10, 5, 0].flatMap(snr_db => ["environment", "music", "competing_speech"].map(category =>
+    ({reverb_condition, category, snr_db}))));
 function browser({dashboard = false, fetch} = {}) {
   class Element {
     constructor(tag = "div") { this.tagName = tag; this.children = []; this.value = ""; this.textContent = ""; this.disabled = false; this.attributes = {}; this.dataset = {}; this.style = {}; this.listeners = new Map(); this.open = false; }
@@ -629,6 +632,28 @@ test("criteria summarize the archived selection conditions without reusing the d
   headers[0].dispatch("click");
   assert.equal(content.children[1].textContent, "총 18가지 조건의 감지율을 같은 비중으로 평균합니다.");
 });
+test("selection help links to the displayed average only for the exact condition set", () => {
+  const {ui, elements, headers} = browser(), report = sample();
+  const recommendation = {schema_version: 1, method: "joint_cached_hard_conditions_v5",
+    search_policy: {hard_conditions: displayedAcousticConditions().reverse()},
+    recommendation_criteria: {fa_per_hour: 1},
+    candidates: [{id: "mean", runtime: {threshold: .85, consecutive_frames: 1}, metrics: {}}]};
+  report.runtime_recommendations = recommendation;
+  const precedence = () => fullText(elements.get("searchCriteria").children.at(-1));
+  const note = () => elements.get("searchCriteriaNote").textContent;
+  const help = () => { headers[4].dispatch("click"); return fullText(elements.get("overview-help-content")); };
+  ui.renderSummary(report);
+  assert.equal(precedence(), "우선 비교 강한 소음·울림 · 18가지");
+  assert.match(note(), /모델 비교의 ‘강한 소음·울림’과 같은 18가지 조건/);
+  assert.match(help(), /모델 비교의 ‘강한 소음·울림’과 같은 18가지 조건/);
+
+  const conditions = recommendation.search_policy.hard_conditions;
+  conditions[0] = {...conditions[0], reverb_condition: "none"};
+  ui.renderSummary(report);
+  assert.equal(precedence(), "우선 비교 소음·울림 시험 평균 · 18가지");
+  assert.doesNotMatch(note(), /같은 18가지/);
+  assert.match(help(), /추천 비교에 기록된 소음·울림 시험 조건/);
+});
 test("missing displayed acoustic conditions never borrow a different-runtime baseline or archived average", () => {
   const {ui, elements, rows} = browser(), report = sample();
   report.runtime = {threshold: .5, consecutive_frames: 1};
@@ -705,6 +730,10 @@ async function testArchivedDiagnosticLoading() {
   }]));
   original.reverb_conditions = acousticCells(.5);
   report.runtime_recommendations = {schema_version: 1, report_diagnostics_pending: true,
+    search_policy: {hard_conditions: [...displayedAcousticConditions(),
+      {reverb_condition: "none", category: "music", snr_db: 10},
+      {reverb_condition: "strong", category: "clean", snr_db: null}]},
+    recommendation_criteria: {fa_per_hour: 1},
     candidates: [{id: "mean", runtime: {threshold: .9, consecutive_frames: 3}, metrics: {}}]};
   let requests = 0, resolveResponse;
   const {ui, rows, elements} = browser({fetch(url) {
@@ -716,17 +745,20 @@ async function testArchivedDiagnosticLoading() {
   ui.renderSummary(report);
   assert.equal(requests, 1);
   assert.deepEqual(rows("storySummary")[3].slice(3, 5), ["계산 중", "계산 중"]);
+  assert.equal(fullText(elements.get("searchCriteria").children.at(-1)), "우선 비교 소음·울림 시험 평균 · 20가지");
   const source = elements.get("overview-source");
   source.value = "baseline";
   source.onchange();
   assert.deepEqual(rows("storySummary")[3].slice(3, 5), ["50.00%", "50.00%"]);
   const projection = JSON.parse(JSON.stringify(report.runtime_recommendations));
   delete projection.report_diagnostics_pending;
+  projection.search_policy.hard_conditions = displayedAcousticConditions();
   projection.candidates[0].metrics.reverb_conditions = acousticCells(.3);
   resolveResponse({ok: true, json: async () => projection});
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(source.value, "baseline");
   assert.deepEqual(rows("storySummary")[3].slice(3, 5), ["50.00%", "50.00%"]);
+  assert.equal(fullText(elements.get("searchCriteria").children.at(-1)), "우선 비교 강한 소음·울림 · 18가지");
   source.value = "recommended";
   source.onchange();
   assert.deepEqual(rows("storySummary")[3].slice(3, 5), ["30.00%", "30.00%"]);

@@ -18,13 +18,16 @@ from .project import load_project
 from .storage import project_storage
 
 
-METHOD = "joint_cached_hard_conditions_v4"
+METHOD = "joint_cached_hard_conditions_v5"
 COARSE_THRESHOLDS = tuple(i / 100 for i in range(1, 100))
 CONSECUTIVE_COUNTS = (1, 2, 3, 4, 5, 6)
-HARD_CONDITIONS = tuple(
+_LEGACY_HARD_CONDITIONS = tuple(
     [(reverb, category, snr) for reverb in ("none", "moderate", "strong")
      for category in CATEGORIES for snr in (10, 5)]
     + [(reverb, "clean", None) for reverb in ("moderate", "strong")])
+_REPORT_REVERB_LEVELS = ("moderate", "strong")
+HARD_CONDITIONS = tuple((reverb, category, snr) for reverb in _REPORT_REVERB_LEVELS
+                        for category in CATEGORIES for snr in (10, 5, 0))
 LEGACY_SEARCH_POLICY = {
     "method": "joint_cached_hard_conditions_v3",
     "starting_threshold": .5,
@@ -36,15 +39,15 @@ LEGACY_SEARCH_POLICY = {
     "refinement_rounds": 0,
     "max_false_activations_per_hour": 1.,
     "hard_conditions": [{"reverb_condition": reverb, "category": category, "snr_db": snr}
-                        for reverb, category, snr in HARD_CONDITIONS],
+                        for reverb, category, snr in _LEGACY_HARD_CONDITIONS],
     "objective": "Equal-weight mean of all 20 hard-condition recalls; dry Clean and SNR0 are excluded; missing conditions prevent a recommendation",
     "selection_order": ["clean/false-activation/latency/duration protections and complete hard-condition coverage passed", "clean protection passed", "false-activation protection passed", "lower false activations/hour when its protection is missed", "latency protection passed", "negative duration protection passed", "complete hard-condition coverage", "higher hard-condition mean recall", "higher worst hard-condition recall", "lower false activations/hour", "lower primary latency p95", "fewer consecutive frames", "lower threshold"],
     "no_feasible_candidate": "Show the conservative tradeoff separately; preserve the original runtime for microphone testing instead of silently applying the tradeoff",
     "scope": "Best among this declared finite grid; not a global optimum or independent Final result",
 }
-SEARCH_POLICY = dict(
+PREVIOUS_SEARCH_POLICY = dict(
     LEGACY_SEARCH_POLICY,
-    method=METHOD,
+    method="joint_cached_hard_conditions_v4",
     selection_order=[
         "all protections and complete hard-condition coverage passed",
         "only the false-activation limit was exceeded, with a measured rate",
@@ -59,6 +62,10 @@ SEARCH_POLICY = dict(
     no_feasible_candidate="Show the diagnostic comparison and use the original runtime for microphone testing "
     "when the other protections or hard-condition coverage are not met",
 )
+SEARCH_POLICY = dict(PREVIOUS_SEARCH_POLICY, method=METHOD,
+    hard_conditions=[{"reverb_condition": reverb, "category": category, "snr_db": snr}
+                     for reverb, category, snr in HARD_CONDITIONS],
+    objective="Equal-weight mean of 18 recalls across moderate and strong reverberation, SNR 10, 5 and 0 dB, and all three noise categories; missing conditions prevent a recommendation")
 
 
 def _measured_false_alarm_rate(value):
@@ -307,7 +314,7 @@ def read_recommendation(project, bundle, evaluation, output, verify_inputs=True)
                 or completion.get("bundle_sha256") != bindings["source_bundle_manifest_sha256"]):
             raise ValueError("Automatic detection recommendation source completion receipt changed")
     policy_matches = any(result.get("method") == policy["method"] and result.get("search_policy") == policy
-                         for policy in (SEARCH_POLICY, LEGACY_SEARCH_POLICY))
+                         for policy in (SEARCH_POLICY, PREVIOUS_SEARCH_POLICY, LEGACY_SEARCH_POLICY))
     if (result.get("schema_version") != 1 or not policy_matches
             or result.get("bindings") != bindings or receipt.get("bindings") != bindings
             or receipt.get("recommendation_sha256") != digest(directory / "recommendation.json")
@@ -324,9 +331,6 @@ def load_recommendation(project, bundle, evaluation, output, verify_inputs=True)
     still checked against its completion receipt on every call.
     """
     return read_recommendation(project, bundle, evaluation, output, verify_inputs=verify_inputs)
-
-
-_REPORT_REVERB_LEVELS = ("moderate", "strong")
 
 
 def _snr_zero_diagnostics(clips, scores, offsets, candidates, selected):
@@ -466,10 +470,7 @@ def recommend(project, bundle, evaluation, output, progress_callback=None):
     with writer_lock(output):
         declaration_path = output / "search.json"
         if declaration_path.exists():
-            # The previous policy measured exactly the same grid and constraints.
-            # Its unfinished journal can continue under the new ranking.
-            legacy_declaration = dict(declaration, search_policy=LEGACY_SEARCH_POLICY)
-            if read_json(declaration_path) not in (declaration, legacy_declaration):
+            if read_json(declaration_path) != declaration:
                 raise ValueError("Resumable detection search inputs or policy changed; use a new directory")
         elif any(path.name != ".writer.lock" for path in output.iterdir()):
             raise ValueError("Recommendation output is not a matching resumable search")
@@ -538,7 +539,15 @@ def recommend(project, bundle, evaluation, output, progress_callback=None):
                   "adoption_criteria": declaration["adoption_criteria"],
                   "recommendation_criteria": declaration["recommendation_criteria"], "candidates": selected,
                   "selection_applied": False, "network_rerun": False, "Final_used_for_selection": False}
-        result = _add_report_diagnostics(result, _snr_zero_diagnostics(prepared.rows, scores, offsets, candidates, selected))
+        # These cells are already part of the search objective, including at
+        # SNR 0. Keep the detailed report format without replaying them.
+        for candidate in selected:
+            for setting in (candidate, candidate["baseline"]):
+                metrics = setting["metrics"]
+                cells = metrics["hard_conditions"]["conditions"]
+                metrics["reverb_conditions"] = {
+                    reverb: {"conditions": {f"{category}:0": cells[f"{reverb}:{category}:0"] for category in CATEGORIES}}
+                    for reverb in _REPORT_REVERB_LEVELS}
         if _bindings(project, bundle, evaluation) != bindings:
             raise ValueError("Automatic detection recommendation inputs changed during search")
         write_json(output / "recommendation.json", result)

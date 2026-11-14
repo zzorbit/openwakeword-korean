@@ -16,6 +16,11 @@ from korean_openwakeword.tune import iter_replay
 
 SNR_ZERO_CATEGORIES = ("environment", "music", "competing_speech")
 SNR_ZERO_REVERBS = ("moderate", "strong")
+EXPECTED_HARD_CONDITIONS = tuple((reverb, category, snr) for reverb in SNR_ZERO_REVERBS
+                                 for category in SNR_ZERO_CATEGORIES for snr in (10, 5, 0))
+PREVIOUS_HARD_CONDITIONS = tuple((reverb, category, snr) for reverb in ("none", *SNR_ZERO_REVERBS)
+                                 for category in SNR_ZERO_CATEGORIES for snr in (10, 5)) + (
+                                     ("moderate", "clean", None), ("strong", "clean", None))
 
 
 @pytest.mark.parametrize("warmup", [0, .13, 2])
@@ -87,7 +92,7 @@ def experiment(tmp_path, monkeypatch):
     candidates = bundle_candidates(package)
     ids = [row["id"] for row in candidates]
     clips, values, offsets = [], [], [0]
-    conditions = [("none", "clean", None), *calibration.HARD_CONDITIONS]
+    conditions = [("none", "clean", None), *PREVIOUS_HARD_CONDITIONS]
     with_hit_frames = [(reverb, category, snr, 5) for reverb, category, snr in conditions]
     with_hit_frames += [
         ("moderate", "environment", 0, 2), ("moderate", "music", 0, 0), ("moderate", "competing_speech", 0, 1),
@@ -192,23 +197,32 @@ def test_recommendations_per_candidate_and_no_source_mutation(experiment, tmp_pa
         "moderate": {"environment:0": 1., "music:0": 0., "competing_speech:0": 1.},
         "strong": {"environment:0": 1., "music:0": .5, "competing_speech:0": 0.},
     }
-    for setting in (first, first["baseline"]):
+    for setting, expected in ((first, 13.5 / 18), (first["baseline"], 15.5 / 18)):
         hard = setting["metrics"]["hard_conditions"]
-        assert hard["measured_cells"] == hard["expected_cells"] == len(calibration.HARD_CONDITIONS)
-        assert hard["cell_mean"] == hard["worst_recall"] == 1.
+        assert hard["measured_cells"] == hard["expected_cells"] == 18
+        assert hard["cell_mean"] == pytest.approx(expected)
+        assert hard["worst_recall"] == 0.
 
 
 @pytest.mark.parametrize("published_strong", [False, True])
-def test_report_diagnostics_replay_archived_runtimes_without_rewriting_receipt(experiment, tmp_path, published_strong):
+def test_report_diagnostics_replay_archived_runtimes_without_rewriting_receipt(experiment, tmp_path, monkeypatch, published_strong):
     project, bundle, evaluation, ids = experiment
     output = tmp_path / "archived_recommendation"
     recommend(project, bundle, evaluation, output)
     publication, receipt_path = output / "recommendation.json", output / "receipt.json"
     archived = read_json(publication)
+    old_policy = dict(calibration.PREVIOUS_SEARCH_POLICY, coarse_thresholds=[.5, .9], consecutive_frames=[1, 2])
+    monkeypatch.setattr(calibration, "PREVIOUS_SEARCH_POLICY", old_policy)
+    archived.update(method=old_policy["method"], search_policy=old_policy)
     for candidate in archived["candidates"]:
         for setting in (candidate, candidate["baseline"]):
             if published_strong:
-                del setting["metrics"]["reverb_conditions"]["moderate"]
+                groups = setting["metrics"]["reverb_conditions"]
+                del groups["moderate"]
+                groups["strong"]["conditions"] = {
+                    key: {field: row[field] for field in ("calls", "successes", "recall")}
+                    for key, row in groups["strong"]["conditions"].items()
+                }
             else:
                 del setting["metrics"]["reverb_conditions"]
     write_json(publication, archived)
@@ -269,8 +283,7 @@ def test_interrupted_search_resumes_and_source_change_rejected(experiment, tmp_p
         recommend(project, bundle, evaluation, directory)
 
 
-@pytest.mark.parametrize("legacy_policy", [False, True])
-def test_resume_partway_through_fixed_grid_reconstructs_the_same_search(experiment, tmp_path, monkeypatch, legacy_policy):
+def test_resume_partway_through_fixed_grid_reconstructs_the_same_search(experiment, tmp_path):
     project, bundle, evaluation, _ = experiment
     complete = tmp_path / "complete"
     expected = recommend(project, bundle, evaluation, complete)
@@ -280,15 +293,31 @@ def test_resume_partway_through_fixed_grid_reconstructs_the_same_search(experime
             raise InterruptedError("pause partway through the fixed grid")
     with pytest.raises(InterruptedError):
         recommend(project, bundle, evaluation, resumed, interrupt)
-    if legacy_policy:
-        policy = dict(calibration.LEGACY_SEARCH_POLICY, coarse_thresholds=[.5, .9], consecutive_frames=[1, 2])
-        monkeypatch.setattr(calibration, "LEGACY_SEARCH_POLICY", policy)
-        declaration = read_json(resumed / "search.json")
-        write_json(resumed / "search.json", dict(declaration, search_policy=policy))
     actual = recommend(project, bundle, evaluation, resumed)
     assert actual["candidates"] == expected["candidates"]
     assert list(iter_rows(resumed / "comparisons.jsonl")) == list(iter_rows(complete / "comparisons.jsonl"))
     assert read_json(resumed / "recommendation.json")["search_policy"] == calibration.SEARCH_POLICY
+
+
+@pytest.mark.parametrize("policy_name", ["LEGACY_SEARCH_POLICY", "PREVIOUS_SEARCH_POLICY"])
+def test_unfinished_earlier_policy_cannot_resume_in_v5_directory(experiment, tmp_path, policy_name):
+    project, bundle, evaluation, _ = experiment
+    output = tmp_path / "interrupted_search"
+
+    def interrupt(progress):
+        if progress["completed"] == 2:
+            raise InterruptedError("pause before the recommendation is published")
+
+    with pytest.raises(InterruptedError):
+        recommend(project, bundle, evaluation, output, interrupt)
+    declaration = read_json(output / "search.json")
+    policy = dict(getattr(calibration, policy_name), coarse_thresholds=[.5, .9], consecutive_frames=[1, 2])
+    write_json(output / "search.json", dict(declaration, search_policy=policy))
+    original = {path: path.read_bytes() for path in output.iterdir() if path.is_file()}
+    with pytest.raises(ValueError, match="inputs or policy changed"):
+        recommend(project, bundle, evaluation, output)
+    assert {path: path.read_bytes() for path in original} == original
+    assert not (output / "receipt.json").exists()
 
 
 def test_all_counts_use_exactly_the_declared_fixed_grid_without_refinement(experiment, tmp_path):
@@ -316,6 +345,16 @@ def test_default_threshold_grid_has_only_one_hundredth_steps():
     assert calibration.SEARCH_POLICY["refinement"] == "none"
     assert calibration.SEARCH_POLICY["refinement_rounds"] == 0
     assert len(expected) * len(calibration.CONSECUTIVE_COUNTS) == 594
+
+
+def test_v5_declares_exactly_the_eighteen_reverberant_noise_conditions():
+    policy = calibration.SEARCH_POLICY
+    assert policy["method"] == calibration.METHOD == "joint_cached_hard_conditions_v5"
+    expected = set(EXPECTED_HARD_CONDITIONS)
+    declared = policy["hard_conditions"]
+    assert len(declared) == len(calibration.HARD_CONDITIONS) == 18
+    assert set(calibration.HARD_CONDITIONS) == expected
+    assert {(row["reverb_condition"], row["category"], row["snr_db"]) for row in declared} == expected
 
 
 @pytest.mark.parametrize("false_alarms", [1, 2])
@@ -369,6 +408,49 @@ def test_recommendation_ceiling_is_distinct_from_original_adoption(experiment, t
     assert all(digest(path) == sha for path, sha in protected.items())
 
 
+def test_v5_selects_the_best_gate_when_snr_zero_breaks_legacy_tie(experiment, tmp_path, monkeypatch):
+    project, bundle, evaluation, _ = experiment
+    clips = read_json(evaluation / "clips.json")
+    with np.load(evaluation / "scores.npz", allow_pickle=False) as archive:
+        scores, offsets, ids = archive["scores"], archive["offsets"], archive["model_ids"]
+    # One FA/hour is eligible for recommendation. With exactly the same 10 dB
+    # and 5 dB recall, the legacy policy chose the gate with zero false alarms.
+    warmup = verify_bundle(bundle)["runtime"]["warmup_s"]
+    negative_length = int(round((3600 + warmup) / .08))
+    negative = np.zeros((negative_length, len(ids)), np.float32)
+    negative[29, 0] = .7
+    scores = np.concatenate([scores[:offsets[-2]], negative])
+    offsets[-1] = len(scores)
+    clips[-1].update(duration_s=negative_length * .08, eligible_seconds=3600.)
+    np.savez_compressed(evaluation / "scores.npz", scores=scores, offsets=offsets, model_ids=ids)
+    write_json(evaluation / "clips.json", clips)
+    report = read_json(evaluation / "report.json")
+    write_json(evaluation / "report.json", dict(report, score_cache_sha256=digest(evaluation / "scores.npz")))
+    receipt = read_json(evaluation / "receipt.json")
+    receipt.update(report_sha256=digest(evaluation / "report.json"), clips_sha256=digest(evaluation / "clips.json"))
+    write_json(evaluation / "receipt.json", receipt)
+
+    package = verify_bundle(bundle)
+    with monkeypatch.context() as legacy:
+        legacy.setattr(calibration, "HARD_CONDITIONS", PREVIOUS_HARD_CONDITIONS)
+        prepared = PreparedScores(clips, offsets, package["runtime"])
+        rows = []
+        for count in (1, 2):
+            runtime = dict(package["runtime"], threshold=.5, consecutive_frames=count)
+            metrics = prepared.summary(scores[:, 0], .5, count, bundle_candidates(package)[0])
+            checks = calibration._constraint_checks(metrics, calibration.recommendation_criteria(read_json(project)))
+            assert all(checks.values())
+            assert metrics["hard_conditions"]["measured_cells"] == 20
+            assert metrics["hard_conditions"]["cell_mean"] == 1.
+            rows.append({"runtime": runtime, "metrics": metrics, "constraint_checks": checks})
+    assert max(rows, key=calibration._rank)["runtime"]["consecutive_frames"] == 2
+
+    preferred = recommend(project, bundle, evaluation, tmp_path / "fresh_policy")["candidates"][0]
+    assert preferred["runtime"]["consecutive_frames"] == 1
+    assert preferred["metrics"]["negative"]["fa_per_hour"] == 1.
+    assert preferred["metrics"]["hard_conditions"]["cell_mean"] == pytest.approx(15.5 / 18)
+
+
 def test_gpu_cache_is_not_mislabeled_cpu_verified(experiment, tmp_path):
     project, bundle, evaluation, _ = experiment
     report = read_json(evaluation / "report.json")
@@ -420,25 +502,27 @@ def test_hard_conditions_have_equal_weight_and_easy_or_unknown_conditions_do_not
                       "snr_db": snr, "reverb_condition": reverb, "eligible_seconds": .32,
                       "calls": [{"start_s": .08, "end_s": .24}]})
         values.extend([0, float(success), 0, 0])
-    for index, condition in enumerate(calibration.HARD_CONDITIONS):
-        for _ in range(100 if index == 0 else 1):
-            add(condition, index == 0)
-    # Extra easy, diagnostic or unknown rooms do not dilute the hard objective.
+    winning_cell = ("strong", "environment", 0)
+    for condition in EXPECTED_HARD_CONDITIONS:
+        for _ in range(100 if condition == winning_cell else 1):
+            add(condition, condition == winning_cell)
+    # Dry, reverb-only, and other SNRs do not contribute to the hard objective.
     for condition in [("none", "clean", None), ("none", "environment", 20),
-                      ("strong", "music", 0), ("unknown", "environment", 5)]:
+                      ("none", "music", 5), ("none", "music", 0), ("moderate", "clean", None),
+                      ("strong", "music", 15), ("unknown", "environment", 5)]:
         for _ in range(40):
             add(condition, True)
     prepared = PreparedScores(clips, np.arange(0, len(values) + 1, 4), runtime)
     summary = prepared.summary(np.asarray(values), .5, 1, {"id": "head", "kind": "single"})
     hard = summary["hard_conditions"]
-    assert hard["complete"] and hard["expected_cells"] == hard["measured_cells"] == 20
-    assert hard["cell_mean"] == pytest.approx(1 / 20)
+    assert hard["complete"] and hard["expected_cells"] == hard["measured_cells"] == 18
+    assert hard["cell_mean"] == pytest.approx(1 / 18)
     assert hard["worst_recall"] == 0
-    assert hard["conditions"]["none:environment:10"]["calls"] == 100
+    assert hard["conditions"]["strong:environment:0"]["calls"] == 100
     assert summary["all_positive"]["recall"] > .8  # pooled recall is a different quantity
 
 
-@pytest.mark.parametrize("reverb", ["none", "unknown"])
+@pytest.mark.parametrize("reverb", ["moderate", "none", "unknown"])
 def test_missing_reverb_coverage_is_not_a_zero_or_partial_average(reverb):
     runtime = {"warmup_s": 0, "cooldown_s": 0, "call_postroll_s": .1}
     clips = [{"sample_id": "one", "kind": "positive", "category": "environment", "snr_db": 10,
@@ -447,8 +531,8 @@ def test_missing_reverb_coverage_is_not_a_zero_or_partial_average(reverb):
     metrics = prepared.summary(np.asarray([0., 1., 0., 0.]), .5, 1, {"id": "head", "kind": "single"})
     hard = metrics["hard_conditions"]
     assert not hard["complete"] and hard["cell_mean"] is None and hard["worst_recall"] is None
-    assert hard["measured_cells"] == (1 if reverb == "none" else 0)
-    assert "strong:clean:none" in hard["missing_conditions"]
+    assert hard["measured_cells"] == (1 if reverb == "moderate" else 0)
+    assert "strong:music:0" in hard["missing_conditions"]
     targets = {"clean_recall": .98, "fa_per_hour": .1, "latency_p95_s": .5, "minimum_negative_hours": 20}
     assert not calibration._constraint_checks(metrics, targets)["hard_conditions"]
 
@@ -519,11 +603,12 @@ def test_legacy_recommendation_uses_the_measured_false_alarm_exception_only():
     assert calibration.recommendation_is_available({})
 
 
-def test_completed_legacy_policy_is_verified_and_never_rewritten(experiment, tmp_path, monkeypatch):
+@pytest.mark.parametrize("policy_name", ["LEGACY_SEARCH_POLICY", "PREVIOUS_SEARCH_POLICY"])
+def test_completed_legacy_policy_is_verified_and_never_rewritten(experiment, tmp_path, monkeypatch, policy_name):
     project, bundle, evaluation, _ = experiment
     directory = tmp_path / "legacy"
-    policy = dict(calibration.LEGACY_SEARCH_POLICY, coarse_thresholds=[.5, .9], consecutive_frames=[1, 2])
-    monkeypatch.setattr(calibration, "LEGACY_SEARCH_POLICY", policy)
+    policy = dict(getattr(calibration, policy_name), coarse_thresholds=[.5, .9], consecutive_frames=[1, 2])
+    monkeypatch.setattr(calibration, policy_name, policy)
     recommend(project, bundle, evaluation, directory)
     publication, receipt_path = directory / "recommendation.json", directory / "receipt.json"
     legacy, receipt = read_json(publication), read_json(receipt_path)
