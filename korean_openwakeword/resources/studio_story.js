@@ -43,7 +43,7 @@
     generate: "positive-generation", positives: "positive-generation", positive_review: "pronunciation", hard_phrases: "phrases",
     hard_pilot: "hard-review", hard_generation: "hard-generation", hard_review: "hard-review", hard_connect: "hard-review",
     features: "features", train: "training", training: "training", package: "training",
-    evaluate: "evaluation", development: "evaluation", evaluation: "evaluation", test: "results", results: "results",
+    evaluate: "evaluation", development: "evaluation", evaluation: "evaluation", test: "results", results: "evaluation",
   };
   const prepostOrder = definitions.map(([id]) => id);
   const order = prepostOrder.filter(id => id !== "call-pilot-generation" && id !== "call-pilot-review");
@@ -110,9 +110,14 @@
   ];
   const navigationAfterHard = [
     ["features", ["features"]], ["training", ["training", "package"]],
-    ["evaluation", ["development", "evaluation"]], ["results", ["results"]],
+    ["evaluation", ["development", "evaluation", "results"]],
   ];
+  const reportAwaitingNext = project => {
+    const checkpoint = navigationCheckpoint(project);
+    return done(project?.status) && checkpoint?.step === "evaluation" && checkpoint.state === "awaiting_next";
+  };
   const stageStep = project => {
+    if (reportAwaitingNext(project)) return "evaluation";
     if (done(project?.status)) return "results";
     if (referencePreparationReached(project) && project.reference_preparation.ready !== true) return "voices";
     const checkpoint = navigationCheckpoint(project);
@@ -146,6 +151,7 @@
   function frontier(project) {
     const screens = displayOrder(project);
     if (!project) return screens.indexOf("materials");
+    if (reportAwaitingNext(project)) return screens.indexOf("evaluation");
     if (done(project.status)) return screens.indexOf((project.results?.mic_url || project.mic_url) ? "microphone" : "results");
     if (referencePreparationReached(project) && project.reference_preparation.ready !== true) return screens.indexOf("voices");
     // Only actual current/completed backend stages unlock later screens.
@@ -465,7 +471,7 @@
     let preflightResumeIntent = null, preflightPickerRequest = null, preflightPickerLastRequest = 0;
     let preflightHeightReceived = false, preflightStateReceived = false;
     let preflightFramePhase = null;
-    let hardReviewArrivalPending = false, hardReviewRevealFailed = false, resultPreparationSeen = false;
+    let hardReviewArrivalPending = false, hardReviewRevealFailed = false;
     let legacyPilotSeen = false;
     const reviewWirePhase = project => (callReviewRoute(project)?.phase || preflightFramePhase) === "hard" ? { phase: "hard" } : {};
     let repairGenerationSeen = "", repairReviewStaged = "", repairReviewConcealed = "", repairRevealFailed = "";
@@ -1353,7 +1359,10 @@
         && ["ready", "idle", "pending", "created"].includes(project.status));
     }
     function releaseStep(project) {
-      if (!project || humanGate(project) || project.status !== "paused") return "";
+      if (!project || humanGate(project)) return "";
+      if (reportAwaitingNext(project)) return current === "evaluation" && !project.error
+        && chapterUrl(project.results?.url || project.results_url) ? "evaluation" : "";
+      if (project.status !== "paused") return "";
       if (["voices", "voice-listening"].includes(current) && referencePreparationNeeded(project) && project.reference_preparation.ready !== true) return "";
       const checkpoint = navigationCheckpoint(project);
       if (checkpoint?.state === "awaiting_next") {
@@ -1717,7 +1726,10 @@
     function workRows(project, historical, active, completed) {
       if (connectingHard(project)) return [{ label: "유사어 학습 자료 연결", statusText: "확인 중", indeterminate: true, active: true }];
       const stage = stageId(project);
-      if (current === "results" && stage === "results" && !historical && !completed) {
+      if (current === "evaluation" && reportAwaitingNext(project)) {
+        return [{ label: "학습 결과 정리", statusText: "완료", completed: true }];
+      }
+      if (current === "evaluation" && stage === "results" && !historical && !completed) {
         return [preparationRow(project, "학습 결과 정리", active, "정리 중")];
       }
       if (repairProgressVisible(project)) {
@@ -2440,7 +2452,7 @@
       if (key !== projectKey) {
         bridge.clearNoticeAction?.(reopenReviewAction);
         hardConnectionIntent = null;
-        hardReviewArrivalPending = false; hardReviewRevealFailed = false; resultPreparationSeen = false; legacyPilotSeen = false;
+        hardReviewArrivalPending = false; hardReviewRevealFailed = false; legacyPilotSeen = false;
         const createdHere = transitionSession?.createdProject === key && Boolean(key) && key !== "setup";
         pauseMedia(); if (!createdHere) stopTransition(); projectKey = key; following = true; materialKey = "";
         referenceReviewComplete = false; clearReferenceGroup(); clearReferenceHeight(); referenceMode = null;
@@ -2526,17 +2538,7 @@
       shell.classList.toggle("synthesis-chapter", synthesisChapter);
       shell.classList.toggle("post-repair-generating", repairProgressVisible(project));
       shell.classList.toggle("hard-connecting", connectingHard(project));
-      const preparingResults = Boolean(project && current === "results" && !done(project.status) && stageStep(project) === "results");
-      if (preparingResults) resultPreparationSeen = true;
-      else if (resultPreparationSeen && current === "results" && done(project?.status)) {
-        resultPreparationSeen = false;
-        if (!transitioning) {
-          const session = beginTransition(false);
-          panel.classList.add("is-concealed");
-          void runTransition(session);
-        }
-      }
-      shell.classList.toggle("preparing-results", preparingResults);
+      const preparingResults = current === "evaluation" && reviewStage === "results" && !done(project?.status);
       const definition = definitions.find(([id]) => id === current);
       const [, title = "학습 상태", description = "현재 작업 상태를 확인해 주세요."] = definition || [];
       const needsToolChoice = waitingToolChoice(project);
@@ -2561,7 +2563,8 @@
             : `적합 판정 ${retained}개는 보존했습니다. 다시 생성한 ${count ?? "음원"}${count === null ? "" : "개"}만 끝까지 듣고 검수하세요.`;
         }
       }
-      if (preparingResults) subtitle.textContent = "학습 결과를 정리하고 모델별 감지 설정을 비교합니다.";
+      if (preparingResults) subtitle.textContent = "채점을 마쳤습니다. 학습 결과를 정리합니다.";
+      else if (current === "evaluation" && reportAwaitingNext(project)) subtitle.textContent = "다음을 눌러 학습 결과를 확인하세요.";
       if (connectingHard(project)) subtitle.textContent = "검수한 유사어를 학습 자료에 연결하고 원본의 무결성을 확인하고 있습니다.";
       document.title = definition ? title : "한국어 호출어 학습";
       logButton.hidden = !project;
@@ -2647,12 +2650,11 @@
         // selected preset or by the setup form's advanced-value overrides.
         $("advanced").hidden = true;
         referencePreview.open = current === "voice-listening" && Boolean(project.reference_preview?.url);
-        if (preparingResults) setView("overview");
-        else if (current === "voice-listening") setView("review", "reference");
+        if (current === "voice-listening") setView("review", "reference");
         else if (current === "results" || current === "microphone") setView(current === "microphone" ? "mic" : "results");
         else if (!historical && (project.review || project.input)) setView("review", "required");
         else setView("overview");
-        const frameStep = !preparingResults && ["results", "microphone"].includes(current) && Boolean(project.results?.url || project.results_url);
+        const frameStep = done(project.status) && ["results", "microphone"].includes(current) && Boolean(resultsFrameUrl(project));
         results.hidden = !frameStep || !(project.results?.url || project.results_url);
         review.hidden = historical || frameStep || !project.review || running(project.status) || repairProgressVisible(project)
           || currentPronunciationStage(project) && !reviewingPreflight(project)

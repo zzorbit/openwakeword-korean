@@ -1,11 +1,12 @@
 """Opt-in story navigation pauses real work, never computational/review gates."""
+import json
 from pathlib import Path
 
 import pytest
 
 from korean_openwakeword import studio
 from korean_openwakeword.common import digest, read_json, write_json
-from test_korean_library_studio import create, manager  # noqa: F401
+from test_korean_library_studio import create, http_server, manager  # noqa: F401
 
 
 GROUPS = (
@@ -15,9 +16,21 @@ GROUPS = (
     ("positive-generation", ("positives",)), ("pronunciation", ("positive_review",)),
     ("phrases", ("hard_phrases",)), ("hard-generation", ("hard_generation",)),
     ("hard-review", ("hard_review", "hard_connect")), ("features", ("features",)),
-    ("training", ("training", "package")), ("evaluation", ("development", "evaluation")),
-    ("results", ("results",)),
+    ("training", ("training", "package")), ("evaluation", ("development", "evaluation", "results")),
 )
+
+
+def finish_report(worker):
+    root = Path(read_json(worker.request_path)["project"]).parent
+    site = root / "reports" / "studio_results"
+    site.mkdir(parents=True, exist_ok=True)
+    index = site / "index.html"
+    index.write_text("<h1>Prepared test report</h1>", encoding="utf-8")
+    (site / "results-data.js").write_text("window.KOWW_RESULTS = {};", encoding="utf-8")
+    provenance = site / "provenance.json"
+    write_json(provenance, {})
+    worker.finish({"state": "completed", "result": {"site": str(index)}, "artifacts": [str(provenance)]},
+                  artifact_bindings=[{"path": str(provenance), "sha256": digest(provenance)}])
 
 
 def finish_group(manager, project_id, group, *, finish_last=True):
@@ -28,7 +41,10 @@ def finish_group(manager, project_id, group, *, finish_last=True):
         assert read_json(worker.request_path)["stage"] == stage
         if number == len(group[1]) - 1 and not finish_last:
             break
-        worker.finish()
+        if stage == "results":
+            finish_report(worker)
+        else:
+            worker.finish()
         manager.tick()
     return manager._load(project_id)
 
@@ -51,21 +67,152 @@ def test_each_story_group_holds_for_next_and_keeps_computation_and_approval_unch
         assert state["navigation_checkpoint"]["step"] == group[0]
         assert state["execution_contract"] == contract
         assert len(manager.workers.calls) == finished
-        if group[0] == "results":
-            assert state["status"] == "completed" and state["navigation_checkpoint"]["state"] == "completed"
-        else:
-            assert state["status"] == "paused" and state["navigation_checkpoint"]["state"] == "awaiting_next"
-            assert state["auto_continue"] is False
+        assert state["status"] == ("completed" if group[0] == "evaluation" else "paused")
+        assert state["navigation_checkpoint"]["state"] == "awaiting_next"
+        assert state["auto_continue"] is False
         before = manager._path(project["id"]).read_bytes()
         manager.tick(); manager.snapshot(); manager.tick()
         assert manager._path(project["id"]).read_bytes() == before
         assert len(manager.workers.calls) == finished
-    assert manager.start(project["id"])["status"] == "completed"
+    opened = manager.start(project["id"])
+    assert opened["status"] == "completed"
+    assert opened["navigation_checkpoint"] == {"policy": "explicit_story_v1", "step": "evaluation", "state": "completed"}
     assert len(manager.workers.calls) == 20
     assert {path: digest(path) for path in protected} == protected
     for worker in manager.workers.items:
         request = read_json(worker.request_path)
         assert "navigation_checkpoint" not in request and "navigation_checkpoint" not in request["context"]
+
+
+def test_report_preparation_failure_resumes_only_report_and_next_opens_the_finished_site(manager, http_server):
+    project_id = create(manager, navigation_checkpoints=True)["id"]
+    for group in GROUPS[:-1]:
+        finish_group(manager, project_id, group)
+    state = finish_group(manager, project_id, GROUPS[-1], finish_last=False)
+    evaluation_history = state["history"][-1]
+    assert evaluation_history["stage"] == "evaluation"
+    assert state["navigation_checkpoint"]["state"] == "running"
+    assert state["job"]["stage"] == "results"
+    assert "results" not in manager.describe(state)
+    assert http_server(f"/results/{project_id}/")[0] == 400
+
+    manager.workers.items[-1].finish(error={"message": "temporary report export failure"})
+    manager.tick()
+    failed = manager._load(project_id)
+    assert failed["status"] == "error" and failed["history"][-2] == evaluation_history
+    assert failed["navigation_checkpoint"]["step"] == "evaluation"
+    resumed = manager.start(project_id)
+    assert resumed["status"] == "running" and resumed["stage_id"] == "results"
+    assert read_json(manager.workers.items[-1].request_path)["stage"] == "results"
+    finish_report(manager.workers.items[-1])
+    manager.tick()
+
+    ready = manager.describe(manager._load(project_id))
+    assert ready["status"] == "completed" and ready["navigation_checkpoint"]["state"] == "awaiting_next"
+    completed_at = manager._load(project_id)["completed_at"]
+    calls = len(manager.workers.calls)
+    status, body, _ = http_server(f"/api/projects/{project_id}/start", "POST", {}, headers={"X-Koww-Token": manager.token})
+    assert status == 200
+    opened = json.loads(body)
+    assert opened["navigation_checkpoint"]["state"] == "completed"
+    assert opened["results"]["url"] == ready["results"]["url"]
+    assert http_server(opened["results"]["url"])[0] == 200
+    assert http_server(opened["results"]["url"] + "results-data.js")[0] == 200
+    assert manager._load(project_id)["completed_at"] == completed_at
+    assert len(manager.workers.calls) == calls
+
+
+@pytest.mark.parametrize("step,phase", [("evaluation", "awaiting_next"), ("results", "running")])
+def test_unfinished_legacy_results_checkpoint_migrates_without_rerunning_evaluation(manager, monkeypatch, step, phase):
+    project_id = create(manager, navigation_checkpoints=True)["id"]
+    for group in GROUPS[:-1]:
+        finish_group(manager, project_id, group)
+    finish_group(manager, project_id, ("evaluation", ("development", "evaluation")), finish_last=False)
+    manager.pause(project_id)
+    manager.workers.items[-1].finish()
+    manager.tick()
+    old = manager._load(project_id)
+    old["navigation_checkpoint"].update(step=step, state=phase)
+    manager._save(old)
+    monkeypatch.setattr(studio, "_implementation", lambda: "merged-evaluation-report")
+    manager._implementation_id = studio._implementation()
+    worker_count = len(manager.workers.calls)
+
+    migrated = manager.migrate(project_id)
+    assert migrated["status"] == "paused" and migrated["stage_id"] == "results"
+    assert migrated["navigation_checkpoint"] == {"policy": "explicit_story_v1", "step": "evaluation", "state": "running"}
+    new = manager._load(project_id)
+    assert new["history"] == old["history"] and new["results"] == old["results"]
+    assert new["auto_continue"] is False and len(manager.workers.calls) == worker_count
+    assert manager.start(project_id)["stage_id"] == "results"
+    assert len(manager.workers.calls) == worker_count + 1
+    assert read_json(manager.workers.items[-1].request_path)["stage"] == "results"
+
+
+def test_existing_completed_report_remains_unchanged_and_tampered_new_receipt_cannot_release(manager):
+    project_id = create(manager, navigation_checkpoints=True)["id"]
+    for group in GROUPS:
+        state = finish_group(manager, project_id, group)
+    result = Path(state["history"][-1]["result"])
+    original = result.read_bytes()
+    result.write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="기록이 변경"):
+        manager.start(project_id)
+    result.write_bytes(original)
+    site = Path(state["results"]["results"]["result"]["site"]).parent
+    boot = site / "results-data.js"
+    boot_content = boot.read_bytes()
+    boot.unlink()
+    with pytest.raises(ValueError, match="결과 파일"):
+        manager.start(project_id)
+    boot.write_bytes(boot_content)
+    provenance = site / "provenance.json"
+    provenance_content = provenance.read_bytes()
+    write_json(provenance, {"changed": True})
+    with pytest.raises(ValueError, match="provenance.json"):
+        manager.start(project_id)
+    provenance.write_bytes(provenance_content)
+    state["navigation_checkpoint"].update(step="results", state="completed")
+    manager._save(state)
+    before = manager._path(project_id).read_bytes()
+    assert manager.migrate(project_id)["navigation_checkpoint"]["step"] == "results"
+    assert manager.start(project_id)["navigation_checkpoint"]["state"] == "completed"
+    assert manager._path(project_id).read_bytes() == before
+    assert len(manager.workers.calls) == len(state["plan"])
+
+
+def test_recover_completed_legacy_report_waits_for_next_without_new_worker(manager):
+    project_id = create(manager, navigation_checkpoints=True)["id"]
+    for group in GROUPS[:-1]:
+        finish_group(manager, project_id, group)
+    old = finish_group(manager, project_id, GROUPS[-1], finish_last=False)
+    old["navigation_checkpoint"]["step"] = "results"
+    manager._save(old)
+    finish_report(manager.workers.items[-1])
+    calls = len(manager.workers.calls)
+
+    recovered = studio.StudioManager(manager.workspace, popen=manager.workers)
+    try:
+        ready = recovered.describe(recovered._load(project_id))
+        assert ready["status"] == "completed" and ready["results"]["url"]
+        assert ready["navigation_checkpoint"] == {"policy": "explicit_story_v1", "step": "evaluation", "state": "awaiting_next"}
+        assert recovered.start(project_id)["navigation_checkpoint"]["state"] == "completed"
+        assert len(manager.workers.calls) == calls
+    finally:
+        recovered.close()
+
+
+def test_a_report_display_marker_without_bound_receipts_cannot_open_the_report(manager):
+    project_id = create(manager, navigation_checkpoints=True)["id"]
+    state = manager._load(project_id)
+    state.update(index=len(state["plan"]), status="completed")
+    state["navigation_checkpoint"].update(step="evaluation", state="awaiting_next")
+    state["results"] = {row["id"]: {"state": "completed"} for row in state["plan"]}
+    manager._save(state)
+    with pytest.raises(ValueError, match="학습 결과 준비 기록"):
+        manager.start(project_id)
+    assert manager._load(project_id)["navigation_checkpoint"]["state"] == "awaiting_next"
+    assert not manager.workers.calls
 
 
 def test_pausing_inside_voice_preparation_resumes_same_group_then_waits_before_pilot(manager):

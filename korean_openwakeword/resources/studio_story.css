@@ -257,7 +257,6 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-live #results-section{display:flex;flex-direction:column;min-height:0;flex:1 1 0}
 .story-live #results-section>.section-heading,.story-live #results-note,.story-live #results-section>.result-tabs{display:none}
 .story-shell .story-live .work-section iframe#result-frame{width:100%;height:0;min-height:0;max-height:100%;border:0;border-radius:0;margin:0;flex:1 1 0;background:transparent}
-.story-shell.preparing-results[data-step="results"] :is(.story-content,.story-live){flex:0 1 auto;overflow:visible}
 .story-live #evaluation-coverage{flex:none;font-size:14px;line-height:20px;max-height:90px;overflow:auto;margin:0 0 8px;padding:0;border:0}
 .story-loader{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:12px;color:#dce3ed;font:400 18px/26px system-ui,"Malgun Gothic",sans-serif;pointer-events:none}
 .story-loader.is-entering{animation:story-loader-reveal var(--story-fade-duration) ease-out both}

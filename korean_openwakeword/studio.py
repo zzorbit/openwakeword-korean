@@ -44,8 +44,7 @@ _NAVIGATION_START = (
 _NAVIGATION_END = (
     ("features", ("features",)),
     ("training", ("training", "package")),
-    ("evaluation", ("development", "evaluation")),
-    ("results", ("results",)),
+    ("evaluation", ("development", "evaluation", "results")),
 )
 _LEGACY_TRAINING_PREPARATION_PHASES = {
     "feature_validation", "device_selection", "model_initialization", "gpu_cache_loading",
@@ -1283,6 +1282,10 @@ class StudioManager:
                     try:
                         if not self._finish_job(state):
                             state.update(status="interrupted", next_action="완료한 자료를 보존했습니다. 이어서 진행을 누르세요.")
+                        elif (state["status"] == "ready" and (state.get("navigation_checkpoint") or {}).get("step") == "evaluation"
+                              and state["plan"][state["index"]]["id"] == "results"):
+                            state.update(status="paused", auto_continue=False,
+                                         next_action="재개를 누르면 학습 결과를 준비합니다.")
                     except (OSError, ValueError, KeyError) as error:
                         state.update(status="error", auto_continue=False, error={"message": str(error), "type": type(error).__name__},
                                      next_action="이전 작업의 완료 근거를 확인해야 합니다. 원본은 보존했습니다.")
@@ -1935,6 +1938,7 @@ class StudioManager:
             state["execution_contract"] = {**self._execution_contract,
                 "settings_sha256": identity(state["settings"]), "plan_sha256": identity(state["plan"])}
             state.setdefault("migrations", []).append({"path": str(receipt), "sha256": digest(receipt)})
+            self._merge_results_checkpoint(state)
             if prior_cuda_failure:
                 state.update(status="paused", auto_continue=False, error=None, evaluation_retry_pending=True,
                              next_action="선택한 장치로 평가를 다시 시작하려면 재개를 누르세요.")
@@ -2038,6 +2042,37 @@ class StudioManager:
             bounds[step] = (start, start + len(stages))
             start += len(stages)
         return bounds
+
+    @staticmethod
+    def _merge_results_checkpoint(state):
+        """Carry unfinished reports across the old evaluation/results chapter boundary."""
+        checkpoint = state.get("navigation_checkpoint") or {}
+        index, plan = state["index"], state["plan"]
+        if (isinstance(checkpoint, dict) and checkpoint.get("policy") == "explicit_story_v1" and index < len(plan)
+                and plan[index]["id"] == "results"
+                and (checkpoint.get("step"), checkpoint.get("state")) in
+                (("evaluation", "awaiting_next"), ("results", "running"))):
+            checkpoint.update(step="evaluation", state="running")
+            if state["status"] == "paused" and not state.get("error"):
+                state["next_action"] = "재개를 누르면 학습 결과를 준비합니다."
+
+    def _verify_results_ready_to_open(self, state):
+        if state["index"] != len(state["plan"]) or not self._checkpoint_prefix_complete(state, state["index"]):
+            raise ValueError("학습 결과 준비 기록을 확인하지 못했습니다.")
+        root = Path(state["project"]).parent.resolve()
+        result = self._history_result(state, "results") or {}
+        last = state["history"][-1]
+        site = resolved(root, result.get("site", ""))
+        if (last["stage"] != "results" or site.name != "index.html" or not site.is_relative_to(root / "reports")
+                or not site.is_file() or not site.with_name("results-data.js").is_file()):
+            raise ValueError("준비된 학습 결과 파일을 찾지 못했습니다.")
+        provenance = site.with_name("provenance.json")
+        receipt = read_json(last["result"])
+        binding = next((entry for entry in receipt.get("artifact_bindings", [])
+                        if resolved(root, entry["path"]) == provenance), None)
+        if not binding:
+            raise ValueError("학습 결과의 완료 기록을 찾지 못했습니다.")
+        bound_file(root, binding)
 
     def _navigation_checkpoint_transition(self, state):
         checkpoint = state.get("navigation_checkpoint")
@@ -2199,6 +2234,9 @@ class StudioManager:
         if navigation and state["status"] in ("ready", "completed"):
             if not isinstance(navigation, dict) or navigation.get("policy") != "explicit_story_v1":
                 raise ValueError("화면 진행 확인 기록이 올바르지 않습니다.")
+            if job["stage"] == "results" and navigation.get("step") == "results" and navigation.get("state") == "running":
+                # A report worker from before the update may finish while the server is stopped.
+                navigation["step"] = "evaluation"
             bounds = self._navigation_bounds(state)
             step = navigation.get("step")
             if step not in bounds or navigation.get("state") != "running":
@@ -2207,7 +2245,8 @@ class StudioManager:
                 if not self._checkpoint_prefix_complete(state, state["index"]):
                     raise ValueError("해당 화면의 작업 완료 근거를 확인할 수 없습니다.")
                 if state["status"] == "completed":
-                    navigation["state"] = "completed"
+                    navigation["state"] = "awaiting_next"
+                    state["next_action"] = "학습 결과를 준비했습니다. 다음을 누르세요."
                 else:
                     navigation["state"] = "awaiting_next"
                     state.update(status="paused", auto_continue=False,
@@ -2280,6 +2319,13 @@ class StudioManager:
             if retry_failed_generation and (not retry or self._job_alive(state.get("job") or {})):
                 raise ValueError("다시 생성할 음성이 없습니다. 현재 작업 상태를 확인하세요.")
             if state["status"] == "completed":
+                checkpoint = state.get("navigation_checkpoint") or {}
+                if checkpoint == {"policy": "explicit_story_v1", "step": "evaluation", "state": "awaiting_next"}:
+                    self._verify_results_ready_to_open(state)
+                    checkpoint["state"] = "completed"
+                    state["next_action"] = "학습 결과를 확인하세요."
+                    state["updated_at"] = now()
+                    write_json(self._path(project_id), state)
                 return self.describe(state)
             self._guard_config(state)
             if self._reference_preparation_job_alive(state):

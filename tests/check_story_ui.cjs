@@ -781,13 +781,14 @@ async function main() {
     ["positive-generation", ["positives"]], ["phrases", ["hard_phrases"]],
     ["hard-generation", ["hard_generation"]], ["hard-review", ["hard_review", "hard_connect"]],
     ["features", ["features"]], ["training", ["training", "package"]],
-    ["evaluation", ["development", "evaluation"]], ["results", ["results"]],
+    ["evaluation", ["development", "evaluation", "results"]],
   ];
   const navigationProject = step => {
     const position = navigationGroups.findIndex(([id]) => id === step);
     const complete = navigationGroups.slice(0, position + 1).flatMap(([, stages]) => stages);
     const stages = navigationGroups.flatMap(([, stages]) => stages).map(id => ({ id, status: complete.includes(id) ? "completed" : "pending" }));
-    return { id: "navigated", wakeword: "보라야", preset: "check", status: "paused", stage_id: stages[complete.length].id,
+    return { id: "navigated", wakeword: "보라야", preset: "check", status: step === "evaluation" ? "completed" : "paused",
+      stage_id: stages[complete.length]?.id || "completed", ...(step === "evaluation" ? { results: { url: "/results/navigated/" } } : {}),
       navigation_checkpoint: { policy: "explicit_story_v1", state: "awaiting_next", step }, stages, progress: {},
       reference_counts: { train: 20, validation: 30 }, reference_preview: { count: 50, train: 20, validation: 30, url: "/reference-preview/" } };
   };
@@ -1031,9 +1032,9 @@ async function main() {
       if (marker) project.results = { url: "/previous-results/" };
       if (marker) project.navigation_checkpoint = { policy: "explicit_story_v1", step: "results", state: "running" };
       const p = page(project);
-      assert.equal(p.shell.dataset.step, "results"); assert.equal(p.shell.querySelector(".story-live-summary").hidden, true);
-      assert.equal(p.get("story-title").textContent, "학습 결과");
-      assert.equal(p.get("story-subtitle").textContent, "학습 결과를 정리하고 모델별 감지 설정을 비교합니다.");
+      assert.equal(p.shell.dataset.step, "evaluation"); assert.equal(p.shell.querySelector(".story-live-summary").hidden, true);
+      assert.equal(p.get("story-title").textContent, "성능 평가");
+      assert.equal(p.get("story-subtitle").textContent, "채점을 마쳤습니다. 학습 결과를 정리합니다.");
       assert.equal(p.get("results-section").hidden, true, "a stale report URL does not replace active result preparation");
       assert.equal(p.viewModes.at(-1).view, "overview");
       assert.equal(p.operation.hidden, false); assert.equal(p.next.textContent, "다음"); assert.equal(p.next.disabled, true);
@@ -1366,7 +1367,6 @@ async function main() {
       ["features", { stage_id: "features" }],
       ["training", { stage_id: "training" }],
       ["evaluation", { stage_id: "evaluation" }],
-      ["results", { stage_id: "results" }],
     ];
     const opened = p => {
       assert.equal(p.get("story-panel").inert, false);
@@ -3134,35 +3134,70 @@ async function main() {
       assert.equal(p.shell.querySelector(".story-loader").hidden, true); assert.equal(p.calls.includes("start"), false);
     }
   });
-  await test("chapter readiness waits for a result frame that appears during the destination paint", async () => {
+  await test("evaluation holds across report preparation, polling and reload, then Next reveals the published report", async () => {
     const project = navigationProject("evaluation");
-    const p = page(project, { chapterReady: false, paintFrames: "manual", action: (_action, state) => {
-      project.status = "running";
-      project.navigation_checkpoint = { policy: "explicit_story_v1", step: "results", state: "running" };
-      state.busy = false; p.ui.render();
+    const checkpoint = project.navigation_checkpoint;
+    const p = page(project, { chapterReady: false, action: (action, state) => {
+      assert.equal(action, "resume");
+      assert.equal(project.status, "completed");
+      checkpoint.state = "completed";
+      state.busy = false;
+      p.ui.render();
     } });
-    const loader = p.shell.querySelector(".story-loader");
-    await p.next.fire("click"); await p.advanceFrame(); await p.advanceFrame();
-    assert.equal(p.shell.dataset.step, "results");
+    const { results } = project;
+    delete project.results;
+    checkpoint.state = "running";
+    Object.assign(project, { status: "running", process_alive: true, stage_id: "evaluation" });
+    project.stages.find(stage => stage.id === "results").status = "pending";
+    p.ui.render();
+    project.stage_id = "results";
+    p.ui.render();
+    assert.equal(p.shell.dataset.step, "evaluation");
+    assert.equal(p.shell.querySelector(".story-loader").hidden, true);
+    assert.equal(p.next.disabled, true);
+    assert.equal(p.get("results-section").hidden, true);
+    assert.equal(p.shell.querySelector(".story-voice-counts").querySelector("strong").dataset.label, "학습 결과 정리");
+    Object.assign(project, { status: "completed", process_alive: false, stage_id: "completed", results });
+    checkpoint.state = "awaiting_next";
+    project.stages.find(stage => stage.id === "results").status = "completed";
+    p.ui.render();
+    assert.equal(p.shell.dataset.step, "evaluation");
+    assert.equal(p.next.disabled, false);
+    assert.equal(p.operation.hidden, true);
     assert.equal(p.chapterRequests.length, 0);
-    project.status = "completed"; project.results = { url: "/results/navigated/" };
-    p.ui.render(); await p.flush();
-    while (await p.advanceFrame()) {}
-    p.advanceTimer(); await p.flush();
+    const refreshed = page(project);
+    assert.equal(await refreshed.ui.prepareInitialView(), true);
+    assert.equal(refreshed.shell.dataset.step, "evaluation");
+    assert.equal(refreshed.get("results-section").hidden, true);
+    assert.equal(refreshed.next.disabled, false);
+    delete project.results;
+    p.ui.render();
+    assert.equal(p.next.disabled, true, "an absent report cannot be opened");
+    project.results = results;
+    p.ui.render();
+    await p.next.fire("click");
+    await p.flush();
+    p.advanceTimer();
+    await p.flush();
+    const loader = p.shell.querySelector(".story-loader"), panel = p.get("story-panel");
     assert.equal(loader.hidden, false);
+    assert.equal(panel.inert, true);
     const request = p.chapterRequests.at(-1);
     assert.equal(request.frame.id, "result-frame");
+    assert.equal(request.data.url, "http://studio.local/results/navigated/");
     await replyChapter(p, request);
-    while (await p.advanceFrame()) {}
     await p.settle();
-    assert.equal(loader.hidden, true); assert.equal(p.get("story-panel").inert, false);
+    assert.equal(p.shell.dataset.step, "results");
+    assert.equal(loader.hidden, true);
+    assert.equal(panel.inert, false);
+    assert.equal(p.calls.filter(call => call === "resume").length, 1);
   });
-  await test("finished results repurpose the current preparation chapter behind a cover until the report is ready", async () => {
+  await test("legacy completion transitions from evaluation behind a cover until its report is ready", async () => {
     const project = { id: "result-published", status: "running", stage_id: "results", process_alive: true };
     const p = page(project, { chapterReady: false });
     const loader = p.shell.querySelector(".story-loader"), panel = p.get("story-panel");
-    assert.equal(p.shell.dataset.step, "results");
-    assert.equal(loader.hidden, true, "ongoing result generation has its own visible progress");
+    assert.equal(p.shell.dataset.step, "evaluation");
+    assert.equal(loader.hidden, true, "ongoing result preparation is visible in evaluation");
     Object.assign(project, { status: "completed", process_alive: false, results: { url: "/results/result-published/" } });
     p.ui.render(); await p.flush();
     assert.equal(loader.hidden, false);
@@ -3530,11 +3565,11 @@ async function main() {
       await p.next.fire('click');p.ui.render();assert.equal(p.calls.some(call=>['start','resume','pause','input'].includes(call)),false);
     }
   });
-  await test('results preparation uses the shared centered work row until the actual report exists',async()=>{
+  await test('results preparation uses the existing evaluation work row until the actual report exists',async()=>{
     for(const [status,alive,active,state] of [['running',true,true,'정리 중'],['pausing',true,true,'정리 중'],['paused',false,false,'일시정지'],['ready',false,false,'대기 중']]){
       const project={id:'results-preparation',status,process_alive:alive,stage_id:'results',progress:{done:19,total:20,unit:'완료 단계'},results:{url:'/older-results/'}};
       const original=JSON.stringify(project),p=page(project),counts=p.shell.querySelector('.story-voice-counts'),row=counts.children[0];
-      assert.equal(p.shell.classList.contains('preparing-results'),true);assert.equal(counts.hidden,false);assert.equal(counts.children.length,1);
+      assert.equal(p.shell.dataset.step,'evaluation');assert.equal(counts.hidden,false);assert.equal(counts.children.length,1);
       assert.equal(row.querySelector('strong').dataset.label,'학습 결과 정리');assert.equal(row.children[1].textContent,state);
       const bar=row.querySelector('progress'),indicator=row.querySelector('.story-progress-indicator');
       assert.equal(bar.hidden,false);assert.equal(bar.getAttribute('value'),null);assert.equal(bar.getAttribute('max'),null);
@@ -3547,14 +3582,13 @@ async function main() {
   });
   await test('results preparation hands off to the completed wide iframe and never hides a real error',async()=>{
     const project={id:'results-handoff',status:'running',process_alive:true,stage_id:'results'};
-    const p=page(project),frame=p.get('result-frame');assert.equal(p.get('results-section').hidden,true);
+    const p=page(project,{chapterReady:false}),frame=p.get('result-frame');assert.equal(p.get('results-section').hidden,true);
     project.error='보고서 정리를 확인하세요.';p.ui.render();assert.equal(p.shell.querySelector('.story-live-summary').hidden,false);
     delete project.error;project.status='completed';project.process_alive=false;project.results={url:'/results/current/',mic_url:'/mic/current/'};p.ui.render();
-    await p.settle();
-    assert.equal(p.shell.classList.contains('preparing-results'),false);assert.equal(p.shell.querySelector('.story-voice-counts').hidden,true);
+    await p.flush();p.advanceTimer();await p.flush();await replyChapter(p);await p.settle();
+    assert.equal(p.shell.dataset.step,'results');assert.equal(p.shell.querySelector('.story-voice-counts').hidden,true);
     assert.equal(p.get('results-section').hidden,false);assert.equal(frame.getAttribute('src'),'/results/current/');assert.equal(p.viewModes.at(-1).view,'results');
     const css=fs.readFileSync(path.join(__dirname,'../korean_openwakeword/resources/studio_story.css'),'utf8');
-    assert.match(css,/\.story-shell\.preparing-results\[data-step="results"\] :is\(\.story-content,\.story-live\)\{flex:0 1 auto;overflow:visible\}/);
     assert.match(css,/\.story-shell:is\(\[data-step="results"\],\[data-step="microphone"\]\) \.story-panel\{gap:12px;width:min\(1060px,100%\)\}/);
     assert.match(css,/iframe#result-frame\{width:100%;height:0;min-height:0;max-height:100%;border:0;border-radius:0;margin:0;flex:1 1 0;background:transparent\}/);
     assert.equal(p.calls.some(call=>['start','resume','pause','input'].includes(call)),false);
@@ -3562,7 +3596,7 @@ async function main() {
   await test('new wakewords share the same workflow-driven chapter layout and pending work components',async()=>{
     const settings={pilot_review_policy:'one_per_voice_before_and_after_generation_v4',hard_review_policy:'one_per_phrase_v1'};
     for(const word of ['새봄아','나래야']) for(const [stage,step] of [['pilot','call-pilot-generation'],['positives','positive-generation'],
-      ['hard_generation','hard-generation'],['features','features'],['package','training'],['development','evaluation'],['results','results']]){
+      ['hard_generation','hard-generation'],['features','features'],['package','training'],['development','evaluation'],['results','evaluation']]){
       const project={id:`new-${word}-${stage}`,wakeword:word,status:'running',process_alive:true,stage_id:stage,settings,
         progress:{done:3,total:20,unit:'완료 단계'}};
       const p=page(project);assert.equal(p.shell.dataset.step,step);assert.equal(p.ui.ownsDownloadRows,true);
