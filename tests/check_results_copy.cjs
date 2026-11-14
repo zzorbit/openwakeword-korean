@@ -522,7 +522,7 @@ test("metric help opens only from headings and describes the archived comparison
   assert.equal(dialog.open, true);
   assert.match(label(), /강한 소음·울림/);
   assert.deepEqual(elements.get("overview-help-content").children.map(node => node.textContent), [
-    "울림 · 울림 추가 없음, 보통 울림, 강한 울림\n소음 크기 · 호출어보다 10 dB 또는 5 dB 작게 (SNR 10 dB, 5 dB)",
+    "울림: 울림 추가 없음, 보통 울림, 강한 울림\n소음 크기: 호출어보다 10 dB 또는 5 dB 작게 (SNR 10 dB, 5 dB)",
     "배경 소리 없이 보통 울림 또는 강한 울림만 적용한 조건도 포함해, 총 20가지 조건의 감지율을 같은 비중으로 평균합니다."
   ]);
   const hardHelp = content();
@@ -534,7 +534,7 @@ test("metric help opens only from headings and describes the archived comparison
   headers[1].dispatch("click");
   assert.equal(dialog.open, true);
   assert.equal(label(), "최악 조건");
-  assert.equal(content(), "울림 · 강한 울림\n소음 크기 · 호출어보다 5 dB 작게 (SNR 5 dB) 이 조건에서 배경 소리별 감지율을 같은 비중으로 평균합니다.");
+  assert.equal(content(), "울림: 강한 울림\n소음 크기: 호출어보다 5 dB 작게 (SNR 5 dB) 이 조건에서 배경 소리별 감지율을 같은 비중으로 평균합니다.");
   assert.doesNotMatch(content(), /가장 낮|보통 울림|SNR 10|추천값 결과|평가 당시 결과|모델 [123]|앙상블|%/);
   assert.equal(elements.get("overview-help-content").children.some(child => child.className === "overview-help-models"), false);
   const worstHelp = content();

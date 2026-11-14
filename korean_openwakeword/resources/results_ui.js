@@ -299,8 +299,8 @@
     }
     const snrs = noiseLevels.map(level => `${level} dB`);
     const details = [
-      `울림 · ${rooms.map(reverbLabel).join(", ")}`,
-      `소음 크기 · 호출어보다 ${snrs.join(" 또는 ")} 작게 (SNR ${snrs.join(", ")})`
+      `울림: ${rooms.map(reverbLabel).join(", ")}`,
+      `소음 크기: 호출어보다 ${snrs.join(" 또는 ")} 작게 (SNR ${snrs.join(", ")})`
     ].join("\n");
     const cleanRooms = [...new Set(clean.map(cell => reverbLabel(cell.reverb_condition)))];
     const coverage = cleanRooms.length ? `배경 소리 없이 ${cleanRooms.join(" 또는 ")}만 적용한 조건도 포함해, ` : "";
@@ -310,7 +310,7 @@
     return {
       hard: {title: "강한 소음·울림", paragraphs: noiseComparisonConditions(policy)},
       worst: {title: "최악 조건", paragraphs: [
-        `울림 · ${reverbLabel(worstReverb)}\n소음 크기 · 호출어보다 ${worstSnr} dB 작게 (SNR ${worstSnr} dB)`,
+        `울림: ${reverbLabel(worstReverb)}\n소음 크기: 호출어보다 ${worstSnr} dB 작게 (SNR ${worstSnr} dB)`,
         "이 조건에서 배경 소리별 감지율을 같은 비중으로 평균합니다."
       ]},
       latency: {title: "반응 시간", paragraphs: ["감지에 성공한 호출의 약 95%가 이 시간 안에 감지됐습니다(P95).",
