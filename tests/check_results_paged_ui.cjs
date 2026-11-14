@@ -23,7 +23,9 @@ function browser(tuples, {deferPages = false, pageFailure = false, indexFailure 
     removeAttribute(name) { this[name] = ""; }
     setAttribute(name, value) { this.attributes[name] = value; }
   }
-  for (const match of (staticViewer ? staticHtml : pagedHtml).matchAll(/id="([^"]+)"/g)) elements.set(match[1], new Element());
+  const html = staticViewer ? staticHtml : pagedHtml;
+  for (const match of html.matchAll(/id="([^"]+)"/g)) elements.set(match[1], new Element());
+  for (const [tag, id] of html.matchAll(/<details\b[^>]*id="([^"]+)"[^>]*>/g)) elements.get(id).open = /\sopen(?:\s|=|>)/.test(tag);
   for (const id of ["storySummary", "conditions", "responses", "scores"]) elements.get(id).tBodies = [new Element("tbody")];
   for (const value of ["none", "moderate", "strong"]) { const option = new Element("option"); option.value = value; elements.get("reverb").append(option); }
   elements.get("reverb").value = "none"; elements.get("category").value = "all";
@@ -65,11 +67,13 @@ const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "posi
     assert.deepEqual(b.readiness, [{status: "loading"}], "metadata alone cannot finish the chapter transition");
     assert.equal(b.elements.get("audio").plays, 0);
     assert.equal(b.elements.get("item").children.length, 2);
+    assert.equal(b.elements.get("playState").textContent, "");
     b.deferred.get(0)(); await boot;
     assert.deepEqual(b.readiness.map(value => value.status), ["loading", "ready"]);
     assert.equal(b.readiness[1].source, "audio/0.wav");
     assert.equal(b.readiness[1].title, "음성 1 · 환경소음");
     assert.equal(b.readiness[1].listCount, 2); assert.equal(b.elements.get("audio").plays, 0);
+    assert.equal(b.elements.get("playState").textContent, "");
     await b.helper.move(1); assert.equal(b.readiness.length, 2, "later detail browsing does not restart chapter readiness");
   });
   await test("an empty initial results filter is ready without fetching a detail page", async () => {
@@ -153,18 +157,28 @@ const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "posi
     assert.equal(b.elements.get("audio").src, source); assert.equal(b.elements.get("audio").pauses, pauses); assert.equal(b.calls.length, calls);
     await b.elements.get("audio").onended(); assert.equal(b.helper.state().index, 128);
   });
-  await test("optional audio control popovers keep the user's choice across resize without resetting playback", async () => {
-    const b = browser(Array.from({length: 20}, (_, index) => tuple(index)), {viewportHeight: 404}); await b.helper.boot();
-    assert.equal(b.elements.get("audio-filter-details").open, false);
-    assert.equal(b.elements.get("clip-select-details").open, false);
-    await b.elements.get("start").onclick(); await b.helper.move(3, true);
-    const source = b.elements.get("audio").src, calls = b.calls.length;
-    b.elements.get("audio-filter-details").open = true; b.resize(444);
-    assert.equal(b.elements.get("audio-filter-details").open, true);
-    b.resize(600); assert.equal(b.elements.get("clip-select-details").open, false);
-    b.resize(404); assert.equal(b.elements.get("audio-filter-details").open, true);
-    assert.equal(b.helper.state().continuous, true); assert.equal(b.helper.state().index, 3);
-    assert.equal(b.elements.get("audio").src, source); assert.equal(b.calls.length, calls);
+  await test("audio filters start closed and preserve their open state and playback across responsive views", async () => {
+    for (const staticViewer of [false, true]) {
+      const b = browser([tuple(0), tuple(1)], {viewportHeight: 680, staticViewer});
+      if (b.helper) await b.helper.boot();
+      const audio = b.elements.get("audio"), filter = b.elements.get("audio-filter-details");
+      assert.equal(filter.open, false);
+      assert.equal(b.elements.has("clip-select-details"), false);
+      await b.elements.get("resume").onclick();
+      const source = audio.src, calls = b.calls.length;
+      filter.open = true;
+      for (const height of [404, 680, 320]) {
+        b.resize(height);
+        b.elements.get("audio-view-settings").onclick();
+        assert.equal(filter.open, true);
+        b.elements.get("audio-view-player").onclick();
+        assert.equal(audio.paused, false);
+        assert.equal(audio.src, source);
+        assert.equal(b.calls.length, calls);
+      }
+      filter.open = false; b.resize(680);
+      assert.equal(filter.open, false);
+    }
   });
   await test("only a same-origin exact parent can pause audio without resetting its queue or filters", async () => {
     const b = browser(Array.from({length: 400}, (_, index) => tuple(index))); await b.helper.boot();
@@ -233,6 +247,22 @@ const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "posi
     b.elements.get("original").value = "900"; await b.elements.get("original-go").onclick();
     assert.equal(b.helper.state().index, 2697); assert.equal(b.elements.get("audio").src, "audio/2697.wav");
     assert.ok(b.elements.get("item").children.length <= 100);
+    assert.match(b.elements.get("clipInfo").textContent, /호출어 위치 2\.00–3\.00초/);
+    assert.equal(b.elements.get("playState").textContent, "");
+    b.elements.get("original").value = "1001"; await b.elements.get("original-go").onclick();
+    assert.equal(b.elements.get("audio").src, "audio/2697.wav");
+    assert.match(b.elements.get("playState").textContent, /해당하는 음성 번호가 없습니다/);
+  });
+  await test("static original selector still navigates the queue and updates file information", async () => {
+    const b = browser(Array.from({length: 12}, (_, index) => tuple(index)), {staticViewer: true});
+    const original = b.elements.get("original");
+    assert.equal(original.children.length, 4);
+    original.value = original.children[3].value; await original.onchange();
+    assert.equal(b.elements.get("audio").src, "audio/9.wav");
+    assert.equal(b.elements.get("clipTitle").textContent, "음성 4 · 환경소음");
+    assert.match(b.elements.get("clipInfo").textContent, /호출어 위치 2\.00–3\.00초/);
+    assert.equal(b.elements.get("hash").textContent, "SHA256 sha9");
+    assert.equal(b.elements.get("playState").textContent, "");
   });
   await test("Clean and negative browsing is paginated and loads only selected detail", async () => {
     const tuples = Array.from({length: 500}, (_, index) => tuple(index, {1: index > 0 ? "negative" : "positive"}));
@@ -251,7 +281,7 @@ const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "posi
     const b = browser([tuple(0), tuple(1)]); await b.helper.boot(); await b.elements.get("start").onclick();
     await b.elements.get("audio").onended(); await b.elements.get("audio").onended();
     assert.equal(b.helper.state().index, 1); assert.equal(b.helper.state().continuous, false);
-    assert.equal(b.elements.get("playState").textContent, "선택한 목록을 모두 들었습니다.");
+    assert.equal(b.elements.get("playState").textContent, "");
   });
   await test("versioned presentation folder resolves pages beside its own index", async () => {
     const b = browser([tuple(0)], {indexPath: "viewer_v1_fix/viewer-index.json"}); await b.helper.boot();
@@ -341,30 +371,40 @@ const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "posi
     });
     await test(`${mode} transport toggles actual playback and resumes the current position without new source or gain`, async () => {
       const b = browser([tuple(0), tuple(1)], {staticViewer}); if (b.helper) await b.helper.boot();
-      const audio = b.elements.get("audio"), toggle = b.elements.get("resume");
+      const audio = b.elements.get("audio"), toggle = b.elements.get("resume"), notice = b.elements.get("playState");
       audio.currentTime = 2.5; audio.volume = .37;
       const source = audio.src, calls = b.calls.length;
       assert.equal(toggle.textContent, "재생");
+      assert.equal(notice.textContent, "");
       await toggle.onclick();
       assert.equal(toggle.textContent, "일시정지"); assert.equal(toggle.attributes["aria-pressed"], "true");
       assert.equal(audio.currentTime, 2.5); assert.equal(audio.src, source); assert.equal(b.calls.length, calls);
+      assert.equal(notice.textContent, "");
       await toggle.onclick(); assert.equal(audio.paused, true); assert.equal(toggle.textContent, "재생");
+      assert.equal(notice.textContent, "");
       await toggle.onclick(); assert.equal(audio.currentTime, 2.5); assert.equal(audio.src, source);
       assert.equal(audio.volume, .37); assert.equal(audio.playbackRate, 1);
       b.message(); await toggle.onclick(); assert.equal(audio.currentTime, 2.5);
       audio.pause(); assert.equal(toggle.textContent, "재생");
       await audio.play(); assert.equal(toggle.textContent, "일시정지");
+      assert.equal(notice.textContent, "");
       audio.onerror(); assert.equal(toggle.textContent, "재생"); assert.equal(toggle.attributes["aria-pressed"], "false");
+      assert.match(notice.textContent, /오디오를 불러올 수 없습니다/);
+      await b.elements.get("next").onclick();
+      assert.equal(audio.src, "audio/1.wav"); assert.equal(notice.textContent, "");
+      await toggle.onclick(); assert.equal(notice.textContent, "");
     });
     await test(`${mode} transport plays the selected extra without jumping back to the main queue`, async () => {
       const b = browser([tuple(0), tuple(1, {1: "negative"})], {staticViewer}); if (b.helper) await b.helper.boot();
       b.elements.get("extra").value = staticViewer ? "clip_1" : "0";
       await b.elements.get("extra").onchange();
       const audio = b.elements.get("audio"), source = audio.src;
+      assert.equal(b.elements.get("playState").textContent, "");
       audio.currentTime = 1.25;
       await b.elements.get("resume").onclick();
       assert.equal(audio.src, source); assert.equal(source, "audio/1.wav"); assert.equal(audio.currentTime, 1.25);
       await audio.onended(); assert.equal(audio.src, source); assert.equal(b.elements.get("resume").textContent, "재생");
+      assert.equal(b.elements.get("playState").textContent, "");
     });
     await test(`${mode} cancelled pending autoplay cannot restart audio or override the stopped transport`, async () => {
       let finishPlay;

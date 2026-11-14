@@ -42,8 +42,26 @@ test("noise and audio panels retain labelled controls without the extra disclosu
     for (const id of ["condition-model", "condition-reverb", "condition-snr", "conditions", "conditionMetrics"]) {
       assert.match(conditions, new RegExp(`id="${id}"`));
     }
-    assert.match(audio, /id="audio-filter-details"[^>]*><summary>소음·울림 선택<\/summary>/);
     assert.doesNotMatch(html, /표 안내|시험에 쓴 배경 소리|condition-clean|conditions-help|noiseCoverage|coverage-details/);
+  }
+});
+test("audio details group the closed filter and clip information disclosures", () => {
+  for (const name of ["results.html", "results_paged.html"]) {
+    const html = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources", name), "utf8");
+    const audio = html.slice(html.indexOf('id="results-panel-audio"'));
+    const tools = audio.slice(audio.indexOf('class="audio-details'));
+    const filter = tools.match(/<details\b([^>]*id="audio-filter-details"[^>]*)>\s*<summary[^>]*>소음·울림 선택<\/summary>([\s\S]*?)<\/details>/);
+    const info = tools.match(/<summary[^>]*>상세 점수와 파일 정보<\/summary>([\s\S]*?)<\/details>/);
+    assert.ok(filter, `${name} audio filter belongs to the tools`);
+    assert.doesNotMatch(filter[1], /\sopen(?:\s|=|$)/);
+    for (const id of ["snr", "category", "reverb"]) assert.match(filter[2], new RegExp(`id="${id}"`));
+    assert.ok(info, `${name} audio details disclosure`);
+    for (const id of ["original", "clipInfo", "scores", "sample-id", "download", "hash"]) {
+      assert.match(info[1], new RegExp(`id="${id}"`));
+    }
+    if (name === "results_paged.html") assert.match(info[1], /id="original-go"/);
+    assert.doesNotMatch(audio, /clip-select-details|음성 번호 · 정보/);
+    assert.match(audio, /id="playState"[^>]*role="status"[^>]*>\s*<\/p>/);
   }
 });
 test("both report layouts put the comparison metrics in the models panel", () => {

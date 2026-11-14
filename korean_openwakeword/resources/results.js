@@ -15,7 +15,7 @@ let queue=[],index=0,continuous=false,token=0,currentSource="main",currentClip=n
 const audio=$("audio");
 const clipPicker=ui.mountClipPicker?.(move, position=>ui.clipLabel(queue[position]), 100);
 function transport(){const active=playing||loading;$("resume").textContent=active?"일시정지":"재생";$("resume").setAttribute("aria-pressed",String(active));$("resume").setAttribute("aria-busy",String(loading));$("resume").disabled=!currentClip&&!queue.length;}
-function stop(){continuous=false;token++;loading=false;playing=false;audio.pause();transport();$("playState").textContent="일시정지";}
+function stop(){continuous=false;token++;loading=false;playing=false;audio.pause();transport();}
 const opt=(select,value,text)=>{const o=document.createElement("option");o.value=value;o.textContent=text;select.append(o);};
 function renderList(reset=false){
   if(clipPicker){
@@ -39,19 +39,19 @@ function progress(reset=false){$("queue").textContent=queue.length?`${(index+1).
 function show(c){currentClip=c;audio.src=c.path;$("clipTitle").textContent=ui.clipLabel(c);const background=evaluationBackgroundTypeText(c);$("clipInfo").textContent=`${c.duration_s.toFixed(2)}초${c.calls?.length?` · 호출어 위치 ${c.calls[0].start_s.toFixed(2)}–${c.calls[0].end_s.toFixed(2)}초`:" · 호출어 없음"}${background?` · 배경: ${background}`:""}`;$("download").href=c.path;$("download").download="";$("hash").textContent=`SHA256 ${c.sha256}`;$("sample-id").textContent=`파일 이름: ${c.sample_id}`;ui.renderResponses(report,c);}
 async function playCurrent(resume=false){
   if((!resume&&!queue.length)||(resume&&!currentClip))return;
-  const mine=++token;loading=true;transport();
+  const mine=++token;loading=true;$("playState").textContent="";transport();
   if(!resume){currentSource="main";show(queue[index]);}
   progress();
-  try{await audio.play();if(mine!==token){if(!continuous)audio.pause();return;}loading=false;playing=audio.paused===false;transport();$("playState").textContent="재생 중";}
+  try{await audio.play();if(mine!==token){if(!continuous)audio.pause();return;}loading=false;playing=audio.paused===false;transport();}
   catch(e){if(mine!==token)return;continuous=false;loading=false;playing=false;transport();$("playState").textContent=`재생 실패: ${e.message}. 재생을 다시 눌러주세요.`;}
 }
 function move(position){if(!Number.isInteger(position)||position<0||position>=queue.length)return;index=position;currentSource="main";if(continuous)return playCurrent();token++;audio.pause();playing=false;loading=false;show(queue[index]);progress();transport();$("playState").textContent="";}
 $("start").onclick=()=>{index=0;continuous=true;return playCurrent();};
 $("resume").onclick=()=>{if(playing||loading||audio.paused===false)return stop();continuous=currentSource==="main";return playCurrent(true);};
 $("pause").onclick=stop;
-audio.onplay=()=>{playing=true;transport();$("playState").textContent="재생 중";};
-audio.onpause=()=>{if(audio.ended)return;playing=false;if(!loading){continuous=false;$("playState").textContent="일시정지";}transport();};
-audio.onended=()=>{playing=false;loading=false;if(continuous&&currentSource==="main"&&index+1<queue.length){index++;return playCurrent();}const finished=continuous&&currentSource==="main";continuous=false;transport();$("playState").textContent=finished?"선택한 목록을 모두 들었습니다.":"재생 완료";};
+audio.onplay=()=>{playing=true;transport();$("playState").textContent="";};
+audio.onpause=()=>{if(audio.ended)return;playing=false;if(!loading)continuous=false;transport();};
+audio.onended=()=>{playing=false;loading=false;if(continuous&&currentSource==="main"&&index+1<queue.length){index++;return playCurrent();}continuous=false;transport();};
 audio.onerror=()=>{continuous=false;token++;loading=false;playing=false;transport();$("playState").textContent="오디오를 불러올 수 없습니다. 파일 경로와 서버 상태를 확인하세요.";};
 $("prev").onclick=()=>move(index-1);$("next").onclick=()=>move(index+1);
 if(!clipPicker){
@@ -61,7 +61,7 @@ if(!clipPicker){
 for(const id of ["item","original"])$(id).onchange=()=>move(Number($(id).value));
 $("snr").onchange=rebuild;$("category").onchange=rebuild;$("reverb").onchange=rebuild;
 clips.filter(c=>c.category==="clean"||c.kind==="negative").forEach(c=>opt($("extra"),c.sample_id,ui.clipLabel(c)));
-$("extra").onchange=()=>{const c=clips.find(c=>c.sample_id===$("extra").value);if(c){stop();currentSource="extra";show(c);transport();renderList();$("playState").textContent="추가 자료 · 재생 버튼을 눌러 들으세요.";}};
+$("extra").onchange=()=>{const c=clips.find(c=>c.sample_id===$("extra").value);if(c){stop();currentSource="extra";show(c);transport();renderList();$("playState").textContent="";}};
 rebuild();
 if(!clipPicker)window.KowwListening?.enhance(audio,$("resume").parentElement,{play:$("resume"),previous:$("prev"),next:$("next")});
 chapter?.ready();

@@ -16,18 +16,8 @@
   const resultsTabs = ["models", "conditions", "audio"];
   const reportDiagnostics = new WeakSet();
   let dashboardView = "models";
-  let compactAudio = null;
   let resultClipPicker;
   let overviewHelp;
-  function fitAudioControls() {
-    if (typeof window === "undefined" || !Number.isFinite(window.innerHeight)) return;
-    const compact = window.innerHeight < 520;
-    if (compact === compactAudio) return;
-    for (const id of ["audio-filter-details", "clip-select-details"]) {
-      const detail = $(id); if (detail && compactAudio === null) detail.open = false;
-    }
-    compactAudio = compact;
-  }
   function activateTabs(prefix, names, chosen, focus = false) {
     names.forEach(name => {
       const tab = $(`${prefix}-tab-${name}`), panel = $(`${prefix}-panel-${name}`);
@@ -563,8 +553,6 @@
     };
   }
   initDashboard();
-  fitAudioControls();
-  if (typeof window !== "undefined") window.addEventListener?.("resize", fitAudioControls);
   if (typeof window !== "undefined") window.addEventListener?.("message", pauseFromParent);
   if (typeof window !== "undefined") window.addEventListener?.("keydown", event => {
     if (event.key === "Escape") document.querySelectorAll?.("details[open]")?.forEach(detail => { detail.open = false; });

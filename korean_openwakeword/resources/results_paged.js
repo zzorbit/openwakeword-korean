@@ -45,7 +45,6 @@
   }
   function stop() {
     continuous = false; token++; loading = false; playing = false; audio.pause(); transport();
-    $("playState").textContent = "일시정지";
   }
   function summary() {
     $("title").textContent = `${report.wakeword} · 성능 시험 결과`;
@@ -103,29 +102,27 @@
   async function activate(sourceIndex, autoplay = false, source = "main") {
     const mine = ++token; loading = true; playing = false; currentSource = source; requestedIndex = sourceIndex;
     audio.pause(); transport();
-    $("playState").textContent = "오디오 정보를 불러오는 중…";
+    $("playState").textContent = "";
     try {
       const clip = await detail(sourceIndex);
       if (mine !== token) return false;
       show(clip); loadedIndex = sourceIndex;
       if (source === "extra" && clipPicker) renderList(false, ui.clipLabel(clip));
-      $("playState").textContent = source === "extra" ? "추가 자료 · 재생 버튼을 눌러 들으세요." : "재생 버튼을 눌러 들으세요.";
       if (autoplay) {
         await audio.play();
         if (mine !== token) { if (!continuous) audio.pause(); return false; }
-        $("playState").textContent = "재생 중";
       }
       loading = false; playing = audio.paused === false; transport();
       return true;
     } catch (error) { if (mine === token) { continuous = false; loading = false; playing = false; transport(); $("playState").textContent = error.message + " 다시 선택하거나 재생을 눌러주세요."; } return false; }
   }
   async function playLoaded() {
-    const mine = ++token; loading = true; transport();
+    const mine = ++token; loading = true; $("playState").textContent = ""; transport();
     try {
       // Resuming the current file must preserve its real playback position.
       await audio.play();
       if (mine !== token) { if (!continuous) audio.pause(); return; }
-      loading = false; playing = audio.paused === false; transport(); $("playState").textContent = "재생 중";
+      loading = false; playing = audio.paused === false; transport();
     } catch (error) { if (mine === token) { continuous = false; loading = false; playing = false; transport(); $("playState").textContent = error.message + " 재생을 다시 눌러주세요."; } }
   }
   function move(position, autoplay = continuous) {
@@ -160,13 +157,12 @@
       return move(index, true);
     };
     $("pause").onclick = stop;
-    audio.onplay = () => { playing = true; transport(); $("playState").textContent = "재생 중"; };
-    audio.onpause = () => { if (audio.ended) return; playing = false; if (!loading) { continuous = false; $("playState").textContent = "일시정지"; } transport(); };
+    audio.onplay = () => { playing = true; transport(); $("playState").textContent = ""; };
+    audio.onpause = () => { if (audio.ended) return; playing = false; if (!loading) continuous = false; transport(); };
     audio.onended = () => {
       playing = false; loading = false;
       if (continuous && currentSource === "main" && index + 1 < queue.length) return move(index + 1, true);
-      const finished = continuous && currentSource === "main";
-      continuous = false; transport(); $("playState").textContent = finished ? "선택한 목록을 모두 들었습니다." : "재생 완료";
+      continuous = false; transport();
     };
     audio.onerror = () => { continuous = false; token++; loading = false; playing = false; transport(); $("playState").textContent = "오디오를 불러올 수 없습니다. 파일 경로와 서버 상태를 확인하세요."; };
     $("prev").onclick = () => move(index - 1); $("next").onclick = () => move(index + 1);
