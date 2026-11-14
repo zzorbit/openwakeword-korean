@@ -2953,5 +2953,5 @@
     return { render, retainReviewFrame, prepareInitialView, ownsDownloadRows: true, ownsProjectNotice: true };
   }
   window.KowwStory = Object.freeze({ create, definitions, stageStep, frontier, completedStep, pageCapacity, downloadCheckpoint,
-    navigationCheckpoint, minimumLoadingMs, waitForLoadingPaint });
+    navigationCheckpoint, reportAwaitingNext, minimumLoadingMs, waitForLoadingPaint });
 })();

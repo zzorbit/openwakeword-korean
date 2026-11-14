@@ -286,8 +286,10 @@
   }
   function dashboardAvailability(project) {
     const result = project?.results || {};
+    const reportHeld = window.KowwStory?.reportAwaitingNext?.(project) === true;
     return { overview: true, materials: true, review: Object.values(listeningAvailability(project)).some(Boolean),
-      results: Boolean(localUrl(result.url || project?.results_url)), mic: Boolean(localUrl(result.mic_url || project?.mic_url)), logs: true };
+      results: !reportHeld && Boolean(localUrl(result.url || project?.results_url)),
+      mic: !reportHeld && Boolean(localUrl(result.mic_url || project?.mic_url)), logs: true };
   }
   function listeningAvailability(project) {
     const reference = project?.reference_preview, hard = project?.hard_preview;

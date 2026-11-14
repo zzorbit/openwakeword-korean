@@ -14,7 +14,7 @@ async function test(name, action) {
   await action(); tests.push(name);
 }
 
-function browser({ noBoot = false, withStory = true, storyOwnsDownloadRows = false, storyError, onStoryRender, onStoryPrepare, storyPrepareMissing = false, retainReviewFrame,initialState, stateError, stateResponse, recipeResponse, recipeError = false, recipeOverrides = {}, recipeList, recipeDirectory = "F:\\test\\models", locationResponse, createdDirectory, logResponse = "ready", logError = false, bootClock } = {}) {
+function browser({ noBoot = false, withStory = true, storyOwnsDownloadRows = false, storyError, onStoryRender, onStoryPrepare, storyPrepareMissing = false, retainReviewFrame, reportAwaitingNext, initialState, stateError, stateResponse, recipeResponse, recipeError = false, recipeOverrides = {}, recipeList, recipeDirectory = "F:\\test\\models", locationResponse, createdDirectory, logResponse = "ready", logError = false, bootClock } = {}) {
   const elements = new Map(), windowEvents = new Map(), calls = [], intervals = [], clearedIntervals = [];
   class Element {
     constructor(tag = "div") { this.tagName = tag; this.value = ""; this.textContent = ""; this.children = []; this.handlers = {}; this.attributes = {}; this.style = {}; this.hidden = false; this.disabled = false; this.open = false; this.srcWrites = 0; }
@@ -75,7 +75,7 @@ function browser({ noBoot = false, withStory = true, storyOwnsDownloadRows = fal
     clearTimeout: timer => { if (!loadingTimers.delete(timer)) clearTimeout(timer); },
     setInterval: callback => { intervals.push(callback); return intervals.length; }, clearInterval(id) { clearedIntervals.push(id); } });
   let storyBridge, storyPreparations = 0;
-  if (withStory) context.KowwStory = { minimumLoadingMs: 800, waitForLoadingPaint: () => bootClock?.paint || Promise.resolve(true),
+  if (withStory) context.KowwStory = { minimumLoadingMs: 800, waitForLoadingPaint: () => bootClock?.paint || Promise.resolve(true), reportAwaitingNext,
     create(bridge) { if (storyError) throw storyError; storyBridge = bridge;
     const view={ render() { onStoryRender?.(bridge, root); },ownsDownloadRows:storyOwnsDownloadRows,retainReviewFrame:project=>retainReviewFrame?.(project) };
     if (!storyPrepareMissing) view.prepareInitialView = async minimum => {
@@ -2312,6 +2312,22 @@ function pendingHardStorageRecipe() {
     await b.tick();
     assert.equal(notice.getAttribute("role"), "alert");
     assert.equal(notice.textContent, "새 평가 실행 오류");
+  });
+  await test("dashboard refresh doesn't request the report before the evaluation chapter releases it", async () => {
+    const project = { id: "bora", status: "completed", navigation_checkpoint: { state: "awaiting_next" },
+      results: { url: "/results/bora/", mic_url: "/mic/bora/" } };
+    const b = browser({ initialState: { projects: [project] },
+      reportAwaitingNext: current => current.navigation_checkpoint.state === "awaiting_next" });
+    await flush();
+    const frame = b.elements.get("result-frame");
+    assert.equal(frame.getAttribute("src"), null);
+    assert.equal(b.elements.get("dashboard-results").disabled, true);
+    assert.equal(b.elements.get("dashboard-mic").disabled, true);
+    project.navigation_checkpoint.state = "completed";
+    await b.tick();
+    b.storyBridge.view("results");
+    assert.equal(b.elements.get("dashboard-results").disabled, false);
+    assert.equal(frame.getAttribute("src"), "/results/bora/");
   });
   await test("evaluation validation does not poll logs or invent a score; manual log errors stay isolated", async () => {
     const project = { id: "bora", status: "running", stage: { id: "evaluation" }, progress: { done: null, total: null, phase: "validation", label: "평가 음원 검증 중" } };
