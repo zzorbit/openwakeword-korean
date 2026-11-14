@@ -3102,6 +3102,38 @@ async function main() {
     await replyChapter(p); assert.equal(p.shell.querySelector(".story-loader").hidden, true);
     assert.equal(p.shell.dataset.step, "pronunciation"); assert.equal(p.calls.includes("input"), false);
   });
+  await test("legacy pronunciation stays covered until the pilot queue is mounted and rendered", async () => {
+    for (const [via, source, policy] of [
+      ["refresh", "pilot_review", "one_per_voice_after_generation_v3"],
+      ["poll", "positives", "one_per_voice_after_generation_v3"],
+      ["same chapter", "pilot", undefined],
+    ]) {
+      const project = { id: "legacy-pronunciation", wakeword: "보라야", status: "running", process_alive: true,
+        stage_id: source, settings: { pilot_review_policy: policy } };
+      const p = page(project, { chapterReady: false });
+      const loader = p.shell.querySelector(".story-loader"), panel = p.get("story-panel");
+      let initial, prepared;
+      if (via === "refresh") initial = p.ui.prepareInitialView().then(value => { prepared = value; });
+      else { project.stage_id = "pilot_review"; p.ui.render(); }
+      await p.flush();
+      if (via !== "refresh") { p.advanceTimer(); await p.flush(); }
+      assert.equal(p.shell.dataset.step, "pronunciation", via);
+      assert.equal(panel.inert, true, "the chapter stays covered while the worker publishes its queue");
+      assert.equal(p.chapterRequests.length, 0);
+      Object.assign(project, { status: "waiting_review", process_alive: false,
+        review: { queue_id: "pilot", queue_sha256: "legacy-pilot-queue", url: "/review/?project=legacy-pronunciation&queue=pilot" } });
+      p.ui.render(); await p.flush();
+      assert.equal(panel.inert, true, "a newly mounted iframe still has to render");
+      assert.equal(p.chapterRequests.at(-1)?.frame.id, "review-frame");
+      await replyChapter(p);
+      await initial;
+      if (via === "refresh") assert.equal(prepared, true);
+      assert.equal(p.get("review-section").hidden, false);
+      assert.equal(panel.inert, false);
+      assert.equal(loader.hidden, true);
+      assert.equal(p.calls.some(call => ["start", "resume", "input"].includes(call)), false);
+    }
+  });
   await test("chapter readiness waits for fonts and paint on ordinary chapters without starting work", async () => {
     let release;
     const p = page(null, { fonts: { ready: new Promise(resolve => { release = resolve; }) }, paintFrames: "manual" });
