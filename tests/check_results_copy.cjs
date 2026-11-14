@@ -521,13 +521,10 @@ test("metric help opens only from headings and describes the archived comparison
   headers[0].dispatch("click");
   assert.equal(dialog.open, true);
   assert.match(label(), /강한 소음·울림/);
-  assert.match(content(), /^배경 소리 · 환경소음, 음악·전자음, 다른 사람 말소리/);
-  assert.match(content(), /같은 비중으로 평균/);
-  for (const detail of [
-    /울림 · 울림 추가 없음, 보통 울림, 강한 울림/, /배경 소리 · 환경소음, 음악·전자음, 다른 사람 말소리/,
-    /소음 크기 · 호출어보다 10 dB 또는 5 dB 작게/, /18가지에 배경 소리 없이 시험한 2가지\(보통 울림, 강한 울림\).*총 20가지/
-  ]) assert.match(content(), detail);
-  assert.doesNotMatch(content(), /70\.00%|92\.00%|앙상블/);
+  assert.deepEqual(elements.get("overview-help-content").children.map(node => node.textContent), [
+    "울림 · 울림 추가 없음, 보통 울림, 강한 울림\n소음 크기 · 호출어보다 10 dB 또는 5 dB 작게 (SNR 10 dB, 5 dB)",
+    "배경 소리 없이 보통 울림 또는 강한 울림만 적용한 조건도 포함해, 총 20가지 조건의 감지율을 같은 비중으로 평균합니다."
+  ]);
   const hardHelp = content();
   close();
   assert.equal(dialog.open, false);
@@ -587,8 +584,10 @@ test("hard-condition help preserves the recorded comparison pairs", () => {
   ui.renderSummary(report);
   const content = elements.get("overview-help-content");
   headers[0].dispatch("click");
-  assert.equal(content.children[0].textContent, ["시험한 2가지 조합", "강한 울림 · 음악·전자음 · 호출어와 같은 크기의 소음",
-    "울림 추가 없음 · 다른 사람 말소리 · 호출어보다 5 dB 작은 소음"].join("\n"));
+  assert.deepEqual(content.children.map(node => node.textContent), [
+    "강한 울림 · 호출어와 같은 크기의 소음 (SNR 0 dB)\n울림 추가 없음 · 호출어보다 5 dB 작은 소음 (SNR 5 dB)",
+    "총 2가지 조건의 감지율을 같은 비중으로 평균합니다."
+  ]);
 });
 test("baseline aggregates only the recorded cells named by the archived policy", () => {
   const {ui, elements, rows} = browser(), report = sample();

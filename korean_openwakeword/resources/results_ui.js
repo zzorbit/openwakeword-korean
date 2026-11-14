@@ -276,13 +276,15 @@
   function comparisonConditionLabel({reverb_condition, category, snr_db}) {
     const room = reverbLabel(reverb_condition);
     if (category === "clean") return `${room} · 배경 소리 없음`;
-    const noise = noiseLabel(category);
-    if (!finite(snr_db)) return `${room} · ${noise} · 소음 크기 기록 없음`;
-    if (snr_db === 0) return `${room} · ${noise} · 호출어와 같은 크기의 소음`;
-    return `${room} · ${noise} · 호출어보다 ${Math.abs(snr_db)} dB ${snr_db > 0 ? "작은" : "큰"} 소음`;
+    if (!finite(snr_db)) return `${room} · 소음 크기 기록 없음`;
+    if (snr_db === 0) return `${room} · 호출어와 같은 크기의 소음 (SNR 0 dB)`;
+    return `${room} · 호출어보다 ${Math.abs(snr_db)} dB ${snr_db > 0 ? "작은" : "큰"} 소음 (SNR ${snr_db} dB)`;
   }
   function noiseComparisonConditions(policy) {
-    if (!Array.isArray(policy) || !policy.length) return ["이 보고서에는 비교한 소음·울림 조합이 기록되어 있지 않습니다."];
+    if (!Array.isArray(policy) || !policy.length) return [
+      "조건마다 감지율을 구해 같은 비중으로 평균합니다.",
+      "이 보고서에는 비교한 소음·울림 조합이 기록되어 있지 않습니다."
+    ];
     const withNoise = policy.filter(cell => cell.category !== "clean");
     const clean = policy.filter(cell => cell.category === "clean");
     const noiseLevels = [...new Set(withNoise.map(cell => cell.snr_db))].sort((left, right) => right - left);
@@ -292,22 +294,21 @@
     if (!noiseLevels.length || !noiseLevels.every(level => finite(level) && level > 0) ||
         combinations.size !== withNoise.length ||
         combinations.size !== backgrounds.length * noiseLevels.length * rooms.length) {
-      return [`시험한 ${policy.length}가지 조합\n${policy.map(comparisonConditionLabel).join("\n")}`];
+      const details = [...new Set(policy.map(comparisonConditionLabel))];
+      return [details.join("\n"), `총 ${policy.length}가지 조건의 감지율을 같은 비중으로 평균합니다.`];
     }
+    const snrs = noiseLevels.map(level => `${level} dB`);
     const details = [
-      `배경 소리 · ${backgrounds.map(noiseLabel).join(", ")}`,
-      `소음 크기 · 호출어보다 ${noiseLevels.map(level => `${level} dB`).join(" 또는 ")} 작게`,
-      `울림 · ${rooms.map(reverbLabel).join(", ")}`
+      `울림 · ${rooms.map(reverbLabel).join(", ")}`,
+      `소음 크기 · 호출어보다 ${snrs.join(" 또는 ")} 작게 (SNR ${snrs.join(", ")})`
     ].join("\n");
-    const coverage = clean.length
-      ? `위 ${withNoise.length}가지에 배경 소리 없이 시험한 ${clean.length}가지(${clean.map(cell => reverbLabel(cell.reverb_condition)).join(", ")})를 더해 총 ${policy.length}가지를 비교합니다.`
-      : `위 조건을 조합한 ${policy.length}가지를 비교합니다.`;
-    return [details, coverage];
+    const cleanRooms = [...new Set(clean.map(cell => reverbLabel(cell.reverb_condition)))];
+    const coverage = cleanRooms.length ? `배경 소리 없이 ${cleanRooms.join(" 또는 ")}만 적용한 조건도 포함해, ` : "";
+    return [details, `${coverage}총 ${policy.length}가지 조건의 감지율을 같은 비중으로 평균합니다.`];
   }
   function metricHelp(policy, criteria) {
-    const conditions = noiseComparisonConditions(policy);
     return {
-      hard: {title: "강한 소음·울림", paragraphs: [...conditions, "조건마다 감지율을 구해 같은 비중으로 평균합니다."]},
+      hard: {title: "강한 소음·울림", paragraphs: noiseComparisonConditions(policy)},
       worst: {title: "최악 조건", paragraphs: [
         `울림 · ${reverbLabel(worstReverb)}\n소음 크기 · 호출어보다 ${worstSnr} dB 작게 (SNR ${worstSnr} dB)`,
         "이 조건에서 배경 소리별 감지율을 같은 비중으로 평균합니다."
