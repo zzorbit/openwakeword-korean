@@ -444,10 +444,6 @@
     }
     return undefined;
   }
-  function cleanValue(result) {
-    if (result?.clean) return result.clean;
-    return Object.entries(result?.conditions || {}).find(([key]) => key.startsWith("clean:"))?.[1];
-  }
   function renderConditions(report) {
     const modelSelect = $("condition-model"), reverbSelect = $("condition-reverb"), rows = body("conditions");
     const snrSelect = $("condition-snr"), mobile = $("conditionMetrics");
@@ -472,19 +468,16 @@
       rows.replaceChildren();
       const model = models.find(value => value.id === modelSelect.value);
       const group = reverbSelect.value || "none";
-      const result = group === "none"
-        ? {conditions: model?.conditions, clean: model?.clean}
-        : model?.reverb_conditions?.[group];
-      if ($("condition-clean")) $("condition-clean").textContent = `배경 소음 없이: ${statisticText(cleanValue(result))}`;
+      const conditions = group === "none" ? model?.conditions : model?.reverb_conditions?.[group]?.conditions;
       for (const category of categories) {
         const row = document.createElement("tr"); appendCell(row, noiseLabel(category));
-        for (const level of levels) appendCell(row, statisticText(conditionValue(result?.conditions, category, level)));
+        for (const level of levels) appendCell(row, statisticText(conditionValue(conditions, category, level)));
         rows.append(row);
       }
       mobile?.replaceChildren();
       if (mobile && snrSelect) for (const category of categories) {
         const item = document.createElement("div"), term = document.createElement("dt"), description = document.createElement("dd");
-        term.textContent = noiseLabel(category); description.textContent = statisticText(conditionValue(result?.conditions, category, Number(snrSelect.value)));
+        term.textContent = noiseLabel(category); description.textContent = statisticText(conditionValue(conditions, category, Number(snrSelect.value)));
         item.append(term, description); mobile.append(item);
       }
       modelSelect.disabled = !models.length; reverbSelect.disabled = !models.length;

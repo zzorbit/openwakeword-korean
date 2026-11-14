@@ -29,7 +29,7 @@ function browser(tuples, {deferPages = false, pageFailure = false, indexFailure 
   elements.get("reverb").value = "none"; elements.get("category").value = "all";
   const row = (tuple, sourceIndex) => ({sample_id: tuple[0], path: `audio/${sourceIndex}.wav`, sha256: `sha${sourceIndex}`, kind: tuple[1], category: tuple[2], snr_db: tuple[3], reverb_condition: tuple[4], original_id: tuple[5], original_order: tuple[6], duration_s: tuple[7], calls: tuple[1] === "positive" ? [{start_s: 2, end_s: 3}] : [], noise_eval_label: "시험 배경", results: {mean: {success: true, false_activations: 0, max_score: 0.999, clean_score_drop: 0.01, latency_s: 0.08}}});
   const page = number => ({start: number * 128, clips: tuples.slice(number * 128, (number + 1) * 128).map((tuple, offset) => row(tuple, number * 128 + offset))});
-  const context = vm.createContext({document: {getElementById: id => elements.get(id), createElement: tag => new Element(tag)}, console, evaluationNoiseCoverageText: () => "시험 배경", evaluationBackgroundTypeText: clip => clip.noise_eval_label || "", fetch: async url => {
+  const context = vm.createContext({document: {getElementById: id => elements.get(id), createElement: tag => new Element(tag)}, console, evaluationBackgroundTypeText: clip => clip.noise_eval_label || "", fetch: async url => {
     calls.push(url);
     if (url === indexPath) return {ok: !indexFailure, status: indexFailure ? 503 : 200, json: async () => ({schema_version: invalidIndex ? 99 : 1, scope_text: "정확한 평가 범위", noise_coverage_text: "전체 음원 사용", clips: tuples})};
     const number = Number(url.match(/page-(\d+)\.json/)[1]);
@@ -67,7 +67,6 @@ const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "posi
     assert.equal(b.elements.get("item").children.length, 2);
     b.deferred.get(0)(); await boot;
     assert.deepEqual(b.readiness.map(value => value.status), ["loading", "ready"]);
-    assert.equal(b.elements.get("noiseCoverage").textContent, "전체 음원 사용");
     assert.equal(b.readiness[1].source, "audio/0.wav");
     assert.equal(b.readiness[1].title, "음성 1 · 환경소음");
     assert.equal(b.readiness[1].listCount, 2); assert.equal(b.elements.get("audio").plays, 0);
@@ -108,6 +107,8 @@ const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "posi
       const b = browser([tuple(0)], {staticViewer, readinessHook: false});
       if (!staticViewer) await b.helper.boot();
       assert.equal(b.elements.get("audio").src, "audio/0.wav"); assert.equal(b.elements.get("audio").plays, 0);
+      assert.equal(b.elements.has("noiseCoverage"), false);
+      assert.equal(b.elements.has("condition-clean"), false);
     }
   });
   await test("112137 clips load one detail page and keep selectors bounded", async () => {
@@ -119,7 +120,6 @@ const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "posi
     assert.equal(b.elements.get("item").children.length, 100);
     assert.equal(b.elements.get("extra").children.length, 100);
     assert.equal(b.elements.get("original").children.length, 0);
-    assert.equal(b.elements.get("noiseCoverage").textContent, "전체 음원 사용");
   });
   await test("continuous playback crosses detail and selector pages without skipping audio", async () => {
     const b = browser(Array.from({length: 400}, (_, index) => tuple(index))); await b.helper.boot();

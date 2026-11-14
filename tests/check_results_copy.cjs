@@ -30,7 +30,20 @@ test("report navigation keeps only model comparison, noise results, and audio", 
     assert.deepEqual([...navigation.matchAll(/id="results-tab-([^"]+)"/g)].map(match => match[1]), ["models", "conditions", "audio"]);
     assert.doesNotMatch(html, /평가 정보|scope-disclosure|id="scope"/);
     assert.doesNotMatch(html, /results-(?:tab|panel)-criteria|searchCriteria/);
-    assert.match(html, /id="noiseCoverage"/);
+  }
+});
+test("noise and audio panels retain labelled controls without the extra disclosures", () => {
+  for (const name of ["results.html", "results_paged.html"]) {
+    const html = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources", name), "utf8");
+    const conditions = html.slice(html.indexOf('id="results-panel-conditions"'), html.indexOf('id="results-panel-audio"'));
+    const audio = html.slice(html.indexOf('id="results-panel-audio"'));
+    assert.match(conditions, /role="tabpanel"[^>]*aria-labelledby="results-tab-conditions"/);
+    assert.match(audio, /role="tabpanel"[^>]*aria-labelledby="results-tab-audio"/);
+    for (const id of ["condition-model", "condition-reverb", "condition-snr", "conditions", "conditionMetrics"]) {
+      assert.match(conditions, new RegExp(`id="${id}"`));
+    }
+    assert.match(audio, /id="audio-filter-details"[^>]*><summary>소음·울림 선택<\/summary>/);
+    assert.doesNotMatch(html, /표 안내|시험에 쓴 배경 소리|condition-clean|conditions-help|noiseCoverage|coverage-details/);
   }
 });
 test("both report layouts put the comparison metrics in the models panel", () => {
@@ -93,7 +106,7 @@ function browser({dashboard = false, fetch} = {}) {
     hidePopover() { this.open = false; this.dispatch("toggle", {newState: "closed"}); }
   }
   const elements = new Map();
-  for (const id of ["responses", "scores", "condition-model", "condition-reverb", "condition-clean", "conditions", "storySummary", "overview-source", "overview-model", "storySummaryMetrics", "condition-snr", "conditionMetrics", "overview-help", "overview-help-title", "overview-help-content", "overview-help-close"]) {
+  for (const id of ["responses", "scores", "condition-model", "condition-reverb", "conditions", "storySummary", "overview-source", "overview-model", "storySummaryMetrics", "condition-snr", "conditionMetrics", "overview-help", "overview-help-title", "overview-help-content", "overview-help-close"]) {
     elements.set(id, new Element());
   }
   const headers = ["hard", "worst", "fa", "latency", "settings"].map(key => {
@@ -277,7 +290,6 @@ test("conditions show actual cells in fixed noise order including zero successes
   assert.deepEqual(rows("conditions")[0], ["환경소음", "100.00%\n12 / 12회", "91.67%\n11 / 12회", "83.33%\n10 / 12회", "75.00%\n9 / 12회", "0.00%\n0 / 12회"]);
   assert.equal(rows("conditions")[1][3], "시험 안 함");
   assert.equal(rows("conditions")[2][1], "결과 없음");
-  assert.equal(elements.get("condition-clean").textContent, "배경 소음 없이: 100.00%\n3 / 3회");
   assert.equal(JSON.stringify(report), before);
 });
 test("room selector switches to the recorded room condition without recomputing means", () => {
@@ -286,7 +298,6 @@ test("room selector switches to the recorded room condition without recomputing 
   elements.get("condition-reverb").value = "strong"; elements.get("condition-reverb").onchange();
   assert.equal(rows("conditions")[1][4], "87.50%\n7 / 8회");
   assert.equal(rows("conditions")[0][3], "결과 없음");
-  assert.equal(elements.get("condition-clean").textContent, "배경 소음 없이: 66.67%\n2 / 3회");
   elements.get("condition-model").value = "member2_seed2"; elements.get("condition-model").onchange();
   assert.equal(elements.get("condition-reverb").value, "none");
   assert.equal(rows("conditions")[0][3], "83.33%\n10 / 12회");
