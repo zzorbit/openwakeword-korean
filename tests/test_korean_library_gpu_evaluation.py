@@ -3,6 +3,8 @@ import importlib
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import numpy as np
@@ -221,8 +223,28 @@ def test_cpu_only_runtime_is_rejected_instead_of_silent_gpu_fallback(monkeypatch
     monkeypatch.delenv("KOWW_GPU_RUNTIME_PATH", raising=False)
     monkeypatch.delenv("KOWW_GPU_DLL_PATHS", raising=False)
     monkeypatch.setattr(ort, "get_available_providers", lambda: ["CPUExecutionProvider"])
-    with pytest.raises(RuntimeError, match="cannot silently become CPU"):
+    with pytest.raises(RuntimeError, match="CUDA 실행 공급자"):
         module._cuda_runtime()
+
+
+def test_cuda_runtime_moves_existing_path_ahead_of_cpu_installation(tmp_path):
+    cpu, gpu = (tmp_path / label for label in ("cpu", "gpu"))
+    for root, provider in ((cpu, "CPUExecutionProvider"), (gpu, "CUDAExecutionProvider")):
+        package = root / "onnxruntime"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text(
+            f"def get_available_providers(): return [{provider!r}]\n", encoding="utf-8")
+    source = Path(__file__).resolve().parents[1]
+    environment = {**os.environ, "PYTHONPATH": os.pathsep.join(map(str, (gpu, source))),
+                   "KOWW_GPU_RUNTIME_PATH": str(gpu), "PYTHONIOENCODING": "utf-8"}
+    environment.pop("KOWW_GPU_DLL_PATHS", None)
+    environment.pop("PYTHONSAFEPATH", None)
+    result = subprocess.run([sys.executable, "-B", "-c",
+        "from korean_openwakeword.gpu_evaluation import _cuda_runtime; "
+        "ort, _ = _cuda_runtime(); print(ort.__file__)"],
+        cwd=cpu, env=environment, capture_output=True, encoding="utf-8", timeout=15)
+    assert result.returncode == 0, result.stderr
+    assert Path(result.stdout.strip()) == gpu / "onnxruntime" / "__init__.py"
 
 
 @pytest.mark.parametrize("providers,tf32", [(["CPUExecutionProvider"], "0"),

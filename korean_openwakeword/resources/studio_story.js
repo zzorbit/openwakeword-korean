@@ -440,13 +440,13 @@
     const reopenReviewAction = { label: "다시 열기", run: controlJob };
     let referenceGroup = null, referenceApprovalPending = false, referenceMode = null;
     let referenceApprovalContext = null, referenceApprovalRequest = 0, boundaryNextIntent = null;
-    let referenceFrameElement = null, referenceFrameWindow = null, referenceFrameUrl = "";
+    let referenceFrameElement = null, referenceFrameWindow = null, referenceFrameUrl = "", referenceHeight = 0;
     let preflightState = null, preflightFinalizePending = false, preflightCommitted = false, preflightFrameKey = "", preflightFrameWindow = null;
     let preflightRequest = 0;
     let preflightResumeIntent = null, preflightPickerRequest = null, preflightPickerLastRequest = 0;
     let preflightHeightReceived = false, preflightStateReceived = false;
     let preflightFramePhase = null;
-    let hardReviewArrivalPending = false, hardReviewRevealFailed = false;
+    let hardReviewArrivalPending = false, hardReviewRevealFailed = false, resultPreparationSeen = false;
     const reviewWirePhase = project => (callReviewRoute(project)?.phase || preflightFramePhase) === "hard" ? { phase: "hard" } : {};
     let repairGenerationSeen = "", repairReviewStaged = "", repairReviewConcealed = "", repairRevealFailed = "";
     function postRepair(project) {
@@ -476,10 +476,14 @@
       if (reload) bridge.clearNoticeAction?.(reopenReviewAction);
       const session = beginTransition(false);
       session.hardReviewArrival = true;
+      if (!reload) panel.classList.add("is-concealed");
       hardReviewRevealFailed = false;
       void runTransition(session, () => {
         if (reload) reloadReviewFrame();
       });
+    }
+    function showChapter(step) {
+      current = step; historyPage = 0; historyKey = "";
     }
     function clearPreflightPicker() {
       preflightPickerRequest = null; shell.classList.remove("preflight-picker-open"); shell.style.setProperty("--preflight-picker-height", "");
@@ -496,7 +500,7 @@
       const intent = { project: project.id, route, session, saved: false, issued: false, inFlight: false };
       const preparation = new Promise((resolve, reject) => { intent.resolve = resolve; intent.reject = reject; });
       void preparation.catch(() => {}); // A project refresh may cancel before the notice paints.
-      boundaryNextIntent = intent; following = true;
+      boundaryNextIntent = intent; following = true; session.followsStage = true;
       const watchdog = setTimeout(() => { if (boundaryNextIntent === intent) cancelBoundaryNext(); }, 90000);
       session.timers.add(watchdog);
       void runTransition(session, async () => {
@@ -505,7 +509,7 @@
         if (!activeTransition(session)) return false;
         intent.saved = true; resumeSavedBoundary();
         return preparation;
-      }, () => { current = intent.target; historyPage = 0; historyKey = ""; });
+      }, () => showChapter(intent.target));
     }
     function resumeSavedBoundary() {
       const intent = boundaryNextIntent; if (!intent) return;
@@ -733,7 +737,7 @@
     function preparingPhraseForm(project) {
       if (current !== "phrases" || stageStep(project) !== current || stageId(project) !== "hard_phrases"
         || shell.dataset.history === "true" || project.error || project.migration || project.review) return false;
-      if (running(project.status)) return true;
+      if (running(project.status) || project.status === "ready") return true;
       if (project.status !== "waiting_input") return false;
       if (!project.input) return true;
       return project.input.kind === "hard_phrases" && (input.hidden || $("input-form").hidden
@@ -759,8 +763,8 @@
       const project = bridge.state().project;
       if (!reviewingPreflight(project)) return true;
       const step = current, reviewStage = stageId(project);
-      return waitForChapterState(session, next => current === step && stageId(next) === reviewStage && reviewingPreflight(next),
-        callReviewLayoutReady);
+      return waitForChapterState(session, () => true,
+        next => current !== step || stageId(next) !== reviewStage || !reviewingPreflight(next) || callReviewLayoutReady());
     }
     function cancelReferenceApproval() {
       if (referenceApprovalContext) {
@@ -770,7 +774,7 @@
       referenceApprovalContext = null; referenceApprovalPending = false;
     }
     function clearReferenceGroup() { referenceGroup = null; cancelReferenceApproval(); }
-    function clearReferenceHeight() { shell.style.setProperty("--reference-content-height", ""); }
+    function clearReferenceHeight() { referenceHeight = 0; shell.style.setProperty("--reference-content-height", ""); }
     function syncReferenceFrame() {
       const frame = $("reference-preview-frame"), source = frame?.contentWindow || null, url = frame?.getAttribute("src") || "";
       if (frame !== referenceFrameElement || source !== referenceFrameWindow || url !== referenceFrameUrl) {
@@ -784,7 +788,7 @@
       if (current === "voice-listening") render();
       const frame = $("reference-preview-frame"), project = bridge.state().project;
       if (project?.id && project.id === lastProject?.id) frame.contentWindow?.postMessage?.(
-        { type: "koww:reference-status", project: project.id }, window.location.origin);
+        { type: "koww:reference-status", project: project.id, request_layout: true }, window.location.origin);
     });
     let hoveredIndex = null, focusedIndex = null;
     const ticks = new Map(definitions.map(([id, label]) => {
@@ -874,6 +878,10 @@
       panel.classList.remove("is-leaving", "is-concealed"); panel.inert = false; panel.removeAttribute("aria-busy");
     }
     function activeTransition(session) { return transitionSession === session; }
+    function markChapterChanged(session) {
+      session.contentVersion = (session.contentVersion || 0) + 1;
+      loader.classList.remove("is-finishing");
+    }
     function beginTransition(backwards, initial = false) {
       cancelReferenceApproval();
       const session = { initial, timers: new Set(), sourceStep: current, sourceFollowing: following, project: bridge.state().project?.id || "", waiters: new Map() };
@@ -947,6 +955,26 @@
       } catch { return ""; }
     }
     function chapterFrameUrl(frame) { return chapterUrl(frame?.getAttribute("src")); }
+    function resultsFrameUrl(project) {
+      return chapterUrl(current === "microphone" ? project.results?.mic_url || project.mic_url
+        : project.results?.url || project.results_url);
+    }
+    function waitingForResultFrame(project) {
+      if (!project || project.error || project.input || project.migration
+        || !["results", "microphone"].includes(current) || !done(project.status)) return false;
+      const expected = resultsFrameUrl(project);
+      return !expected || results.hidden || chapterFrameUrl($("result-frame")) !== expected;
+    }
+    function referenceFrameMounted(project) {
+      const expected = chapterUrl(project?.reference_preview?.url);
+      return Boolean(expected && chapterFrameUrl($("reference-preview-frame")) === expected);
+    }
+    function waitingForReferenceLayout(project) {
+      return Boolean(current === "voice-listening" && project?.reference_preview?.url
+        && (!referenceFrameMounted(project)
+          || (project.reference_preview.candidate_selection === true || referenceMode === "candidate_pool_v2")
+            && (referenceMode !== "candidate_pool_v2" || !referenceHeight)));
+    }
     function visibleNoticeFrame(project) {
       if (!project || listening) return null;
       if (current === "voice-listening" && project.reference_preview?.url && referencePreview.open) return $("reference-preview-frame");
@@ -994,8 +1022,9 @@
     function destinationFrames() {
       const project = bridge.state().project;
       if (!project) return [];
-      if (current === "voice-listening" && project.reference_preview?.url) return [$("reference-preview-frame")];
-      if (["results", "microphone"].includes(current) && !results.hidden) return [$("result-frame")];
+      if (current === "voice-listening" && referenceFrameMounted(project)) return [$("reference-preview-frame")];
+      if (["results", "microphone"].includes(current) && !results.hidden
+        && resultsFrameUrl(project) && chapterFrameUrl($("result-frame")) === resultsFrameUrl(project)) return [$("result-frame")];
       if (!review.hidden && historic.hidden && project.review
         && (!currentPronunciationStage(project) || reviewQueueMounted(project))) return [$("review-frame")];
       return [];
@@ -1028,7 +1057,7 @@
           chapterFrameStates.set(id, state);
         }
         if (frame === loadedFrame) { state.loaded = Boolean(url); state.generation++; }
-        if (session && activeTransition(session) && state.generation !== previousGeneration) session.contentVersion = (session.contentVersion || 0) + 1;
+        if (session && activeTransition(session) && state.generation !== previousGeneration) markChapterChanged(session);
         const waiter = session?.waiters.get(id);
         if (!frame || !frames.includes(frame)) {
           if (waiter) { waiter.resolve(false); session.waiters.delete(id); }
@@ -1060,16 +1089,13 @@
     });
     async function chapterPaint(session) {
       if (document.fonts?.ready) await Promise.race([document.fonts.ready, session.aborted]);
-      for (let i = 0; i < 2 && activeTransition(session); i++) {
-        if (typeof requestAnimationFrame !== "function") break;
-        await Promise.race([new Promise(resolve => requestAnimationFrame(resolve)), session.aborted]);
-      }
-      return activeTransition(session);
+      return activeTransition(session) && await waitForLoadingPaint(session.aborted);
+    }
+    function chapterStatePending(project) {
+      return preparingPhraseForm(project) || preparingReviewQueue(project) || waitingForResultFrame(project);
     }
     async function waitForChapter(session) {
       let timer, rejectTimeout;
-      const step = current;
-      const recipePending = Boolean(bridge.state().project && ["scale", "materials"].includes(current) && bridge.prepareRecipes);
       const repairedReview = Boolean(current === "pronunciation" && postRepair(bridge.state().project)
         && bridge.state().project.review);
       if (current === "hard-review" && currentPronunciationStage(bridge.state().project)) session.hardReviewArrival = true;
@@ -1087,34 +1113,40 @@
       }
       try {
         const ready = (async () => {
-          if (recipePending || document.fonts?.ready) armTimeout();
-          if (recipePending) {
-            await bridge.prepareRecipes();
-            if (!activeTransition(session)) return false;
-          }
+          if (document.fonts?.ready) armTimeout();
           session.waitingForFrames = true;
+          let preparedRecipeStep;
           while (activeTransition(session)) {
+            const step = current;
             const project = bridge.state().project;
-            if (preparingPhraseForm(project)) {
+            if (project && ["scale", "materials"].includes(step) && preparedRecipeStep !== step && bridge.prepareRecipes) {
               armTimeout();
-              if (!await waitForChapterState(session, next => current === step && stageStep(next) === step,
-                next => !preparingPhraseForm(next))) return false;
+              await bridge.prepareRecipes();
+              preparedRecipeStep = step;
+              if (!activeTransition(session)) return false;
+              if (current !== step) continue;
             }
-            if (preparingReviewQueue(project)) {
+            if (chapterStatePending(bridge.state().project)) {
               armTimeout();
-              const reviewStage = stageId(project);
-              if (!await waitForChapterState(session, next => current === step && stageId(next) === reviewStage,
-                next => !preparingReviewQueue(next))) return false;
+              if (!await waitForChapterState(session, () => true, next => current !== step || !chapterStatePending(next))) return false;
+              if (current !== step) continue;
             }
             refreshChapterWaiters(session);
             if (session.waiters.size) armTimeout();
             await Promise.all([...session.waiters.values()].map(waiter => waiter.promise));
+            if (current !== step) continue;
+            if (waitingForReferenceLayout(bridge.state().project)) {
+              armTimeout();
+              if (!await waitForChapterState(session, () => true,
+                next => current !== step || !waitingForReferenceLayout(next))) return false;
+              if (current !== step) continue;
+            }
             if (!await waitForCallReviewLayout(session)) return false;
             const version = session.contentVersion || 0;
             if (!await chapterPaint(session)) return false;
             const latest = bridge.state().project;
-            if ([...session.waiters.values()].every(waiter => waiter.ready)
-              && !preparingPhraseForm(latest) && !preparingReviewQueue(latest)
+            if (current === step && [...session.waiters.values()].every(waiter => waiter.ready)
+              && !chapterStatePending(latest) && !waitingForReferenceLayout(latest)
               && (!reviewingPreflight(latest) || callReviewLayoutReady())
               && version === (session.contentVersion || 0)) {
               session.readyVersion = session.contentVersion || 0; return true;
@@ -1136,8 +1168,8 @@
       stopTransition();
       const project = bridge.state().project;
       if (project) { current = stageStep(project); lastFrontier = current; following = true; historyKey = ""; }
-      render();
       const session = beginTransition(false, true);
+      render();
       try {
         if (await waitForChapter(session)) {
           if (minimum) await Promise.race([minimum, session.aborted]);
@@ -1185,10 +1217,10 @@
           const version = session.contentVersion || 0;
           loader.classList.remove("is-entering");
           loader.classList.add("is-finishing");
-          if (!await waitForMotion(loader, session)) return;
+          await waitForMotion(loader, session);
+          if (!activeTransition(session)) return;
           if (version === (session.contentVersion || 0) || !result?.ok) break;
           loader.classList.remove("is-finishing");
-          if (!await waitForMotion(loader, session) || !await waitForChapter(session)) return;
         }
       } catch (error) {
         if (activeTransition(session)) {
@@ -1227,6 +1259,7 @@
       if (!automatic && backwards && awaitingPhrasePause(state.project)) return false;
       if (!automatic) hardConnectionIntent = null;
       const session = beginTransition(backwards);
+      session.followsStage = automatic || (!backwards && target === stageStep(state.project));
       if (!automatic && backwards && target === "phrases" && canReturnToPhraseEditor(state.project)) {
         void runTransition(session, async () => {
           if (!canReturnToPhraseEditor(bridge.state().project) || await bridge.action("edit_hard_phrases") === false) return false;
@@ -1239,7 +1272,7 @@
         return true;
       }
       following = automatic || (state.project && (target === stageStep(state.project) || position === frontier(state.project)));
-      void runTransition(session, undefined, () => { current = target; historyPage = 0; historyKey = ""; });
+      void runTransition(session, undefined, () => showChapter(target));
       return true;
     }
     function humanGate(project) { return Boolean(project?.review || project?.input || (project?.migration && !project.process_alive)); }
@@ -1284,6 +1317,7 @@
     }
     function releaseChapter(project) {
       const session = beginTransition(false);
+      session.followsStage = true;
       const failed = next => Boolean(next?.error || next?.migration && !next.process_alive
         || ["failed", "error", "interrupted", "cancelled", "stopped"].includes(next?.status));
       const advanced = next => next?.id === project.id
@@ -1310,7 +1344,7 @@
         if (failed(latest) || !advanced(latest))
           throw Error("다음 단계가 시작되지 않았습니다. 상태를 확인한 뒤 다시 진행하세요.");
         target = stageStep(latest);
-      }, () => { current = lastFrontier = target; following = true; historyPage = 0; historyKey = ""; });
+      }, () => { showChapter(target); lastFrontier = target; following = true; });
     }
     function reviewingReferenceGroup(project) {
       return Boolean(project && current === "voice-listening" && referenceMode === "candidate_pool_v2"
@@ -1467,7 +1501,7 @@
           request: preflightRequest, phase: "finalizing", route: callReviewRoute(project), session };
         const preparation = new Promise((resolve, reject) => { intent.resolve = resolve; intent.reject = reject; });
         void preparation.catch(() => {});
-        preflightResumeIntent = intent; following = true;
+        preflightResumeIntent = intent; following = true; session.followsStage = true;
         const watchdog = setTimeout(() => { if (preflightResumeIntent === intent) cancelPreflightNext("다음 단계 준비 상태를 확인하지 못했습니다. 다시 진행하세요."); }, intent.route.phase === "post" ? 90000 : 45000);
         intent.watchdog = watchdog; session.timers.add(watchdog);
         void runTransition(session, () => {
@@ -1475,7 +1509,7 @@
           if (preflightResumeIntent === intent) intent.source.postMessage({ type: "koww:preflight-finalize", ...reviewWirePhase(project),
             project: intent.project, queue_sha256: intent.queue, request: intent.request }, window.location.origin);
           return preparation;
-        }, () => { current = intent.target; historyPage = 0; historyKey = ""; });
+        }, () => showChapter(intent.target));
         return;
       }
       if (editingPhrases(project)) {
@@ -2347,7 +2381,7 @@
       if (key !== projectKey) {
         bridge.clearNoticeAction?.(reopenReviewAction);
         hardConnectionIntent = null;
-        hardReviewArrivalPending = false; hardReviewRevealFailed = false;
+        hardReviewArrivalPending = false; hardReviewRevealFailed = false; resultPreparationSeen = false;
         const createdHere = transitionSession?.createdProject === key && Boolean(key) && key !== "setup";
         pauseMedia(); if (!createdHere) stopTransition(); projectKey = key; following = true; materialKey = "";
         referenceReviewComplete = false; clearReferenceGroup(); clearReferenceHeight(); referenceMode = null;
@@ -2386,9 +2420,15 @@
       const actual = project ? stageStep(project) : current;
       if (project && actual !== lastFrontier) {
         if (!following || current === actual) lastFrontier = actual;
+        else if (transitionSession?.initial || transitionSession?.staged && transitionSession.followsStage) {
+          showChapter(actual); lastFrontier = actual;
+        }
         else if (!transitioning && !state.busy && navigate(screens.indexOf(actual), true)) lastFrontier = actual;
       }
-      if (screens.indexOf(current) > maximum) current = actual;
+      if (screens.indexOf(current) > maximum) {
+        if (transitionSession && !transitionSession.initial && !transitionSession.staged) panel.classList.add("is-concealed");
+        showChapter(actual);
+      }
       const reviewStage = stageId(project);
       if (current === "hard-review" && sampleFirstHardReview(project) && reviewStage === "hard_pilot") hardReviewArrivalPending = true;
       else if (hardReviewArrivalPending) {
@@ -2417,6 +2457,15 @@
       shell.classList.toggle("post-repair-generating", repairProgressVisible(project));
       shell.classList.toggle("hard-connecting", connectingHard(project));
       const preparingResults = Boolean(project && current === "results" && !done(project.status) && stageStep(project) === "results");
+      if (preparingResults) resultPreparationSeen = true;
+      else if (resultPreparationSeen && current === "results" && done(project?.status)) {
+        resultPreparationSeen = false;
+        if (!transitioning) {
+          const session = beginTransition(false);
+          panel.classList.add("is-concealed");
+          void runTransition(session);
+        }
+      }
       shell.classList.toggle("preparing-results", preparingResults);
       const definition = definitions.find(([id]) => id === current);
       const [, title = "학습 상태", description = "현재 작업 상태를 확인해 주세요."] = definition || [];
@@ -2632,10 +2681,11 @@
       if (transitionSession) {
         const queueKey = currentPronunciationStage(project)
           ? [project.id, current, stageId(project), project.review?.queue_sha256 || "", reviewQueueMounted(project)] : null;
-        const contentKey = JSON.stringify([queueKey, preparingPhraseForm(project), destinationFrames().map(frame => frame?.id)]);
+        const contentKey = JSON.stringify([current, shell.dataset.history, queueKey, project?.input?.kind,
+          chapterStatePending(project), waitingForReferenceLayout(project), referenceHeight, destinationFrames().map(frame => frame?.id)]);
         if (transitionSession.contentKey !== contentKey) {
           transitionSession.contentKey = contentKey;
-          transitionSession.contentVersion = (transitionSession.contentVersion || 0) + 1;
+          markChapterChanged(transitionSession);
         }
       }
       refreshChapterWaiters(transitionSession);
@@ -2761,7 +2811,11 @@
       if (event.data?.type === "koww:reference-height" && matchingProject
         && event.data.mode === "candidate_pool_v2" && referenceMode === "candidate_pool_v2"
         && Number.isSafeInteger(event.data.height) && event.data.height > 0 && event.data.height <= 100000) {
-        shell.style.setProperty("--reference-content-height", `${event.data.height}px`);
+        if (referenceHeight !== event.data.height) {
+          referenceHeight = event.data.height;
+          shell.style.setProperty("--reference-content-height", `${referenceHeight}px`);
+          if (current === "voice-listening") render();
+        }
         return;
       }
       if (event.data?.type === "koww:reference-group" && matchingProject

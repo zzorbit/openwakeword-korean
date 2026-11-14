@@ -74,8 +74,13 @@ def _cuda_runtime():
         existing = sys.modules.get("onnxruntime")
         if existing is not None and not Path(existing.__file__).resolve().is_relative_to(target):
             raise RuntimeError("A different ONNX Runtime is already loaded; start a separate GPU worker with its package path first")
-        if str(target) not in sys.path:
-            sys.path.insert(0, str(target))
+        # A Python -m subprocess can put its working directory before
+        # PYTHONPATH. Move the selected runtime ahead of that CPU installation
+        # even when the runtime path was already supplied by the launcher.
+        location = str(target)
+        if location in sys.path:
+            sys.path.remove(location)
+        sys.path.insert(0, location)
     directories = []
     explicit = os.environ.get("KOWW_GPU_DLL_PATHS")
     if explicit:
@@ -93,8 +98,10 @@ def _cuda_runtime():
     if directories:
         os.environ["PATH"] = os.pathsep.join(map(str, directories)) + os.pathsep + os.environ.get("PATH", "")
     import onnxruntime as ort
+    if target and not Path(ort.__file__).resolve().is_relative_to(target):
+        raise RuntimeError("선택한 GPU용 ONNX Runtime 경로에서 라이브러리를 불러오지 못했습니다.")
     if "CUDAExecutionProvider" not in ort.get_available_providers():
-        raise RuntimeError("CUDAExecutionProvider is unavailable; GPU evaluation cannot silently become CPU evaluation")
+        raise RuntimeError("불러온 ONNX Runtime에서 CUDA 실행 공급자를 사용할 수 없습니다.")
     # CUDA's DEFAULT convolution algorithm can emit a warning at every new
     # batch shape even while the native CUDA kernel works correctly. Keep
     # errors visible and validate actual providers instead of flooding logs.

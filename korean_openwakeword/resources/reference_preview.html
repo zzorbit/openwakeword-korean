@@ -326,6 +326,7 @@ window.addEventListener('message',event=>{
   if(event.origin!==location.origin||event.source!==window.parent)return;
   if(event.data?.type==='koww:reference-status'&&event.data.project===project){
     for(const [channel,message] of referenceNotices)referenceNotice(channel,message);
+    if(reportedLayout&&event.data.request_layout===true)reportReferenceLayout(reportedLayout,true);
     if(candidateSelectionBlocked)recoverCandidateSelection();
     if(candidateMode)syncCandidates(true);
     scheduleCandidateHeight(true);
@@ -607,9 +608,9 @@ function applyReview(payload, nextKey){
   syncReview();scheduleReviewPoll();
   reportReferenceLayout('legacy');
 }
-function reportReferenceLayout(mode){
+function reportReferenceLayout(mode,force=false){
   if(reportedLayout!==mode)reportedCandidateHeight=null;
-  if(reportedLayout===mode||corpus||window.parent===window)return;
+  if((!force&&reportedLayout===mode)||corpus||window.parent===window)return;
   window.parent.postMessage?.({type:'koww:reference-layout',project,mode},location.origin);reportedLayout=mode;
 }
 function scheduleCandidateHeight(force=false){

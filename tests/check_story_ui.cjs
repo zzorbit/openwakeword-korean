@@ -133,6 +133,11 @@ function page(initialProject = null, options = {}) {
   for (const id of ["reference-preview-frame", "review-frame", "result-frame"]) {
     const frame = get(id);
     frame.contentWindow = { postMessage(data, origin) {
+      if (data.type === "koww:reference-status" && data.request_layout && state.project?.reference_preview?.candidate_selection && !options.deferReferenceLayout) {
+        const send = type => { for (const fn of windowHandlers.message || []) fn({ origin, source: frame.contentWindow,
+          data: { type, project: data.project, mode: "candidate_pool_v2", height: 410 } }); };
+        setImmediate(() => { send("koww:reference-layout"); send("koww:reference-height"); });
+      }
       if (data.type !== "koww:chapter-request") return;
       chapterRequests.push({ frame, data, origin });
       if (options.chapterReady === false) return;
@@ -700,6 +705,40 @@ async function main() {
       navigation_checkpoint: { policy: "explicit_story_v1", state: "awaiting_next", step }, stages, progress: {},
       reference_counts: { train: 20, validation: 30 }, reference_preview: { count: 50, train: 20, validation: 30, url: "/reference-preview/" } };
   };
+  await test("automatic and explicit forward transitions keep one cover across advanced worker snapshots", async () => {
+    for (const via of ["poll", "next"]) {
+      const project = navigationProject("hard-review");
+      if (via === "poll") Object.assign(project, { stage_id: "hard_connect", status: "running",
+        navigation_checkpoint: { policy: "explicit_story_v1", step: "hard-review", state: "running" } });
+      const beginFeatures = () => {
+        Object.assign(project, { stage_id: "features", status: "running",
+          navigation_checkpoint: { policy: "explicit_story_v1", step: "features", state: "running" } });
+        p.ui.render();
+      };
+      const p = page(project, { paintFrames: "manual", action: (action, state) => {
+        assert.equal(action, "resume");
+        state.busy = false;
+        beginFeatures();
+      } });
+      const loader = p.shell.querySelector(".story-loader"), panel = p.get("story-panel");
+      assert.equal(p.shell.dataset.step, "hard-review");
+      if (via === "poll") beginFeatures();
+      else await p.next.fire("click");
+      await p.advanceFrame(); await p.advanceFrame();
+      assert.equal(p.shell.dataset.step, "features");
+      while (await p.advanceFrame()) {}
+      Object.assign(project, { stage_id: "training", progress: { done: 0, total: 2000, unit: "학습 업데이트" },
+        navigation_checkpoint: { policy: "explicit_story_v1", step: "training", state: "running" } });
+      p.ui.render();
+      p.advanceTimer(); await p.flush();
+      while (await p.advanceFrame()) {}
+      assert.equal(p.shell.dataset.step, "training");
+      assert.equal(loader.hidden, true);
+      assert.equal(panel.inert, false, "the new chapter finishes under the original mask");
+      assert.equal(p.shell.querySelector(".story-voice-counts").querySelector("progress").max, 2000);
+      assert.equal(p.calls.filter(call => call === "resume").length, via === "next" ? 1 : 0);
+    }
+  });
   await test("every explicit story boundary waits for proven completion and next releases the next real group once", async () => {
     for (const [step] of navigationGroups.slice(0, -1).filter(([step]) => !["voices", "hard-generation"].includes(step))) {
       const project = navigationProject(step), target = navigationGroups[navigationGroups.findIndex(([id]) => id === step) + 1][0];
@@ -1199,6 +1238,81 @@ async function main() {
     assert.ok(p.calls.includes("pause:result-frame"));
     assert.equal(p.calls.some(call => ["create", "start", "resume", "input"].includes(call)), false);
   });
+  await test("every reachable chapter completes a covered Previous and Next in a saved workflow", async () => {
+    const project = { id: "all-chapters", wakeword: "보라야", status: "completed",
+      settings: { pilot_review_policy: "one_per_voice_before_and_after_generation_v4" },
+      results: { url: "/results/all-chapters/", mic_url: "/mic/all-chapters/" } };
+    const p = page(project, { paintFrames: "manual" });
+    const chapters = p.api.definitions.map(([step, title]) => [step, title]);
+    const loader = p.shell.querySelector(".story-loader"), panel = p.get("story-panel");
+    const move = async (button, index) => {
+      const [step, title] = chapters[index];
+      const source = p.shell.dataset.step;
+      assert.equal(button.disabled, false, source);
+      await button.fire("click");
+      assert.equal(p.shell.dataset.step, source);
+      assert.equal(loader.hidden, false);
+      assert.equal(panel.inert, true);
+      await p.advanceFrame(); await p.advanceFrame();
+      for (let i = 0; i < 8; i++) { await p.advanceFrame(); await p.flush(); }
+      await p.settle();
+      assert.equal(p.shell.dataset.step, step);
+      assert.equal(p.get("story-title").textContent, title);
+      assert.equal(loader.hidden, true);
+      assert.equal(panel.inert, false);
+    };
+    await move(p.next, chapters.length - 1);
+    for (let index = chapters.length - 2; index >= 0; index--) await move(p.back, index);
+    for (let index = 1; index < chapters.length; index++) await move(p.next, index);
+    assert.equal(p.calls.some(call => ["create", "start", "resume", "input"].includes(call)), false);
+  });
+  await test("every ordinary workflow destination waits for paint on refresh and automatic movement", async () => {
+    const settings = { pilot_review_policy: "one_per_voice_before_and_after_generation_v4", hard_review_policy: "one_per_phrase_v1" };
+    const base = { id: "all-active-chapters", wakeword: "보라야", settings, status: "running", process_alive: true };
+    const destinations = [
+      ["downloads", { stage_id: "data_download" }],
+      ["voices", { stage_id: "references" }],
+      ["call-pilot-generation", { stage_id: "pilot" }],
+      ["positive-generation", { stage_id: "positives" }],
+      ["phrases", { stage_id: "hard_phrases", status: "waiting_input", process_alive: false,
+        input: { kind: "hard_phrases", phrases: ["보라빛"] } }],
+      ["hard-generation", { stage_id: "hard_generation" }],
+      ["features", { stage_id: "features" }],
+      ["training", { stage_id: "training" }],
+      ["evaluation", { stage_id: "evaluation" }],
+      ["results", { stage_id: "results" }],
+    ];
+    const opened = p => {
+      assert.equal(p.get("story-panel").inert, false);
+      assert.equal(p.shell.querySelector(".story-loader").hidden, true);
+      assert.equal(p.calls.some(call => ["create", "start", "resume", "input"].includes(call)), false);
+    };
+    for (const [step, changes] of [["entry", null], ...destinations]) {
+      const p = page(changes ? { ...base, ...changes } : null, { paintFrames: "manual" });
+      let reveal;
+      const minimum = new Promise(resolve => { reveal = resolve; });
+      const prepared = p.ui.prepareInitialView(minimum);
+      await p.flush();
+      assert.equal(p.get("story-panel").inert, true, step);
+      while (await p.advanceFrame()) {}
+      assert.equal(p.get("story-panel").inert, true, step);
+      reveal();
+      assert.equal(await prepared, true, step);
+      assert.equal(p.shell.dataset.step, step);
+      opened(p);
+    }
+    const p = page({ ...base, ...destinations[0][1] }, { paintFrames: "manual" });
+    for (const [step, changes] of destinations.slice(1)) {
+      p.state.project = { ...base, ...changes };
+      p.ui.render();
+      assert.equal(p.get("story-panel").inert, true, step);
+      assert.equal(p.shell.querySelector(".story-loader").hidden, false, step);
+      while (await p.advanceFrame()) {}
+      await p.settle();
+      assert.equal(p.shell.dataset.step, step);
+      opened(p);
+    }
+  });
   await test("saved model entry preserves the recorded word without editing or overwriting a new-model draft", async () => {
     const model = { id: "model", wakeword: "보라야", status: "completed", results: { url: "/results/" } };
     const p = page(model);
@@ -1511,11 +1625,12 @@ async function main() {
     let request, reads = 0;
     const p = page(historyModel({}), { prepareRecipes: () => {
       reads++;
-      return new Promise(resolve => { request = resolve; });
+      return new Promise(resolve => { request = () => { p.state.recipeReady = true; resolve(); }; });
     } });
     assert.equal(await p.ui.prepareInitialView(), true);
     assert.equal(reads, 0);
     for (const step of ["scale", "materials"]) {
+      p.state.recipeReady = false;
       await p.ticks.find(tick => tick.dataset.step === step).fire("click"); await p.flush();
       assert.equal(p.shell.dataset.step, step);
       assert.equal(p.get("story-panel").inert, true);
@@ -2442,6 +2557,35 @@ async function main() {
     await replyChapter(p, updated); await prepared;
     assert.equal(result, true); assert.equal(p.get("story-panel").inert, false);
   });
+  await test("refresh follows a newer workflow chapter before revealing the first page", async () => {
+    const project = { id: "refresh-advances", wakeword: "보라야", status: "running", stage_id: "positives",
+      settings: { pilot_review_policy: "one_per_voice_before_and_after_generation_v4" } };
+    const p = page(project, { chapterReady: false, paintFrames: "manual" });
+    let finishMinimum, result;
+    const minimum = new Promise(resolve => { finishMinimum = resolve; });
+    const prepared = p.ui.prepareInitialView(minimum).then(value => {
+      result = { value, step: p.shell.dataset.step, inert: p.get("story-panel").inert };
+    });
+    p.ui.render();
+    await p.flush();
+    while (await p.advanceFrame()) {}
+    assert.equal(result, undefined);
+    project.stage_id = "hard_phrases";
+    project.status = "waiting_input";
+    project.input = { kind: "hard_phrases", phrases: ["보라빛"] };
+    p.ui.render();
+    finishMinimum();
+    await p.flush();
+    assert.equal(result, undefined, "the first chapter's paint cannot release the later prompt");
+    while (await p.advanceFrame()) {}
+    await prepared;
+    assert.deepEqual(result, { value: true, step: "phrases", inert: false });
+    assert.equal(p.shell.dataset.step, "phrases");
+    const fields = p.get("hard-phrase-fields");
+    assert.equal(fields.firstElementChild.value, "보라빛");
+    assert.equal(p.get("hard-phrase-editor").hidden, false);
+    assert.equal(p.calls.some(call => ["start", "resume", "input"].includes(call)), false);
+  });
   await test('initial readiness fails rather than revealing incomplete geometry after timeout or project exchange',async()=>{
     for(const change of ['timeout','project']){
       const project=postflightProject(),p=page(project),wire=await wirePreflight(p,project);
@@ -2524,7 +2668,7 @@ async function main() {
     const ready=(sender=source,id=project.id)=>p.windowEvent("message",{origin:"http://studio.local",source:sender,data:{type:"koww:reference-group",project:id,group:"train:man:child",ready:true}});
     await ready();assert.equal(p.next.disabled,false);
     await frame.fire("load");assert.equal(p.next.disabled,true);
-    assert.deepEqual(posted.at(-1),{data:{type:"koww:reference-status",project:project.id},origin:"http://studio.local"},"reload requests fresh child readiness");
+    assert.deepEqual(posted.at(-1),{data:{type:"koww:reference-status",project:project.id,request_layout:true},origin:"http://studio.local"},"reload requests fresh child readiness");
     await ready();assert.equal(p.next.disabled,false);
     const replacement={postMessage:(data,origin)=>posted.push({data:JSON.parse(JSON.stringify(data)),origin})};
     frame.contentWindow=replacement;frame.setAttribute("src","/reference-preview/?project="+project.id+"&reload=1");p.ui.render();assert.equal(p.next.disabled,true);
@@ -2809,6 +2953,28 @@ async function main() {
       data: { ...request.data, type: "koww:chapter-ready", status: "ready", ...changes }, ...envelope });
     await p.flush();
   }
+  await test("candidate review waits for the measured current layout even after the document is ready", async () => {
+    const project = preparationProject({ status: "completed", ready: true, can_start: false });
+    project.reference_preparation.rows.forEach(row => Object.assign(row, { done: 50, completed: true }));
+    project.reference_preview = { ...project.reference_preview, candidate_selection: true, review_required: true };
+    const p = page(project, { chapterReady: false, deferReferenceLayout: true });
+    await p.ticks.find(tick => tick.dataset.step === "voices").fire("click"); await p.settle();
+    await p.next.fire("click"); await p.flush();
+    const loader = p.shell.querySelector(".story-loader"), frame = p.get("reference-preview-frame");
+    p.advanceTimer(); await p.flush();
+    await replyChapter(p);
+    assert.equal(loader.hidden, false, "the parent still needs the candidate frame height");
+    const send = (data, envelope = {}) => p.windowEvent("message", {
+      origin: "http://studio.local", source: frame.contentWindow, data: { project: project.id, ...data }, ...envelope,
+    });
+    await send({ type: "koww:reference-layout", mode: "candidate_pool_v2" });
+    await send({ type: "koww:reference-height", mode: "candidate_pool_v2", height: 410 }, { source: {} });
+    assert.equal(loader.hidden, false, "another frame cannot settle the candidate geometry");
+    await send({ type: "koww:reference-height", mode: "candidate_pool_v2", height: 410 });
+    assert.equal(p.shell.style["--reference-content-height"], "410px");
+    assert.equal(loader.hidden, true);
+    assert.equal(p.next.disabled, true, "sizing a review does not approve its candidate group");
+  });
   await test("chapter readiness keeps the destination concealed beyond the notice minimum until real content arrives", async () => {
     const p = await pendingReferenceChapter(), loader = p.shell.querySelector(".story-loader");
     p.advanceTimer(); await p.flush();
@@ -2904,6 +3070,26 @@ async function main() {
     while (await p.advanceFrame()) {}
     await p.settle();
     assert.equal(loader.hidden, true); assert.equal(p.get("story-panel").inert, false);
+  });
+  await test("finished results repurpose the current preparation chapter behind a cover until the report is ready", async () => {
+    const project = { id: "result-published", status: "running", stage_id: "results", process_alive: true };
+    const p = page(project, { chapterReady: false });
+    const loader = p.shell.querySelector(".story-loader"), panel = p.get("story-panel");
+    assert.equal(p.shell.dataset.step, "results");
+    assert.equal(loader.hidden, true, "ongoing result generation has its own visible progress");
+    Object.assign(project, { status: "completed", process_alive: false, results: { url: "/results/result-published/" } });
+    p.ui.render(); await p.flush();
+    assert.equal(loader.hidden, false);
+    p.advanceTimer(); await p.flush();
+    assert.equal(panel.inert, true);
+    const frameRequest = p.chapterRequests.at(-1);
+    assert.equal(frameRequest?.frame.id, "result-frame");
+    await replyChapter(p, frameRequest);
+    await p.settle();
+    assert.equal(loader.hidden, true);
+    assert.equal(p.get("results-section").hidden, false);
+    assert.equal(panel.inert, false);
+    assert.equal(p.calls.some(call => ["start", "resume", "input"].includes(call)), false);
   });
   await test("chapter readiness also waits for required pronunciation review content", async () => {
     const project = { id: "reviewing", status: "waiting_review", stage_id: "pilot", wakeword: "보라야",
@@ -3241,11 +3427,12 @@ async function main() {
       assert.equal(JSON.stringify(project),original);assert.equal(p.calls.some(call=>['start','resume','pause','input'].includes(call)),false);
     }
   });
-  await test('results preparation hands off to the completed wide iframe and never hides a real error',()=>{
+  await test('results preparation hands off to the completed wide iframe and never hides a real error',async()=>{
     const project={id:'results-handoff',status:'running',process_alive:true,stage_id:'results'};
     const p=page(project),frame=p.get('result-frame');assert.equal(p.get('results-section').hidden,true);
     project.error='보고서 정리를 확인하세요.';p.ui.render();assert.equal(p.shell.querySelector('.story-live-summary').hidden,false);
     delete project.error;project.status='completed';project.process_alive=false;project.results={url:'/results/current/',mic_url:'/mic/current/'};p.ui.render();
+    await p.settle();
     assert.equal(p.shell.classList.contains('preparing-results'),false);assert.equal(p.shell.querySelector('.story-voice-counts').hidden,true);
     assert.equal(p.get('results-section').hidden,false);assert.equal(frame.getAttribute('src'),'/results/current/');assert.equal(p.viewModes.at(-1).view,'results');
     const css=fs.readFileSync(path.join(__dirname,'../korean_openwakeword/resources/studio_story.css'),'utf8');

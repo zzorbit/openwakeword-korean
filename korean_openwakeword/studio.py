@@ -290,6 +290,11 @@ def _execution_contract(*, legacy_reference_review=False):
     if bindings.get("reference_voice_review.py") == _REFERENCE_REVIEW_REUSABLE_LOADER_SHA256:
         # This exact version only allows the worker to reuse an already loaded model.
         bindings["reference_voice_review.py"] = _REFERENCE_REVIEW_COMPATIBLE_FILES[1]
+    gpu_loader = bindings.get("gpu_evaluation.py")
+    if gpu_loader in _GPU_LOADER_COMPATIBLE_DIGESTS:
+        # This audited change only corrects runtime selection. It preserves
+        # the qualified CUDA and CPU scoring algorithms and checkpoint identity.
+        bindings["gpu_evaluation.py"] = _GPU_LOADER_COMPATIBLE_DIGESTS[gpu_loader]
     if legacy_reference_review:
         # Only project the previous contract for this audited, opt-in change.
         if (bindings.get("pilot.py"), bindings.get("reference_voice_review.py")) != _REFERENCE_REVIEW_COMPATIBLE_FILES:
@@ -374,6 +379,12 @@ _REFERENCE_REVIEW_COMPATIBLE_FILES = (
     "5b5315240fd0ee91abf6d48a23d592b291c25d9bf475114b57b4aa2db03d4247",
 )
 _REFERENCE_REVIEW_REUSABLE_LOADER_SHA256 = "ca1554f1a5a797024c83e0d1d98bc2a44d1c363940c4eb954877c4adfc462ab3"
+_GPU_LOADER_COMPATIBLE_DIGESTS = {
+    "d77af5158d76cbbdf2ab77f407b3d3a5a05eedfa787ca831454c90abbef2b395":
+        "6b54b650912ec310c30389ca484f368812e44b4c51980aa1802b3bf8ec738aca",
+    "ba8541e8af58375029aebe41912c5ca74eb490f5a82840babbdd2fbe8cd1f05c":
+        "8a827b57411055f16d17f6ff9dc08d004e8039c55cb9f53e7bb50a0f9c945009",
+}
 _REFERENCE_WORKER_IDLE_SECONDS = 120
 
 # Populated only after testing the exact candidate-pool release. This cannot
