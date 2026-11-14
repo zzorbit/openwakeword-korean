@@ -537,10 +537,7 @@ test("metric help opens only from headings and describes the archived comparison
   headers[1].dispatch("click");
   assert.equal(dialog.open, true);
   assert.equal(label(), "최악 조건");
-  for (const detail of [
-    /울림 · 강한 울림/, /배경 소리 · 환경소음, 음악·전자음, 다른 사람 말소리/,
-    /소음 크기 · 호출어보다 5 dB 작게 \(SNR 5 dB\)/, /같은 비중으로 평균/
-  ]) assert.match(content(), detail);
+  assert.equal(content(), "울림 · 강한 울림\n소음 크기 · 호출어보다 5 dB 작게 (SNR 5 dB) 이 조건에서 배경 소리별 감지율을 같은 비중으로 평균합니다.");
   assert.doesNotMatch(content(), /가장 낮|보통 울림|SNR 10|추천값 결과|평가 당시 결과|모델 [123]|앙상블|%/);
   assert.equal(elements.get("overview-help-content").children.some(child => child.className === "overview-help-models"), false);
   const worstHelp = content();
@@ -577,8 +574,8 @@ test("fixed worst-case help describes its definition even when legacy records la
   const content = fullText(elements.get("overview-help-content"));
   assert.match(content, /강한 울림/);
   assert.match(content, /SNR 5 dB/);
-  assert.match(content, /환경소음, 음악·전자음, 다른 사람 말소리/);
-  assert.doesNotMatch(content, /가장 낮았던 시험 조건|[0-9.]+%/);
+  assert.match(content, /배경 소리별 감지율을 같은 비중으로 평균/);
+  assert.doesNotMatch(content, /환경소음|음악·전자음|다른 사람 말소리|가장 낮았던 시험 조건|[0-9.]+%/);
 });
 test("hard-condition help preserves the recorded comparison pairs", () => {
   const {ui, elements, headers} = browser(), report = sample();

@@ -309,8 +309,8 @@
     return {
       hard: {title: "강한 소음·울림", paragraphs: [...conditions, "조건마다 감지율을 구해 같은 비중으로 평균합니다."]},
       worst: {title: "최악 조건", paragraphs: [
-        `울림 · ${reverbLabel(worstReverb)}\n소음 크기 · 호출어보다 ${worstSnr} dB 작게 (SNR ${worstSnr} dB)\n배경 소리 · ${categories.map(noiseLabel).join(", ")}`,
-        "가장 강한 울림과 본 평가에서 가장 큰 배경 소음으로 고정하고, 세 배경 소리의 감지율을 같은 비중으로 평균합니다."
+        `울림 · ${reverbLabel(worstReverb)}\n소음 크기 · 호출어보다 ${worstSnr} dB 작게 (SNR ${worstSnr} dB)`,
+        "이 조건에서 배경 소리별 감지율을 같은 비중으로 평균합니다."
       ]},
       latency: {title: "반응 시간", paragraphs: ["감지에 성공한 호출의 약 95%가 이 시간 안에 감지됐습니다(P95).",
         "시간은 발화 종료 시점을 기준으로 잽니다. 값에 ‘전’이 붙으면 발화가 끝나기 전에 감지됐다는 뜻입니다."]},
