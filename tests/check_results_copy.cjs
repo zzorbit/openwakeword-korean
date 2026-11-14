@@ -445,6 +445,7 @@ test("metric help opens only from headings and describes the archived comparison
   report.runtime_recommendations = {schema_version: 1,
     search_policy: {hard_conditions: [
       {reverb_condition: "strong", category: "environment", snr_db: 5},
+      {reverb_condition: "none", category: "competing_speech", snr_db: 10},
       {reverb_condition: "moderate", category: "clean", snr_db: null}
     ]},
     candidates: [{id: model.id, runtime: {threshold: .9, consecutive_frames: 3}, recommendation_available: true,
@@ -476,7 +477,7 @@ test("metric help opens only from headings and describes the archived comparison
   assert.equal(dialog.open, true);
   assert.match(label(), /강한 소음·울림/);
   assert.match(content(), /평균/);
-  assert.match(content(), /2개.*환경소음.*SNR 5 dB/s);
+  assert.match(content(), /비교 조건 3개/);
   assert.doesNotMatch(content(), /70\.00%|92\.00%|앙상블/);
   const hardHelp = content();
   close();
@@ -488,7 +489,14 @@ test("metric help opens only from headings and describes the archived comparison
   assert.equal(dialog.open, true);
   assert.match(label(), /최약 조건/);
   assert.match(content(), /낮/);
-  assert.match(content(), /소음·울림/);
+  assert.match(content(), /감지율/);
+  for (const detail of [
+    /비교 조건 3개/, /울림.*강한 울림.*울림 추가 없음.*보통 울림/s, /배경 소리.*환경소음.*다른 사람 말소리/s,
+    /소음 크기.*SNR 10, 5 dB/, /배경 소리 포함 2개 \+ 울림만 1개/, /배경 소음 없이 울림만 있는 조건.*보통 울림/
+  ]) {
+    assert.match(content(), detail);
+    assert.match(hardHelp, detail);
+  }
   assert.doesNotMatch(content(), /추천값 결과|평가 당시 결과|모델 [123]|앙상블|%/);
   assert.equal(elements.get("overview-help-content").children.some(child => child.className === "overview-help-models"), false);
   const worstHelp = content();
@@ -516,6 +524,15 @@ test("metric help opens only from headings and describes the archived comparison
   assert.equal(dialog.open, false);
   assert.equal(compactHard.attributes["aria-expanded"], "false");
   assert.equal(JSON.stringify(report), saved);
+});
+test("the weakest-condition help shows no invented test policy for legacy reports", () => {
+  const {ui, elements, headers} = browser();
+  ui.renderSummary(sample());
+  headers[1].dispatch("click");
+  assert.equal(elements.get("overview-help").open, true);
+  const content = fullText(elements.get("overview-help-content"));
+  assert.match(content, /소음·울림.*낮/);
+  assert.doesNotMatch(content, /비교 조건 \d+개|배경 소리 ·|소음 크기 · SNR|다른 사람 말소리|강한 울림/);
 });
 test("baseline aggregates only the recorded cells named by the archived policy", () => {
   const {ui, elements, rows} = browser(), report = sample();

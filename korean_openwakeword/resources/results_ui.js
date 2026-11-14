@@ -264,25 +264,32 @@
     window.addEventListener?.("resize", position);
     return {bind, hide};
   }
-  function metricHelp(policy, criteria) {
-    const hard = ["비교에 포함된 소음·울림 조건의 감지율을 같은 비중으로 평균한 값입니다."];
-    if (Array.isArray(policy) && policy.length) {
-      const noiseLevels = [...new Set(policy.map(cell => cell.snr_db).filter(finite))].sort((left, right) => right - left);
-      const noise = [...new Set(policy.map(cell => cell.category).filter(category => category !== "clean"))].map(noiseLabel);
-      const rooms = [...new Set(policy.filter(cell => cell.category !== "clean").map(cell => cell.reverb_condition))].map(reverbLabel);
-      const groups = [`비교 조건 ${policy.length}개`];
-      if (rooms.length) groups.push(`울림 · ${rooms.join(", ")}`);
-      if (noise.length) groups.push(`배경 · ${noise.join(", ")}`);
-      if (noiseLevels.length) groups.push(`소음 크기 · SNR ${noiseLevels.join(", ")} dB`);
-      hard.push(groups.join("\n"));
-      if (policy.some(cell => cell.category === "clean" && cell.reverb_condition !== "none")) {
-        hard.push("배경 소음 없이 울림만 있는 조건도 포함합니다.");
-      }
+  function noiseComparisonConditions(policy) {
+    if (!Array.isArray(policy) || !policy.length) return [];
+    const withNoise = policy.filter(cell => cell.category !== "clean");
+    const reverbOnly = policy.filter(cell => cell.category === "clean" && cell.reverb_condition !== "none");
+    const noiseLevels = [...new Set(withNoise.map(cell => cell.snr_db).filter(finite))].sort((left, right) => right - left);
+    const noise = [...new Set(withNoise.map(cell => cell.category))].map(noiseLabel);
+    const rooms = [...new Set(policy.map(cell => cell.reverb_condition))].map(reverbLabel);
+    let total = `비교 조건 ${policy.length}개`;
+    if (withNoise.length && reverbOnly.length && withNoise.length + reverbOnly.length === policy.length) {
+      total += ` (배경 소리 포함 ${withNoise.length}개 + 울림만 ${reverbOnly.length}개)`;
     }
+    const groups = [total, `울림 · ${rooms.join(", ")}`];
+    if (noise.length) groups.push(`배경 소리 · ${noise.join(", ")}`);
+    if (noiseLevels.length) groups.push(`소음 크기 · SNR ${noiseLevels.join(", ")} dB`);
+    const paragraphs = [groups.join("\n")];
+    if (reverbOnly.length) {
+      const addedRooms = [...new Set(reverbOnly.map(cell => cell.reverb_condition))].map(reverbLabel);
+      paragraphs.push(`배경 소음 없이 울림만 있는 조건도 포함합니다. (${addedRooms.join(", ")})`);
+    }
+    return paragraphs;
+  }
+  function metricHelp(policy, criteria) {
+    const conditions = noiseComparisonConditions(policy);
     return {
-      hard: {title: "강한 소음·울림", paragraphs: hard},
-      worst: {title: "최약 조건", paragraphs: ["강한 소음·울림 비교에 포함된 시험 조건 중 감지율이 가장 낮은 값을 보여줍니다.",
-        "각 조건에서 호출어를 얼마나 감지했는지 따로 계산한 뒤, 그중 최저 감지율을 사용합니다."]},
+      hard: {title: "강한 소음·울림", paragraphs: ["비교에 포함된 소음·울림 조건의 감지율을 같은 비중으로 평균한 값입니다.", ...conditions]},
+      worst: {title: "최약 조건", paragraphs: ["아래 소음·울림 시험 조건에서 각각 감지율을 계산해, 그중 가장 낮은 값을 표시합니다.", ...conditions]},
       latency: {title: "반응 시간", paragraphs: ["감지에 성공한 호출의 95%가 이 시간 이내에 반응했습니다(P95).",
         "발화가 끝난 시점부터 잽니다. ‘전’은 발화가 끝나기 전에 감지됐다는 뜻입니다."]},
       criteria: {title: "평가 기준", paragraphs: ["모델을 비교할 때 참고할 기준입니다."], models: [
