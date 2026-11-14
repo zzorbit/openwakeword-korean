@@ -136,15 +136,24 @@
     const rounded = Number(value.toPrecision(6));
     return String(rounded > 0 && rounded < 1 ? rounded : value);
   }
+  const recommendationMissed = "추천 기준 미달";
+  function measuredSettings(candidate) {
+    const runtime = candidate?.runtime;
+    return candidate?.metrics && finite(runtime?.threshold) && runtime.threshold > 0 && runtime.threshold < 1
+      && Number.isInteger(runtime.consecutive_frames) && runtime.consecutive_frames > 0;
+  }
+  function recommendationReasons(candidate, criteria) {
+    return [...new Set((candidate.recommendation_reasons || []).map(reason =>
+      String(reason).includes("FA/hour") && finite(criteria?.fa_per_hour)
+        ? `시간당 오호출 ${criteria.fa_per_hour}회 이하` : reasonText(reason)))];
+  }
   function renderRecommendations(report) {
     const section = $("runtimeRecommendations"), rows = body("recommendations");
     if (!section || !rows) return;
     const source = report.runtime_recommendations;
     const candidates = source?.schema_version === 1 && Array.isArray(source.candidates) ? source.candidates : [];
     const known = new Set((report.models || []).map(row => row.id));
-    const measured = candidates.filter(row => known.has(row.id) && finite(row.runtime?.threshold)
-      && row.runtime.threshold > 0 && row.runtime.threshold < 1
-      && Number.isInteger(row.runtime.consecutive_frames) && row.runtime.consecutive_frames > 0 && row.metrics);
+    const measured = candidates.filter(row => known.has(row.id) && measuredSettings(row));
     rows.replaceChildren(); section.hidden = !measured.length;
     const reasons = $("recommendationReasons"), failures = $("recommendationFailures");
     reasons?.replaceChildren();
@@ -163,7 +172,7 @@
       const passed = candidate.passed ?? candidate.adoption?.passed;
       const hard = metric.hard_conditions;
       const availability = candidate.recommendation_available;
-      const status = availability === false ? "절충 후보" : availability === true ? "추천" : "이전 추천";
+      const status = availability === false ? recommendationMissed : availability === true ? "추천" : "이전 추천";
       [modelLabel(report, candidate.id), status, thresholdText(candidate.runtime.threshold), `${candidate.runtime.consecutive_frames}회`,
         percent(metric.clean?.recall), hard?.complete === false ? "자료 부족" : percent(hard?.cell_mean),
         hard?.complete === false ? "자료 부족" : percent(hard?.worst_recall), finite(metric.negative?.fa_per_hour)
@@ -174,11 +183,17 @@
           .map(cell => `${reverbLabel(cell.reverb_condition)} · ${noiseLabel(cell.category)}${finite(cell.snr_db) ? ` · SNR ${cell.snr_db} dB` : ""}`).join(" / ");
       }
       rows.append(row);
-      if ((passed === false || availability === false) && reasons) {
+      if (availability === false && reasons) {
         const line = document.createElement("p");
-        const items = [...new Set([...(candidate.recommendation_reasons || []),
-          ...(candidate.adoption?.reasons || [])].map(reasonText))];
-        line.textContent = `${modelLabel(report, candidate.id)}${availability === false ? " · 추천 없음" : ""}: ${items.join(" · ") || "추가 확인 필요"}`;
+        const items = recommendationReasons(candidate, source.recommendation_criteria);
+        line.textContent = `${modelLabel(report, candidate.id)} · ${recommendationMissed} · ${items.join(" · ") || "추가 확인 필요"}`;
+        reasons.append(line);
+        if (failures) failures.hidden = false;
+      }
+      if (passed === false && reasons) {
+        const line = document.createElement("p");
+        const items = [...new Set((candidate.adoption?.reasons || []).map(reasonText))];
+        line.textContent = `${modelLabel(report, candidate.id)}${availability === false ? " · 평가 목표 미달" : ""}: ${items.join(" · ") || "추가 확인 필요"}`;
         reasons.append(line);
         if (failures) failures.hidden = false;
       }
@@ -196,7 +211,7 @@
     const unverified = measured.some(row => row.deployment_backend_verified !== true);
     const previousGoal = finite(originalFaLimit) && finite(faLimit) && originalFaLimit !== faLimit
       ? `기존 평가 목표의 오작동 한도는 시간당 ${originalFaLimit}회이며, 추천 기준과 별도로 표시합니다. ` : "";
-    if ($("recommendationNote")) $("recommendationNote").textContent = `${unavailable ? "추천 기준을 만족하는 조합이 없는 모델은 절충 후보를 표시합니다. 마이크에는 그 모델의 기존 설정을 유지합니다. " : ""}${previousGoal}${unverified ? "저장 점수 기준 비교이며 마이크 실행 결과는 별도로 확인합니다." : "실행 연산 방식에서도 추천 설정을 확인했습니다."}`;
+    if ($("recommendationNote")) $("recommendationNote").textContent = `${unavailable ? "추천 기준을 만족하는 조합이 없는 모델도 시험 수치를 표시합니다. 마이크에는 그 모델의 기존 설정을 유지합니다. " : ""}${previousGoal}${unverified ? "저장 점수 기준 비교이며 마이크 실행 결과는 별도로 확인합니다." : "실행 연산 방식에서도 추천 설정을 확인했습니다."}`;
     if (baseline) baseline.textContent = `평가 당시 설정${report.runtime ? ` · 감지 기준 ${thresholdText(report.runtime.threshold)} · 연속 ${report.runtime.consecutive_frames}회` : ""}의 결과입니다. 추천값 결과는 ‘추천 감지 설정’에서 확인하세요.`;
   }
   function reasonText(reason) {
@@ -345,7 +360,9 @@
   function renderOverview(report) {
     const table = body("storySummary"), source = $("overview-source"), modelSelect = $("overview-model");
     if (!table || !source || !modelSelect) return;
-    const recommendations = report.runtime_recommendations?.schema_version === 1 ? report.runtime_recommendations.candidates || [] : [];
+    const calibration = report.runtime_recommendations;
+    const recommendations = calibration?.schema_version === 1 && Array.isArray(calibration.candidates)
+      ? calibration.candidates : [];
     const previousSource = source.value, previousModel = modelSelect.value;
     const models = [...(report.models || [])].sort((left, right) => {
       const order = [...singleIds(report), ...report.models.filter(row => isEnsemble(report, row.id)).map(row => row.id)];
@@ -358,38 +375,50 @@
       ? previousSource : recommendations.length ? "recommended" : "baseline";
     modelSelect.replaceChildren(); models.forEach(model => option(modelSelect, model.id, modelLabel(report, model.id)));
     modelSelect.value = models.some(model => model.id === previousModel) ? previousModel : models.find(model => isEnsemble(report, model.id))?.id || models[0]?.id || "";
-    const valuesFor = model => {
-      const chosen = recommendations.find(row => row.id === model.id);
-      const available = chosen && chosen.recommendation_available !== false && chosen.metrics && finite(chosen.runtime?.threshold)
-        && chosen.runtime.threshold > 0 && chosen.runtime.threshold < 1 && Number.isInteger(chosen.runtime?.consecutive_frames) && chosen.runtime.consecutive_frames > 0;
-      const recommended = source.value === "recommended";
-      const metric = recommended ? available ? chosen.metrics : null : model;
-      const runtime = recommended ? available ? chosen.runtime : null : report.runtime;
+    function overviewFor(model) {
+      const compareSettings = source.value === "recommended";
+      const candidate = compareSettings ? recommendations.find(row => row.id === model.id) : null;
+      const tested = measuredSettings(candidate) ? candidate : null;
+      const metric = compareSettings ? tested?.metrics : model;
+      const runtime = compareSettings ? tested?.runtime : report.runtime;
+      const status = tested?.recommendation_available === false
+        ? [recommendationMissed, ...recommendationReasons(tested, calibration.recommendation_criteria)].join(" · ") : "";
       const hard = metric?.hard_conditions;
-      return [modelLabel(report, model.id), percent(metric?.clean?.recall),
+      const values = [percent(metric?.clean?.recall),
         hard?.complete === false ? "자료 부족" : percent(hard?.cell_mean),
         finite(metric?.negative?.fa_per_hour) ? `${metric.negative.fa_per_hour.toFixed(3)}회` : "결과 없음",
         runtime && finite(runtime.threshold) && Number.isInteger(runtime.consecutive_frames)
-          ? `${thresholdText(runtime.threshold)} · ${runtime.consecutive_frames}회` : recommended ? "추천 없음" : "기록 없음"];
-    };
+          ? `${thresholdText(runtime.threshold)} · ${runtime.consecutive_frames}회` : compareSettings ? "추천 없음" : "기록 없음"];
+      return {values, status};
+    }
     function draw() {
       table.replaceChildren();
       for (const model of models) {
+        const {values, status} = overviewFor(model);
         const row = document.createElement("tr"); if (isEnsemble(report, model.id)) row.className = "ensemble";
-        valuesFor(model).forEach(value => appendCell(row, value)); table.append(row);
+        const name = appendCell(row, modelLabel(report, model.id));
+        if (status) {
+          const detail = document.createElement("small");
+          detail.className = "recommendation-status"; detail.textContent = status;
+          name.append(detail);
+        }
+        values.forEach(value => appendCell(row, value)); table.append(row);
       }
       const metrics = $("storySummaryMetrics"), model = models.find(row => row.id === modelSelect.value);
       metrics?.replaceChildren();
       if (metrics && model) {
         const labels = ["조용할 때", "강한 소음·울림", "오호출 / 시간", "감지 기준 · 연속"];
-        valuesFor(model).slice(1).forEach((value, index) => {
+        const {values, status} = overviewFor(model);
+        const entries = labels.map((label, index) => [label, values[index]]);
+        if (status) entries.unshift(["추천 상태", status]);
+        for (const [label, value] of entries) {
           const item = document.createElement("div"), term = document.createElement("dt"), description = document.createElement("dd");
-          term.textContent = labels[index]; description.textContent = value; item.append(term, description); metrics.append(item);
-        });
+          term.textContent = label; description.textContent = value; item.append(term, description); metrics.append(item);
+        }
       }
       const note = $("overview-note");
       if (note) note.textContent = source.value === "recommended"
-        ? "추천 기준을 만족한 설정의 결과입니다. 추천이 없는 모델은 평가 당시 결과에서 확인하세요."
+        ? "모델별로 비교한 감지 설정의 시험 결과입니다."
         : "저장된 평가 당시 설정의 결과입니다. 강한 소음·울림 평균이 기록되지 않은 평가는 ‘결과 없음’으로 표시합니다.";
     }
     source.onchange = draw; modelSelect.onchange = draw; draw();

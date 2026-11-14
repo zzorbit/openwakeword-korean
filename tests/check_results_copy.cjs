@@ -291,17 +291,16 @@ test("missing, invalid and cache-only recommendation evidence is never shown as 
   assert.equal(elements.get("baselineRuntime").hidden, true);
 });
 
-test("a failed protection check is a tradeoff, never a recommendation or automatic microphone gate", () => {
+test("a failed protection check identifies the unmet recommendation criterion and preserves the microphone setting", () => {
   const {ui, rows, elements} = browser(), report = sample(), model = report.models[0];
-  report.runtime_recommendations = {schema_version: 1, candidates: [{id: model.id,
+  report.runtime_recommendations = {schema_version: 1, recommendation_criteria: {fa_per_hour: 1}, candidates: [{id: model.id,
     runtime: {threshold: .999, consecutive_frames: 4}, original_runtime: {threshold: .5, consecutive_frames: 1},
     recommendation_available: false, recommendation_reasons: ["FA/hour target failed or unmeasured"],
-    metrics: {...model, hard_conditions: {complete: true, cell_mean: .8, worst_recall: .6}}, passed: false}]};
+    metrics: {...model, negative: {fa_per_hour: 1.2}, hard_conditions: {complete: true, cell_mean: .8, worst_recall: .6}}, passed: false}]};
   const before = JSON.stringify(report); ui.renderSummary(report);
-  assert.equal(rows("recommendations")[0][1], "절충 후보");
-  assert.equal(rows("recommendations")[0][5], "80.00%");
+  assert.deepEqual(rows("recommendations")[0].slice(1, 8), ["추천 기준 미달", "0.999", "4회", "100.00%", "80.00%", "60.00%", "1.200회"]);
   assert.match(elements.get("recommendationNote").textContent, /마이크에는 그 모델의 기존 설정을 유지/);
-  assert.match(elements.get("recommendationReasons").children[0].textContent, /추천 없음: 시간당 오작동 횟수/);
+  assert.match(elements.get("recommendationReasons").children[0].textContent, /모델 2 · 추천 기준 미달.*시간당 오호출 1회 이하/);
   assert.equal(JSON.stringify(report), before);
   report.runtime_recommendations.candidates[0].metrics.hard_conditions = {complete: false, cell_mean: null, worst_recall: null};
   report.runtime_recommendations.candidates[0].recommendation_reasons = ["Hard noise/reverberation conditions incomplete"];
@@ -344,21 +343,35 @@ test("recommended-setting failures describe that setting rather than the preserv
   assert.equal(elements.get("recommendationFailures").hidden, true);
   assert.equal(elements.get("recommendationReasons").children.length, 0);
 });
-test("story overview separates recommended measurements from the preserved evaluation and never applies a tradeoff", () => {
+test("story overview shows measured settings that miss recommendation criteria in both layouts", () => {
   const {ui, elements, rows} = browser({story: true}), report = sample();
   report.runtime = {threshold: .5, consecutive_frames: 1};
-  report.runtime_recommendations = {schema_version: 1, candidates: [
+  Object.assign(report.models[0], {clean: {recall: .999}, hard_conditions: {complete: true, cell_mean: .783125}, negative: {fa_per_hour: 9.399818}});
+  report.runtime_recommendations = {schema_version: 1, recommendation_criteria: {fa_per_hour: 1}, adoption_criteria: {fa_per_hour: .1}, candidates: [
     {id: "mean", recommendation_available: true, runtime: {threshold: .97, consecutive_frames: 3}, metrics: {clean: {recall: .995}, hard_conditions: {complete: true, cell_mean: .73}, negative: {fa_per_hour: .9}}},
-    {id: "member1_seed1", recommendation_available: false, runtime: {threshold: .7, consecutive_frames: 1}, metrics: {clean: {recall: 1}, hard_conditions: {complete: true, cell_mean: .99}, negative: {fa_per_hour: 20}}}
+    {id: "member2_seed2", recommendation_available: false, recommendation_reasons: ["FA/hour target failed or unmeasured"],
+      runtime: {threshold: .99, consecutive_frames: 5}, metrics: {clean: {recall: .9855}, hard_conditions: {complete: true, cell_mean: .62785}, negative: {fa_per_hour: 1.199976889}}},
+    {id: "member3_seed3", recommendation_available: false, runtime: {threshold: .9, consecutive_frames: 2}, metrics: null}
   ]};
   const before = JSON.stringify(report); ui.renderSummary(report);
   assert.equal(elements.get("overview-source").value, "recommended");
   assert.deepEqual(rows("storySummary")[3], ["앙상블", "99.50%", "73.00%", "0.900회", "0.97 · 3회"]);
+  assert.deepEqual(rows("storySummary")[1].slice(1), ["98.55%", "62.79%", "1.200회", "0.99 · 5회"]);
   assert.deepEqual(rows("storySummary")[0], ["모델 1", "결과 없음", "결과 없음", "결과 없음", "추천 없음"]);
-  const metrics = elements.get("storySummaryMetrics").children;
-  assert.equal(metrics[1].children[1].textContent, "73.00%");
+  assert.deepEqual(rows("storySummary")[2], ["모델 3", "결과 없음", "결과 없음", "결과 없음", "추천 없음"]);
+  const status = "추천 기준 미달 · 시간당 오호출 1회 이하";
+  const modelCell = elements.get("storySummary").tBodies[0].children[1].children[0];
+  assert.equal(modelCell.children.find(node => node.className === "recommendation-status")?.textContent, status);
+  const mobileMetrics = () => elements.get("storySummaryMetrics").children.map(item => item.children.map(cell => cell.textContent));
+  assert.deepEqual(mobileMetrics()[1], ["강한 소음·울림", "73.00%"]);
+  elements.get("overview-model").value = "member2_seed2"; elements.get("overview-model").onchange();
+  assert.deepEqual(mobileMetrics(), [
+    ["추천 상태", status], ["조용할 때", "98.55%"], ["강한 소음·울림", "62.79%"],
+    ["오호출 / 시간", "1.200회"], ["감지 기준 · 연속", "0.99 · 5회"]
+  ]);
   elements.get("overview-source").value = "baseline"; elements.get("overview-source").onchange();
-  assert.deepEqual(rows("storySummary")[3], ["앙상블", "100.00%", "결과 없음", "0.033회", "0.5 · 1회"]);
+  assert.deepEqual(rows("storySummary")[1], ["모델 2", "99.90%", "78.31%", "9.400회", "0.5 · 1회"]);
+  assert.equal(mobileMetrics()[0][0], "조용할 때");
   assert.equal(JSON.stringify(report), before);
 });
 test("story criteria disclose the recorded recommendation policy instead of inventing defaults for historical reports", () => {
