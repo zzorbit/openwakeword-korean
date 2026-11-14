@@ -9,6 +9,12 @@ from .storage import project_storage
 HARD_SAMPLE_REVIEW_POLICY = "sample_before_generation_v2"
 
 
+def _implementation_sha256():
+    from .studio import _compute_dispatch_compatible_digest
+
+    return _compute_dispatch_compatible_digest("hard_pilot.py", digest(__file__))
+
+
 @project_storage
 def generate_hard_pilot(project, phrases, samples_per_phrase, model, *, revision=None, pause_requested=None):
     from . import clone_reference, tts
@@ -43,7 +49,7 @@ def generate_hard_pilot(project, phrases, samples_per_phrase, model, *, revision
     journal = output / "candidates.jsonl"
     contract = {"kind": HARD_SAMPLE_REVIEW_POLICY, "word": config["wakeword"], "phrases": phrases,
                 "samples_per_phrase": samples_per_phrase, "references": references, "tts": config["tts"],
-                "implementation_sha256": digest(__file__), "technical_qc_sha256": digest(tts.__file__),
+                "implementation_sha256": _implementation_sha256(), "technical_qc_sha256": tts._technical_qc_sha256(),
                 "short_clone_policy": tts.SHORT_CLONE_POLICY,
                 "positive_policy": {"path": "approval.json", "sha256": digest(approval_path)}}
     with writer_lock(output):

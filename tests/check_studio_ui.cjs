@@ -1954,6 +1954,18 @@ function pendingHardStorageRecipe() {
     project.input = { ...project.input, id: "new-dependency-prompt", recommended_backend: "cpu" }; await b.tick();
     assert.equal(cpu.checked, true); assert.equal(gpu.checked, false, "a new prompt uses its own recommendation");
   });
+  await test("compute input and launch remain scoped to the selected project and preserve payloads", async () => {
+    const project = { id: "bora", wakeword: "보라야", status: "error", stage_id: "evaluation", evaluation_backend: "cuda" };
+    const b = browser({ initialState: { projects: [project] } }); await flush();
+    assert.equal(await b.storyBridge.input({ evaluation_backend: "cpu" }, "different"), false);
+    assert.equal(await b.storyBridge.action("resume", { expected_evaluation_backend: "cpu" }, "different"), false);
+    assert.equal(await b.storyBridge.input({ evaluation_backend: "cpu" }, "bora"), true);
+    assert.equal(await b.storyBridge.action("resume", { expected_evaluation_backend: "cpu" }, "bora"), true);
+    const posts = b.calls.filter(call => call.options?.method === "POST")
+      .map(call => [call.url, JSON.parse(call.options.body)]);
+    assert.deepEqual(posts, [["/api/projects/bora/input", { evaluation_backend: "cpu" }],
+      ["/api/projects/bora/resume", { expected_evaluation_backend: "cpu" }]]);
+  });
   await test("null and missing errors render normally while string and object errors remain visible", async () => {
     const cases = [
       { value: null, visible: false, text: "" },

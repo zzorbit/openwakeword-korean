@@ -3,9 +3,11 @@ from pathlib import Path
 from contextlib import nullcontext
 from collections import deque
 import argparse
+import importlib
 import json
 import math
 import os
+import subprocess
 import sys
 import time
 import traceback
@@ -13,6 +15,72 @@ import traceback
 from .common import bound_file, digest, identity, now, read_json, write_json, writer_lock
 from .storage import storage_environment
 from .project import load_project
+
+
+_TORCH_STAGES = {"references", "pilot", "positives", "positive_review", "hard_pilot", "hard_generation", "training"}
+
+
+def _torch_install_command(backend):
+    from .studio_steps import _dependency_plan, _installed_dependencies
+
+    commands = _dependency_plan(_installed_dependencies(), backend)
+    if commands and any(package.startswith("torch==") for package in commands[0]):
+        return commands[0]
+
+
+def _verify_selected_torch(backend):
+    if backend not in ("cpu", "cu128"):
+        return
+    from .studio_steps import _dependency_plan
+
+    try:
+        import torch
+        import torchaudio
+
+        versions = {"torch": torch.__version__, "torchaudio": torchaudio.__version__}
+        if any(spec.startswith("torch==") for spec in _dependency_plan(versions, backend)[0]):
+            raise ValueError("설치된 PyTorch와 TorchAudio가 선택한 장치의 버전과 다릅니다.")
+        if backend == "cu128":
+            if not torch.cuda.is_available():
+                raise ValueError("선택한 NVIDIA GPU를 사용할 수 없습니다. 드라이버를 확인하거나 CPU를 선택하세요.")
+            torch.ones(1, device="cuda:0").add_(1).item()
+    except (ImportError, OSError, RuntimeError) as error:
+        raise ValueError("선택한 PyTorch 실행 도구로 연산할 수 없습니다. 설치 로그를 확인하세요.") from error
+
+
+def _prepare_selected_torch(project_root, backend):
+    """Restore the selected build if this virtual environment was switched."""
+    if backend not in ("cpu", "cu128"):
+        return
+    command = _torch_install_command(backend)
+    if command:
+        if sys.prefix == sys.base_prefix:
+            raise ValueError("선택한 PyTorch 도구를 사용하려면 웹 화면을 가상환경에서 실행하세요.")
+        if "torch" in sys.modules:
+            raise ValueError("학습 도구가 변경되었습니다. 현재 작업을 재개해 새 실행 환경을 불러오세요.")
+        print("이 프로젝트에서 선택한 PyTorch 실행 도구를 확인하고 있습니다.", flush=True)
+        try:
+            with storage_environment(project_root):
+                subprocess.run(command, cwd=str(project_root), check=True)
+        except subprocess.CalledProcessError as error:
+            raise ValueError("선택한 PyTorch 도구를 설치하지 못했습니다. 설치 로그를 확인한 뒤 재개하세요.") from error
+        importlib.invalidate_caches()
+    _verify_selected_torch(backend)
+
+
+def _training_torch_backend(root, config, backend):
+    if backend not in ("cpu", "cu128"):
+        return None
+    seed = config["training"]["seeds"][0]
+    prior = root / "runs/studio_run" / f"member1_seed{seed}" / "contract.json"
+    if prior.is_file():
+        version = read_json(prior).get("versions", {}).get("torch", "")
+        if version == "2.8.0+cu128":
+            return "cu128"
+        if version == ("2.8.0" if sys.platform == "darwin" else "2.8.0+cpu"):
+            return "cpu"
+        return None  # The existing training contract will verify its exact build.
+    return backend
 
 
 def _hard_stage(request, request_path, run_stage):
@@ -139,6 +207,7 @@ def _execute_reference_preparation(request_path, *, load_model=None):
                 or digest(request["project"]) != request["config_sha256"]):
             raise ValueError("후보 준비 실행 코드 또는 모델 설정이 변경되었습니다.")
         root = Path(request["project"]).parent.resolve()
+        _prepare_selected_torch(root, os.environ.get("KOWW_STUDIO_TORCH_BACKEND"))
         if Path(request["pause_path"]).resolve() != request_path.parent / "pause.json":
             raise ValueError("후보 준비 일시정지 요청의 저장 위치가 다릅니다.")
         ledger_path = root / ".studio/reference-candidates/state.json"
@@ -203,6 +272,7 @@ def _execute_reference_review(request_path, *, load_model=None):
     try:
         if _implementation() != request["implementation_id"] or digest(request["project"]) != request["config_sha256"]:
             raise ValueError("다시 생성하기 전에 실행 코드 또는 모델 설정이 바뀌었습니다.")
+        _prepare_selected_torch(Path(request["project"]).parent, os.environ.get("KOWW_STUDIO_TORCH_BACKEND"))
         options = {"load_model": load_model} if load_model is not None else {}
         if request.get("kind") == "reference_candidate_batch_v2":
             from .reference_candidates import generate_candidate_batch
@@ -255,6 +325,7 @@ def _execute(request_path):
     result = {"task_id": request["task_id"], "request_sha256": request_hash,
               "config_sha256": request["config_sha256"], "started_at": now()}
     try:
+        stage = request["stage"]
         before = load_project(request["project"])[1]
         if digest(request["project"]) != request["config_sha256"]:
             raise ValueError("Project settings changed before execution")
@@ -276,11 +347,22 @@ def _execute(request_path):
         else:
             preparation = nullcontext()
         with storage_environment(Path(request["project"]).parent), result_audio, preparation, task_progress(report):
-            if request["stage"] in ("hard_pilot", "hard_generation"):
+            if stage in _TORCH_STAGES:
+                backend = os.environ.get("KOWW_STUDIO_TORCH_BACKEND")
+                if stage == "training":
+                    backend = _training_torch_backend(Path(request["project"]).parent, before, backend)
+                _prepare_selected_torch(Path(request["project"]).parent, backend)
+            if stage in ("hard_pilot", "hard_generation"):
                 result["result"] = _hard_stage(request, request_path, run_stage)
             else:
-                result["result"] = run_stage(request["project"], request["workspace"], request["settings"],
-                                             request["stage"], request.get("context", {}))
+                context = request.get("context", {})
+                settings = request["settings"]
+                if stage in ("frontend", "evaluation"):
+                    settings = _stage_evaluation_settings(stage, settings, context.get("inputs", {}),
+                                                          Path(request["project"]).parent)
+                result["result"] = run_stage(request["project"], request["workspace"], settings, stage, context)
+                if stage == "frontend" and result["result"]["state"] == "completed":
+                    _verify_selected_torch(os.environ.get("KOWW_STUDIO_TORCH_BACKEND"))
         after = load_project(request["project"])[1]
         if after != before:
             if request["stage"] not in ("data_connect", "hard_connect"):
@@ -305,6 +387,26 @@ def _execute(request_path):
     result["completed_at"] = now()
     write_json(request["result_path"], result)
     return 1 if result.get("error") else 0
+
+
+def _stage_evaluation_settings(stage, settings, inputs, root):
+    from .studio import _studio_evaluation_backend
+
+    backend = _studio_evaluation_backend(settings, inputs)
+    effective = {**settings, "evaluation_backend": backend}
+    if backend == "cpu":
+        effective.pop("gpu_cpu_prefix_import", None)
+    elif stage == "evaluation" and inputs.get("evaluation_backend") == "cuda" and not os.environ.get("KOWW_GPU_RUNTIME_PATH"):
+        from .gpu_runtime_install import _managed_reason, gpu_runtime_environment
+        from .studio_steps import _prepare_evaluation_runtime
+        from .task_progress import emit
+
+        if _managed_reason() is None and not gpu_runtime_environment(root):
+            emit("evaluation_environment", "GPU 평가 실행환경 설치·확인", eta_eligible=False)
+            _prepare_evaluation_runtime(root)
+    if inputs.get("evaluation_backend") == "cuda":
+        effective.setdefault("gpu_numerical_differences_approved", True)
+    return effective
 
 
 if __name__ == "__main__":

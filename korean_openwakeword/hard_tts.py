@@ -135,11 +135,17 @@ def _short_clone_context(root, output, contract, expected, rows, *, create=False
 def _current_hard_contract(contract, *, pilot):
     if pilot:
         from . import hard_pilot
-        return {**contract, "implementation_sha256": digest(hard_pilot.__file__),
-                "technical_qc_sha256": digest(tts.__file__)}
+        return {**contract, "implementation_sha256": hard_pilot._implementation_sha256(),
+                "technical_qc_sha256": tts._technical_qc_sha256()}
     return {**contract,
-            "implementation": {"path": str(Path(__file__).resolve()), "sha256": digest(__file__)},
-            "technical_qc_implementation": {"path": str(Path(tts.__file__).resolve()), "sha256": digest(tts.__file__)}}
+            "implementation": {"path": str(Path(__file__).resolve()), "sha256": _implementation_sha256()},
+            "technical_qc_implementation": {"path": str(Path(tts.__file__).resolve()), "sha256": tts._technical_qc_sha256()}}
+
+
+def _implementation_sha256():
+    from .studio import _compute_dispatch_compatible_digest
+
+    return _compute_dispatch_compatible_digest("hard_tts.py", digest(__file__))
 
 
 def hard_generation_recovery_available(output, *, pilot=False):
@@ -389,8 +395,8 @@ def generate_hard(project, phrases, count=None, model=None, *, samples_per_phras
         "short_clone_policy": tts.SHORT_CLONE_POLICY,
         "phrase_policy": {"kind": "exclude_complete_call_and_vocative_base_v1",
                           "protected_terms": protected_call_terms(config["wakeword"])},
-        "implementation": {"path": str(Path(__file__).resolve()), "sha256": digest(__file__)},
-        "technical_qc_implementation": {"path": str(Path(tts.__file__).resolve()), "sha256": digest(tts.__file__)},
+        "implementation": {"path": str(Path(__file__).resolve()), "sha256": _implementation_sha256()},
+        "technical_qc_implementation": {"path": str(Path(tts.__file__).resolve()), "sha256": tts._technical_qc_sha256()},
         "positive_policy": {"path": "approval.json", "sha256": digest(root / "approval.json")},
         "acceptance": "technical_candidates_only_content_approval_pending"}
     if samples_per_phrase is not None:

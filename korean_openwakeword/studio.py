@@ -146,6 +146,21 @@ def _dependency_specs(arguments):
     return [argument for argument in arguments if re.match(r"^[\w.-]+(?:==|>=)", argument)]
 
 
+def _studio_evaluation_backend(settings, inputs):
+    override = inputs.get("evaluation_backend")
+    if override in ("cpu", "cuda"):
+        return override
+    requested = settings.get("evaluation_backend")
+    if requested in ("cpu", "cuda"):
+        return requested
+    backend = inputs.get("dependency_backend")
+    if backend == "cpu":
+        return "cpu"
+    if backend == "cu128":
+        return "auto"
+    return requested or "cpu"
+
+
 def _download_setup_rows(backend, evaluation_runtime, phase, *, complete=False, log=""):
     """Project the install plan using worker phases and its existing pip log.
 
@@ -242,6 +257,14 @@ def _dependency_setup_options(recommended_backend):
             "download_bytes": {backend: _dependency_download_bytes(specs) for backend, specs in packages.items()}}
 
 
+def _set_torch_worker_backend(environment, state):
+    selected = state.get("inputs", {}).get("dependency_backend")
+    if selected in ("cpu", "cu128"):
+        environment["KOWW_STUDIO_TORCH_BACKEND"] = selected
+    else:
+        environment.pop("KOWW_STUDIO_TORCH_BACKEND", None)
+
+
 def _elapsed(start):
     try:
         return max(0, time.time() - datetime.fromisoformat(start).timestamp())
@@ -295,6 +318,8 @@ def _execution_contract(*, legacy_reference_review=False):
         # This audited change only corrects runtime selection. It preserves
         # the qualified CUDA and CPU scoring algorithms and checkpoint identity.
         bindings["gpu_evaluation.py"] = _GPU_LOADER_COMPATIBLE_DIGESTS[gpu_loader]
+    for name in _COMPUTE_DISPATCH_COMPATIBLE_DIGESTS:
+        bindings[name] = _compute_dispatch_compatible_digest(name, bindings[name])
     if legacy_reference_review:
         # Only project the previous contract for this audited, opt-in change.
         if (bindings.get("pilot.py"), bindings.get("reference_voice_review.py")) != _REFERENCE_REVIEW_COMPATIBLE_FILES:
@@ -385,6 +410,47 @@ _GPU_LOADER_COMPATIBLE_DIGESTS = {
     "ba8541e8af58375029aebe41912c5ca74eb490f5a82840babbdd2fbe8cd1f05c":
         "8a827b57411055f16d17f6ff9dc08d004e8039c55cb9f53e7bb50a0f9c945009",
 }
+
+# Exact device-dispatch updates keep synthesis QC, model math and the
+# identity of existing checkpoints. Their stored device/build still match.
+_COMPUTE_DISPATCH_COMPATIBLE_DIGESTS = {
+    "train.py": {
+        "2da8d20d025a324e63cf9f6eda515084a2f3f391374674c1e5426bb606922aa6":
+            "c1ac1c6aa4b6cc37041c1bf800b2fa766a0d950f740b19dd85601976a1e26939",
+        "865ca4c5b757cf64bf17fcbd549f91f8d4ebe2fc6adfb9b94bdaebd48a1542c3":
+            "df61837471a4768378f96cf0c5fcab825292515e10c3aca678ec7510ec2a87da",
+    },
+    "tts.py": {
+        "cf3359d89b53bf21531381658f3dabc0c5599d53170150fb0b61e2479c061d08":
+            "4b80f8a5561ba98454b8e6fd8b0449301b6bf3852d6eb78b8f3af043b52bb488",
+        "5714cd590420168112fec8540dc6c854b2ff94728dcabd449f94ed5a9018ac3f":
+            "35e797140ce4bc13235a0d9e259b129d63b7bbd66aac23fe2b1f8f624d9808bf",
+    },
+    "hard_pilot.py": {
+        "4ffa5d27c2ce746846c15e6eeb96767d786b3d533ba892a458c1269b45f25d77":
+            "4acf18a929dd6c6243b06fe67b9136125bb4e879558579588054cec28a534334",
+        "4168622e399f62b22ba95783731e57b10776c3498ea83059be8a16f8db66b4be":
+            "18ecacbb2cfc82db32c295644175bb7d2f68f2d3a3a664a927b06321535b1164",
+    },
+    "hard_tts.py": {
+        "63fffbc8ebee268c1cc70e64f80fb0c2c49a563668f2c52af462ad855caba105":
+            "43deed598cefa6503d105761ccb9fd7c9c2a5cb56ee700bfea402688c838bcc3",
+        "a68cfa27a8c5fd55d707c8bf2b718177c81f3b5010624c7af3e7bc8bb8d0d1ef":
+            "fa9ef4a2393fcf61f7df80097cceb656339e45588a66e4843c978212e948a061",
+    },
+    "pool_review.py": {
+        "e1bf5eaff41b907a8d2b3aa0c6bccf55cd03a8be54005fd6db21e1d5eda12a22":
+            "2262ef5c984390eb0976ecb44245aaa7f11e54a3efe95c2d01a665894ad4b1be",
+        "9b95a05cab54245642a1287c92087bff6c120b3ed699f28a3f4385b6d0f6f020":
+            "3f9f5cc654808c8e205dfa6fc5b5f818306d7e7b18701112f2d368c1e6b2d38c",
+    },
+}
+
+
+def _compute_dispatch_compatible_digest(name, sha256):
+    return _COMPUTE_DISPATCH_COMPATIBLE_DIGESTS[name].get(sha256, sha256)
+
+
 _REFERENCE_WORKER_IDLE_SECONDS = 120
 
 # Populated only after testing the exact candidate-pool release. This cannot
@@ -2005,6 +2071,7 @@ class StudioManager:
         write_json(task_dir / "request.json", request)
         environment = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1",
                            KOWW_CACHE_ROOT=state.get("cache_root", str(storage_workspace / "cache")))
+        _set_torch_worker_backend(environment, state)
         environment.pop("KOWW_STUDIO_REFERENCE_REVIEW", None)
         reference_review = state["inputs"].get("reference_voice_review")
         if reference_review:
@@ -2153,9 +2220,22 @@ class StudioManager:
     def retry_generation(self, project_id):
         return self.start(project_id, retry_failed_generation=True)
 
-    def start(self, project_id, *, retry_failed_generation=False):
+    def start(self, project_id, *, retry_failed_generation=False, expected_dependency_backend=None,
+              expected_evaluation_backend=None):
         with self._lock:
             state = self._load(project_id)
+            if expected_dependency_backend is not None or expected_evaluation_backend is not None:
+                index = state["index"]
+                stage = state["plan"][index]["id"] if index < len(state["plan"]) else None
+                inputs = state["inputs"]
+                evaluation_backend = _studio_evaluation_backend(state["settings"], inputs)
+                if evaluation_backend == "auto":
+                    evaluation_backend = "cuda"
+                expected = ((expected_dependency_backend, "frontend", inputs.get("dependency_backend")),
+                            (expected_evaluation_backend, "evaluation", evaluation_backend))
+                if any(choice is not None and (stage != expected_stage or choice != selected)
+                       for choice, expected_stage, selected in expected):
+                    raise ValueError("연산 도구 선택이나 현재 단계가 바뀌었습니다. 현재 선택을 확인한 뒤 다시 진행하세요.")
             pilot_retry = self._pilot_generation_retry(state) if retry_failed_generation else None
             retry = pilot_retry or (self._hard_generation_retry(state) if retry_failed_generation else None)
             if retry_failed_generation and (not retry or self._job_alive(state.get("job") or {})):
@@ -2389,29 +2469,58 @@ class StudioManager:
         inputs["hard_phrase_revision"] = uuid.uuid4().hex
         return True
 
+    def _backend_selection_available(self, state, stage):
+        index = state["index"]
+        if (index >= len(state["plan"]) or state["plan"][index]["id"] != stage
+                or self._job_alive(state.get("job") or {})):
+            return False
+        if state["status"] in ("ready", "paused", "error", "interrupted"):
+            return True
+        if stage == "frontend" and state["status"] == "waiting_input":
+            result = state["results"].get(stage, {})
+            return (result.get("input") or {}).get("kind", result.get("input_kind")) == "dependency_setup"
+        return False
+
+    def _save_backend_selection(self, state, stage, key, selection, next_action):
+        if not self._backend_selection_available(state, stage):
+            raise ValueError("현재 단계에서 실행 중인 작업이 없을 때만 연산 도구를 변경할 수 있습니다.")
+        self._guard_config(state)
+        if state.get("job"):
+            if self._finish_job(state):
+                if not self._backend_selection_available(state, stage):
+                    raise ValueError("작업이 완료되어 이 단계의 연산 도구를 변경할 수 없습니다.")
+            else:
+                state["last_job"] = state.pop("job")
+        state["inputs"][key] = selection
+        state.update(status="paused", error=None, auto_continue=False, next_action=next_action)
+        if stage == "frontend":
+            state.update(input_submitted=True, dependency_setup_selected=True)
+        self._save(state)
+        return self.describe(state)
+
     def submit_input(self, project_id, payload):
         with self._lock:
             state = self._load(project_id)
-            if state["status"] != "waiting_input":
-                raise ValueError("현재 입력을 기다리는 단계가 아닙니다.")
-            if state.get("hard_phrase_edit") and set(payload) != {"phrases"}:
-                raise ValueError("수정할 유사어 문구를 입력하세요.")
+            if "evaluation_backend" in payload:
+                backend = payload["evaluation_backend"]
+                if set(payload) != {"evaluation_backend"} or backend not in ("cpu", "cuda"):
+                    raise ValueError("평가 연산 도구는 CPU 또는 NVIDIA GPU를 선택하세요.")
+                return self._save_backend_selection(state, "evaluation", "evaluation_backend", backend,
+                                                    "선택한 연산 도구로 평가하려면 재개를 누르세요.")
             defer_dependency_install = payload.get("defer_dependency_install", False)
             if type(defer_dependency_install) is not bool:
                 raise ValueError("학습 도구 설치 연기 설정은 참 또는 거짓으로 지정하세요.")
             if defer_dependency_install:
-                stage = state["plan"][state["index"]]["id"]
-                result = state["results"].get(stage, {})
-                input_kind = (result.get("input") or {}).get("kind", result.get("input_kind"))
                 backend = payload.get("dependency_backend")
-                if (stage != "frontend" or input_kind != "dependency_setup" or backend not in ("cpu", "cu128")
-                        or set(payload) - {"dependency_backend", "defer_dependency_install"}):
-                    raise ValueError("학습 도구를 선택하는 단계에서만 설치를 미룰 수 있습니다.")
-                state["inputs"]["dependency_backend"] = backend
-                state.update(status="paused", input_submitted=True, auto_continue=False,
-                             dependency_setup_selected=True, next_action="설치·다운로드 시작을 누르세요.")
-                self._save(state)
-                return self.describe(state)
+                if (backend not in ("cpu", "cu128") or set(payload) - {"dependency_backend", "defer_dependency_install"}
+                        or not self._backend_selection_available(state, "frontend")):
+                    raise ValueError("학습 도구를 선택하는 단계에서 작업이 없을 때만 설치를 미룰 수 있습니다.")
+                return self._save_backend_selection(state, "frontend", "dependency_backend", backend,
+                                                    "설치·다운로드 시작을 누르세요.")
+            if state["status"] != "waiting_input":
+                raise ValueError("현재 입력을 기다리는 단계가 아닙니다.")
+            if state.get("hard_phrase_edit") and set(payload) != {"phrases"}:
+                raise ValueError("수정할 유사어 문구를 입력하세요.")
             if "phrases" in payload:
                 if state["plan"][state["index"]]["id"] != "hard_phrases":
                     raise ValueError("유사어 문구를 입력하는 단계가 아닙니다.")
@@ -2432,7 +2541,11 @@ class StudioManager:
                 if not isinstance(admissions, list) or not admissions or any(not isinstance(p, str) for p in admissions):
                     raise ValueError("준비된 자료 묶음의 승인 기록 경로가 필요합니다.")
                 state["inputs"]["material_admissions"] = [str(_safe_root(p)) for p in admissions]
-            elif payload.get("dependency_backend") in ("cpu", "cu128"):
+            elif "dependency_backend" in payload:
+                if (payload["dependency_backend"] not in ("cpu", "cu128")
+                        or set(payload) - {"dependency_backend", "defer_dependency_install"}
+                        or not self._backend_selection_available(state, "frontend")):
+                    raise ValueError("학습 도구를 선택하는 단계에서만 CPU 또는 NVIDIA GPU를 선택할 수 있습니다.")
                 state["inputs"]["dependency_backend"] = payload["dependency_backend"]
             elif "source" in payload:
                 source = payload["source"]
@@ -3203,8 +3316,10 @@ class StudioManager:
         task_id = directory.name
         environment = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1",
                            KOWW_CACHE_ROOT=state.get("cache_root", str(root / "cache")))
+        _set_torch_worker_backend(environment, state)
         environment["PYTHONPATH"] = str(Path(__file__).resolve().parent.parent) + os.pathsep + environment.get("PYTHONPATH", "")
-        key = (state["project"], state["config_sha256"], environment["KOWW_CACHE_ROOT"])
+        key = (state["project"], state["config_sha256"], environment["KOWW_CACHE_ROOT"],
+               environment.get("KOWW_STUDIO_TORCH_BACKEND"))
         worker = self._reference_worker
         if worker is not None and (worker["key"] != key or worker["child"].poll() is not None
                                    or worker["child"].stdin.closed):
@@ -3428,6 +3543,7 @@ class StudioManager:
             log_path = directory / "output.log"
             environment = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1",
                                KOWW_CACHE_ROOT=state.get("cache_root", str(root / "cache")))
+            _set_torch_worker_backend(environment, state)
             environment["PYTHONPATH"] = str(Path(__file__).resolve().parent.parent) + os.pathsep + environment.get("PYTHONPATH", "")
             with log_path.open("ab") as log:
                 child = self._popen([sys.executable, "-m", "korean_openwakeword.studio_worker", "--reference-preparation", str(request_path)],
@@ -4671,13 +4787,19 @@ class StudioManager:
         dependency_backend = state.get("inputs", {}).get("dependency_backend")
         view["dependency_backend"] = dependency_backend
         view["dependency_setup_selected"] = state.get("dependency_setup_selected") is True
+        view["dependency_backend_editable"] = self._backend_selection_available(state, "frontend")
         view["dependency_install_pending"] = (view["dependency_setup_selected"] and stage["id"] == "frontend"
                                               and state["status"] == "paused" and state.get("input_submitted") is True)
+        if stage["id"] == "evaluation":
+            evaluation_backend = _studio_evaluation_backend(state["settings"], state.get("inputs", {}))
+            view["evaluation_backend"] = "cuda" if evaluation_backend == "auto" else evaluation_backend
+            view["evaluation_backend_editable"] = self._backend_selection_available(state, "evaluation")
+        frontend_evaluation_backend = _studio_evaluation_backend(state["settings"], {"dependency_backend": dependency_backend})
         if dependency_backend in ("cpu", "cu128"):
             packages, evaluation_runtime = _dependency_package_requirements()
             view["dependency_packages"] = packages[dependency_backend]
             view["dependency_download_bytes"] = _dependency_download_bytes(view["dependency_packages"])
-            if dependency_backend == "cu128" or state["settings"].get("evaluation_backend") in ("auto", "cuda"):
+            if dependency_backend == "cu128" or frontend_evaluation_backend in ("auto", "cuda"):
                 view["evaluation_runtime_packages"] = evaluation_runtime
         if isinstance(state.get("download_checkpoint"), dict):
             view["download_checkpoint"] = {key: state["download_checkpoint"].get(key) for key in ("policy", "state")}
@@ -4854,7 +4976,11 @@ class StudioManager:
                 view["progress_note"] = "음원 수 기준이며, 긴 비호출 음원은 더 오래 걸립니다."
                 view["eta_seconds"] = None
                 phase = view["progress"]["phase"]
-                if phase == "validation":
+                if phase == "validation" and owned_progress.get("phase") == "evaluation_environment":
+                    view["progress"] = owned_progress
+                    view["progress_note"] = ""
+                    view["next_action"] = "선택한 GPU 평가 환경을 준비합니다."
+                elif phase == "validation":
                     view["next_action"] = "평가 음원의 무결성과 형식을 확인하고 있습니다."
                 elif phase == "finalizing":
                     view["next_action"] = "채점을 마쳤으며 결과를 정리하고 있습니다."
@@ -5000,7 +5126,7 @@ class StudioManager:
             frontend_progress = owned_progress if job.get("stage") == "frontend" else {}
             phase = frontend_progress.get("phase")
             evaluation_runtime = view.get("evaluation_runtime_packages")
-            if evaluation_runtime is None and state["settings"].get("evaluation_backend") in ("auto", "cuda"):
+            if evaluation_runtime is None and frontend_evaluation_backend in ("auto", "cuda"):
                 _, evaluation_runtime = _dependency_package_requirements()
             setup_items = _download_setup_rows(dependency_backend, evaluation_runtime, phase,
                 complete=frontend_complete,
@@ -5545,7 +5671,11 @@ def make_studio_server(manager, port=8793):
                     project_id, action = path.split("/")[3:5]
                     if action == "retry_postgeneration":
                         return self.respond(manager.retry_postgeneration(project_id, payload))
-                    methods = {"start": manager.start, "resume": manager.start, "pause": manager.pause,
+                    if action in ("start", "resume"):
+                        return self.respond(manager.start(project_id,
+                            expected_dependency_backend=payload.get("expected_dependency_backend"),
+                            expected_evaluation_backend=payload.get("expected_evaluation_backend")))
+                    methods = {"pause": manager.pause,
                                "edit_hard_phrases": manager.edit_hard_phrases,
                                "retry_generation": manager.retry_generation,
                                "prepare_start": manager.prepare_start, "prepare_pause": manager.prepare_pause,

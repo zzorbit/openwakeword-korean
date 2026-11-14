@@ -284,7 +284,11 @@ def test_balanced_100_candidate_contract_and_resume_never_loads_model(tmp_path, 
     assert contract["human_reference_used"] is False
     assert contract["phrase_policy"] == {
         "kind": "exclude_complete_call_and_vocative_base_v1", "protected_terms": ["보라야", "보라"]}
-    assert digest(contract["implementation"]["path"]) == contract["implementation"]["sha256"]
+    from korean_openwakeword.studio import _compute_dispatch_compatible_digest
+
+    implementation = contract["implementation"]
+    assert Path(implementation["path"]).resolve() == Path(hard_tts.__file__).resolve()
+    assert implementation["sha256"] == _compute_dispatch_compatible_digest("hard_tts.py", digest(implementation["path"]))
     rows = read_rows(root / "data/generated/hard/candidates.jsonl")
     assert all(r["generation_contract_id"] == identity(contract) and "admission" not in r for r in rows)
     assert all(r["technical_pass"] and r["end_s"] - r["start_s"] <= 1.84 for r in rows)

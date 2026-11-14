@@ -7,6 +7,7 @@ import copy
 from contextlib import contextmanager
 from contextvars import ContextVar
 import math
+import os
 import random
 import time
 from pathlib import Path
@@ -19,6 +20,12 @@ from .storage import project_storage
 
 
 _TRAINING_PROGRESS = ContextVar("training_progress_callback", default=None)
+
+
+def _training_implementation_sha256():
+    from .studio import _compute_dispatch_compatible_digest
+
+    return _compute_dispatch_compatible_digest("train.py", digest(__file__))
 
 
 @contextmanager
@@ -224,9 +231,9 @@ def _train_member(config, root, metadata, pools, seed, output, smoke, resume,
     _report_training_progress("model_initialization", "학습 모델 준비")
     import torch
     settings = config["training"]
-    device = settings["device"]
+    device = selected_device or settings["device"]
     if device == "auto":
-        device = selected_device or ("cuda:0" if torch.cuda.is_available() else "cpu")
+        device = "cuda:0" if torch.cuda.is_available() else "cpu"
     if device.startswith("cuda") and not torch.cuda.is_available():
         raise ValueError("CUDA requested but unavailable; install CUDA PyTorch or explicitly select CPU")
     torch.set_num_threads(settings["cpu_threads"])
@@ -241,7 +248,7 @@ def _train_member(config, root, metadata, pools, seed, output, smoke, resume,
     sampler = PoolSampler({r: len(a) for r, a in pools.items()}, seed, batch)
     versions = {"torch": torch.__version__, "numpy": np.__version__}
     contract = {"schema_version": 1, "config": config, "seed": seed, "smoke_test_only": smoke,
-        "metadata": metadata, "device": device, "versions": versions, "implementation_sha256": digest(__file__)}
+        "metadata": metadata, "device": device, "versions": versions, "implementation_sha256": _training_implementation_sha256()}
     contract_id = identity(contract)
     with writer_lock(output):
         prior = output / "contract.json"
@@ -387,20 +394,25 @@ def train(project, output=None, smoke=False, resume=False):
         validate_training_scale(config, metadata)
     receipts = []
     selected_device = None
-    if config["training"]["device"] == "auto":
+    configured_device = config["training"]["device"]
+    selected_backend = os.environ.get("KOWW_STUDIO_TORCH_BACKEND")
+    prior = directory / f"member1_seed{config['training']['seeds'][0]}" / "contract.json"
+    if resume and prior.exists() and (configured_device == "auto" or selected_backend in ("cpu", "cu128")):
+        selected_device = read_json(prior)["device"]
+    elif selected_backend == "cpu":
+        selected_device = "cpu"
+    elif selected_backend == "cu128":
+        selected_device = configured_device if configured_device.startswith("cuda") else "cuda:0"
+    elif configured_device == "auto":
         _report_training_progress("device_selection", "학습 장치 확인")
         from .benchmark import benchmark_training, doctor
         resource = doctor()
         if "GPU" in resource:
             resource["GPU"].pop("free_bytes", None)
-        probe_key = identity([resource, config["training"]["architecture"], training_batch(config), digest(__file__)])[:16]
+        probe_key = identity([resource, config["training"]["architecture"], training_batch(config), _training_implementation_sha256()])[:16]
         probe_path = root / "reports" / f"resource_probe_{probe_key}.json"
-        prior = directory / f"member1_seed{config['training']['seeds'][0]}" / "contract.json"
-        if resume and prior.exists():
-            selected_device = read_json(prior)["device"]
-        else:
-            probe = read_json(probe_path) if probe_path.exists() else benchmark_training(probe_path, steps=10, architecture=config["training"]["architecture"], batch=training_batch(config))
-            selected_device = probe["fastest_measured"]
+        probe = read_json(probe_path) if probe_path.exists() else benchmark_training(probe_path, steps=10, architecture=config["training"]["architecture"], batch=training_batch(config))
+        selected_device = probe["fastest_measured"]
     shared_delivery = _SharedInputDelivery(pools, config["training"])
     for index, seed in enumerate(config["training"]["seeds"], 1):
         receipts.append(_train_member(config, root, metadata, pools, seed,

@@ -30,6 +30,16 @@ def _bind_hard_implementation(root, implementation):
         _binding(root, implementation)
     except ValueError:
         from .hard_tts import __file__ as current_source
+        from .studio import _compute_dispatch_compatible_digest
+
+        if not (isinstance(implementation, dict) and set(implementation) == {"path", "sha256"}
+                and isinstance(implementation["path"], str)
+                and isinstance(implementation["sha256"], str)
+                and resolved(root, implementation["path"]) == Path(current_source).resolve()):
+            raise
+        current = _compute_dispatch_compatible_digest("hard_tts.py", digest(current_source))
+        if implementation["sha256"] == current:
+            return
 
         # Permit only audited upgrades at the exact frozen source path.
         # Recovery rows also bind their original candidate journal prefix.
@@ -41,10 +51,7 @@ def _bind_hard_implementation(root, implementation):
                            "53d3bb6a2d9c346cfab015caa962499ac7f0a5564c200cf55609c12f4285836c",
                            "43deed598cefa6503d105761ccb9fd7c9c2a5cb56ee700bfea402688c838bcc3",
                            "fa9ef4a2393fcf61f7df80097cceb656339e45588a66e4843c978212e948a061"}
-        if not (isinstance(implementation, dict) and set(implementation) == {"path", "sha256"}
-                and isinstance(implementation["path"], str) and implementation["sha256"] in audited_prior
-                and resolved(root, implementation["path"]) == Path(current_source).resolve()
-                and digest(current_source) in audited_current):
+        if implementation["sha256"] not in audited_prior or current not in audited_current:
             raise
 
 

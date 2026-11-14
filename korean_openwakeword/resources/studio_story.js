@@ -157,6 +157,7 @@
   const titles = { check: "동작 확인용", trial: "시험 모델용", production: "상용 모델용" };
   const shortDescriptions = { check: "라이브러리 동작 확인", trial: "호출 성능 비교·시험", production: "많은 자료로 본격 학습" };
   const toolBackends = { cpu: ["CPU", "NVIDIA GPU 없이 실행"], cu128: ["NVIDIA GPU", "CUDA 12.8 사용"] };
+  const evaluationBackends = { cpu: ["CPU", "CPU로 평가"], cuda: ["NVIDIA GPU", "CUDA로 평가"] };
   const count = value => Number.isFinite(value) ? value.toLocaleString("ko-KR") : "—";
   function pageCapacity(items, available, rowHeight, columns = 1, gap = 12, pagerSpace = 44) {
     if (!items) return 1;
@@ -178,6 +179,25 @@
     if (action) result.addEventListener("click", action);
     return result;
   };
+  function computePicker(id, legend, backends, onSelect) {
+    const element = node("fieldset", undefined, "story-tool-options"), radios = new Map();
+    element.id = id; element.append(node("legend", legend, "sr-only"));
+    for (const [backend, [label, description]] of Object.entries(backends)) {
+      const card = node("label", undefined, "dependency-option story-choice-card"), radio = node("input");
+      radio.id = `${id.replace(/-picker$/, "")}-${backend}`; radio.type = "radio"; radio.name = id; radio.value = backend;
+      radio.addEventListener("change", () => { if (radio.checked) onSelect(backend); });
+      card.append(radio, node("strong", label), node("span", description));
+      radios.set(backend, radio); element.append(card);
+    }
+    return { element, radios };
+  }
+  function updateComputePicker({ element, radios }, backend, disabled) {
+    if (element.disabled !== disabled) element.disabled = disabled;
+    for (const [value, radio] of radios) {
+      const checked = value === backend;
+      if (radio.checked !== checked) radio.checked = checked;
+    }
+  }
   function create(bridge) {
     if (!document.querySelector || !document.body || !$('wakeword')) return null;
     const sourcePanels = document.querySelector("main.dashboard-shell");
@@ -250,16 +270,12 @@
     const savedWord = node("input"); savedWord.id = "story-saved-wakeword";
     savedWord.type = "text"; savedWord.readOnly = true;
     savedWord.setAttribute("aria-label", "호출어"); savedEntry.append(savedWord);
-    const toolPicker = node("fieldset", undefined, "story-tool-options");
-    toolPicker.id = "story-tool-picker"; toolPicker.append(node("legend", "연산 장치", "sr-only"));
-    const toolInputs = new Map();
-    for (const [backend, [label, description]] of Object.entries(toolBackends)) {
-      const card = node("label", undefined, "dependency-option story-choice-card"), radio = node("input");
-      radio.id = `story-tool-${backend}`; radio.type = "radio"; radio.name = "setup-backend"; radio.value = backend;
-      radio.addEventListener("change", () => { if (radio.checked) setupBackend = backend; });
-      card.append(radio, node("strong", label), node("span", description));
-      toolInputs.set(backend, radio); toolPicker.append(card);
-    }
+    const tools = computePicker("story-tool-picker", "연산 장치", toolBackends, backend => {
+      if (bridge.state().project) projectToolBackend = backend;
+      else setupBackend = backend;
+      render();
+    });
+    const toolPicker = tools.element;
     const scale = node("div", undefined, "story-scale"); scale.append($("presets"));
     const savedScale = node("div", undefined, "story-scale story-saved-scale");
     const savedPresets = node("div", undefined, "preset-grid"); savedPresets.id = "story-saved-presets";
@@ -369,13 +385,23 @@
     const evaluationPlanDetail = node("p");
     evaluationPlan.append(evaluationPlanTitle, evaluationPlanDetail);
     evaluationPlan.hidden = true;
+    const downloadCompute = node("div", undefined, "story-compute-summary"); downloadCompute.hidden = true;
+    const downloadComputeLabel = node("span");
+    const changeDownloadCompute = button("연산 장치 변경", "story-secondary", () => navigate(screens.indexOf("tools")));
+    downloadCompute.append(downloadComputeLabel, changeDownloadCompute);
+    const evaluationCompute = node("div", undefined, "story-evaluation-compute"); evaluationCompute.hidden = true;
+    const evaluationComputeLabel = node("p", undefined, "story-compute-summary");
+    const evaluationPicker = computePicker("story-evaluation-picker", "평가 연산 장치", evaluationBackends, backend => {
+      evaluationBackend = backend; render();
+    });
+    evaluationCompute.append(evaluationComputeLabel, evaluationPicker.element);
     const listenActions = node("div", undefined, "story-listen-actions");
     const hardButton = button("유사어 전체 듣기", "story-secondary", openHardListening);
     const positiveButton = button("호출어 전체 듣기", "story-secondary", openPositiveListening);
     listenActions.append(hardButton, positiveButton);
     // A completed stage hides live progress, but its compatibility update must
     // remain reachable through the existing explicit migration control.
-    live.append(migrationNote, voiceCounts, liveSummary, downloadActivity, downloads, review, input, results, historic, evaluationPlan, listenActions);
+    live.append(migrationNote, downloadCompute, evaluationCompute, voiceCounts, liveSummary, downloadActivity, downloads, review, input, results, historic, evaluationPlan, listenActions);
     // Core forms and event bindings retain their IDs when moved into chapters.
     // Inactive controls stay connected so their drafts survive navigation.
     content.append(entry, savedEntry, toolPicker, scale, savedScale, materials, live, voiceListening);
@@ -425,7 +451,7 @@
       render();
     });
     let current = "entry", projectKey = "", maximum = frontier(null), setupReached = 0, following = true, transitioning = false, transitionSession = null, creationPending = false;
-    let setupBackend = null;
+    let setupBackend = null, projectToolBackend = null, evaluationBackend = null, evaluationLaunchPending = false;
     let hardConnectionIntent = null;
     const connectingHard = project => current === "hard-review" && stageId(project) === "hard_connect"
       && running(project?.status) && !project.review && !project.input;
@@ -1257,7 +1283,7 @@
     }
     function navigate(position, automatic = false) {
       const state = bridge.state();
-      if (transitioning || position < 0 || position > maximum || position >= screens.length || state.busy || position === screens.indexOf(current)) return false;
+      if (transitioning || position < 0 || position > maximum || position >= screens.length || state.busy || evaluationLaunchPending || position === screens.indexOf(current)) return false;
       if (!state.project && position > screens.indexOf(current)) {
         if (composingWakeword) return false;
         const error = bridge.wakewordError(wakeword.value);
@@ -1281,7 +1307,13 @@
         return true;
       }
       following = automatic || (state.project && (target === stageStep(state.project) || position === frontier(state.project)));
-      void runTransition(session, undefined, () => showChapter(target));
+      const editingTools = !automatic && !backwards && position > screens.indexOf("tools") && editableToolChoice(state.project);
+      const backend = editingTools && (projectToolBackend || (current === "tools" && !state.project.dependency_backend ? draftBackend(state) : null));
+      const prepare = backend && backend !== state.project.dependency_backend ? async () => {
+        if (!await saveComputeChoice(state.project, "dependency_backend", backend)) return false;
+        projectToolBackend = null;
+      } : undefined;
+      void runTransition(session, prepare, () => showChapter(target));
       return true;
     }
     function humanGate(project) { return Boolean(project?.review || project?.input || (project?.migration && !project.process_alive)); }
@@ -1291,6 +1323,32 @@
     function waitingToolChoice(project) {
       return project?.status === "waiting_input" && stageStep(project) === "tools"
         && project.input?.kind === "dependency_setup" && typeof bridge.input === "function";
+    }
+    function editableToolChoice(project) {
+      return project?.dependency_backend_editable === true && !waitingToolChoice(project) && typeof bridge.input === "function";
+    }
+    async function saveComputeChoice(project, key, backend) {
+      const choice = key === "dependency_backend" ? { dependency_backend: backend, defer_dependency_install: true }
+        : { evaluation_backend: backend };
+      if (!await bridge.input(choice, project.id)) return false;
+      const latest = bridge.state().project;
+      if (latest?.id === project.id && latest[key] === backend) return true;
+      bridge.message?.("변경한 연산 장치를 확인하지 못했습니다. 화면을 새로고침한 뒤 다시 진행해 주세요.", true);
+      return false;
+    }
+    async function saveEvaluationChoice(project, backend) {
+      if (!backend || backend === project.evaluation_backend) return true;
+      if (project.evaluation_backend_editable !== true || !await saveComputeChoice(project, "evaluation_backend", backend)) return false;
+      evaluationBackend = null;
+      return true;
+    }
+    function startWithSelectedCompute(action, project, expectedEvaluationBackend = project.evaluation_backend) {
+      const stage = stageId(project), payload = {};
+      if (stage === "frontend" && Object.hasOwn(toolBackends, project.dependency_backend))
+        payload.expected_dependency_backend = project.dependency_backend;
+      if (stage === "evaluation" && Object.hasOwn(evaluationBackends, expectedEvaluationBackend))
+        payload.expected_evaluation_backend = expectedEvaluationBackend;
+      return bridge.action(action, payload, project.id);
     }
     function editingPhrases(project) {
       return Boolean(project && current === "phrases" && stageId(project) === "hard_phrases"
@@ -1334,8 +1392,9 @@
       let target;
       void runTransition(session, async () => {
         const before = bridge.state();
-        if (before.project?.id !== project.id || !releaseStep(before.project)
-          || await bridge.action("resume") === false)
+        if (before.project?.id !== project.id || !releaseStep(before.project))
+          throw Error("다음 단계가 시작되지 않았습니다. 상태를 확인한 뒤 다시 진행하세요.");
+        if (await startWithSelectedCompute("resume", before.project) === false)
           throw Error("다음 단계가 시작되지 않았습니다. 상태를 확인한 뒤 다시 진행하세요.");
         if (!activeTransition(session)) return;
         const responseReady = next => failed(next) || advanced(next);
@@ -1435,17 +1494,23 @@
     function isReviewReopen(action) { return action === "load_review" || action === "load_hard_review"; }
     async function controlJob() {
       const state = bridge.state(), action = operationAction(state.project);
-      if (!action || transitioning || state.busy || state.project.status === "pausing"
+      if (!action || transitioning || state.busy || evaluationLaunchPending || state.project.status === "pausing"
         || action === "retry_generation" && state.project.process_alive === true
         || current === "voices" && referencePreparationNeeded(state.project) && state.project.reference_preparation.status === "pausing") return;
       hardConnectionIntent = null;
       if (action === "load_hard_review") { revealHardReview(true); return; }
       if (action === "load_review") { revealRepairReview(state.project, true); return; }
-      await bridge.action(action);
+      if (!["start", "resume"].includes(action)) { await bridge.action(action); return; }
+      if (current !== "evaluation") { await startWithSelectedCompute(action, state.project); return; }
+      const backend = evaluationBackend || state.project.evaluation_backend;
+      evaluationLaunchPending = true; render();
+      try {
+        if (await saveEvaluationChoice(state.project, backend)) await startWithSelectedCompute(action, state.project, backend);
+      } finally { evaluationLaunchPending = false; render(); }
     }
     async function advance() {
       const state = bridge.state(), project = state.project, position = screens.indexOf(current);
-      if (transitioning || state.busy || referenceApprovalContext) return;
+      if (transitioning || state.busy || evaluationLaunchPending || referenceApprovalContext) return;
       if (!project) {
         if (current === "materials") {
           if ($("create").disabled) return;
@@ -2399,6 +2464,7 @@
         shell.classList.remove("candidate-reference-review");
         maximum = frontier(project); current = project ? stageStep(project) : "entry"; lastFrontier = project ? stageStep(project) : "entry";
         if (!project) setupBackend = null;
+        projectToolBackend = null; evaluationBackend = null;
         historyPage = 0; historyKey = ""; setupReached = 0;
       }
       syncReferenceFrame(); syncPreflightFrame();
@@ -2489,10 +2555,15 @@
       const definition = definitions.find(([id]) => id === current);
       const [, title = "학습 상태", description = "현재 작업 상태를 확인해 주세요."] = definition || [];
       const needsToolChoice = waitingToolChoice(project);
+      const toolChoiceEditable = editableToolChoice(project);
+      if (!toolChoiceEditable) projectToolBackend = null;
+      const evaluationChoiceEditable = project?.evaluation_backend_editable === true && typeof bridge.input === "function";
+      if (!evaluationChoiceEditable) evaluationBackend = null;
+      const chosenEvaluationBackend = evaluationBackend || project?.evaluation_backend;
       heading.textContent = title;
       const savedReviewDescription = historical && pronunciationSteps.has(current);
       subtitle.textContent = savedReviewDescription ? "대표 음원과 저장된 판정을 확인합니다." : description;
-      if (current === "tools" && (needsToolChoice || !project)) subtitle.textContent = "음성 생성과 모델 학습에 사용할 연산 장치를 선택하세요.";
+      if (current === "tools" && (needsToolChoice || toolChoiceEditable || !project)) subtitle.textContent = "음성 생성과 모델 학습에 사용할 연산 장치를 선택하세요.";
       if (current === "voices" && separateReferencePreparation(project)) subtitle.textContent = "성별·연령별로 검수할 기준 목소리 후보를 미리 생성합니다.";
       if (current === "voice-listening" && !project?.reference_preview?.review_required) {
         subtitle.textContent = "생성 설정이 비슷한 목소리를 묶음별로 들어보세요.";
@@ -2517,13 +2588,13 @@
       index.hidden = visibleThrough === 0;
       screens.forEach((id, i) => {
         const tick = ticks.get(id);
-        tick.hidden = i > visibleThrough; tick.disabled = state.busy || i > maximum;
+        tick.hidden = i > visibleThrough; tick.disabled = state.busy || evaluationLaunchPending || i > maximum;
         tick.setAttribute("aria-current", i === position ? "step" : "false");
       });
       updateIndexDistances();
       if (!transitioning) {
         back.hidden = position === 0;
-        const backDisabled = Boolean(state.busy || position === 0 || awaitingPhrasePause(project));
+        const backDisabled = Boolean(state.busy || evaluationLaunchPending || position === 0 || awaitingPhrasePause(project));
         if (back.disabled !== backDisabled) back.disabled = backDisabled;
         next.hidden = current === "microphone";
         let nextDisabled = Boolean(!project
@@ -2534,7 +2605,7 @@
         if (current === "hard-review" && hardReviewRevealFailed) nextDisabled = true;
         if (editingPhrases(project)) nextDisabled = Boolean(state.busy);
         if (needsToolChoice && (current === "tools" || current === "materials")) nextDisabled = Boolean(state.busy);
-        nextDisabled = nextDisabled || Boolean(referenceApprovalContext);
+        nextDisabled = nextDisabled || evaluationLaunchPending || Boolean(referenceApprovalContext);
         if (next.disabled !== nextDisabled) next.disabled = nextDisabled;
         if (next.textContent !== "다음") next.textContent = "다음";
         if (next.title) next.title = "";
@@ -2545,7 +2616,7 @@
       operation.hidden = !action || reopen && bridge.noticeActionVisible?.(reopenReviewAction) === true;
       const retryGeneration = action === "retry_generation";
       const preparationPausing = current === "voices" && referencePreparationNeeded(project) && project.reference_preparation.status === "pausing";
-      const operationDisabled = Boolean(!action || state.busy || transitioning || project?.status === "pausing" || preparationPausing
+      const operationDisabled = Boolean(!action || state.busy || evaluationLaunchPending || transitioning || project?.status === "pausing" || preparationPausing
         || retryGeneration && project.process_alive === true);
       if (operation.disabled !== operationDisabled) operation.disabled = operationDisabled;
       const startsToolsAndDownloads = preparingTools && action === "start";
@@ -2565,15 +2636,24 @@
       // Hidden panels stay connected; polling never rebuilds their inputs or
       // embedded documents, and never resets a review's listening position.
       const pickerBackend = needsToolChoice ? ($("dependency-cu128").checked ? "cu128" : "cpu")
-        : project ? project.dependency_backend : draftBackend(state);
-      const showToolPicker = current === "tools" && !liveTools && toolInputs.has(pickerBackend);
+        : project ? (projectToolBackend || project.dependency_backend || (toolChoiceEditable ? draftBackend(state) : null)) : draftBackend(state);
+      const showToolPicker = current === "tools" && (!liveTools || toolChoiceEditable) && tools.radios.has(pickerBackend);
       const wanted = showToolPicker ? toolPicker : current === "entry" ? (project ? savedEntry : entry) : current === "scale" ? (project ? savedScale : scale)
         : current === "materials" ? materials : current === "voice-listening" ? voiceListening : live;
       for (const unit of [entry, savedEntry, toolPicker, scale, savedScale, materials, live, voiceListening]) unit.hidden = unit !== wanted;
-      if (showToolPicker) {
-        toolPicker.disabled = Boolean(project || state.busy);
-        for (const [backend, radio] of toolInputs) radio.checked = backend === pickerBackend;
-      }
+      if (showToolPicker) updateComputePicker(tools, pickerBackend, Boolean(state.busy || project && !toolChoiceEditable));
+      const downloadDevice = toolBackends[project?.dependency_backend]?.[0];
+      downloadCompute.hidden = !preparingTools || !(downloadDevice || toolChoiceEditable);
+      const downloadLabel = downloadDevice ? `학습 연산 장치 · ${downloadDevice}` : "학습 연산 장치를 선택하세요.";
+      if (!downloadCompute.hidden && downloadComputeLabel.textContent !== downloadLabel) downloadComputeLabel.textContent = downloadLabel;
+      changeDownloadCompute.hidden = !toolChoiceEditable;
+      changeDownloadCompute.disabled = Boolean(state.busy || transitioning);
+      const evaluationDevice = evaluationBackends[chosenEvaluationBackend]?.[0];
+      evaluationCompute.hidden = current !== "evaluation" || !evaluationDevice;
+      const evaluationLabel = `평가 연산 장치 · ${evaluationDevice}`;
+      if (!evaluationCompute.hidden && evaluationComputeLabel.textContent !== evaluationLabel) evaluationComputeLabel.textContent = evaluationLabel;
+      evaluationPicker.element.hidden = !evaluationChoiceEditable;
+      if (evaluationChoiceEditable) updateComputePicker(evaluationPicker, chosenEvaluationBackend, Boolean(state.busy || evaluationLaunchPending || transitioning));
       if (project && savedWord.value !== (project.wakeword || "")) savedWord.value = project.wakeword || "";
       if (project) for (const card of savedPresets.children) {
         const radio = card.querySelector("input"); radio.checked = radio.value === project.preset;
@@ -2662,9 +2742,9 @@
         const recipe = state.recipes.find(recipe => recipe.id === (project?.preset || state.selectedPreset));
         const values = project ? { ...recipe, ...project.settings, evaluation_policy: project.evaluation_policy || recipe?.evaluation_policy } : recipe;
         const toolPlan = project?.dependency_setup ?? state.dependencySetup;
-        const toolPackages = needsToolChoice ? toolPlan?.packages?.[pickerBackend]
+        const toolPackages = needsToolChoice || projectToolBackend ? toolPlan?.packages?.[pickerBackend]
           : project?.dependency_packages ?? toolPlan?.packages?.[pickerBackend];
-        const toolDownloadBytes = needsToolChoice ? toolPlan?.download_bytes?.[pickerBackend]
+        const toolDownloadBytes = needsToolChoice || projectToolBackend ? toolPlan?.download_bytes?.[pickerBackend]
           : project?.dependency_download_bytes ?? toolPlan?.download_bytes?.[pickerBackend];
         const fingerprint = JSON.stringify([values, pickerBackend, toolPackages, toolDownloadBytes,
           !project ? [$("adv-originals").value, $("adv-generic").value, $("adv-korean").value] : null]);

@@ -313,6 +313,58 @@ def test_cli_defaults_to_auto_and_keeps_explicit_cpu_override():
     assert parser().parse_args(arguments + ["--backend", "cpu"]).backend == "cpu"
 
 
+def test_studio_worker_reuses_its_backend_checkpoint_after_repeated_switches(monkeypatch, tmp_path):
+    from korean_openwakeword import gpu_runtime_install, studio_worker
+
+    settings = studio_steps.preset_settings("check")
+    settings.pop("evaluation_policy")
+    settings.pop("runtime_recommendation_policy")
+    project = create_project(tmp_path / "word", "보라야", "switch_eval",
+        positive_originals=settings["originals"], augmentation_rounds=settings["rounds"],
+        updates=settings["updates"], generic_hours=settings["generic_hours"], korean_hours=settings["korean_hours"])
+    bundle, manifest = sample_bundle(), tmp_path / "development.jsonl"
+    manifest.write_text("", encoding="utf-8")
+    context = {"results": {"package": {"result": {"bundle": str(bundle)}},
+                           "development": {"result": {"manifest": str(manifest)}}}}
+    monkeypatch.delenv("KOWW_GPU_RUNTIME_PATH", raising=False)
+    monkeypatch.setattr(gpu_runtime_install, "gpu_runtime_environment", lambda root: {"fixture": True})
+    calls = []
+
+    def score(path, selected_bundle, output, *, backend, resume, **kwargs):
+        calls.append((backend, resume, output))
+        work = output / "_evaluation_work"
+        checkpoint = work / "checkpoint.json"
+        scores = work / "scores.bin"
+        if not resume:
+            write_json(checkpoint, {"schema_version": 1,
+                "binding": evaluate.evaluation_binding(path, selected_bundle, manifest, smoke=True, backend=backend)})
+            scores.write_bytes(backend.encode("ascii"))
+            raise RuntimeError("fixture interruption")
+        assert scores.read_bytes() == backend.encode("ascii")
+        report = {"models": [], "smoke_test_only": True}
+        write_json(output / "report.json", report)
+        write_json(output / "receipt.json", {})
+        write_json(output / "clips.json", [])
+        return report
+
+    monkeypatch.setattr(evaluate, "evaluate", score)
+    prior_config = digest(project)
+    for index, (backend, returncode) in enumerate((("cpu", 1), ("cuda", 1), ("cpu", 0))):
+        task = tmp_path / f"evaluation-{index}"
+        path = task / "request.json"
+        write_json(path, {"task_id": str(index), "project": str(project), "workspace": str(tmp_path),
+            "stage": "evaluation", "settings": settings, "config_sha256": prior_config,
+            "result_path": str(task / "result.json"),
+            "context": {**context, "inputs": {"dependency_backend": "cpu", "evaluation_backend": backend}}})
+        request_sha256 = digest(path)
+        assert studio_worker.execute(path) == returncode and digest(path) == request_sha256
+    base = project.parent / "reports/studio_evaluation"
+    gpu = base.with_name("studio_evaluation_attempt2")
+    assert calls == [("cpu", False, base), ("cuda", False, gpu), ("cpu", True, base)]
+    assert (gpu / "_evaluation_work/scores.bin").read_bytes() == b"cuda"
+    assert digest(project) == prior_config
+
+
 def test_setup_gpu_cli_dispatches_only_to_the_selected_project_cache(monkeypatch, tmp_path):
     from korean_openwakeword import gpu_runtime_install
     project = tmp_path / "selected word" / "project.json"

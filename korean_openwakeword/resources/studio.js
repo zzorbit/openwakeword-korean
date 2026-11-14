@@ -1032,7 +1032,7 @@
       $("hard-phrase-fields").replaceChildren();
       if (hard) for (const value of (input.phrases || input.values || input.suggestions || []).length ? (input.phrases || input.values || input.suggestions) : [""]) addHardPhraseField(value);
       if (dependencies) {
-        const useGpu = input.recommended_backend === "cu128";
+        const useGpu = (project.dependency_backend || input.recommended_backend) === "cu128";
         $("dependency-cpu").checked = !useGpu;
         $("dependency-cu128").checked = useGpu;
       }
@@ -1412,10 +1412,10 @@
       if (initial) throw error;
     }
   }
-  async function runAction(action) {
-    if (busy || !selectedId) return false;
+  async function runAction(action, payload = {}, projectId = selectedId) {
+    if (busy || !selectedId || newProject || selectedId !== projectId) return false;
     const id = selectedId; busy = true; message(""); render();
-    try { await api(`/api/projects/${encodeURIComponent(id)}/${action}`, "POST", {}); await refresh({ fresh: true }); return true; }
+    try { await api(`/api/projects/${encodeURIComponent(id)}/${action}`, "POST", payload); await refresh({ fresh: true }); return true; }
     catch (error) { message(error.message, true); await refresh(); return false; }
     finally { busy = false; render(); }
   }
@@ -1469,8 +1469,11 @@
       if (["mls", "yodas2"].includes(source.dataset) && !source.metadata) { message("메타데이터에 download_receipt.json 경로를 입력하세요.", true); return false; }
       body = { source };
     }
+    return postProjectInput(project.id, body);
+  }
+  async function postProjectInput(projectId, body) {
     busy = true; message(""); render();
-    try { await api(`/api/projects/${encodeURIComponent(project.id)}/input`, "POST", body); await refresh({ fresh: true }); return true; }
+    try { await api(`/api/projects/${encodeURIComponent(projectId)}/input`, "POST", body); await refresh({ fresh: true }); return true; }
     catch (error) { message(error.message, true); return false; }
     finally { busy = false; render(); }
   }
@@ -1546,7 +1549,11 @@
       voiceDesign: design => renderVoiceDesign("setup-voices", design),
       create: options => create({ preventDefault() {} }, options),
       action: runAction,
-      input: () => submitInput({ preventDefault() {} }),
+      input: (choice, projectId) => {
+        if (!choice) return submitInput({ preventDefault() {} });
+        if (busy || newProject || selectedId !== projectId) return false;
+        return postProjectInput(projectId, choice);
+      },
       view: (view, mode = "required") => {
         const project = newProject ? null : selectedProject();
         if (!project) return;

@@ -219,7 +219,7 @@ def test_recipe_and_saved_project_share_dependency_requirements(manager, monkeyp
         assert view["dependency_setup_selected"] is True
         assert view["dependency_packages"] == setup["packages"][backend]
         assert view["dependency_download_bytes"] == setup["download_bytes"][backend]
-        assert view["evaluation_runtime_packages"] == runtime
+        assert view.get("evaluation_runtime_packages", []) == (runtime if backend == "cu128" else [])
         assert view["navigation_checkpoint"] == {"policy": "explicit_story_v1", "step": "downloads", "state": "awaiting_start"}
         assert manager._load(view["id"])["inputs"] == {"dependency_backend": backend}
     assert manager.workers.calls == []
@@ -308,6 +308,68 @@ def test_existing_dependency_prompt_still_submits_and_resumes_frontend(manager):
     request = read_json(manager.workers.items[-1].request_path)
     assert request["stage"] == "frontend"
     assert request["context"]["inputs"] == {"dependency_backend": "cpu"}
+
+
+def test_dependency_choice_can_be_revised_before_installation_and_after_failure(manager):
+    project = create(manager, navigation_checkpoints=True, dependency_backend="cu128")
+    project_id = project["id"]
+    for backend in ("cpu", "cu128", "cpu"):
+        project = manager.submit_input(project_id, {"dependency_backend": backend, "defer_dependency_install": True})
+        assert project["dependency_backend"] == backend and project["dependency_backend_editable"]
+        assert project["dependency_install_pending"] and not manager.workers.items
+    assert "evaluation_runtime_packages" not in project
+    assert not any(row["id"] == "onnxruntime-gpu" for row in project["download_setup_items"])
+
+    with pytest.raises(ValueError, match="선택이나 현재 단계가 바뀌었습니다"):
+        manager.start(project_id, expected_dependency_backend="cu128")
+    assert not manager.workers.items
+    launched = manager.start(project_id, expected_dependency_backend="cpu")
+    assert not launched["dependency_backend_editable"]
+    first = manager.workers.items[0]
+    assert read_json(first.request_path)["context"]["inputs"]["dependency_backend"] == "cpu"
+    with pytest.raises(ValueError, match="학습 도구"):
+        manager.submit_input(project_id, {"dependency_backend": "cu128", "defer_dependency_install": True})
+
+    first.finish(error={"message": "설치 실패"})
+    manager.tick()
+    retry = manager.submit_input(project_id, {"dependency_backend": "cu128", "defer_dependency_install": True})
+    assert retry["status"] == "paused" and not retry["error"] and retry["dependency_install_pending"]
+    manager.tick()
+    assert len(manager.workers.items) == 1
+    with pytest.raises(ValueError, match="선택이나 현재 단계가 바뀌었습니다"):
+        manager.start(project_id, expected_evaluation_backend="cpu")
+    manager.start(project_id, expected_dependency_backend="cu128")
+    second = read_json(manager.workers.items[1].request_path)
+    assert second["context"]["inputs"]["dependency_backend"] == "cu128"
+
+
+def test_evaluation_backend_can_be_changed_without_rewriting_work_or_auto_launching(manager):
+    project = create(manager, dependency_backend="cu128")
+    project_id = project["id"]
+    original = manager._load(project_id)
+    stage_index = next(index for index, step in enumerate(original["plan"]) if step["id"] == "evaluation")
+    put_state(manager, project_id, index=stage_index, status="error", error={"message": "GPU 검사 실패"})
+    directory = Path(original["project"]).parent / "reports/studio_evaluation/_evaluation_work"
+    directory.mkdir(parents=True)
+    checkpoint = directory / "checkpoint.json"
+    checkpoint.write_bytes(b"existing GPU checkpoint bytes")
+
+    for backend in ("cpu", "cuda", "cpu"):
+        view = manager.submit_input(project_id, {"evaluation_backend": backend})
+        assert view["evaluation_backend"] == backend and view["evaluation_backend_editable"]
+        assert view["status"] == "paused" and not view["error"] and view["dependency_backend"] == "cu128"
+    state = manager._load(project_id)
+    assert state["settings"] == original["settings"] and state["config_sha256"] == original["config_sha256"]
+    assert checkpoint.read_bytes() == b"existing GPU checkpoint bytes" and not manager.workers.items
+    with pytest.raises(ValueError, match="선택이나 현재 단계가 바뀌었습니다"):
+        manager.start(project_id, expected_evaluation_backend="cuda")
+    assert not manager.workers.items
+    manager.start(project_id, expected_evaluation_backend="cpu")
+    request = read_json(manager.workers.items[0].request_path)
+    assert request["context"]["inputs"] == {"dependency_backend": "cu128", "evaluation_backend": "cpu"}
+    assert request["settings"] == original["settings"]
+    with pytest.raises(ValueError, match="연산 도구"):
+        manager.submit_input(project_id, {"evaluation_backend": "cuda"})
 
 
 @pytest.mark.parametrize("checkpoint", ["navigation_checkpoints", "download_checkpoint"])
@@ -1269,6 +1331,41 @@ def worker_request(tmp_path, stage="frontend"):
     path = tmp_path / "request.json"
     write_json(path, request)
     return path, request
+
+
+@pytest.mark.parametrize("stage,settings,inputs,expected,prepare_gpu", [
+    ("frontend", {"evaluation_backend": "auto"}, {"dependency_backend": "cpu"}, "cpu", False),
+    ("frontend", {"evaluation_backend": "auto"}, {"dependency_backend": "cu128"}, "auto", False),
+    ("evaluation", {"evaluation_backend": "auto"}, {"dependency_backend": "cpu"}, "cpu", False),
+    ("evaluation", {"evaluation_backend": "cpu"}, {"dependency_backend": "cu128"}, "cpu", False),
+    ("evaluation", {"evaluation_backend": "auto"}, {"dependency_backend": "cu128", "evaluation_backend": "cpu"}, "cpu", False),
+    ("evaluation", {"evaluation_backend": "auto"}, {"dependency_backend": "cpu", "evaluation_backend": "cuda"}, "cuda", True),
+    ("evaluation", {}, {}, "cpu", False),
+])
+def test_worker_applies_last_compute_choice_without_mutating_frozen_request(
+        tmp_path, monkeypatch, stage, settings, inputs, expected, prepare_gpu):
+    from korean_openwakeword import gpu_runtime_install, studio_steps, studio_worker
+
+    path, request = worker_request(tmp_path, stage)
+    request.update(settings={**settings, "gpu_cpu_prefix_import": "fixture-only"}, context={"inputs": inputs})
+    write_json(path, request)
+    frozen = path.read_bytes()
+    chosen, provisioned = [], []
+    monkeypatch.delenv("KOWW_GPU_RUNTIME_PATH", raising=False)
+    monkeypatch.setattr(gpu_runtime_install, "_managed_reason", lambda: None)
+    monkeypatch.setattr(gpu_runtime_install, "gpu_runtime_environment", lambda root: {})
+    monkeypatch.setattr(studio_steps, "_prepare_evaluation_runtime", provisioned.append)
+
+    def run(project, workspace, effective, active_stage, context):
+        assert active_stage == stage and context["inputs"] == inputs
+        chosen.append(effective)
+        return {"state": "completed"}
+
+    monkeypatch.setattr(studio_steps, "run_stage", run)
+    assert studio_worker.execute(path) == 0 and path.read_bytes() == frozen
+    assert len(chosen) == 1 and chosen[0]["evaluation_backend"] == expected
+    assert ("gpu_cpu_prefix_import" in chosen[0]) is (expected != "cpu")
+    assert provisioned == ([Path(request["project"]).parent] if prepare_gpu else [])
 
 
 @pytest.mark.parametrize("stage", ["hard_pilot", "hard_generation"])

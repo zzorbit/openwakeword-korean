@@ -157,8 +157,8 @@ function page(initialProject = null, options = {}) {
     wakewordError: value => options.wakewordError?.(value) || (String(value).trim() ? "" : "호출어를 입력하세요."),
     mediaUrl: value => typeof value === "string" && value.startsWith("/") && !value.startsWith("//") ? value : "",
     create: input => { state.busy = true; calls.push("create"); creationOptions.push(JSON.parse(JSON.stringify(input || {}))); return options.create?.(state); },
-    action: action => { state.busy = true; calls.push(action); return options.action?.(action, state); },
-    input: () => { calls.push("input"); return options.input?.(state); }, view: (view, mode) => {
+    action: (action, payload, projectId) => { state.busy = true; calls.push(action); return options.action?.(action, state, payload && JSON.parse(JSON.stringify(payload)), projectId); },
+    input: (choice, projectId) => { calls.push("input"); return options.input?.(state, choice && JSON.parse(JSON.stringify(choice)), projectId); }, view: (view, mode) => {
       calls.push("view:" + view); viewModes.push({ view, mode });
       const project = state.project;
       const frameSource = (id, url) => {
@@ -454,6 +454,69 @@ async function main() {
     assert.deepEqual(p.creationOptions, [{ navigationCheckpoints: true, dependencyBackend: "cu128" }]);
     assert.equal(p.calls.includes("start"), false, "model creation does not start downloads");
     assert.equal(p.timers.at(-1).delay, 800); await p.settle(); await creation;
+  });
+  await test("saved setup confirms only the final CPU/GPU choice each time and installs only when started", async () => {
+    const project = { id: "reselect-tools", status: "ready", stage_id: "frontend", preset: "check", dependency_backend: "cu128",
+      dependency_backend_editable: true, navigation_checkpoint: { policy: "explicit_story_v1", step: "downloads", state: "awaiting_start" } };
+    const sent = [], p = page(project, { dependencySetup: toolSetup, input: (_state, choice, id) => {
+      assert.equal(id, project.id); sent.push(choice);
+      project.dependency_backend = choice.dependency_backend;
+      project.dependency_install_pending = true;
+      project.status = "paused";
+      p.ui.render();
+      return true;
+    }, action: (action, _state, payload, id) => {
+      assert.equal(action, "start"); assert.equal(id, project.id);
+      assert.deepEqual(payload, { expected_dependency_backend: "cu128" });
+    } });
+    p.state.recipes = [{ id: "check" }];
+    const change = p.shell.querySelectorAll("button").find(button => button.textContent === "연산 장치 변경");
+    const cpu = p.get("story-tool-cpu"), gpu = p.get("story-tool-cu128");
+    async function choose(radio) { cpu.checked = radio === cpu; gpu.checked = radio === gpu; await radio.fire("change"); }
+    assert.match(textOf(change.parentElement), /NVIDIA GPU/);
+    await change.fire("click"); await p.settle();
+    assert.equal(p.get("story-tool-picker").disabled, false);
+    for (const radio of [cpu, gpu, cpu]) { await choose(radio); p.ui.render(); assert.equal(radio.checked, true); }
+    assert.deepEqual(sent, [], "changing radio choices does not write every intermediate choice");
+    await advanceSetup(p, "scale", "materials", "downloads");
+    assert.match(textOf(change.parentElement), /CPU/);
+    await change.fire("click"); await p.settle();
+    for (const radio of [gpu, cpu, gpu]) { await choose(radio); p.ui.render(); assert.equal(radio.checked, true); }
+    await p.ticks.find(tick => tick.dataset.step === "downloads").fire("click"); await p.settle();
+    assert.match(textOf(change.parentElement), /NVIDIA GPU/);
+    assert.deepEqual(sent, [{ dependency_backend: "cpu", defer_dependency_install: true },
+      { dependency_backend: "cu128", defer_dependency_install: true }]);
+    assert.equal(p.calls.some(call => ["start", "resume"].includes(call)), false);
+    await p.operation.fire("click");
+    assert.equal(p.calls.filter(call => call === "start").length, 1);
+  });
+  await test("evaluation resumes only after the last chosen device is stored and confirmed", async () => {
+    for (const confirm of [false, true]) {
+      const project = { id: "reselect-evaluation", status: "error", stage_id: "evaluation", error: "GPU 오류",
+        evaluation_backend: "cuda", evaluation_backend_editable: true };
+      let save, sent;
+      const p = page(project, { input: (_state, choice, id) => {
+        assert.equal(id, project.id); sent = choice;
+        return new Promise(resolve => { save = () => { if (confirm) project.evaluation_backend = choice.evaluation_backend; resolve(true); }; });
+      }, action: (action, _state, payload, id) => {
+        assert.equal(action, "resume"); assert.equal(id, project.id); assert.equal(project.evaluation_backend, "cpu");
+        assert.deepEqual(payload, { expected_evaluation_backend: "cpu" });
+      } });
+      const cpu = p.get("story-evaluation-cpu"), gpu = p.get("story-evaluation-cuda");
+      assert.equal(gpu.checked, true);
+      for (const radio of [cpu, gpu, cpu]) {
+        cpu.checked = radio === cpu; gpu.checked = radio === gpu;
+        await radio.fire("change"); p.ui.render(); assert.equal(radio.checked, true);
+      }
+      const begin = p.operation.fire("click"); await p.flush();
+      assert.deepEqual(sent, { evaluation_backend: "cpu" });
+      await p.operation.fire("click");
+      assert.equal(p.calls.filter(call => call === "input").length, 1);
+      assert.equal(p.calls.includes("resume"), false);
+      save(); await begin;
+      assert.equal(p.calls.filter(call => call === "resume").length, confirm ? 1 : 0);
+      if (!confirm) assert.equal(cpu.checked, true, "the unsaved selection can still be retried");
+    }
   });
   await test("fast creation runs behind the visible notice and keeps its full 800 ms hold", async () => {
     const p = page(null, { create: state => {

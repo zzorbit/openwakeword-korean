@@ -7,6 +7,7 @@ from collections import Counter
 import hashlib
 from importlib.metadata import PackageNotFoundError, version
 import math
+import os
 import random
 import time
 import warnings
@@ -46,8 +47,14 @@ _REFERENCE_PREPARATION_PREVIOUS_IMPLEMENTATIONS = {
 def _generation_evidence_sha256():
     from .call_generation_history import SCHEDULING_ONLY_TTS_DIGESTS
 
-    current = digest(__file__)
+    current = _technical_qc_sha256()
     return SCHEDULING_ONLY_TTS_DIGESTS.get(current, current)
+
+
+def _technical_qc_sha256():
+    from .studio import _compute_dispatch_compatible_digest
+
+    return _compute_dispatch_compatible_digest("tts.py", digest(__file__))
 
 
 def _clone_reference_evidence_sha256():
@@ -94,14 +101,21 @@ def _load_model(model_path, config, project_root):
         from qwen_tts import Qwen3TTSModel
         local_path = local_tts_snapshot(model_path, config, project_root)
         requested = config["device"]
+        backend = os.environ.get("KOWW_STUDIO_TORCH_BACKEND")
+        if backend == "cpu":
+            requested = "cpu"
+        elif backend == "cu128" and not requested.startswith("cuda"):
+            requested = "auto"
         automatic = requested == "auto"
         devices = [requested]
         if automatic:
-            devices = ["cpu"]
+            devices = [] if backend == "cu128" else ["cpu"]
             if torch.cuda.is_available():
                 current = torch.cuda.current_device()
                 others = [index for index in range(torch.cuda.device_count()) if index != current]
                 devices[:0] = [f"cuda:{index}" for index in [current, *others]]
+            if not devices:
+                raise ValueError("선택한 NVIDIA GPU를 사용할 수 없습니다. CUDA 지원 드라이버와 학습 도구를 확인하세요.")
 
         def load(device, dtype):
             return Qwen3TTSModel.from_pretrained(local_path, device_map=device, dtype=dtype,
@@ -122,6 +136,7 @@ def _load_model(model_path, config, project_root):
                 # except block has exited. Release the allocator cache afterwards.
                 torch.cuda.empty_cache()
             warnings.warn(f"TTS model did not fit on {device}; trying the next available device.", RuntimeWarning)
+        raise ValueError("선택한 GPU의 메모리가 부족해 음성 모델을 불러오지 못했습니다.")
 
 
 def _short_clone_token_limit(model, configured_max_new_tokens, *, text=None, retry=False):
