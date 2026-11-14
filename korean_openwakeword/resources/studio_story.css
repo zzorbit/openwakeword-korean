@@ -168,8 +168,6 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-evaluation-plan h2{margin:0;font-size:16px;line-height:22px;font-weight:600}
 .story-evaluation-plan p{margin:0;color:var(--muted);font-size:14px;line-height:22px;white-space:pre-line;word-break:keep-all;overflow-wrap:anywhere}
 .story-compute-summary{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px 12px;margin:0;color:var(--muted);font-size:14px;line-height:22px}
-.story-evaluation-compute{display:grid;gap:8px;align-self:center;width:min(490px,100%)}
-.story-evaluation-compute .story-choice-card{min-height:76px;padding:8px}
 .story-shell[data-work-rows="true"] .story-live-summary .progress-section{display:none}
 .story-shell.separate-reference-preparation[data-step="voices"] .story-live #counts{display:none}
 .story-history-rows.story-work-history-rows{gap:24px}

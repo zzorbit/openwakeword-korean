@@ -451,7 +451,7 @@
   function evaluationRetryMessage(project) {
     if ((project?.stage?.id || project?.stage_id) !== "evaluation" || project.status !== "paused"
         || project.evaluation_retry_pending !== true || project.error || project.migration) return "";
-    return "이전 평가가 중단됐습니다. 선택한 장치로 다시 시작하려면 재개를 누르세요.";
+    return "이전 평가가 중단됐습니다. 저장된 연산 장치로 다시 시작하려면 재개를 누르세요.";
   }
   function creationBody() {
     return requestBody({ wakeword: $("wakeword").value, advanced: { positive_originals: $("adv-originals").value, augmentation_rounds: $("adv-rounds").value, updates: $("adv-updates").value, generic_hours: $("adv-generic").value, korean_hours: $("adv-korean").value } }, selectedPreset);

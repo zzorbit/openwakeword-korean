@@ -494,42 +494,31 @@ async function main() {
     await p.operation.fire("click");
     assert.equal(p.calls.filter(call => call === "start").length, 1);
   });
-  await test("evaluation resumes only after the last chosen device is stored and confirmed", async () => {
-    for (const confirm of [false, true]) {
-      const project = { id: "reselect-evaluation", status: "error", stage_id: "evaluation", error: "GPU 오류",
-        evaluation_backend: "cuda", evaluation_backend_editable: true };
-      let save, sent;
-      const p = page(project, { input: (_state, choice, id) => {
-        assert.equal(id, project.id); sent = choice;
-        return new Promise(resolve => { save = () => { if (confirm) project.evaluation_backend = choice.evaluation_backend; resolve(true); }; });
-      }, action: (action, _state, payload, id) => {
-        assert.equal(action, "resume"); assert.equal(id, project.id); assert.equal(project.evaluation_backend, "cpu");
-        assert.deepEqual(payload, { expected_evaluation_backend: "cpu" });
+  await test("evaluation resumes directly with the saved tool device and has no device picker", async () => {
+    for (const [tool, backend] of [["cpu", "cpu"], ["cu128", "cuda"]]) {
+      const project = { id: "resume-evaluation", status: "error", stage_id: "evaluation", error: "평가 오류",
+        dependency_backend: tool, evaluation_backend: backend };
+      const p = page(project, { action: (action, _state, payload, id) => {
+        assert.equal(action, "resume"); assert.equal(id, project.id);
+        assert.deepEqual(payload, { expected_evaluation_backend: backend });
       } });
-      const cpu = p.get("story-evaluation-cpu"), gpu = p.get("story-evaluation-cuda");
-      assert.equal(gpu.checked, true);
-      for (const radio of [cpu, gpu, cpu]) {
-        cpu.checked = radio === cpu; gpu.checked = radio === gpu;
-        await radio.fire("change"); p.ui.render(); assert.equal(radio.checked, true);
-      }
-      const begin = p.operation.fire("click"); await p.flush();
-      assert.deepEqual(sent, { evaluation_backend: "cpu" });
+      assert.equal(p.get("story-evaluation-picker"), null);
+      assert.equal(p.get("story-tool-picker").hidden, true);
+      assert.equal(p.operation.textContent, "재개");
       await p.operation.fire("click");
-      assert.equal(p.calls.filter(call => call === "input").length, 1);
-      assert.equal(p.calls.includes("resume"), false);
-      save(); await begin;
-      assert.equal(p.calls.filter(call => call === "resume").length, confirm ? 1 : 0);
-      if (!confirm) assert.equal(cpu.checked, true, "the unsaved selection can still be retried");
+      await p.operation.fire("click");
+      assert.equal(p.calls.filter(call => call === "resume").length, 1);
+      assert.equal(p.calls.includes("input"), false);
     }
   });
   await test("evaluation retry after an update replaces the old error while genuine new errors stay visible", async () => {
     const project = { id: "evaluation-retry", status: "paused", stage_id: "evaluation", evaluation_retry_pending: true,
-      evaluation_backend: "cuda", evaluation_backend_editable: true, progress: { done: 5, total: 10, phase: "scoring" } };
+      dependency_backend: "cu128", evaluation_backend: "cuda", progress: { done: 5, total: 10, phase: "scoring" } };
     const p = page(project, { action: (action, state, payload, id) => {
       assert.equal(action, "resume"); assert.equal(id, project.id);
       assert.deepEqual(payload, { expected_evaluation_backend: "cuda" });
       Object.assign(project, { status: "running", process_alive: true, evaluation_retry_pending: false,
-        evaluation_backend_editable: false, progress: { phase: "validation" } });
+        progress: { phase: "validation" } });
       state.busy = false;
     } });
     const message = p.get("project-error"), counts = p.shell.querySelector(".story-voice-counts");
@@ -539,10 +528,11 @@ async function main() {
     assert.equal(row.children[1].textContent, "재개 대기");
     assert.equal(row.querySelector("progress").dataset.active, "false");
     assert.equal(p.operation.textContent, "재개"); assert.equal(p.operation.disabled, false);
-    assert.equal(p.get("story-evaluation-cuda").checked, true);
+    assert.equal(p.get("story-evaluation-picker"), null);
     assert.equal(p.calls.includes("resume"), false);
     await p.operation.fire("click");
     assert.equal(p.calls.filter(call => call === "resume").length, 1);
+    p.ui.render();
     assert.equal(message.hidden, true);
     assert.equal(row.children[1].textContent, "검증 중");
     Object.assign(project, { status: "error", process_alive: false, error: { message: "새 평가의 GPU 실행에 실패했습니다." }, progress: null });

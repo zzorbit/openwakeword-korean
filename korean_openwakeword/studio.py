@@ -147,18 +147,12 @@ def _dependency_specs(arguments):
 
 
 def _studio_evaluation_backend(settings, inputs):
-    override = inputs.get("evaluation_backend")
-    if override in ("cpu", "cuda"):
-        return override
-    requested = settings.get("evaluation_backend")
-    if requested in ("cpu", "cuda"):
-        return requested
     backend = inputs.get("dependency_backend")
     if backend == "cpu":
         return "cpu"
     if backend == "cu128":
         return "auto"
-    return requested or "cpu"
+    return settings.get("evaluation_backend", "cpu")
 
 
 def _download_setup_rows(backend, evaluation_runtime, phase, *, complete=False, log=""):
@@ -2518,32 +2512,29 @@ class StudioManager:
         inputs["hard_phrase_revision"] = uuid.uuid4().hex
         return True
 
-    def _backend_selection_available(self, state, stage):
+    def _dependency_selection_available(self, state):
         index = state["index"]
-        if (index >= len(state["plan"]) or state["plan"][index]["id"] != stage
+        if (index >= len(state["plan"]) or state["plan"][index]["id"] != "frontend"
                 or self._job_alive(state.get("job") or {})):
             return False
         if state["status"] in ("ready", "paused", "error", "interrupted"):
             return True
-        if stage == "frontend" and state["status"] == "waiting_input":
-            result = state["results"].get(stage, {})
+        if state["status"] == "waiting_input":
+            result = state["results"].get("frontend", {})
             return (result.get("input") or {}).get("kind", result.get("input_kind")) == "dependency_setup"
         return False
 
-    def _save_backend_selection(self, state, stage, key, selection, next_action):
-        if not self._backend_selection_available(state, stage):
-            raise ValueError("현재 단계에서 실행 중인 작업이 없을 때만 연산 도구를 변경할 수 있습니다.")
+    def _save_dependency_selection(self, state, backend):
         self._guard_config(state)
         if state.get("job"):
             if self._finish_job(state):
-                if not self._backend_selection_available(state, stage):
+                if not self._dependency_selection_available(state):
                     raise ValueError("작업이 완료되어 이 단계의 연산 도구를 변경할 수 없습니다.")
             else:
                 state["last_job"] = state.pop("job")
-        state["inputs"][key] = selection
-        state.update(status="paused", error=None, auto_continue=False, next_action=next_action)
-        if stage == "frontend":
-            state.update(input_submitted=True, dependency_setup_selected=True)
+        state["inputs"]["dependency_backend"] = backend
+        state.update(status="paused", error=None, auto_continue=False, input_submitted=True,
+                     dependency_setup_selected=True, next_action="설치·다운로드 시작을 누르세요.")
         self._save(state)
         return self.describe(state)
 
@@ -2551,21 +2542,16 @@ class StudioManager:
         with self._lock:
             state = self._load(project_id)
             if "evaluation_backend" in payload:
-                backend = payload["evaluation_backend"]
-                if set(payload) != {"evaluation_backend"} or backend not in ("cpu", "cuda"):
-                    raise ValueError("평가 연산 도구는 CPU 또는 NVIDIA GPU를 선택하세요.")
-                return self._save_backend_selection(state, "evaluation", "evaluation_backend", backend,
-                                                    "선택한 연산 도구로 평가하려면 재개를 누르세요.")
+                raise ValueError("CPU 또는 NVIDIA GPU 선택은 학습 도구 준비에서 변경할 수 있습니다.")
             defer_dependency_install = payload.get("defer_dependency_install", False)
             if type(defer_dependency_install) is not bool:
                 raise ValueError("학습 도구 설치 연기 설정은 참 또는 거짓으로 지정하세요.")
             if defer_dependency_install:
                 backend = payload.get("dependency_backend")
                 if (backend not in ("cpu", "cu128") or set(payload) - {"dependency_backend", "defer_dependency_install"}
-                        or not self._backend_selection_available(state, "frontend")):
+                        or not self._dependency_selection_available(state)):
                     raise ValueError("학습 도구를 선택하는 단계에서 작업이 없을 때만 설치를 미룰 수 있습니다.")
-                return self._save_backend_selection(state, "frontend", "dependency_backend", backend,
-                                                    "설치·다운로드 시작을 누르세요.")
+                return self._save_dependency_selection(state, backend)
             if state["status"] != "waiting_input":
                 raise ValueError("현재 입력을 기다리는 단계가 아닙니다.")
             if state.get("hard_phrase_edit") and set(payload) != {"phrases"}:
@@ -2593,7 +2579,7 @@ class StudioManager:
             elif "dependency_backend" in payload:
                 if (payload["dependency_backend"] not in ("cpu", "cu128")
                         or set(payload) - {"dependency_backend", "defer_dependency_install"}
-                        or not self._backend_selection_available(state, "frontend")):
+                        or not self._dependency_selection_available(state)):
                     raise ValueError("학습 도구를 선택하는 단계에서만 CPU 또는 NVIDIA GPU를 선택할 수 있습니다.")
                 state["inputs"]["dependency_backend"] = payload["dependency_backend"]
             elif "source" in payload:
@@ -4836,13 +4822,12 @@ class StudioManager:
         dependency_backend = state.get("inputs", {}).get("dependency_backend")
         view["dependency_backend"] = dependency_backend
         view["dependency_setup_selected"] = state.get("dependency_setup_selected") is True
-        view["dependency_backend_editable"] = self._backend_selection_available(state, "frontend")
+        view["dependency_backend_editable"] = self._dependency_selection_available(state)
         view["dependency_install_pending"] = (view["dependency_setup_selected"] and stage["id"] == "frontend"
                                               and state["status"] == "paused" and state.get("input_submitted") is True)
         if stage["id"] == "evaluation":
             evaluation_backend = _studio_evaluation_backend(state["settings"], state.get("inputs", {}))
             view["evaluation_backend"] = "cuda" if evaluation_backend == "auto" else evaluation_backend
-            view["evaluation_backend_editable"] = self._backend_selection_available(state, "evaluation")
             view["evaluation_retry_pending"] = state.get("evaluation_retry_pending") is True and view["status"] == "paused"
         frontend_evaluation_backend = _studio_evaluation_backend(state["settings"], {"dependency_backend": dependency_backend})
         if dependency_backend in ("cpu", "cu128"):

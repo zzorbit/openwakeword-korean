@@ -157,7 +157,6 @@
   const titles = { check: "동작 확인용", trial: "시험 모델용", production: "상용 모델용" };
   const shortDescriptions = { check: "라이브러리 동작 확인", trial: "호출 성능 비교·시험", production: "많은 자료로 본격 학습" };
   const toolBackends = { cpu: ["CPU", "NVIDIA GPU 없이 실행"], cu128: ["NVIDIA GPU", "CUDA 12.8 사용"] };
-  const evaluationBackends = { cpu: ["CPU", "CPU로 평가"], cuda: ["NVIDIA GPU", "CUDA로 평가"] };
   const count = value => Number.isFinite(value) ? value.toLocaleString("ko-KR") : "—";
   function pageCapacity(items, available, rowHeight, columns = 1, gap = 12, pagerSpace = 44) {
     if (!items) return 1;
@@ -389,19 +388,13 @@
     const downloadComputeLabel = node("span");
     const changeDownloadCompute = button("연산 장치 변경", "story-secondary", () => navigate(screens.indexOf("tools")));
     downloadCompute.append(downloadComputeLabel, changeDownloadCompute);
-    const evaluationCompute = node("div", undefined, "story-evaluation-compute"); evaluationCompute.hidden = true;
-    const evaluationComputeLabel = node("p", undefined, "story-compute-summary");
-    const evaluationPicker = computePicker("story-evaluation-picker", "평가 연산 장치", evaluationBackends, backend => {
-      evaluationBackend = backend; render();
-    });
-    evaluationCompute.append(evaluationComputeLabel, evaluationPicker.element);
     const listenActions = node("div", undefined, "story-listen-actions");
     const hardButton = button("유사어 전체 듣기", "story-secondary", openHardListening);
     const positiveButton = button("호출어 전체 듣기", "story-secondary", openPositiveListening);
     listenActions.append(hardButton, positiveButton);
     // A completed stage hides live progress, but its compatibility update must
     // remain reachable through the existing explicit migration control.
-    live.append(migrationNote, downloadCompute, evaluationCompute, voiceCounts, liveSummary, downloadActivity, downloads, review, input, results, historic, evaluationPlan, listenActions);
+    live.append(migrationNote, downloadCompute, voiceCounts, liveSummary, downloadActivity, downloads, review, input, results, historic, evaluationPlan, listenActions);
     // Core forms and event bindings retain their IDs when moved into chapters.
     // Inactive controls stay connected so their drafts survive navigation.
     content.append(entry, savedEntry, toolPicker, scale, savedScale, materials, live, voiceListening);
@@ -451,7 +444,7 @@
       render();
     });
     let current = "entry", projectKey = "", maximum = frontier(null), setupReached = 0, following = true, transitioning = false, transitionSession = null, creationPending = false;
-    let setupBackend = null, projectToolBackend = null, evaluationBackend = null, evaluationLaunchPending = false;
+    let setupBackend = null, projectToolBackend = null;
     let hardConnectionIntent = null;
     const connectingHard = project => current === "hard-review" && stageId(project) === "hard_connect"
       && running(project?.status) && !project.review && !project.input;
@@ -1283,7 +1276,7 @@
     }
     function navigate(position, automatic = false) {
       const state = bridge.state();
-      if (transitioning || position < 0 || position > maximum || position >= screens.length || state.busy || evaluationLaunchPending || position === screens.indexOf(current)) return false;
+      if (transitioning || position < 0 || position > maximum || position >= screens.length || state.busy || position === screens.indexOf(current)) return false;
       if (!state.project && position > screens.indexOf(current)) {
         if (composingWakeword) return false;
         const error = bridge.wakewordError(wakeword.value);
@@ -1310,7 +1303,7 @@
       const editingTools = !automatic && !backwards && position > screens.indexOf("tools") && editableToolChoice(state.project);
       const backend = editingTools && (projectToolBackend || (current === "tools" && !state.project.dependency_backend ? draftBackend(state) : null));
       const prepare = backend && backend !== state.project.dependency_backend ? async () => {
-        if (!await saveComputeChoice(state.project, "dependency_backend", backend)) return false;
+        if (!await saveToolChoice(state.project, backend)) return false;
         projectToolBackend = null;
       } : undefined;
       void runTransition(session, prepare, () => showChapter(target));
@@ -1327,27 +1320,19 @@
     function editableToolChoice(project) {
       return project?.dependency_backend_editable === true && !waitingToolChoice(project) && typeof bridge.input === "function";
     }
-    async function saveComputeChoice(project, key, backend) {
-      const choice = key === "dependency_backend" ? { dependency_backend: backend, defer_dependency_install: true }
-        : { evaluation_backend: backend };
-      if (!await bridge.input(choice, project.id)) return false;
+    async function saveToolChoice(project, backend) {
+      if (!await bridge.input({ dependency_backend: backend, defer_dependency_install: true }, project.id)) return false;
       const latest = bridge.state().project;
-      if (latest?.id === project.id && latest[key] === backend) return true;
+      if (latest?.id === project.id && latest.dependency_backend === backend) return true;
       bridge.message?.("변경한 연산 장치를 확인하지 못했습니다. 화면을 새로고침한 뒤 다시 진행해 주세요.", true);
       return false;
     }
-    async function saveEvaluationChoice(project, backend) {
-      if (!backend || backend === project.evaluation_backend) return true;
-      if (project.evaluation_backend_editable !== true || !await saveComputeChoice(project, "evaluation_backend", backend)) return false;
-      evaluationBackend = null;
-      return true;
-    }
-    function startWithSelectedCompute(action, project, expectedEvaluationBackend = project.evaluation_backend) {
+    function startWithSelectedCompute(action, project) {
       const stage = stageId(project), payload = {};
       if (stage === "frontend" && Object.hasOwn(toolBackends, project.dependency_backend))
         payload.expected_dependency_backend = project.dependency_backend;
-      if (stage === "evaluation" && Object.hasOwn(evaluationBackends, expectedEvaluationBackend))
-        payload.expected_evaluation_backend = expectedEvaluationBackend;
+      if (stage === "evaluation" && ["cpu", "cuda"].includes(project.evaluation_backend))
+        payload.expected_evaluation_backend = project.evaluation_backend;
       return bridge.action(action, payload, project.id);
     }
     function editingPhrases(project) {
@@ -1494,23 +1479,18 @@
     function isReviewReopen(action) { return action === "load_review" || action === "load_hard_review"; }
     async function controlJob() {
       const state = bridge.state(), action = operationAction(state.project);
-      if (!action || transitioning || state.busy || evaluationLaunchPending || state.project.status === "pausing"
+      if (!action || transitioning || state.busy || state.project.status === "pausing"
         || action === "retry_generation" && state.project.process_alive === true
         || current === "voices" && referencePreparationNeeded(state.project) && state.project.reference_preparation.status === "pausing") return;
       hardConnectionIntent = null;
       if (action === "load_hard_review") { revealHardReview(true); return; }
       if (action === "load_review") { revealRepairReview(state.project, true); return; }
-      if (!["start", "resume"].includes(action)) { await bridge.action(action); return; }
-      if (current !== "evaluation") { await startWithSelectedCompute(action, state.project); return; }
-      const backend = evaluationBackend || state.project.evaluation_backend;
-      evaluationLaunchPending = true; render();
-      try {
-        if (await saveEvaluationChoice(state.project, backend)) await startWithSelectedCompute(action, state.project, backend);
-      } finally { evaluationLaunchPending = false; render(); }
+      if (["start", "resume"].includes(action)) await startWithSelectedCompute(action, state.project);
+      else await bridge.action(action);
     }
     async function advance() {
       const state = bridge.state(), project = state.project, position = screens.indexOf(current);
-      if (transitioning || state.busy || evaluationLaunchPending || referenceApprovalContext) return;
+      if (transitioning || state.busy || referenceApprovalContext) return;
       if (!project) {
         if (current === "materials") {
           if ($("create").disabled) return;
@@ -2469,7 +2449,7 @@
         shell.classList.remove("candidate-reference-review");
         maximum = frontier(project); current = project ? stageStep(project) : "entry"; lastFrontier = project ? stageStep(project) : "entry";
         if (!project) setupBackend = null;
-        projectToolBackend = null; evaluationBackend = null;
+        projectToolBackend = null;
         historyPage = 0; historyKey = ""; setupReached = 0;
       }
       syncReferenceFrame(); syncPreflightFrame();
@@ -2562,13 +2542,10 @@
       const needsToolChoice = waitingToolChoice(project);
       const toolChoiceEditable = editableToolChoice(project);
       if (!toolChoiceEditable) projectToolBackend = null;
-      const evaluationChoiceEditable = project?.evaluation_backend_editable === true && typeof bridge.input === "function";
-      if (!evaluationChoiceEditable) evaluationBackend = null;
-      const chosenEvaluationBackend = evaluationBackend || project?.evaluation_backend;
       heading.textContent = title;
       const savedReviewDescription = historical && pronunciationSteps.has(current);
       subtitle.textContent = savedReviewDescription ? "대표 음원과 저장된 판정을 확인합니다." : description;
-      if (current === "tools" && (needsToolChoice || toolChoiceEditable || !project)) subtitle.textContent = "음성 생성과 모델 학습에 사용할 연산 장치를 선택하세요.";
+      if (current === "tools" && (needsToolChoice || toolChoiceEditable || !project)) subtitle.textContent = "음성 생성, 모델 학습, 성능 평가에 사용할 연산 장치를 선택하세요.";
       if (current === "voices" && separateReferencePreparation(project)) subtitle.textContent = "성별·연령별로 검수할 기준 목소리 후보를 미리 생성합니다.";
       if (current === "voice-listening" && !project?.reference_preview?.review_required) {
         subtitle.textContent = "생성 설정이 비슷한 목소리를 묶음별로 들어보세요.";
@@ -2593,13 +2570,13 @@
       index.hidden = visibleThrough === 0;
       screens.forEach((id, i) => {
         const tick = ticks.get(id);
-        tick.hidden = i > visibleThrough; tick.disabled = state.busy || evaluationLaunchPending || i > maximum;
+        tick.hidden = i > visibleThrough; tick.disabled = state.busy || i > maximum;
         tick.setAttribute("aria-current", i === position ? "step" : "false");
       });
       updateIndexDistances();
       if (!transitioning) {
         back.hidden = position === 0;
-        const backDisabled = Boolean(state.busy || evaluationLaunchPending || position === 0 || awaitingPhrasePause(project));
+        const backDisabled = Boolean(state.busy || position === 0 || awaitingPhrasePause(project));
         if (back.disabled !== backDisabled) back.disabled = backDisabled;
         next.hidden = current === "microphone";
         let nextDisabled = Boolean(!project
@@ -2610,7 +2587,7 @@
         if (current === "hard-review" && hardReviewRevealFailed) nextDisabled = true;
         if (editingPhrases(project)) nextDisabled = Boolean(state.busy);
         if (needsToolChoice && (current === "tools" || current === "materials")) nextDisabled = Boolean(state.busy);
-        nextDisabled = nextDisabled || evaluationLaunchPending || Boolean(referenceApprovalContext);
+        nextDisabled = nextDisabled || Boolean(referenceApprovalContext);
         if (next.disabled !== nextDisabled) next.disabled = nextDisabled;
         if (next.textContent !== "다음") next.textContent = "다음";
         if (next.title) next.title = "";
@@ -2621,7 +2598,7 @@
       operation.hidden = !action || reopen && bridge.noticeActionVisible?.(reopenReviewAction) === true;
       const retryGeneration = action === "retry_generation";
       const preparationPausing = current === "voices" && referencePreparationNeeded(project) && project.reference_preparation.status === "pausing";
-      const operationDisabled = Boolean(!action || state.busy || evaluationLaunchPending || transitioning || project?.status === "pausing" || preparationPausing
+      const operationDisabled = Boolean(!action || state.busy || transitioning || project?.status === "pausing" || preparationPausing
         || retryGeneration && project.process_alive === true);
       if (operation.disabled !== operationDisabled) operation.disabled = operationDisabled;
       const startsToolsAndDownloads = preparingTools && action === "start";
@@ -2653,12 +2630,6 @@
       if (!downloadCompute.hidden && downloadComputeLabel.textContent !== downloadLabel) downloadComputeLabel.textContent = downloadLabel;
       changeDownloadCompute.hidden = !toolChoiceEditable;
       changeDownloadCompute.disabled = Boolean(state.busy || transitioning);
-      const evaluationDevice = evaluationBackends[chosenEvaluationBackend]?.[0];
-      evaluationCompute.hidden = current !== "evaluation" || !evaluationDevice;
-      const evaluationLabel = `평가 연산 장치 · ${evaluationDevice}`;
-      if (!evaluationCompute.hidden && evaluationComputeLabel.textContent !== evaluationLabel) evaluationComputeLabel.textContent = evaluationLabel;
-      evaluationPicker.element.hidden = !evaluationChoiceEditable;
-      if (evaluationChoiceEditable) updateComputePicker(evaluationPicker, chosenEvaluationBackend, Boolean(state.busy || evaluationLaunchPending || transitioning));
       if (project && savedWord.value !== (project.wakeword || "")) savedWord.value = project.wakeword || "";
       if (project) for (const card of savedPresets.children) {
         const radio = card.querySelector("input"); radio.checked = radio.value === project.preset;

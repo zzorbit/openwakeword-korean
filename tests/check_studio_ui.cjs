@@ -1955,16 +1955,17 @@ function pendingHardStorageRecipe() {
     assert.equal(cpu.checked, true); assert.equal(gpu.checked, false, "a new prompt uses its own recommendation");
   });
   await test("compute input and launch remain scoped to the selected project and preserve payloads", async () => {
-    const project = { id: "bora", wakeword: "보라야", status: "error", stage_id: "evaluation", evaluation_backend: "cuda" };
+    const project = { id: "bora", wakeword: "보라야", status: "ready", stage_id: "frontend", dependency_backend: "cu128" };
     const b = browser({ initialState: { projects: [project] } }); await flush();
-    assert.equal(await b.storyBridge.input({ evaluation_backend: "cpu" }, "different"), false);
-    assert.equal(await b.storyBridge.action("resume", { expected_evaluation_backend: "cpu" }, "different"), false);
-    assert.equal(await b.storyBridge.input({ evaluation_backend: "cpu" }, "bora"), true);
-    assert.equal(await b.storyBridge.action("resume", { expected_evaluation_backend: "cpu" }, "bora"), true);
+    const tools = { dependency_backend: "cpu", defer_dependency_install: true };
+    const launch = { expected_dependency_backend: "cpu" };
+    assert.equal(await b.storyBridge.input(tools, "different"), false);
+    assert.equal(await b.storyBridge.action("start", launch, "different"), false);
+    assert.equal(await b.storyBridge.input(tools, "bora"), true);
+    assert.equal(await b.storyBridge.action("start", launch, "bora"), true);
     const posts = b.calls.filter(call => call.options?.method === "POST")
       .map(call => [call.url, JSON.parse(call.options.body)]);
-    assert.deepEqual(posts, [["/api/projects/bora/input", { evaluation_backend: "cpu" }],
-      ["/api/projects/bora/resume", { expected_evaluation_backend: "cpu" }]]);
+    assert.deepEqual(posts, [["/api/projects/bora/input", tools], ["/api/projects/bora/start", launch]]);
   });
   await test("null and missing errors render normally while string and object errors remain visible", async () => {
     const cases = [
@@ -2305,7 +2306,7 @@ function pendingHardStorageRecipe() {
     const b = browser({ initialState: { projects: [project] } }); await flush();
     const notice = b.elements.get("project-error");
     assert.equal(notice.getAttribute("role"), "status");
-    assert.match(notice.textContent, /이전 평가가 중단됐습니다.*선택한 장치.*재개를 누르세요/);
+    assert.match(notice.textContent, /이전 평가가 중단됐습니다.*저장된 연산 장치.*재개를 누르세요/);
     assert.equal(b.calls.some(call => call.options.method === "POST"), false);
     Object.assign(project, { status: "error", error: { message: "새 평가 실행 오류" } });
     await b.tick();

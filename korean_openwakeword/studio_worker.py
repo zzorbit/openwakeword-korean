@@ -404,8 +404,6 @@ def _stage_evaluation_settings(stage, settings, inputs, root):
         if _managed_reason() is None and not gpu_runtime_environment(root):
             emit("evaluation_environment", "GPU 평가 실행환경 설치·확인", eta_eligible=False)
             _prepare_evaluation_runtime(root)
-    if inputs.get("evaluation_backend") == "cuda":
-        effective.setdefault("gpu_numerical_differences_approved", True)
     return effective
 
 

@@ -315,10 +315,10 @@ def test_cli_defaults_to_auto_and_keeps_explicit_cpu_override():
 
 @pytest.mark.parametrize("inputs,managed,installed,expected_setup", [
     ({"dependency_backend": "cu128"}, True, False, True),
-    ({"evaluation_backend": "cuda"}, True, False, True),
-    ({"evaluation_backend": "cuda"}, True, True, False),
-    ({"evaluation_backend": "cuda"}, False, False, False),
-    ({"evaluation_backend": "cpu"}, True, False, False),
+    ({"dependency_backend": "cu128", "evaluation_backend": "cpu"}, True, False, True),
+    ({"dependency_backend": "cu128"}, True, True, False),
+    ({"dependency_backend": "cu128"}, False, False, False),
+    ({"dependency_backend": "cpu", "evaluation_backend": "cuda"}, True, False, False),
 ])
 def test_evaluation_retry_prepares_only_missing_managed_cuda_runtime(monkeypatch, tmp_path, inputs, managed, installed, expected_setup):
     from korean_openwakeword import gpu_runtime_install, studio_worker
@@ -332,7 +332,7 @@ def test_evaluation_retry_prepares_only_missing_managed_cuda_runtime(monkeypatch
     assert calls == ([tmp_path] if expected_setup else [])
 
 
-def test_studio_worker_reuses_its_backend_checkpoint_after_repeated_switches(monkeypatch, tmp_path):
+def test_studio_worker_reuses_the_saved_tools_backend_checkpoint(monkeypatch, tmp_path):
     from korean_openwakeword import gpu_runtime_install, studio_worker
 
     settings = studio_steps.preset_settings("check")
@@ -350,6 +350,7 @@ def test_studio_worker_reuses_its_backend_checkpoint_after_repeated_switches(mon
     calls = []
 
     def score(path, selected_bundle, output, *, backend, resume, **kwargs):
+        backend = "cuda" if backend == "auto" else backend
         calls.append((backend, resume, output))
         work = output / "_evaluation_work"
         checkpoint = work / "checkpoint.json"
@@ -368,13 +369,13 @@ def test_studio_worker_reuses_its_backend_checkpoint_after_repeated_switches(mon
 
     monkeypatch.setattr(evaluate, "evaluate", score)
     prior_config = digest(project)
-    for index, (backend, returncode) in enumerate((("cpu", 1), ("cuda", 1), ("cpu", 0))):
+    for index, (tools_backend, archived, returncode) in enumerate((("cpu", "cuda", 1), ("cu128", "cpu", 1), ("cpu", "cuda", 0))):
         task = tmp_path / f"evaluation-{index}"
         path = task / "request.json"
         write_json(path, {"task_id": str(index), "project": str(project), "workspace": str(tmp_path),
             "stage": "evaluation", "settings": settings, "config_sha256": prior_config,
             "result_path": str(task / "result.json"),
-            "context": {**context, "inputs": {"dependency_backend": "cpu", "evaluation_backend": backend}}})
+            "context": {**context, "inputs": {"dependency_backend": tools_backend, "evaluation_backend": archived}}})
         request_sha256 = digest(path)
         assert studio_worker.execute(path) == returncode and digest(path) == request_sha256
     base = project.parent / "reports/studio_evaluation"

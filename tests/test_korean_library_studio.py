@@ -343,33 +343,37 @@ def test_dependency_choice_can_be_revised_before_installation_and_after_failure(
     assert second["context"]["inputs"]["dependency_backend"] == "cu128"
 
 
-def test_evaluation_backend_can_be_changed_without_rewriting_work_or_auto_launching(manager):
-    project = create(manager, dependency_backend="cu128")
+@pytest.mark.parametrize("selection,archived,expected", [("cpu", "cuda", "cpu"), ("cu128", "cpu", "cuda")])
+def test_evaluation_uses_saved_tools_choice_and_rejects_override(manager, http_server, selection, archived, expected):
+    project = create(manager, dependency_backend=selection)
     project_id = project["id"]
     original = manager._load(project_id)
     stage_index = next(index for index, step in enumerate(original["plan"]) if step["id"] == "evaluation")
-    put_state(manager, project_id, index=stage_index, status="error", error={"message": "GPU 검사 실패"})
+    inputs = {**original["inputs"], "evaluation_backend": archived}
+    put_state(manager, project_id, index=stage_index, status="error", inputs=inputs, error={"message": "평가 검사 실패"})
     directory = Path(original["project"]).parent / "reports/studio_evaluation/_evaluation_work"
     directory.mkdir(parents=True)
     checkpoint = directory / "checkpoint.json"
     checkpoint.write_bytes(b"existing GPU checkpoint bytes")
 
-    for backend in ("cpu", "cuda", "cpu"):
-        view = manager.submit_input(project_id, {"evaluation_backend": backend})
-        assert view["evaluation_backend"] == backend and view["evaluation_backend_editable"]
-        assert view["status"] == "paused" and not view["error"] and view["dependency_backend"] == "cu128"
     state = manager._load(project_id)
-    assert state["settings"] == original["settings"] and state["config_sha256"] == original["config_sha256"]
-    assert checkpoint.read_bytes() == b"existing GPU checkpoint bytes" and not manager.workers.items
-    with pytest.raises(ValueError, match="선택이나 현재 단계가 바뀌었습니다"):
-        manager.start(project_id, expected_evaluation_backend="cuda")
+    view = manager.describe(state)
+    assert view["evaluation_backend"] == expected and "evaluation_backend_editable" not in view
+    headers = {"X-Koww-Token": manager.token}
+    route = f"/api/projects/{project_id}"
+    before = manager._path(project_id).read_bytes()
+    status, body, _ = http_server(route + "/input", "POST", {"evaluation_backend": archived}, headers=headers)
+    assert status == 400 and "학습 도구 준비" in json.loads(body)["error"]
+    status, body, _ = http_server(route + "/resume", "POST", {"expected_evaluation_backend": archived}, headers=headers)
+    assert status == 400 and "선택이나 현재 단계가 바뀌었습니다" in json.loads(body)["error"]
+    assert manager._path(project_id).read_bytes() == before
     assert not manager.workers.items
-    manager.start(project_id, expected_evaluation_backend="cpu")
+    status, body, _ = http_server(route + "/resume", "POST", {"expected_evaluation_backend": expected}, headers=headers)
+    assert status == 200 and json.loads(body)["evaluation_backend"] == expected
     request = read_json(manager.workers.items[0].request_path)
-    assert request["context"]["inputs"] == {"dependency_backend": "cu128", "evaluation_backend": "cpu"}
+    assert request["context"]["inputs"] == inputs
     assert request["settings"] == original["settings"]
-    with pytest.raises(ValueError, match="연산 도구"):
-        manager.submit_input(project_id, {"evaluation_backend": "cuda"})
+    assert checkpoint.read_bytes() == b"existing GPU checkpoint bytes"
 
 
 @pytest.mark.parametrize("checkpoint", ["navigation_checkpoints", "download_checkpoint"])
@@ -1229,7 +1233,7 @@ def test_evaluation_update_only_reclassifies_verified_legacy_cuda_failure(manage
         assert view["status"] == "error" and view["error"] == error and not view["evaluation_retry_pending"]
         return
     assert view["status"] == "paused" and view["error"] is None and view["evaluation_retry_pending"]
-    assert view["evaluation_backend"] == "cuda" and view["evaluation_backend_editable"]
+    assert view["evaluation_backend"] == "cuda" and "evaluation_backend_editable" not in view
     receipt = read_json(migrated["migrations"][-1]["path"])
     assert receipt["previous_cuda_loader_failure"]["result"] == {"path": str(result), "sha256": original_hash}
     manager.tick()
@@ -1408,9 +1412,10 @@ def worker_request(tmp_path, stage="frontend"):
     ("frontend", {"evaluation_backend": "auto"}, {"dependency_backend": "cpu"}, "cpu", False),
     ("frontend", {"evaluation_backend": "auto"}, {"dependency_backend": "cu128"}, "auto", False),
     ("evaluation", {"evaluation_backend": "auto"}, {"dependency_backend": "cpu"}, "cpu", False),
-    ("evaluation", {"evaluation_backend": "cpu"}, {"dependency_backend": "cu128"}, "cpu", False),
-    ("evaluation", {"evaluation_backend": "auto"}, {"dependency_backend": "cu128", "evaluation_backend": "cpu"}, "cpu", False),
-    ("evaluation", {"evaluation_backend": "auto"}, {"dependency_backend": "cpu", "evaluation_backend": "cuda"}, "cuda", True),
+    ("evaluation", {"evaluation_backend": "cpu"}, {"dependency_backend": "cu128"}, "auto", True),
+    ("evaluation", {"evaluation_backend": "auto"}, {"dependency_backend": "cu128", "evaluation_backend": "cpu"}, "auto", True),
+    ("evaluation", {"evaluation_backend": "auto"}, {"dependency_backend": "cpu", "evaluation_backend": "cuda"}, "cpu", False),
+    ("evaluation", {"evaluation_backend": "cuda"}, {"evaluation_backend": "cpu"}, "cuda", True),
     ("evaluation", {}, {}, "cpu", False),
 ])
 def test_worker_applies_last_compute_choice_without_mutating_frozen_request(
