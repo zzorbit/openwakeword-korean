@@ -1786,11 +1786,12 @@ async function main() {
     const p = page(project), details = p.shell.querySelector(".story-evaluation-plan");
     await visit(p, "evaluation");
     assert.equal(details.hidden, false);
-    assert.match(textOf(details), /호출 감지 시험 48,000회/);
-    assert.match(textOf(details), /2,000개 × 16조건 = 32,000회/);
-    assert.match(textOf(details), /500개 × 16조건 × 2강도 = 16,000회/);
-    assert.match(textOf(details), /약 30시간/);
-    assert.match(textOf(details), /오호출 시험 137세션/);
+    const visiblePlan = textOf(details);
+    assert.match(visiblePlan, /호출 감지 시험 48,000회/);
+    assert.match(visiblePlan, /원본 2,000개 × 16조건 = 32,000회\n대표 원본 500개 × 16조건 × \(일반 잔향·강한 잔향\) = 16,000회/);
+    assert.doesNotMatch(visiblePlan, /잔향 없음 ·|일반·강한 잔향 ·|× 2(?:강도|단계)/);
+    assert.match(visiblePlan, /약 30시간/);
+    assert.match(visiblePlan, /오호출 시험 137세션/);
     await visit(p, "training");
     assert.equal(details.hidden, true);
 
@@ -1801,6 +1802,7 @@ async function main() {
     });
     const earlierDetails = textOf(earlier.shell.querySelector(".story-evaluation-plan"));
     assert.match(earlierDetails, /호출 감지 시험 계획 112,000회/);
+    assert.match(earlierDetails, /원본 5,000개 × 16조건 = 80,000회\n대표 원본 1,000개 × 16조건 × \(일반 잔향·강한 잔향\) = 32,000회/);
     assert.doesNotMatch(earlierDetails, /48,000|137세션/);
   });
   await test("whole hard listening is available only from representative review with generated clips", async () => {

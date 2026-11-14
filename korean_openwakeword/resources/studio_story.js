@@ -1856,9 +1856,11 @@
       if (evaluationPlan.hidden) return;
       const conditions = 1 + 3 * policy.snrs.length;
       const dry = policy.dry_positive_sessions ?? policy.positive_sessions;
-      const lines = [`잔향 없음 · 원본 ${count(policy.validation_originals)}개 × ${conditions}조건 = ${count(dry)}회`];
+      const lines = [`원본 ${count(policy.validation_originals)}개 × ${conditions}조건 = ${count(dry)}회`];
       if (policy.reverb_positive_sessions > 0) {
-        lines.push(`일반·강한 잔향 · 대표 원본 ${count(policy.reverb_originals)}개 × ${conditions}조건 × ${policy.reverb_groups.length}강도 = ${count(policy.reverb_positive_sessions)}회`);
+        const reverbLabels = { moderate: "일반 잔향", strong: "강한 잔향" };
+        const reverbGroups = policy.reverb_groups.map(group => reverbLabels[group] ?? group).join("·");
+        lines.push(`대표 원본 ${count(policy.reverb_originals)}개 × ${conditions}조건 × (${reverbGroups}) = ${count(policy.reverb_positive_sessions)}회`);
       }
       lines.push(`${conditions}조건 = 배경음 없음 1조건 + 배경음 3종(말소리·환경음·음악/전자음) × 소음 강도 ${policy.snrs.length}단계`);
       const cells = project.results?.common_evaluation_assessment?.reverberation?.condition_counts;
