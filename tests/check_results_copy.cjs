@@ -613,6 +613,37 @@ test("baseline aggregates only the recorded cells named by the archived policy",
   ui.renderSummary(report);
   assert.deepEqual(rows("storySummary")[3].slice(3, 5), ["자료 부족", "자료 부족"]);
 });
+test("fixed worst-case values prefer the original measured conditions and exclude untested data", () => {
+  const {ui, rows} = browser(), report = sample();
+  const model = report.models.find(row => row.id === "mean");
+  const measured = {
+    "environment:5.0": {recall: .25, calls: 4},
+    "music:5": {recall: .5, calls: 10},
+    "competing_speech:5": {recall: .75, calls: 100},
+    "competing_speech:10": {recall: 0, calls: 20},
+    "clean:none": {recall: 1, calls: 20}
+  };
+  model.reverb_conditions.strong.conditions = measured;
+  model.hard_conditions = {complete: true, cell_mean: .8, worst_recall: 0, conditions: [
+    {reverb_condition: "strong", category: "environment", snr_db: 5, recall: .9},
+    {reverb_condition: "strong", category: "music", snr_db: 5, recall: .9},
+    {reverb_condition: "strong", category: "competing_speech", snr_db: 5, recall: .9}
+  ]};
+  const before = JSON.stringify(report);
+  ui.renderSummary(report);
+  assert.deepEqual(rows("storySummary")[3].slice(3, 5), ["80.00%", "50.00%"]);
+  assert.equal(JSON.stringify(report), before);
+  delete model.hard_conditions;
+  const untested = measured["competing_speech:5"];
+  for (const invalid of [{recall: .75, calls: 0}, {recall: 1.2, calls: 100}, {recall: null, calls: 100}]) {
+    measured["competing_speech:5"] = invalid;
+    ui.renderSummary(report);
+    assert.equal(rows("storySummary")[3][4], "자료 부족");
+  }
+  measured["competing_speech:5"] = untested;
+  ui.renderSummary(report);
+  assert.equal(rows("storySummary")[3][4], "50.00%");
+});
 test("story criteria disclose the recorded recommendation policy instead of inventing defaults for historical reports", () => {
   const {ui, elements} = browser(), report = sample();
   ui.renderSummary(report);
