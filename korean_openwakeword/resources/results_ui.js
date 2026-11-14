@@ -141,7 +141,7 @@
   function recommendationReasons(candidate, criteria) {
     return [...new Set((candidate.recommendation_reasons || []).map(reason =>
       String(reason).includes("FA/hour") && finite(criteria?.fa_per_hour)
-        ? `시간당 오호출 ${criteria.fa_per_hour}회 이하`
+        ? `오호출 한도 ${criteria.fa_per_hour}회/시간`
         : String(reason).includes("Hard noise/reverberation conditions") ? "강소음·울림 시험 자료 부족" : goalReason(reason)))];
   }
   function goalReason(reason) {
@@ -217,8 +217,9 @@
       ["오호출 시험 시간", `${goals.minimum_negative_hours}시간 이상`]
     ]) appendMetric(original, name, value);
   }
-  function appendMetric(list, label, value) {
+  function appendMetric(list, label, value, rowClass) {
     const item = document.createElement("div"), term = document.createElement("dt"), description = document.createElement("dd");
+    if (rowClass) item.className = rowClass;
     term.textContent = label; description.textContent = value; item.append(term, description); list.append(item);
     return description;
   }
@@ -233,7 +234,7 @@
     if (!weakest.length) return "";
     const {reverb_condition: reverb, category, snr_db: snr} = weakest[0];
     const ties = weakest.length > 1 ? ` 외 ${weakest.length - 1}개 조건` : "";
-    return `${reverbLabel(reverb)} · ${noiseLabel(category)}${finite(snr) ? ` · SNR ${snr} dB` : ""}${ties}`;
+    return `${reverbLabel(reverb)} · ${noiseLabel(category)}${finite(snr) ? ` · ${snr} dB` : ""}${ties}`;
   }
   function renderOverview(report) {
     const table = body("storySummary"), source = $("overview-source"), modelSelect = $("overview-model");
@@ -274,22 +275,20 @@
       const passed = (compareSettings ? tested?.passed : undefined) ?? goal?.passed;
       const negative = metric?.negative;
       const rawFalse = finite(negative?.events) && finite(negative?.hours) ? `${count(negative.events)}회 / ${negative.hours.toFixed(2)}시간` : "";
-      const aggregate = finite(metric?.primary?.recall) ? `종합 감지율 ${percent(metric.primary.recall)}` : "";
       const clean = metric?.clean;
       const cleanCount = finite(clean?.recall) && finite(clean.successes) && finite(clean.calls) ? `${count(clean.successes)} / ${count(clean.calls)}회` : "";
       const dryNoise = finite(metric?.noise_cell_mean) ? `울림 없는 소음 평균 ${percent(metric.noise_cell_mean)}` : "";
-      const settingsMissing = compareSettings ? "시험 기록 없음" : "기록 없음";
+      const settings = validSettings(runtime) ? `${thresholdText(runtime.threshold)} · ${runtime.consecutive_frames}회` : "기록 없음";
       const entries = [
-        ["조용할 때", clean?.calls === 0 ? "시험 안 함" : percent(clean?.recall), [cleanCount, aggregate].filter(Boolean).join("\n")],
-        ["강한 소음·울림 평균", hard?.complete === false ? "자료 부족" : percent(hard?.cell_mean), dryNoise],
-        ["최약 조건", hard?.complete === false ? "자료 부족" : percent(hard?.worst_recall), weakestCondition(hard)],
-        ["시간당 오호출", finite(negative?.fa_per_hour) ? `${negative.fa_per_hour.toFixed(3)}회` : "결과 없음", rawFalse],
-        ["반응 시간", reactionTime(metric?.primary?.latency_p95_s),
-          finite(metric?.primary?.latency_p95_s) ? "감지된 호출의 95% 기준" : ""],
-        ["감지 기준", validSettings(runtime) ? thresholdText(runtime.threshold) : settingsMissing],
-        ["연속 감지", validSettings(runtime) ? `${runtime.consecutive_frames}회` : settingsMissing],
-        ["기존 평가 목표", passed === true ? "충족" : passed === false ? "미달" : "기록 없음",
-          passed === false ? [...new Set((goal?.reasons || []).map(goalReason))].join(" · ") : ""]
+        {label: "종합 감지율", value: percent(metric?.primary?.recall)},
+        {label: "조용할 때", value: clean?.calls === 0 ? "시험 안 함" : percent(clean?.recall), title: cleanCount},
+        {label: "강한 소음·울림", value: hard?.complete === false ? "자료 부족" : percent(hard?.cell_mean), title: dryNoise},
+        {label: "최약 조건", value: hard?.complete === false ? "자료 부족" : percent(hard?.worst_recall), detail: weakestCondition(hard)},
+        {label: "오호출/시간", value: finite(negative?.fa_per_hour) ? `${negative.fa_per_hour.toFixed(3)}회` : "결과 없음", title: rawFalse},
+        {label: "반응 시간", value: reactionTime(metric?.primary?.latency_p95_s)},
+        {label: "감지 설정", value: settings, title: "감지 기준 · 연속 감지 횟수"},
+        {label: "평가 목표", value: passed === true ? "충족" : passed === false ? "미달" : "기록 없음",
+          title: passed === false ? [...new Set((goal?.reasons || []).map(goalReason))].join(" · ") : ""}
       ];
       return {entries, status};
     }
@@ -303,17 +302,26 @@
         if (isEnsemble(report, model.id)) row.className = "ensemble";
         const name = appendCell(row, modelLabel(report, model.id));
         appendMetricDetail(name, status, "recommendation-status");
-        for (const [, value, detail] of entries) appendMetricDetail(appendCell(row, value), detail);
+        for (const {value, detail, title} of entries) {
+          const cell = appendCell(row, value);
+          if (title) cell.title = title;
+          appendMetricDetail(cell, detail);
+        }
         table.append(row);
         if (metrics && model.id === modelSelect.value) {
-          if (status) appendMetric(metrics, "추천 상태", status).className = "recommendation-status";
-          for (const [label, value, detail] of entries) appendMetricDetail(appendMetric(metrics, label, value), detail);
+          if (status) appendMetric(metrics, "추천 상태", status, "overview-status-row").className = "recommendation-status";
+          for (const {label, value, detail, title} of entries) {
+            const description = appendMetric(metrics, label, value);
+            if (title) description.title = title;
+            if (label === "반응 시간") description.setAttribute("aria-describedby", "overview-latency-note");
+            appendMetricDetail(description, detail);
+          }
         }
       }
       const note = $("overview-note");
       if (note) note.textContent = source.value === "recommended"
-        ? `저장된 점수로 감지 설정을 비교했습니다.${hasMissedRecommendation ? " 추천 기준 미달인 모델은 마이크에서 기존 설정을 사용합니다." : ""}`
-        : `평가에 사용한 설정의 결과입니다.${deployed ? ` 평가 당시 실행 모델은 ${modelLabel(report, deployed)}${isEnsemble(report, deployed) ? `(${memberCount(report, deployed)}개 모델의 점수 평균)` : ""}입니다.` : ""}`;
+        ? hasMissedRecommendation ? "미달 모델은 마이크에서 평가 당시 설정을 사용합니다." : "저장된 점수로 감지 설정을 비교했습니다."
+        : deployed ? `평가 당시 실행 모델 · ${modelLabel(report, deployed)}${isEnsemble(report, deployed) ? ` (${memberCount(report, deployed)}개 모델)` : ""}` : "";
     }
     source.onchange = draw; modelSelect.onchange = draw; draw();
   }

@@ -264,10 +264,10 @@ const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "posi
     const b = browser([tuple(0)], {report}); await b.helper.boot();
     const comparison = b.elements.get("storySummary").tBodies[0].children[0].children;
     assert.equal(comparison[0].textContent, "모델 2");
-    assert.match(comparison[1].children.map(node => node.textContent).join(" "), /93.33%/);
-    assert.equal(comparison[4].textContent, "0.100회");
-    assert.match(comparison[4].children.map(node => node.textContent).join(" "), /3회.*30/);
-    assert.equal(comparison[5].textContent, "0.20초");
+    assert.equal(comparison[1].textContent, "93.33%");
+    assert.equal(comparison[5].textContent, "0.100회");
+    assert.match(comparison[5].title, /3회.*30/);
+    assert.equal(comparison[6].textContent, "0.20초");
     assert.equal(comparison[8].textContent, "미달");
     assert.equal(b.elements.get("conditions").tBodies[0].children.length, 3);
     assert.equal(b.elements.get("conditions").tBodies[0].children[0].children[3].textContent, "83.33%\n10 / 12회");

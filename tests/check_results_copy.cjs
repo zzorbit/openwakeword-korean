@@ -41,8 +41,10 @@ test("both report layouts put the comparison metrics in the models panel", () =>
     }
     assert.doesNotMatch(html, /result-full-details|상세 결과|model-tab-|targetComparison|id="summary"|id="recommendations"/);
     assert.deepEqual([...models.matchAll(/<th scope="col"[^>]*>([^<]+)<\/th>/g)].map(match => match[1]), [
-      "모델", "조용할 때", "강한 소음·울림 평균", "최약 조건", "시간당 오호출", "반응 시간", "감지 기준", "연속 감지", "기존 평가 목표"
+      "모델", "종합 감지율", "조용할 때", "강한 소음·울림", "최약 조건", "오호출/시간", "반응 시간", "감지 설정", "평가 목표"
     ]);
+    assert.match(models, /aria-describedby="overview-latency-note"/);
+    assert.equal([...models.matchAll(/id="overview-latency-note"/g)].length, 1);
   }
 });
 function browser({dashboard = false} = {}) {
@@ -152,11 +154,11 @@ test("evaluation comparison preserves saved statistics and decisions", () => {
   ui.renderSummary(report);
   const model = elements.get("storySummary").tBodies[0].children[1].children;
   assert.equal(elements.get("overview-source").value, "baseline");
-  assert.deepEqual(rows("storySummary")[1].slice(0, 6), ["모델 2", "100.00%", "결과 없음", "결과 없음", "0.100회", "0.20초"]);
+  assert.deepEqual(rows("storySummary")[1].slice(0, 7), ["모델 2", "93.33%", "100.00%", "결과 없음", "결과 없음", "0.100회", "0.20초"]);
   assert.equal(rows("storySummary")[1][8], "미달");
   assert.equal(rows("storySummary")[3][8], "충족");
-  assert.match(model[1].children.map(node => node.textContent).join(" "), /93.33%/);
-  assert.match(model[4].children.map(node => node.textContent).join(" "), /3회.*30/);
+  assert.match(model[5].title, /3회.*30/);
+  assert.equal(model[6].children.length, 0);
   assert.equal(JSON.stringify(report), before);
 });
 test("runtime model and evaluation selection are not conflated", () => {
@@ -225,9 +227,9 @@ test("missing results stay distinct from measured zero and explicit empty trials
   const {ui, rows, elements} = browser(), report = sample();
   delete report.candidate_adoptions.member3_seed3;
   ui.renderSummary(report);
-  assert.equal(rows("storySummary")[2][1], "시험 안 함");
-  assert.equal(rows("storySummary")[2][2], "결과 없음");
-  assert.equal(rows("storySummary")[2][4], "결과 없음");
+  assert.equal(rows("storySummary")[2][2], "시험 안 함");
+  assert.equal(rows("storySummary")[2][3], "결과 없음");
+  assert.equal(rows("storySummary")[2][5], "결과 없음");
   assert.equal(rows("storySummary")[2][8], "기록 없음");
   ui.renderConditions({models: []});
   assert.equal(elements.get("condition-model").disabled, true);
@@ -259,7 +261,7 @@ test("missing, invalid and cache-only recommendations are presented honestly", (
   }]};
   ui.renderSummary(report);
   elements.get("overview-source").value = "recommended"; elements.get("overview-source").onchange();
-  assert.deepEqual(rows("storySummary")[1].slice(6), ["0.9999999", "2회", "미달"]);
+  assert.deepEqual(rows("storySummary")[1].slice(7), ["0.9999999 · 2회", "미달"]);
   assert.match(elements.get("overview-note").textContent, /저장.*점수/);
   report.runtime_recommendations.candidates[0].runtime.threshold = 1; ui.renderSummary(report);
   assert.equal(elements.get("overview-source").value, "baseline");
@@ -273,51 +275,51 @@ test("one comparison shows measured settings, weakest conditions and goal status
   report.runtime_recommendations = {schema_version: 1, recommendation_criteria: {fa_per_hour: 1}, adoption_criteria: {fa_per_hour: .1}, candidates: [
     {id: "mean", recommendation_available: true, runtime: {threshold: .97, consecutive_frames: 3}, passed: false,
       adoption: {passed: false, reasons: ["FA/hour target failed or unmeasured"]},
-      metrics: {clean: {recall: .995}, hard_conditions: hard(.73, .5), negative: {fa_per_hour: .9}, primary: {latency_p95_s: -.02}}},
+      metrics: {clean: {recall: .995}, hard_conditions: hard(.73, .5), negative: {fa_per_hour: .9}, primary: {recall: .81, latency_p95_s: -.02}}},
     {id: "member2_seed2", recommendation_available: false, recommendation_reasons: ["FA/hour target failed or unmeasured"],
       runtime: {threshold: .99, consecutive_frames: 5}, adoption: {passed: false, reasons: ["Latency target failed or unmeasured"]},
-      metrics: {clean: {recall: .9855}, hard_conditions: hard(.62785, 0), negative: {fa_per_hour: 1.199976889}, primary: {latency_p95_s: .44}},
+      metrics: {clean: {recall: .9855}, hard_conditions: hard(.62785, 0), negative: {fa_per_hour: 1.199976889}, primary: {recall: .69, latency_p95_s: .44}},
       baseline: {runtime: report.runtime, metrics: {hard_conditions: hard(.783125, .5), clean: {recall: .8}, negative: {fa_per_hour: 8}}}},
     {id: "member3_seed3", recommendation_available: false, runtime: {threshold: .9, consecutive_frames: 2}, metrics: null}
   ]};
   const before = JSON.stringify(report); ui.renderSummary(report);
   assert.equal(elements.get("overview-source").value, "recommended");
-  assert.deepEqual(rows("storySummary")[3], ["앙상블", "99.50%", "73.00%", "50.00%", "0.900회", "0.02초 전", "0.97", "3회", "미달"]);
-  assert.deepEqual(rows("storySummary")[1].slice(1), ["98.55%", "62.79%", "0.00%", "1.200회", "0.44초", "0.99", "5회", "미달"]);
+  assert.deepEqual(rows("storySummary")[3], ["앙상블", "81.00%", "99.50%", "73.00%", "50.00%", "0.900회", "0.02초 전", "0.97 · 3회", "미달"]);
+  assert.deepEqual(rows("storySummary")[1].slice(1), ["69.00%", "98.55%", "62.79%", "0.00%", "1.200회", "0.44초", "0.99 · 5회", "미달"]);
   for (const index of [0, 2]) {
-    assert.deepEqual(rows("storySummary")[index].slice(1, 6), Array(5).fill("결과 없음"));
+    assert.deepEqual(rows("storySummary")[index].slice(1, 7), Array(6).fill("결과 없음"));
     assert.equal(rows("storySummary")[index][8], "기록 없음");
   }
-  const status = "추천 기준 미달 · 시간당 오호출 1회 이하";
+  const status = "추천 기준 미달 · 오호출 한도 1회/시간";
   const modelCells = () => elements.get("storySummary").tBodies[0].children[1].children;
   const details = cell => cell.children.map(node => node.textContent).join(" ");
   assert.equal(modelCells()[0].children.find(node => node.className === "recommendation-status")?.textContent, status);
-  assert.match(details(modelCells()[3]), /강한 울림.*다른 사람 말소리.*SNR 5 dB/);
-  assert.match(details(modelCells()[8]), /반응 시간/);
-  assert.doesNotMatch(details(modelCells()[8]), /환경소음/);
+  assert.match(details(modelCells()[4]), /강한 울림.*다른 사람 말소리.*5 dB/);
+  assert.equal(modelCells()[8].title, "반응 시간");
   const mobileMetrics = () => elements.get("storySummaryMetrics").children.map(item => item.children.map(cell => cell.textContent));
-  assert.deepEqual(mobileMetrics()[1], ["강한 소음·울림 평균", "73.00%"]);
+  assert.deepEqual(mobileMetrics()[2], ["강한 소음·울림", "73.00%"]);
   elements.get("overview-model").value = "member2_seed2"; elements.get("overview-model").onchange();
   assert.deepEqual(mobileMetrics(), [
-    ["추천 상태", status], ["조용할 때", "98.55%"], ["강한 소음·울림 평균", "62.79%"],
-    ["최약 조건", "0.00%"], ["시간당 오호출", "1.200회"], ["반응 시간", "0.44초"],
-    ["감지 기준", "0.99"], ["연속 감지", "5회"], ["기존 평가 목표", "미달"]
+    ["추천 상태", status], ["종합 감지율", "69.00%"], ["조용할 때", "98.55%"], ["강한 소음·울림", "62.79%"],
+    ["최약 조건", "0.00%"], ["오호출/시간", "1.200회"], ["반응 시간", "0.44초"],
+    ["감지 설정", "0.99 · 5회"], ["평가 목표", "미달"]
   ]);
-  assert.match(details(elements.get("storySummaryMetrics").children[3].children[1]), /강한 울림.*다른 사람 말소리.*SNR 5 dB/);
+  assert.equal(elements.get("storySummaryMetrics").children[0].className, "overview-status-row");
+  assert.match(details(elements.get("storySummaryMetrics").children[4].children[1]), /강한 울림.*다른 사람 말소리.*5 dB/);
   elements.get("overview-source").value = "baseline"; elements.get("overview-source").onchange();
-  assert.deepEqual(rows("storySummary")[1], ["모델 2", "99.90%", "78.31%", "50.00%", "9.400회", "0.20초", "0.5", "1회", "미달"]);
-  assert.equal(mobileMetrics()[0][0], "조용할 때");
+  assert.deepEqual(rows("storySummary")[1], ["모델 2", "93.33%", "99.90%", "78.31%", "50.00%", "9.400회", "0.20초", "0.5 · 1회", "미달"]);
+  assert.equal(mobileMetrics()[0][0], "종합 감지율");
   assert.equal(JSON.stringify(report), before);
 
   report.runtime_recommendations.candidates[1].baseline.runtime = {...report.runtime, consecutive_frames: 2};
   ui.renderSummary(report);
-  assert.deepEqual(rows("storySummary")[1].slice(2, 4), ["결과 없음", "결과 없음"]);
+  assert.deepEqual(rows("storySummary")[1].slice(3, 5), ["결과 없음", "결과 없음"]);
   elements.get("overview-source").value = "recommended"; elements.get("overview-source").onchange();
   const candidate = report.runtime_recommendations.candidates[1];
   candidate.metrics.hard_conditions.complete = false;
   candidate.recommendation_reasons = ["Hard noise/reverberation conditions incomplete"];
   ui.renderSummary(report);
-  assert.deepEqual(rows("storySummary")[1].slice(2, 4), ["자료 부족", "자료 부족"]);
+  assert.deepEqual(rows("storySummary")[1].slice(3, 5), ["자료 부족", "자료 부족"]);
   assert.match(details(modelCells()[0]), /강소음·울림 시험 자료 부족/);
 });
 test("baseline aggregates only the recorded cells named by the archived policy", () => {
@@ -331,16 +333,16 @@ test("baseline aggregates only the recorded cells named by the archived policy",
     baseline: {runtime: {threshold: .5, consecutive_frames: 2}, metrics: {hard_conditions: {complete: true, cell_mean: .99, worst_recall: .99}}}}]};
   const before = JSON.stringify(report);
   ui.renderSummary(report);
-  assert.deepEqual(rows("storySummary")[3].slice(2, 4), ["결과 없음", "결과 없음"]);
+  assert.deepEqual(rows("storySummary")[3].slice(3, 5), ["결과 없음", "결과 없음"]);
   const source = elements.get("overview-source");
   source.value = "baseline"; source.onchange();
-  assert.deepEqual(rows("storySummary")[3].slice(2, 4), ["70.83%", "66.67%"]);
-  const weakest = elements.get("storySummary").tBodies[0].children[3].children[3];
+  assert.deepEqual(rows("storySummary")[3].slice(3, 5), ["70.83%", "66.67%"]);
+  const weakest = elements.get("storySummary").tBodies[0].children[3].children[4];
   assert.match(weakest.children[0].textContent, /강한 울림.*조용한 환경/);
   assert.equal(JSON.stringify(report), before);
   delete model.reverb_conditions.strong.clean;
   ui.renderSummary(report);
-  assert.deepEqual(rows("storySummary")[3].slice(2, 4), ["자료 부족", "자료 부족"]);
+  assert.deepEqual(rows("storySummary")[3].slice(3, 5), ["자료 부족", "자료 부족"]);
 });
 test("story criteria disclose the recorded recommendation policy instead of inventing defaults for historical reports", () => {
   const {ui, elements} = browser(), report = sample();

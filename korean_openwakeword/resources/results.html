@@ -19,19 +19,20 @@
 <table id="storySummary" class="story-summary">
 <thead><tr>
 <th scope="col">모델</th>
+<th scope="col">종합 감지율</th>
 <th scope="col">조용할 때</th>
-<th scope="col">강한 소음·울림 평균</th>
+<th scope="col">강한 소음·울림</th>
 <th scope="col">최약 조건</th>
-<th scope="col">시간당 오호출</th>
-<th scope="col" title="호출을 마친 시점을 기준으로 감지된 호출의 95%가 이 시간 안에 반응했습니다.">반응 시간</th>
-<th scope="col">감지 기준</th>
-<th scope="col">연속 감지</th>
-<th scope="col">기존 평가 목표</th>
+<th scope="col">오호출/시간</th>
+<th scope="col" aria-describedby="overview-latency-note">반응 시간</th>
+<th scope="col">감지 설정</th>
+<th scope="col">평가 목표</th>
 </tr></thead>
 <tbody></tbody>
 </table>
 <dl id="storySummaryMetrics" class="story-summary-metrics"></dl>
 <p id="overview-note" class="table-note"></p>
+<p id="overview-latency-note" class="table-note">반응 시간 · 발화 종료부터 감지된 호출의 95% 기준</p>
 </div>
 </section>
 <section id="results-panel-criteria" class="workspace-panel criteria-panel" role="tabpanel" tabindex="0" aria-labelledby="results-tab-criteria" hidden>
