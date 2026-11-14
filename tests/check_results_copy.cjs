@@ -23,6 +23,15 @@ test("both frozen result layouts support the shared picker and playback controls
   assert.match(css, /data-audio-view="reactions"\] \.audio-player\.listen-player\{display:contents/);
   assert.match(css, /data-audio-view="settings"\] \.playback-controls\{display:none/);
 });
+test("report navigation omits the repeated evaluation scope and keeps the four results tabs", () => {
+  for (const name of ["results.html", "results_paged.html"]) {
+    const html = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources", name), "utf8");
+    const navigation = html.match(/<nav class="dashboard-tabs"[^>]*>([\s\S]*?)<\/nav>/)[1];
+    assert.deepEqual([...navigation.matchAll(/id="results-tab-([^"]+)"/g)].map(match => match[1]), ["models", "conditions", "audio", "criteria"]);
+    assert.doesNotMatch(html, /평가 정보|scope-disclosure|id="scope"/);
+    assert.match(html, /id="noiseCoverage"/);
+  }
+});
 function browser({dashboard = false, story = false} = {}) {
   class Element {
     constructor(tag = "div") { this.tagName = tag; this.children = []; this.value = ""; this.textContent = ""; this.disabled = false; this.attributes = {}; }

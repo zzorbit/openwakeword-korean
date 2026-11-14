@@ -821,7 +821,6 @@
       }
       return { label, value: project.id };
     });
-    if (projects.length) options.push({ label: "새 호출어…", value: "" });
     if (selector.children.length !== options.length || options.some(({ label, value }, i) =>
       selector.children[i].textContent !== label || selector.children[i].value !== value)) {
       replace(selector, options.map(({ label, value }) => {
@@ -1021,7 +1020,7 @@
         hardSynthesis && project.can_edit_hard_phrases ? " 같은 문구에서 실패가 반복되면 ‘이전’을 눌러 유사어를 수정할 수 있습니다." : ""}`;
     } else {
       $("input-title").textContent = input.title || synthesisFailure || (!editable ? "작업을 확인해주세요" : dependencies ? "학습 도구를 준비해주세요" : hard ? "유사어 후보를 정해주세요" : "추가 자료를 연결해주세요");
-      const description = input.description || (!editable ? "자동으로 해결할 수 없는 문제가 있어 멈췄습니다. 아래 작업 기록에서 원인과 필요한 조치를 확인하세요." : dependencies ? "이 가상 환경에 필요한 음성 생성·학습 도구를 설치합니다. 사용할 연산 환경을 선택하세요." : hard ? "호출어와 헷갈릴 수 있는 표현을 입력하세요." : "자동으로 준비할 수 없는 자료가 있습니다. 안내에 맞는 검수·승인 기록을 연결하면 이어서 진행합니다.");
+      const description = input.description || (!editable ? "자동으로 해결할 수 없는 문제가 있어 멈췄습니다. 오류 안내에서 원인과 필요한 조치를 확인하세요." : dependencies ? "이 가상 환경에 필요한 음성 생성·학습 도구를 설치합니다. 사용할 연산 환경을 선택하세요." : hard ? "호출어와 헷갈릴 수 있는 표현을 입력하세요." : "자동으로 준비할 수 없는 자료가 있습니다. 안내에 맞는 검수·승인 기록을 연결하면 이어서 진행합니다.");
       $("input-description").textContent = synthesisFailure && hardSynthesis && project.can_edit_hard_phrases
         ? description + "\n\n‘이전’을 눌러 유사어를 수정한 뒤 다시 생성하세요." : description;
     }
@@ -1559,7 +1558,6 @@
       materials: materialGroups,
       formatBytes: bytes,
       mediaUrl: localUrl,
-      voiceDesign: design => renderVoiceDesign("setup-voices", design),
       create: options => create({ preventDefault() {} }, options),
       action: runAction,
       input: (choice, projectId) => {
@@ -1577,7 +1575,6 @@
       },
       pause: pauseFrame,
       preview: kind => selectAudioView(kind),
-      logs: loadLog,
       installLog: id => api(`/api/projects/${encodeURIComponent(id)}/log`),
       projectErrorText,
       evaluationRetryMessage,
@@ -1636,7 +1633,7 @@
     }
     $("project-select").addEventListener("change", async () => {
       const value = $("project-select").value;
-      if (!value) return beginNewProject();
+      if (!value) return;
       if (value === selectedId && !newProject) return;
       return openView(async () => {
         selectionRevision++;

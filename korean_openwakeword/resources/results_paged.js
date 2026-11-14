@@ -195,7 +195,7 @@
       const data = await json(viewer.index_path);
       if (data.schema_version !== 1 || !Array.isArray(data.clips)) throw new Error("평가 목록 형식이 올바르지 않습니다.");
       metadata = data.clips;
-      $("scope").textContent = data.scope_text; $("noiseCoverage").textContent = data.noise_coverage_text;
+      $("noiseCoverage").textContent = data.noise_coverage_text;
       const levels = new Set(), reverbGroups = new Set();
       for (let position = 0; position < metadata.length; position++) { const clip = metadata[position]; if (clip[1] === "positive") { reverbGroups.add(clip[4] || "none"); if (clip[2] !== "clean") levels.add(clip[3]); } if (clip[2] === "clean" || clip[1] === "negative") extras.push(position); }
       [...levels].sort((a, b) => b - a).forEach(level => option($("snr"), level, ui.snrLabel(level)));

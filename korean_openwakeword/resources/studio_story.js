@@ -225,11 +225,7 @@
     const projectLabel = node("label", "작업한 호출어"); projectLabel.setAttribute("for", projectSelect.id);
     projectSwitch.replaceChildren(projectLabel, projectSelect);
     newProjectButton.textContent = "새 호출어 생성";
-    const detailButton = button("세부 설정", "story-settings-action", () => { setSettingsOpen(false); openDialog(settingsDialog); });
-    detailButton.id = "story-settings-details";
-    const logButton = button("작업 기록", "story-settings-action", () => { setSettingsOpen(false); $("log-details").open = true; openDialog(logDialog); bridge.logs(); });
-    logButton.id = "story-settings-log";
-    settingsMenu.append(newProjectButton, projectSwitch, detailButton, logButton);
+    settingsMenu.append(newProjectButton, projectSwitch);
     settingsContainer.append(settingsButton, settingsMenu); toolbar.append(settingsContainer);
     function setSettingsOpen(open, restoreFocus = false) {
       settingsMenu.hidden = !open;
@@ -243,7 +239,8 @@
         event.preventDefault(); setSettingsOpen(false, true);
       } else if (event.key === "ArrowDown" && event.target === settingsButton) {
         event.preventDefault(); setSettingsOpen(true);
-        (newProjectButton.hidden || newProjectButton.disabled ? detailButton : newProjectButton).focus();
+        if (!newProjectButton.hidden && !newProjectButton.disabled) newProjectButton.focus();
+        else if (!projectSwitch.hidden && !projectSelect.hidden && !projectSelect.disabled) projectSelect.focus();
       }
     });
     settingsContainer.addEventListener("focusout", event => {
@@ -428,14 +425,6 @@
       container: savedReviewPickerContainer, button: savedReviewPickerButton, label: savedReviewPickerLabel,
       popup: savedReviewPickerPopup, list: savedReviewPickerList, onSelect: position => selectHistoryReview(position),
     });
-    const settingsDialog = makeDialog("세부 설정");
-    const settingSummary = node("div", undefined, "story-setting-summary");
-    const location = $("storage-directory").parentElement;
-    settingSummary.append(location, $("system-summary"));
-    settingsDialog.content.append(settingSummary, $("advanced"), $("setup-voices"), $("storage-budget-details"));
-    const timingDetails = statusCard.querySelector(".task-details");
-    if (timingDetails) settingsDialog.content.append(timingDetails);
-    const logDialog = makeDialog("작업 기록"); logDialog.content.append($("log-details"));
     const listenDialog = makeDialog("유사어 전체 듣기");
     listenDialog.dialog.classList.add("story-listen-dialog");
     listenDialog.dialog.setAttribute("aria-describedby", "hard-preview-counts");
@@ -2441,6 +2430,8 @@
     function render() {
       if (creationPending) return;
       const state = bridge.state(), project = state.project;
+      settingsContainer.hidden = newProjectButton.hidden && projectSwitch.hidden;
+      if (settingsContainer.hidden && !settingsMenu.hidden) setSettingsOpen(false);
       downloadActivity.hidden = true;
       const key = project?.id || "setup";
       const nextScreens = displayOrder(project);
@@ -2488,7 +2479,6 @@
       }
       shell.classList.toggle("merged-reference-review", mergedReferenceReview(project));
       shell.classList.toggle("separate-reference-preparation", separateReferencePreparation(project));
-      bridge.voiceDesign?.(project ? project.reference_design : state.recipes.find(recipe => recipe.id === state.selectedPreset)?.reference_design);
       const actual = project ? stageStep(project) : current;
       if (project && actual !== lastFrontier) {
         if (!following || current === actual) lastFrontier = actual;
@@ -2567,7 +2557,6 @@
       else if (current === "evaluation" && reportAwaitingNext(project)) subtitle.textContent = "다음을 눌러 학습 결과를 확인하세요.";
       if (connectingHard(project)) subtitle.textContent = "검수한 유사어를 학습 자료에 연결하고 원본의 무결성을 확인하고 있습니다.";
       document.title = definition ? title : "한국어 호출어 학습";
-      logButton.hidden = !project;
       if (!project) setupReached = Math.max(setupReached, position);
       const visibleThrough = project ? maximum : setupReached;
       index.hidden = visibleThrough === 0;
@@ -2644,11 +2633,7 @@
           const description = preset.querySelector(".preset-description");
           if (radio) { preset.setAttribute("data-selected", String(radio.checked)); if (description) description.textContent = shortDescriptions[radio.value] || description.textContent; }
         }
-        settingsDialog.content.querySelector("#advanced").hidden = false;
       } else {
-        // Existing model settings are displayed, never overwritten by a newly
-        // selected preset or by the setup form's advanced-value overrides.
-        $("advanced").hidden = true;
         referencePreview.open = current === "voice-listening" && Boolean(project.reference_preview?.url);
         if (current === "voice-listening") setView("review", "reference");
         else if (current === "results" || current === "microphone") setView(current === "microphone" ? "mic" : "results");
@@ -2746,16 +2731,6 @@
           renderToolMaterials(pickerBackend, toolPackages, toolDownloadBytes);
         }
       }
-      const details = project ? `${project.directory || ""}` : "";
-      settingSummary.title = details;
-      if (timingDetails) timingDetails.hidden = !project;
-      $("storage-budget-details").hidden = Boolean(project) || !$("storage-budget-content").children.length;
-      settingsDialog.content.querySelector(".storage-location").hidden = Boolean(project);
-      if (project) {
-        let saved = settingsDialog.content.querySelector(".story-saved-settings");
-        if (!saved) { saved = node("p", undefined, "story-saved-settings"); settingSummary.prepend(saved); }
-        saved.textContent = [project.wakeword, titles[project.preset], project.directory].filter(Boolean).join(" · ");
-      } else settingsDialog.content.querySelector(".story-saved-settings")?.remove();
       if (listening) {
         $("reference-preview").hidden = true;
         $("hard-preview").hidden = listening !== "hard";

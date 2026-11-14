@@ -286,19 +286,6 @@ html[data-studio-boot="ready"] #studio-boot>.story-atmosphere{display:none}
 .story-dialog-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;flex:none}
 .story-dialog-heading h2{font-size:20px;line-height:28px;font-weight:500;margin:0}
 .story-dialog-content{min-height:0;overflow:auto;padding:0 2px}
-.story-dialog .advanced,.story-dialog .storage-budget,.story-dialog .voice-design{margin:12px 0 0;padding:12px 0 0;border:0;border-top:1px solid #343c47;box-shadow:none;background:none}
-.story-dialog .advanced summary,.story-dialog .storage-budget summary{font-size:16px;line-height:24px;font-weight:500}
-.story-dialog .advanced-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin:12px 0}
-.story-dialog .advanced-grid input,.story-dialog .advanced-grid select{width:100%;font-size:16px;line-height:24px}
-.story-dialog .hint{font-size:14px;line-height:22px}
-.story-dialog .storage-location{font-size:14px;display:flex;flex-wrap:wrap;gap:6px 12px}
-.story-dialog .directory{font-size:14px;overflow-wrap:anywhere;max-width:100%}
-.story-dialog .story-setting-summary p{font-size:14px;line-height:22px;overflow-wrap:anywhere;margin:0}
-.story-dialog .voice-design-table{font-size:14px;line-height:22px}
-.story-dialog .voice-design-table th,.story-dialog .voice-design-table td{padding:8px 10px}
-.story-dialog #log-details{background:transparent;border:0;box-shadow:none;padding:0;margin:0}
-.story-dialog #log-details>summary{display:none}
-.story-dialog #log-details pre{max-height:58dvh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:#171a1f;border:1px solid #343c47;padding:12px;font:13px/20px ui-monospace,Consolas,monospace}
 .story-dialog.story-listen-dialog{max-width:min(726px,calc(100vw - 40px))}
 .story-dialog .story-listen-body{height:min(220px,calc(100dvh - 150px));overflow:hidden;display:flex;flex-direction:column;padding:0}
 .story-dialog .reference-preview{padding:0;margin:0;border:0;min-height:0;flex:1 1 0}
@@ -348,7 +335,6 @@ html[data-studio-boot="ready"] #studio-boot>.story-atmosphere{display:none}
   .story-history-line>.story-history-percent{font-size:13px;line-height:20px}
   .story-dialog{padding:16px;max-width:calc(100vw - 24px);max-height:calc(100dvh - 24px)}
   .story-dialog.story-listen-dialog{max-width:calc(100vw - 24px)}
-  .story-dialog .advanced-grid{grid-template-columns:1fr 1fr}
   .story-voice-row{gap:8px 12px;padding-bottom:12px}
   .story-voice-row strong{font-size:16px;line-height:24px}
   .story-voice-row>span{font-size:14px;line-height:22px}

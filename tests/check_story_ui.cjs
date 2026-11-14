@@ -2941,12 +2941,17 @@ async function main() {
     assert.equal(p.next.disabled, true);
     assert.equal(p.viewModes.at(-1).mode, "reference");
   });
-  await test("settings dropdown contains existing project controls and preserves their actions", async () => {
+  await test("settings dropdown offers only project creation and saved project switching", async () => {
     const p = page(navigationProject("voices"));
     const menu = p.get("story-settings-menu"), toggle = p.get("story-settings-button");
     assert.equal(menu.hidden, true); assert.equal(toggle.getAttribute("aria-expanded"), "false");
-    assert.equal(menu.contains(p.get("project-select")), true);
-    assert.equal(menu.contains(p.get("new-project")), true);
+    assert.deepEqual(menu.children.map(child => child.id), ["new-project", "project-switch"]);
+    assert.equal(p.get("new-project").textContent, "새 호출어 생성");
+    assert.equal(p.get("project-switch").contains(p.get("project-select")), true);
+    assert.equal(p.get("story-settings-details"), null);
+    assert.equal(p.get("story-settings-log"), null);
+    assert.equal(p.shell.contains(p.get("advanced")), false);
+    assert.equal(p.shell.contains(p.get("log-details")), false);
     const notices = p.get("studio-notices");
     assert.equal(notices.querySelector(".story-toolbar").children.length, 1);
     for (const id of ["connection", "message", "project-error", "review-error", "studio-notice-action"])
@@ -2957,10 +2962,7 @@ async function main() {
     await p.get("project-select").fire("change"); assert.equal(switched, 1); assert.equal(menu.hidden, true); assert.equal(toggle.focused, true);
     await toggle.fire("click"); p.get("new-project").addEventListener("click", () => created++);
     await p.get("new-project").fire("click"); assert.equal(created, 1); assert.equal(menu.hidden, true);
-    await toggle.fire("click"); await p.get("story-settings-details").fire("click");
-    assert.equal(menu.hidden, true); assert.equal(p.shell.querySelectorAll("dialog").some(dialog => dialog.open), true);
-    await toggle.fire("click"); await p.get("story-settings-log").fire("click");
-    assert.equal(menu.hidden, true); assert.equal(p.calls.filter(call => call === "logs").length, 1);
+    assert.equal(p.calls.includes("logs"), false);
   });
   await test("settings dropdown closes outside and on Escape while keeping keyboard access", async () => {
     const p = page(), menu = p.get("story-settings-menu"), toggle = p.get("story-settings-button"), container = toggle.parentElement;
@@ -2968,11 +2970,23 @@ async function main() {
     await p.documentEvent("pointerdown", { target: p.shell }); assert.equal(menu.hidden, true);
     let prevented = false;
     await container.fire("keydown", { key: "ArrowDown", target: toggle, preventDefault() { prevented = true; } });
-    assert.equal(prevented, true); assert.equal(menu.hidden, false);
+    assert.equal(prevented, true); assert.equal(menu.hidden, false); assert.equal(p.get("new-project").focused, true);
     await container.fire("keydown", { key: "Escape", preventDefault() {} });
     assert.equal(menu.hidden, true); assert.equal(toggle.focused, true); assert.equal(toggle.getAttribute("aria-expanded"), "false");
+    p.get("new-project").hidden = true;
+    await container.fire("keydown", { key: "ArrowDown", target: toggle, preventDefault() {} });
+    assert.equal(p.get("project-select").focused, true);
     await toggle.fire("click"); await container.fire("focusout", { relatedTarget: p.shell }); assert.equal(menu.hidden, true);
     await toggle.fire("click"); await p.windowEvent("blur"); assert.equal(menu.hidden, true, "leaving the window or focusing an embedded player dismisses the menu");
+  });
+  await test("settings trigger is hidden when the project commands are unavailable", async () => {
+    const p = page(), menu = p.get("story-settings-menu"), toggle = p.get("story-settings-button");
+    await toggle.fire("click");
+    p.get("new-project").hidden = true; p.get("project-switch").hidden = true; p.ui.render();
+    assert.equal(toggle.parentElement.hidden, true);
+    assert.equal(menu.hidden, true); assert.equal(toggle.getAttribute("aria-expanded"), "false");
+    p.get("new-project").hidden = false; p.ui.render();
+    assert.equal(toggle.parentElement.hidden, false);
   });
   await test("top strip accepts errors only from the active review and clears each cause independently", async () => {
     const project = postflightProject(), p = page(project);

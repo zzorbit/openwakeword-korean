@@ -9,7 +9,6 @@ const ui=window.KowwResultsUI;
 const $=id=>document.getElementById(id);
 const labels={clean:"Clean",environment:"환경소음",music:"음악·전자음",competing_speech:"다른 사람 말소리"};
 $("title").textContent=`${report.wakeword} · 성능 시험 결과`;
-$("scope").textContent=evaluationScopeText(report,clips);
 $("noiseCoverage").textContent=evaluationNoiseCoverageText(clips);
 ui.renderSummary(report);
 ui.renderConditions(report);

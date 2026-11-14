@@ -388,6 +388,8 @@ function pendingHardStorageRecipe() {
     assert.equal(b.storyBridge.state().recipeReady, true);
     assert.equal(b.storyBridge.state().project, null);
     assert.equal(b.elements.get("wakeword").focused, true);
+    assert.equal(selector.value, "");
+    assert.deepEqual(selector.children.map(option => option.value), ["bora", "other"]);
     selector.value = "other"; await selector.handlers.change();
     await b.click("new-project");
     assert.equal(b.calls.filter(call => call.url === "/api/recipes").length, 1);
@@ -570,7 +572,7 @@ function pendingHardStorageRecipe() {
     await locationSettled();
     assert.equal(b.elements.get("storage-directory").textContent, label);
     assert.equal(b.elements.get("storage-directory").children.length, 0);
-    assert.match(textOf(b.elements.get("project-select")), /새 호출어/);
+    assert.deepEqual(b.elements.get("project-select").children.map(option => option.textContent), ["보라야"]);
   });
   await test("location previews debounce edits, follow every workload choice and do not repeat on polling", async () => {
     const b = browser(); await flush();
@@ -1766,7 +1768,7 @@ function pendingHardStorageRecipe() {
       {id:"new",wakeword:"보라야",directory:"F:\\test\\models\\model_0002",status:"paused",stage:"references"}
     ] } }); await flush();
     const options = b.elements.get("project-select").children;
-    assert.deepEqual(options.map(option => [option.textContent,option.value]), [["보라야 · model_0001","old"],["보라야 · model_0002","new"],["새 호출어…",""]]);
+    assert.deepEqual(options.map(option => [option.textContent,option.value]), [["보라야 · model_0001","old"],["보라야 · model_0002","new"]]);
     assert.equal(b.elements.get("project-select").value,"new");
   });
   await test("human input is explicit; polling does not overwrite the text being edited", async () => {
@@ -2230,12 +2232,12 @@ function pendingHardStorageRecipe() {
     b.elements.get("log-details").open = true;
     const first = b.click("refresh-log");
     assert.equal(b.elements.get("log-details").handlers.toggle(), first);
-    assert.equal(b.storyBridge.logs(), first);
+    assert.equal(b.click("refresh-log"), first);
     assert.equal(b.calls.filter(call => call.url.endsWith("/log")).length, 1);
     const selector = b.elements.get("project-select");
     selector.value = "other";
     await selector.handlers.change();
-    const second = b.storyBridge.logs();
+    const second = b.click("refresh-log");
     assert.notEqual(second, first);
     respond.get("/api/projects/other/log")("current log");
     await second;
