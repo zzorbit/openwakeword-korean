@@ -1195,6 +1195,77 @@ def test_http_compatible_update_requires_token_and_does_not_start_worker(manager
     assert len(manager.workers.items) == 1
 
 
+@pytest.mark.parametrize("failure", ["legacy", "other", "unverified", "current"])
+def test_evaluation_update_only_reclassifies_verified_legacy_cuda_failure(manager, http_server, failure):
+    project_id = create(manager, dependency_backend="cu128")["id"]
+    state = manager._load(project_id)
+    index = next(i for i, stage in enumerate(state["plan"]) if stage["id"] == "evaluation")
+    put_state(manager, project_id, index=index)
+    manager.start(project_id)
+    first = manager.workers.items[-1]
+    message = ("GPU 평가를 시작하지 못했습니다: GPU 실행에 필요한 구성 요소를 사용할 수 없습니다. "
+               "CUDAExecutionProvider is unavailable; GPU evaluation cannot silently become CPU evaluation "
+               "CPU로 자동 전환하지 않습니다. 문제를 해결한 뒤 다시 진행하세요.")
+    error = {"message": message if failure != "other" else "GPU 작업 중 음원 검증 실패",
+             "type": "RuntimeError", "stage": "evaluation"}
+    result = first.finish(error=error)
+    manager.tick()
+    failed = manager._load(project_id)
+    assert failed["status"] == "error"
+    original_hash = digest(result)
+    if failure == "unverified":
+        first.request_path.write_bytes(first.request_path.read_bytes() + b"\n")
+    if failure != "current":
+        manager._implementation_id = "compatible-loader-update"
+
+    headers = {"X-Koww-Token": manager.token}
+    status, body, _ = http_server(f"/api/projects/{project_id}/migrate", "POST", {}, headers=headers)
+    assert status == 200
+    view = json.loads(body)
+    migrated = manager._load(project_id)
+    assert migrated["history"] == failed["history"] and digest(result) == original_hash
+    assert migrated["last_job"] == failed["last_job"] and len(manager.workers.items) == 1
+    if failure != "legacy":
+        assert view["status"] == "error" and view["error"] == error and not view["evaluation_retry_pending"]
+        return
+    assert view["status"] == "paused" and view["error"] is None and view["evaluation_retry_pending"]
+    assert view["evaluation_backend"] == "cuda" and view["evaluation_backend_editable"]
+    receipt = read_json(migrated["migrations"][-1]["path"])
+    assert receipt["previous_cuda_loader_failure"]["result"] == {"path": str(result), "sha256": original_hash}
+    manager.tick()
+    assert len(manager.workers.items) == 1
+
+    manager._implementation_id = studio._implementation()
+    put_state(manager, project_id, implementation_id=manager._implementation_id)
+    status, body, _ = http_server(f"/api/projects/{project_id}/resume", "POST",
+        {"expected_evaluation_backend": "cuda"}, headers=headers)
+    assert status == 200 and json.loads(body)["status"] == "running"
+    assert not json.loads(body)["evaluation_retry_pending"]
+    second = manager.workers.items[-1]
+    assert second != first and read_json(second.request_path)["stage"] == "evaluation"
+    second.finish(error={"message": "현재 CUDA 실행 오류", "type": "RuntimeError", "stage": "evaluation"})
+    manager.tick()
+    view = manager.describe(manager._load(project_id))
+    assert view["status"] == "error" and view["error"]["message"] == "현재 CUDA 실행 오류"
+    assert not view["evaluation_retry_pending"]
+
+
+def test_evaluation_resume_reconciles_an_already_failed_worker_in_one_request(manager, http_server):
+    project_id = create(manager, dependency_backend="cu128")["id"]
+    state = manager._load(project_id)
+    index = next(i for i, stage in enumerate(state["plan"]) if stage["id"] == "evaluation")
+    put_state(manager, project_id, index=index, status="paused")
+    manager.start(project_id)
+    first = manager.workers.items[-1]
+    first.finish(error={"message": "방금 실패한 평가"})
+    headers = {"X-Koww-Token": manager.token}
+    status, body, _ = http_server(f"/api/projects/{project_id}/resume", "POST",
+        {"expected_evaluation_backend": "cuda"}, headers=headers)
+    assert status == 200 and json.loads(body)["status"] == "running"
+    assert len(manager.workers.items) == 2
+    assert manager._load(project_id)["history"][-1]["stage"] == "evaluation"
+
+
 @pytest.mark.parametrize("headers,body", [
     ({"Content-Type": "application/json", "Content-Length": "1000001"}, b""),
     ({"Content-Type": "application/json", "Content-Length": "-1"}, b""),

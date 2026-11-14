@@ -190,8 +190,12 @@ function page(initialProject = null, options = {}) {
     noticeActionVisible: action => action === noticeAction && !actionButton.hidden,
     clearNoticeAction: action => { if (action === noticeAction) { noticeAction = null; actionButton.hidden = true; } },
     reviewNotice: text => { const notice = get("review-error"); notice.textContent = text; notice.hidden = !text; },
-    projectNotice: text => { const notice = get("project-error"); notice.textContent = text; notice.hidden = !text; },
+    projectNotice: (text, severity = "error") => {
+      const notice = get("project-error"); notice.textContent = text; notice.hidden = !text; notice.dataset.severity = severity;
+    },
     projectErrorText: error => typeof error === "string" ? error : error?.message || "",
+    evaluationRetryMessage: project => project?.status === "paused" && project.evaluation_retry_pending
+      ? "이전 평가가 중단됐습니다. 재개를 누르세요." : "",
   });
   const shell = get("story-shell"), actions = shell.querySelector(".story-actions");
   const next = actions.children[2], operation = actions.children[1], back = actions.children[0];
@@ -517,6 +521,35 @@ async function main() {
       assert.equal(p.calls.filter(call => call === "resume").length, confirm ? 1 : 0);
       if (!confirm) assert.equal(cpu.checked, true, "the unsaved selection can still be retried");
     }
+  });
+  await test("evaluation retry after an update replaces the old error while genuine new errors stay visible", async () => {
+    const project = { id: "evaluation-retry", status: "paused", stage_id: "evaluation", evaluation_retry_pending: true,
+      evaluation_backend: "cuda", evaluation_backend_editable: true, progress: { done: 5, total: 10, phase: "scoring" } };
+    const p = page(project, { action: (action, state, payload, id) => {
+      assert.equal(action, "resume"); assert.equal(id, project.id);
+      assert.deepEqual(payload, { expected_evaluation_backend: "cuda" });
+      Object.assign(project, { status: "running", process_alive: true, evaluation_retry_pending: false,
+        evaluation_backend_editable: false, progress: { phase: "validation" } });
+      state.busy = false;
+    } });
+    const message = p.get("project-error"), counts = p.shell.querySelector(".story-voice-counts");
+    const row = counts.children[0];
+    assert.equal(message.dataset.severity, "info"); assert.equal(message.hidden, false);
+    assert.match(message.textContent, /이전 평가가 중단됐습니다.*재개를 누르세요/);
+    assert.equal(row.children[1].textContent, "재개 대기");
+    assert.equal(row.querySelector("progress").dataset.active, "false");
+    assert.equal(p.operation.textContent, "재개"); assert.equal(p.operation.disabled, false);
+    assert.equal(p.get("story-evaluation-cuda").checked, true);
+    assert.equal(p.calls.includes("resume"), false);
+    await p.operation.fire("click");
+    assert.equal(p.calls.filter(call => call === "resume").length, 1);
+    assert.equal(message.hidden, true);
+    assert.equal(row.children[1].textContent, "검증 중");
+    Object.assign(project, { status: "error", process_alive: false, error: { message: "새 평가의 GPU 실행에 실패했습니다." }, progress: null });
+    p.ui.render();
+    assert.equal(message.hidden, false); assert.equal(message.dataset.severity, "error");
+    assert.equal(message.textContent, project.error.message);
+    assert.equal(row.children[1].textContent, "확인 필요");
   });
   await test("fast creation runs behind the visible notice and keeps its full 800 ms hold", async () => {
     const p = page(null, { create: state => {

@@ -1689,6 +1689,9 @@
       return !historical && Boolean(project) && stageStep(project) === current && running(project.status)
         && project.process_alive !== false && !project.input && !project.review;
     }
+    function evaluationRetryMessage(project) {
+      return current === "evaluation" ? bridge.evaluationRetryMessage?.(project) : "";
+    }
     function preparationRow(project, label, active, statusText = "준비 중") {
       return { label, indeterminate: true, active,
         statusText: active ? statusText : project.status === "paused" ? "일시정지"
@@ -1804,6 +1807,8 @@
       const generation = generationSteps.has(current) || Boolean(sampleLabel);
       const detail = generation && active && !completed && stageScreen(project, stage) === current ? generationActivity(progress) : "";
       const done = progress?.done ?? progress?.completed ?? progress?.current;
+      if (evaluationRetryMessage(project))
+        return [{ ...preparationRow(project, "성능 평가 준비", false), statusText: "재개 대기" }];
       const evaluationPhaseLabel = current === "evaluation"
         ? { validation: "평가 음원 검증", finalizing: "평가 결과 정리", preparation_validation: "평가 자료 원본 검증",
           preparation_generation: "평가 자료 생성", preparation_finalizing: "평가 자료 등록·검증" }[progress?.phase] : "";
@@ -2698,7 +2703,12 @@
         const preparationError = current === "voices" && separateReferencePreparation(project) && typeof project.reference_preparation?.error === "string"
           ? project.reference_preparation.error : "";
         const repairError = repairProgressVisible(project) && typeof repair?.error === "string" ? repair.error : "";
-        bridge.projectNotice?.(historical ? "" : preparationError || repairError || bridge.projectErrorText?.(project.error) || "");
+        const retry = !historical && evaluationRetryMessage(project);
+        if (retry) {
+          bridge.projectNotice?.(retry, "info");
+        } else {
+          bridge.projectNotice?.(historical ? "" : preparationError || repairError || bridge.projectErrorText?.(project.error) || "");
+        }
         downloads.hidden = true;
         $("progress").dataset.active = String(chapterActive);
         $("progress-label").dataset.status = progressStatus(chapterActive, chapterComplete);

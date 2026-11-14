@@ -1790,6 +1790,44 @@ class StudioManager:
         return not any(path.is_file() for folder in ("data/generated", "runs")
                        if (root / folder).exists() for path in (root / folder).rglob("*"))
 
+    def _legacy_cuda_failure(self, state):
+        """Identify the verified failure from the old CUDA package loader."""
+        index, plan = state["index"], state["plan"]
+        error, job = state.get("error"), state.get("last_job") or {}
+        legacy_message = ("GPU 평가를 시작하지 못했습니다: GPU 실행에 필요한 구성 요소를 사용할 수 없습니다. "
+                          "CUDAExecutionProvider is unavailable; GPU evaluation cannot silently become CPU evaluation "
+                          "CPU로 자동 전환하지 않습니다. 문제를 해결한 뒤 다시 진행하세요.")
+        if (state["status"] != "error" or index >= len(plan) or plan[index]["id"] != "evaluation"
+                or state.get("job") or job.get("stage") != "evaluation" or not isinstance(error, dict)
+                or error.get("stage") != "evaluation" or error.get("type") != "RuntimeError"
+                or error.get("message") != legacy_message):
+            return None
+        history = state.get("history") or []
+        if not history or history[-1].get("stage") != "evaluation":
+            return None
+        entry = history[-1]
+        root = Path(state["project"]).parent.resolve()
+        try:
+            directory = Path(job["directory"]).resolve()
+            if directory.parent != root / ".studio/jobs" or directory.name != job.get("task_id"):
+                return None
+            request_path = bound_file(root, {"path": directory / "request.json", "sha256": job["request_sha256"]})
+            result_path = bound_file(root, {"path": entry["result"], "sha256": entry["sha256"]})
+            if result_path != directory / "result.json":
+                return None
+            request, result = read_json(request_path), read_json(result_path)
+            implementation = request.get("implementation_id")
+            if (not isinstance(implementation, str) or not implementation or implementation == self._implementation_id
+                    or request.get("stage") != "evaluation" or request.get("project") != state["project"]
+                    or request.get("task_id") != job["task_id"] or result.get("task_id") != job["task_id"]
+                    or request.get("config_sha256") != state["config_sha256"]
+                    or result.get("config_sha256") != state["config_sha256"]
+                    or result.get("request_sha256") != job["request_sha256"] or result.get("error") != error):
+                return None
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            return None
+        return {"implementation_id": implementation, "result": {"path": str(result_path), "sha256": entry["sha256"]}}
+
     def migrate(self, project_id):
         """Explicit, audited compatibility rebind; never an implicit resume."""
         with self._lock:
@@ -1816,6 +1854,7 @@ class StudioManager:
             before = directory / "workflow_before.json"
             before.write_bytes(self._path(project_id).read_bytes())
             receipt = directory / "receipt.json"
+            prior_cuda_failure = self._legacy_cuda_failure(state)
             write_json(receipt, {"schema_version": 1, "kind": "compatible_workflow_update",
                 "migrated_at": now(), "old_implementation_id": state.get("implementation_id"),
                 "new_implementation_id": self._implementation_id, "config_sha256": state["config_sha256"],
@@ -1842,6 +1881,7 @@ class StudioManager:
                    if compatibility.get("audited_call_generation_recovery_update") else {}),
                 **({"reference_budget_change": compatibility["reference_budget_change"]}
                    if compatibility.get("reference_budget_change") else {}),
+                **({"previous_cuda_loader_failure": prior_cuda_failure} if prior_cuda_failure else {}),
                 "preserved": compatibility["preserves"]})
             budget_change = compatibility.get("reference_budget_change")
             recovery_update = compatibility.get("audited_call_generation_recovery_update") or {}
@@ -1901,6 +1941,9 @@ class StudioManager:
             state["execution_contract"] = {**self._execution_contract,
                 "settings_sha256": identity(state["settings"]), "plan_sha256": identity(state["plan"])}
             state.setdefault("migrations", []).append({"path": str(receipt), "sha256": digest(receipt)})
+            if prior_cuda_failure:
+                state.update(status="paused", auto_continue=False, error=None, evaluation_retry_pending=True,
+                             next_action="선택한 장치로 평가를 다시 시작하려면 재개를 누르세요.")
             if state.get("status") in ("running", "pausing"):
                 state.update(status="interrupted", auto_continue=False)
             self._save(state)
@@ -2085,6 +2128,8 @@ class StudioManager:
                                 env=environment, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         creation = process_identity(child.pid)
         self._children[task_id] = child
+        if stage["id"] == "evaluation":
+            state.pop("evaluation_retry_pending", None)
         state.update(status="running", error=None, next_action="작업을 진행하고 있습니다.",
                      job={"task_id": task_id, "pid": child.pid, "creation_identity": creation,
                           "stage": stage["id"], "started_at": now(), "directory": str(task_dir),
@@ -2277,8 +2322,12 @@ class StudioManager:
             state.update(auto_continue=True, input_submitted=False)
             self._verify_history(state)
             # Finish a worker that completed while the browser/server was closed.
+            retrying_evaluation = (expected_evaluation_backend is not None
+                and (state.get("job") or {}).get("stage") == "evaluation"
+                and not self._job_alive(state["job"]))
             if state.get("job") and self._finish_job(state):
-                if (state["status"] in ("waiting_review", "waiting_input", "completed", "error")
+                if (state["status"] in ("waiting_review", "waiting_input", "completed")
+                        or state["status"] == "error" and not retrying_evaluation
                         or (state.get("download_checkpoint") or {}).get("state") == "awaiting_next"
                         or (state.get("navigation_checkpoint") or {}).get("state") == "awaiting_next"):
                     return self.describe(state)
@@ -4794,6 +4843,7 @@ class StudioManager:
             evaluation_backend = _studio_evaluation_backend(state["settings"], state.get("inputs", {}))
             view["evaluation_backend"] = "cuda" if evaluation_backend == "auto" else evaluation_backend
             view["evaluation_backend_editable"] = self._backend_selection_available(state, "evaluation")
+            view["evaluation_retry_pending"] = state.get("evaluation_retry_pending") is True and view["status"] == "paused"
         frontend_evaluation_backend = _studio_evaluation_backend(state["settings"], {"dependency_backend": dependency_backend})
         if dependency_backend in ("cpu", "cu128"):
             packages, evaluation_runtime = _dependency_package_requirements()

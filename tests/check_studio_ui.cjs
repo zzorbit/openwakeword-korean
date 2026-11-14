@@ -2287,6 +2287,31 @@ function pendingHardStorageRecipe() {
     assert.equal(notice.textContent, "서버 오류"); assert.equal(notice.getAttribute("role"), "alert");
     assert.equal(retry.hidden, true); assert.equal(b.elements.get("review-error").textContent, "재생하지 못했습니다.");
   });
+  await test("project notices switch between neutral status and error alert without affecting other notices", async () => {
+    const b = browser(); await flush();
+    const bridge = b.storyBridge, notice = b.elements.get("project-error");
+    bridge.message("다른 안내");
+    bridge.projectNotice("이전 평가가 중단됐습니다.", "info");
+    assert.equal(notice.className, "notice"); assert.equal(notice.getAttribute("role"), "status");
+    assert.equal(notice.hidden, false);
+    bridge.projectNotice("현재 GPU 실행 오류");
+    assert.equal(notice.className, "notice error"); assert.equal(notice.getAttribute("role"), "alert");
+    assert.equal(notice.textContent, "현재 GPU 실행 오류");
+    bridge.projectNotice("");
+    assert.equal(notice.hidden, true); assert.equal(b.elements.get("message").textContent, "다른 안내");
+  });
+  await test("dashboard fallback reuses the evaluation retry notice and shows a new failure as an alert", async () => {
+    const project = { id: "bora", status: "paused", stage_id: "evaluation", evaluation_retry_pending: true };
+    const b = browser({ initialState: { projects: [project] } }); await flush();
+    const notice = b.elements.get("project-error");
+    assert.equal(notice.getAttribute("role"), "status");
+    assert.match(notice.textContent, /이전 평가가 중단됐습니다.*선택한 장치.*재개를 누르세요/);
+    assert.equal(b.calls.some(call => call.options.method === "POST"), false);
+    Object.assign(project, { status: "error", error: { message: "새 평가 실행 오류" } });
+    await b.tick();
+    assert.equal(notice.getAttribute("role"), "alert");
+    assert.equal(notice.textContent, "새 평가 실행 오류");
+  });
   await test("evaluation validation does not poll logs or invent a score; manual log errors stay isolated", async () => {
     const project = { id: "bora", status: "running", stage: { id: "evaluation" }, progress: { done: null, total: null, phase: "validation", label: "평가 음원 검증 중" } };
     const b = browser({ initialState: { projects: [project] }, logError: true }); await flush();

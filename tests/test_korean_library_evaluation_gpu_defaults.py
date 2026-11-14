@@ -313,6 +313,25 @@ def test_cli_defaults_to_auto_and_keeps_explicit_cpu_override():
     assert parser().parse_args(arguments + ["--backend", "cpu"]).backend == "cpu"
 
 
+@pytest.mark.parametrize("inputs,managed,installed,expected_setup", [
+    ({"dependency_backend": "cu128"}, True, False, True),
+    ({"evaluation_backend": "cuda"}, True, False, True),
+    ({"evaluation_backend": "cuda"}, True, True, False),
+    ({"evaluation_backend": "cuda"}, False, False, False),
+    ({"evaluation_backend": "cpu"}, True, False, False),
+])
+def test_evaluation_retry_prepares_only_missing_managed_cuda_runtime(monkeypatch, tmp_path, inputs, managed, installed, expected_setup):
+    from korean_openwakeword import gpu_runtime_install, studio_worker
+
+    monkeypatch.delenv("KOWW_GPU_RUNTIME_PATH", raising=False)
+    monkeypatch.setattr(gpu_runtime_install, "_managed_reason", lambda: None if managed else "unsupported platform")
+    monkeypatch.setattr(gpu_runtime_install, "gpu_runtime_environment", lambda root: {"found": True} if installed else {})
+    calls = []
+    monkeypatch.setattr(studio_steps, "_prepare_evaluation_runtime", calls.append)
+    studio_worker._stage_evaluation_settings("evaluation", {"evaluation_backend": "auto"}, inputs, tmp_path)
+    assert calls == ([tmp_path] if expected_setup else [])
+
+
 def test_studio_worker_reuses_its_backend_checkpoint_after_repeated_switches(monkeypatch, tmp_path):
     from korean_openwakeword import gpu_runtime_install, studio_worker
 

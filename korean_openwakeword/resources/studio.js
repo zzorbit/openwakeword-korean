@@ -442,8 +442,16 @@
     const notice = $("review-error");
     if (notice) noticeText(notice, text || "");
   }
-  function projectNotice(text) {
-    noticeText($("project-error"), text || "");
+  function projectNotice(text, severity = "error") {
+    const notice = $("project-error");
+    notice.className = severity === "error" ? "notice error" : "notice";
+    notice.setAttribute("role", severity === "error" ? "alert" : "status");
+    noticeText(notice, text || "");
+  }
+  function evaluationRetryMessage(project) {
+    if ((project?.stage?.id || project?.stage_id) !== "evaluation" || project.status !== "paused"
+        || project.evaluation_retry_pending !== true || project.error || project.migration) return "";
+    return "이전 평가가 중단됐습니다. 선택한 장치로 다시 시작하려면 재개를 누르세요.";
   }
   function creationBody() {
     return requestBody({ wakeword: $("wakeword").value, advanced: { positive_originals: $("adv-originals").value, augmentation_rounds: $("adv-rounds").value, updates: $("adv-updates").value, generic_hours: $("adv-generic").value, korean_hours: $("adv-korean").value } }, selectedPreset);
@@ -1339,7 +1347,10 @@
     Object.assign($("eta").style, { whiteSpace: activityText ? "nowrap" : "", overflow: activityText ? "hidden" : "", textOverflow: activityText ? "ellipsis" : "" });
     $("eta").title = activityText;
     if ($("eta").textContent !== timingText) $("eta").textContent = timingText;
-    if (story?.ownsProjectNotice !== true) projectNotice(projectErrorText(project.error));
+    if (story?.ownsProjectNotice !== true) {
+      const retry = evaluationRetryMessage(project);
+      projectNotice(retry || projectErrorText(project.error), retry ? "info" : "error");
+    }
     renderDashboard(project);
     // The chapter view builds its own download list from project state.
     if (story?.ownsDownloadRows !== true) renderDownloads(project);
@@ -1567,6 +1578,7 @@
       logs: loadLog,
       installLog: id => api(`/api/projects/${encodeURIComponent(id)}/log`),
       projectErrorText,
+      evaluationRetryMessage,
       refresh,
       prepareRecipes: loadRecipes,
       message,

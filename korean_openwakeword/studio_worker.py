@@ -396,7 +396,7 @@ def _stage_evaluation_settings(stage, settings, inputs, root):
     effective = {**settings, "evaluation_backend": backend}
     if backend == "cpu":
         effective.pop("gpu_cpu_prefix_import", None)
-    elif stage == "evaluation" and inputs.get("evaluation_backend") == "cuda" and not os.environ.get("KOWW_GPU_RUNTIME_PATH"):
+    elif stage == "evaluation" and not os.environ.get("KOWW_GPU_RUNTIME_PATH"):
         from .gpu_runtime_install import _managed_reason, gpu_runtime_environment
         from .studio_steps import _prepare_evaluation_runtime
         from .task_progress import emit
