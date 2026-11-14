@@ -42,7 +42,7 @@ test("both report layouts put the comparison metrics in the models panel", () =>
     assert.doesNotMatch(html, /result-full-details|상세 결과|model-tab-|targetComparison|id="summary"|id="recommendations"/);
     assert.deepEqual([...models.matchAll(/<th scope="col"[^>]*>([\s\S]*?)<\/th>/g)]
       .map(match => match[1].replace(/<[^>]+>/g, "").trim()), [
-      "모델", "종합 감지율", "소음·울림 없음", "강한 소음·울림", "최악 조건", "오호출/시간", "반응 시간", "감지 기준"
+      "모델", "종합 감지율", "소음·울림 없음", "강한 소음·울림", "최악 조건", "오호출/시간", "반응 시간", "기본 감지 기준"
     ]);
     assert.deepEqual([...models.matchAll(/<button[^>]+data-overview-help="([^"]+)"/g)].map(match => match[1]), ["criteria", "hard", "worst", "fa", "latency", "settings"]);
     assert.doesNotMatch(models, /overview-note|overview-latency-note|발화 종료/);
@@ -306,9 +306,12 @@ test("audio titles avoid internal filenames and do not claim a negative clip con
   assert.equal(ui.clipLabel({kind: "negative", category: "music", original_order: 12}), "호출어 없는 음원 · 음악·전자음");
 });
 test("missing, invalid and cache-only recommendations are presented honestly", () => {
-  const {ui, rows, elements} = browser(), report = sample(), model = report.models[0];
+  const {ui, rows, elements, headers} = browser(), report = sample(), model = report.models[0];
   ui.renderSummary(report);
-  assert.equal(elements.get("overview-source").value, "baseline");
+  const source = elements.get("overview-source");
+  assert.equal(source.value, "baseline");
+  assert.deepEqual(source.children.map(option => option.textContent), ["기본 감지 기준"]);
+  assert.equal(headers[4].textContent, "기본 감지 기준");
   report.runtime_recommendations = {schema_version: 1, candidates: [{
     id: model.id, runtime: {threshold: .9999999, consecutive_frames: 2}, metrics: model,
     adoption: {passed: false}, deployment_backend_verified: false
@@ -362,13 +365,13 @@ test("one comparison shows measured settings and fixed acoustic means in both la
   assert.deepEqual(mobileMetrics(), [
     ["종합 감지율", "69.00%"], ["소음·울림 없음", "98.55%"], ["강한 소음·울림", "58.33%"],
     ["최악 조건", "50.00%"], ["오호출/시간", "1.2회"], ["반응 시간", "0.44초"],
-    ["감지 기준", "0.99 · 5회"]
+    ["추천 감지 기준", "0.99 · 5회"]
   ]);
   assert.equal(elements.get("storySummaryMetrics").children[6].children[1].children.length, 0);
   assert.equal(elements.get("storySummaryMetrics").children[3].children[1].children.length, 0);
   elements.get("overview-source").value = "baseline"; elements.get("overview-source").onchange();
   assert.deepEqual(rows("storySummary")[1], ["모델 2", "93.33%", "99.90%", "83.33%", "70.00%", "9.4회", "0.20초", "0.5 · 1회"]);
-  assert.deepEqual(mobileMetrics()[6], ["감지 기준", "0.5 · 1회"]);
+  assert.deepEqual(mobileMetrics()[6], ["기본 감지 기준", "0.5 · 1회"]);
   assert.equal(modelCells()[7].children.length, 0);
   assert.equal(mobileMetrics()[0][0], "종합 감지율");
   assert.equal(JSON.stringify(report), before);
@@ -463,7 +466,7 @@ test("the response-time heading explains P95 for desktop and compact without cha
   mobile[0].children[0].dispatch("click");
   assert.equal(content(), desktopHelp);
 });
-test("the same detection heading explains the settings for each result view", () => {
+test("the detection menu, desktop and mobile headings, and help use the selected setting's name", () => {
   const {ui, elements, headers, rows} = browser(), report = sample();
   report.runtime = {threshold: .5, consecutive_frames: 1};
   report.runtime_recommendations = {schema_version: 1, recommendation_criteria: {fa_per_hour: 1},
@@ -473,8 +476,13 @@ test("the same detection heading explains the settings for each result view", ()
   const title = () => fullText(elements.get("overview-help-title"));
   const close = () => elements.get("overview-help-close").dispatch("click");
   const compactMetric = () => elements.get("storySummaryMetrics").children[6].children;
+  assert.deepEqual(elements.get("overview-source").children.map(option => [option.value, option.textContent]), [
+    ["recommended", "추천 감지 기준"], ["baseline", "기본 감지 기준"]
+  ]);
+  assert.equal(headers[4].textContent, "추천 감지 기준");
+  assert.equal(compactMetric()[0].children[0].textContent, "추천 감지 기준");
   headers[4].dispatch("click");
-  assert.equal(title(), "감지 기준");
+  assert.equal(title(), "추천 감지 기준");
   assert.match(content(), /임계값.*연속/s);
   assert.match(content(), /저장된 평가 점수.*비교/s);
   assert.match(content(), /시간당 1회 이하/);
@@ -487,12 +495,14 @@ test("the same detection heading explains the settings for each result view", ()
   assert.equal(compactMetric()[1].children.length, 0);
   close();
   compactMetric()[0].children[0].dispatch("click");
-  assert.equal(title(), "감지 기준");
+  assert.equal(title(), "추천 감지 기준");
   assert.equal(content(), recommendedHelp);
   elements.get("overview-source").value = "baseline"; elements.get("overview-source").onchange();
   assert.equal(elements.get("overview-help").open, false);
+  assert.equal(headers[4].textContent, "기본 감지 기준");
+  assert.equal(compactMetric()[0].children[0].textContent, "기본 감지 기준");
   headers[4].dispatch("click");
-  assert.equal(title(), "감지 기준");
+  assert.equal(title(), "기본 감지 기준");
   assert.match(content(), /성능 평가.*설정|평가 당시.*설정/s);
   assert.doesNotMatch(content(), /시간당 1회 이하|오호출이 가장 적은/);
   const baselineHelp = content();
@@ -500,7 +510,7 @@ test("the same detection heading explains the settings for each result view", ()
   assert.equal(compactMetric()[1].textContent, "0.5 · 1회");
   close();
   compactMetric()[0].children[0].dispatch("click");
-  assert.equal(title(), "감지 기준");
+  assert.equal(title(), "기본 감지 기준");
   assert.equal(content(), baselineHelp);
 });
 test("metric help opens only from headings and describes the fixed displayed acoustic conditions", () => {

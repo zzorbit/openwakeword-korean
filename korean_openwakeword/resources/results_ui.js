@@ -11,6 +11,7 @@
   const strongSnrs = [10, 5, 0];
   const worstReverb = "strong";
   const worstSnr = 0;
+  const detectionLabels = {baseline: "기본 감지 기준", recommended: "추천 감지 기준"};
   const reportDiagnostics = new WeakSet();
   let dashboardView = "models";
   let compactAudio = null;
@@ -330,15 +331,15 @@
     const previousSource = source.value, previousModel = modelSelect.value;
     const deployed = report.deployment_candidate?.id || report.selected_candidate || report.adoption?.candidate;
     source.replaceChildren();
-    if (hasComparison) option(source, "recommended", "추천값 결과");
-    option(source, "baseline", "평가 당시 결과");
+    if (hasComparison) option(source, "recommended", detectionLabels.recommended);
+    option(source, "baseline", detectionLabels.baseline);
     source.value = hasComparison && previousSource !== "baseline" ? "recommended" : "baseline";
     source.disabled = !hasComparison;
     modelSelect.replaceChildren(); sorted.forEach(model => option(modelSelect, model.id, modelLabel(report, model.id)));
     modelSelect.value = models.some(model => model.id === previousModel) ? previousModel
       : models.some(model => model.id === deployed) ? deployed : sorted[0]?.id || "";
 
-    function overviewFor(model, compareSettings) {
+    function overviewFor(model, compareSettings, settingsLabel) {
       const candidate = byModel.get(model.id);
       const tested = measuredSettings(candidate) ? candidate : null;
       const metric = compareSettings ? tested?.metrics : model;
@@ -363,13 +364,14 @@
         {label: "최악 조건", value: worstValue, help: "worst"},
         {label: "오호출/시간", value: falseRate, title: rawFalse, help: "fa"},
         {label: "반응 시간", value: reactionTime(metric?.primary?.latency_p95_s), help: "latency"},
-        {label: "감지 기준", value: settings, help: "settings"}
+        {label: settingsLabel, value: settings, help: "settings"}
       ];
       return entries;
     }
     function draw() {
       overviewHelp?.hide();
       const compareSettings = source.value === "recommended";
+      const settingsLabel = compareSettings ? detectionLabels.recommended : detectionLabels.baseline;
       const recommendationLimit = calibration?.recommendation_criteria?.fa_per_hour;
       const selection = finite(recommendationLimit) ? [
         `다른 추천 조건을 충족하는 설정 중 오호출이 시간당 ${recommendationLimit}회 이하인 후보를 먼저 봅니다. 그중 추천 비교에 기록된 소음·울림 시험 조건에서 평균 감지율이 가장 높은 설정을 추천합니다.`,
@@ -379,21 +381,23 @@
         ...sharedHelp,
         fa: {title: "오호출/시간", paragraphs: ["호출어가 없는 음원에서 호출어를 잘못 감지한 횟수를 1시간 기준으로 환산한 값입니다.",
           ...(finite(recommendationLimit) ? [`감지 기준을 추천할 때 오호출 상한은 시간당 ${recommendationLimit}회입니다.`] : [])]},
-        settings: {title: "감지 기준", paragraphs: [
+        settings: {title: settingsLabel, paragraphs: [
           "앞 숫자는 감지 점수의 임계값이고, 뒤의 횟수는 그 점수 이상이 연속으로 나와야 하는 횟수입니다.",
           ...(compareSettings
             ? ["모델마다 저장된 평가 점수에 여러 감지 기준을 적용해 비교했습니다.", ...selection]
             : ["이 보고서의 성능 평가에 사용한 설정입니다."])
         ]}
       };
-      if (overviewHelp) for (const button of document.querySelectorAll("[data-overview-help]")) {
-        overviewHelp.bind(button, explanations[button.dataset.overviewHelp]);
+      for (const button of document.querySelectorAll?.("[data-overview-help]") ?? []) {
+        const key = button.dataset.overviewHelp;
+        if (key === "settings") button.textContent = settingsLabel;
+        overviewHelp?.bind(button, explanations[key]);
       }
       table.replaceChildren();
       const metrics = $("storySummaryMetrics");
       metrics?.replaceChildren();
       for (const model of sorted) {
-        const entries = overviewFor(model, compareSettings);
+        const entries = overviewFor(model, compareSettings, settingsLabel);
         const label = modelLabel(report, model.id);
         const row = document.createElement("tr");
         if (isEnsemble(report, model.id)) row.className = "ensemble";
