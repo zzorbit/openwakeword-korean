@@ -281,17 +281,17 @@
     const paragraphs = [groups.join("\n")];
     if (reverbOnly.length) {
       const addedRooms = [...new Set(reverbOnly.map(cell => cell.reverb_condition))].map(reverbLabel);
-      paragraphs.push(`배경 소음 없이 울림만 있는 조건도 포함합니다. (${addedRooms.join(", ")})`);
+      paragraphs.push(`배경 소음 없이 울림만 있는 조건 · ${addedRooms.join(", ")}`);
     }
     return paragraphs;
   }
   function metricHelp(policy, criteria) {
     const conditions = noiseComparisonConditions(policy);
     return {
-      hard: {title: "강한 소음·울림", paragraphs: ["비교에 포함된 소음·울림 조건의 감지율을 같은 비중으로 평균한 값입니다.", ...conditions]},
-      worst: {title: "최약 조건", paragraphs: ["아래 소음·울림 시험 조건에서 각각 감지율을 계산해, 그중 가장 낮은 값을 표시합니다.", ...conditions]},
-      latency: {title: "반응 시간", paragraphs: ["감지에 성공한 호출의 95%가 이 시간 이내에 반응했습니다(P95).",
-        "발화가 끝난 시점부터 잽니다. ‘전’은 발화가 끝나기 전에 감지됐다는 뜻입니다."]},
+      hard: {title: "강한 소음·울림", paragraphs: ["소음·울림 시험 조건별 감지율을 같은 비중으로 평균한 값입니다.", ...conditions]},
+      worst: {title: "최약 조건", paragraphs: ["같은 소음·울림 시험 조건에서 측정한 감지율 중 가장 낮은 값입니다.", ...conditions]},
+      latency: {title: "반응 시간", paragraphs: ["감지에 성공한 호출의 약 95%가 이 시간 안에 감지됐습니다(P95).",
+        "시간은 발화 종료 시점을 기준으로 잽니다. 값에 ‘전’이 붙으면 발화가 끝나기 전에 감지됐다는 뜻입니다."]},
       criteria: {title: "평가 기준", paragraphs: ["모델을 비교할 때 참고할 기준입니다."], models: [
         {label: "소음·울림 없음", value: finite(criteria?.clean_recall) ? `${Number((criteria.clean_recall * 100).toFixed(2))}% 이상` : "높을수록 좋습니다."},
         {label: "종합·소음·최약 조건", value: "감지율이 높을수록 좋습니다."},
@@ -331,7 +331,7 @@
     modelSelect.value = models.some(model => model.id === previousModel) ? previousModel
       : models.some(model => model.id === deployed) ? deployed : sorted[0]?.id || "";
 
-    function overviewFor(model, compareSettings, settingsLabel) {
+    function overviewFor(model, compareSettings) {
       const candidate = byModel.get(model.id);
       const tested = measuredSettings(candidate) ? candidate : null;
       const metric = compareSettings ? tested?.metrics : model;
@@ -356,24 +356,29 @@
         {label: "최약 조건", value: worstValue, help: "worst"},
         {label: "오호출/시간", value: falseRate, title: rawFalse, help: "fa"},
         {label: "반응 시간", value: reactionTime(metric?.primary?.latency_p95_s), help: "latency"},
-        {label: settingsLabel, value: settings, title: "감지 기준 · 연속 감지 횟수"}
+        {label: "감지 기준", value: settings, help: "settings"}
       ];
       return entries;
     }
     function draw() {
       overviewHelp?.hide();
       const compareSettings = source.value === "recommended";
-      const settingsLabel = compareSettings ? "추천 감지 설정" : "평가 당시 감지 설정";
-      const settingsHeader = $("overview-settings-label");
-      if (settingsHeader) settingsHeader.textContent = settingsLabel;
-      const explanations = {...sharedHelp};
       const recommendationLimit = calibration?.recommendation_criteria?.fa_per_hour;
-      const falseAlarmExplanation = ["호출어가 없는 음원에서 시간당 잘못 감지한 횟수입니다."];
-      if (finite(recommendationLimit)) {
-        falseAlarmExplanation.push(`시간당 ${recommendationLimit}회 이하인 설정 중 소음·울림에서 감지율이 가장 높은 설정을 우선합니다.`,
-          "상한선 이내의 설정이 없으면 다른 조건을 충족한 설정 중 오호출이 가장 적은 값을 추천합니다.");
-      }
-      explanations.fa = {title: "오호출/시간", paragraphs: falseAlarmExplanation};
+      const selection = finite(recommendationLimit) ? [
+        `다른 추천 조건을 충족하는 설정 중 오호출이 시간당 ${recommendationLimit}회 이하인 후보를 먼저 봅니다. 그중 소음·울림 시험의 평균 감지율이 가장 높은 설정을 추천합니다.`,
+        "상한 이내에 드는 후보가 없으면, 다른 추천 조건을 충족한 설정 중 오호출이 가장 적은 설정을 추천합니다."
+      ] : [];
+      const explanations = {
+        ...sharedHelp,
+        fa: {title: "오호출/시간", paragraphs: ["호출어가 없는 음원에서 호출어를 잘못 감지한 횟수를 1시간 기준으로 환산한 값입니다.",
+          ...(finite(recommendationLimit) ? [`감지 기준을 추천할 때 오호출 상한은 시간당 ${recommendationLimit}회입니다.`] : [])]},
+        settings: {title: "감지 기준", paragraphs: [
+          "앞 숫자는 감지 점수의 임계값이고, 뒤의 횟수는 그 점수 이상이 연속으로 나와야 하는 횟수입니다.",
+          ...(compareSettings
+            ? ["모델마다 저장된 평가 점수에 여러 감지 기준을 적용해 비교했습니다.", ...selection]
+            : ["이 보고서의 성능 평가에 사용한 설정입니다."])
+        ]}
+      };
       if (overviewHelp) for (const button of document.querySelectorAll("[data-overview-help]")) {
         overviewHelp.bind(button, explanations[button.dataset.overviewHelp]);
       }
@@ -381,7 +386,7 @@
       const metrics = $("storySummaryMetrics");
       metrics?.replaceChildren();
       for (const model of sorted) {
-        const entries = overviewFor(model, compareSettings, settingsLabel);
+        const entries = overviewFor(model, compareSettings);
         const label = modelLabel(report, model.id);
         const row = document.createElement("tr");
         if (isEnsemble(report, model.id)) row.className = "ensemble";
@@ -402,9 +407,11 @@
         }
       }
       const note = $("overview-note");
-      if (note) note.textContent = compareSettings
-        ? "저장된 점수로 감지 설정을 비교했습니다."
-        : deployed ? `평가 당시 실행 모델 · ${modelLabel(report, deployed)}${isEnsemble(report, deployed) ? ` (${memberCount(report, deployed)}개 모델)` : ""}` : "";
+      if (note) {
+        note.hidden = compareSettings || !deployed;
+        note.textContent = note.hidden ? ""
+          : `평가 당시 실행 모델 · ${modelLabel(report, deployed)}${isEnsemble(report, deployed) ? ` (${memberCount(report, deployed)}개 모델)` : ""}`;
+      }
     }
     source.onchange = draw; modelSelect.onchange = draw; draw();
   }
