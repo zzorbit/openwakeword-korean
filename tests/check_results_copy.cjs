@@ -45,7 +45,7 @@ test("both report layouts put the comparison metrics in the models panel", () =>
       "모델", "종합 감지율", "소음·울림 없음", "강한 소음·울림", "최약 조건", "오호출/시간", "반응 시간", "감지 기준"
     ]);
     assert.deepEqual([...models.matchAll(/<button[^>]+data-overview-help="([^"]+)"/g)].map(match => match[1]), ["criteria", "hard", "worst", "fa", "latency", "settings"]);
-    assert.doesNotMatch(models, /overview-latency-note|발화 종료/);
+    assert.doesNotMatch(models, /overview-note|overview-latency-note|발화 종료/);
     assert.match(models, /id="overview-criteria"[^>]+data-overview-help="criteria"/);
     assert.doesNotMatch(models, /평가 목표|충족|미달/);
     assert.doesNotMatch(html, /evaluationCriteria|기존 평가 목표/);
@@ -83,7 +83,7 @@ function browser({dashboard = false} = {}) {
     hidePopover() { this.open = false; this.dispatch("toggle", {newState: "closed"}); }
   }
   const elements = new Map();
-  for (const id of ["responses", "scores", "condition-model", "condition-reverb", "condition-clean", "conditions", "storySummary", "overview-source", "overview-model", "storySummaryMetrics", "overview-note", "searchCriteria", "searchCriteriaNote", "condition-snr", "conditionMetrics", "overview-help", "overview-help-title", "overview-help-content", "overview-help-close"]) {
+  for (const id of ["responses", "scores", "condition-model", "condition-reverb", "condition-clean", "conditions", "storySummary", "overview-source", "overview-model", "storySummaryMetrics", "searchCriteria", "searchCriteriaNote", "condition-snr", "conditionMetrics", "overview-help", "overview-help-title", "overview-help-content", "overview-help-close"]) {
     elements.set(id, new Element());
   }
   const headers = ["hard", "worst", "fa", "latency", "settings"].map(key => {
@@ -316,8 +316,6 @@ test("missing, invalid and cache-only recommendations are presented honestly", (
   ui.renderSummary(report);
   elements.get("overview-source").value = "recommended"; elements.get("overview-source").onchange();
   assert.deepEqual(rows("storySummary")[1].slice(7), ["0.9999999 · 2회"]);
-  assert.equal(elements.get("overview-note").textContent, "");
-  assert.equal(elements.get("overview-note").hidden, true);
   report.runtime_recommendations.candidates[0].runtime.threshold = 1; ui.renderSummary(report);
   assert.equal(elements.get("overview-source").value, "baseline");
 });
@@ -349,7 +347,6 @@ test("one comparison shows measured settings and weakest conditions in both layo
   assert.equal(modelCells()[0].children.length, 0);
   assert.equal(modelCells()[4].children.length, 0);
   assert.equal(modelCells()[7].children.length, 0);
-  assert.doesNotMatch(elements.get("overview-note").textContent, /시험값/);
   const mobileMetrics = () => elements.get("storySummaryMetrics").children.map(item =>
     [fullText(item.children[0]), item.children[1].textContent]);
   assert.deepEqual(mobileMetrics()[2], ["강한 소음·울림", "73.00%"]);
@@ -363,8 +360,6 @@ test("one comparison shows measured settings and weakest conditions in both layo
   assert.equal(elements.get("storySummaryMetrics").children[3].children[1].children.length, 0);
   elements.get("overview-source").value = "baseline"; elements.get("overview-source").onchange();
   assert.deepEqual(rows("storySummary")[1], ["모델 2", "93.33%", "99.90%", "78.31%", "50.00%", "9.4회", "0.20초", "0.5 · 1회"]);
-  assert.match(elements.get("overview-note").textContent, /평가 당시 실행 모델/);
-  assert.equal(elements.get("overview-note").hidden, false);
   assert.deepEqual(mobileMetrics()[6], ["감지 기준", "0.5 · 1회"]);
   assert.equal(modelCells()[7].children.length, 0);
   assert.equal(mobileMetrics()[0][0], "종합 감지율");

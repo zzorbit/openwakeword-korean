@@ -5,7 +5,7 @@ h1,h2,h3,p{margin:0}h1{color:#eaedf1;font-size:26px;line-height:36px;letter-spac
 button,select,input{font:inherit;font-size:15px;color:#e9edf2;min-height:40px;border:1px solid var(--border);border-radius:7px;background:var(--control);padding:8px 12px;max-width:100%}button{cursor:pointer;font-weight:500;transition:background-color .2s ease}button:hover:enabled,button.primary:hover:enabled{background:#363d47}button.primary{background:var(--control);border-color:var(--border)}button:disabled{opacity:.5;cursor:default}input::placeholder{color:#bdc5d1;opacity:1}option{background:#292d33;color:var(--fg)}button:focus-visible,select:focus-visible,input:focus-visible,summary:focus-visible,a:focus-visible,audio:focus-visible{outline:2px solid var(--focus);outline-offset:3px}a{color:var(--blue)}
 .dashboard-tabs{display:flex;align-items:center;justify-content:center;gap:24px;position:relative;min-height:40px}.dashboard-tabs>button{border:0;border-radius:0;background:transparent;padding:7px 0;color:var(--muted);border-bottom:1px solid transparent;font-weight:500}.dashboard-tabs>button[aria-selected=true]{color:#eaedf1;border-bottom-color:#aab7c9}.dashboard-tabs>button:hover:enabled{background:#292d33}
 .dashboard-content{min-height:0;display:flex;align-items:center;justify-content:center}.workspace-panel{width:100%;min-width:0;max-height:100%;position:relative}
-.models-panel{display:flex;flex-direction:column;gap:12px;height:100%;min-height:0}
+.models-panel{display:flex;flex-direction:column;justify-content:safe center;gap:12px;height:100%;min-height:0}
 .overview-controls{display:flex;flex:none;justify-content:flex-end;gap:8px}
 .overview-controls :is(select,button){min-width:0;font-size:14px;min-height:34px;padding:5px 10px}
 .overview-criteria-button{flex:none;margin-inline-end:auto;white-space:nowrap}
@@ -101,7 +101,6 @@ html:has(body.embedded){background:transparent}
   .story-summary-metrics>div{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline;gap:5px;padding:3px 0}
   .story-summary-metrics dt,.story-summary-metrics dd{font-size:13px;line-height:1.25}
   .story-summary-metrics dd{text-align:right}
-  .model-comparison>.table-note{font-size:12px;line-height:1.35}
 }
 /* The compact viewer keeps all three condition selectors on one line. */
 @media(max-height:340px) and (max-width:760px){.conditions-panel .panel-heading{margin-bottom:5px}.conditions-panel .panel-heading>.controls{display:grid;grid-template-columns:minmax(70px,1.2fr) minmax(0,1fr) minmax(0,1fr);width:100%;gap:6px}.conditions-panel .panel-heading>.controls label,.conditions-panel .panel-heading>.controls label:first-child,.conditions-panel .panel-heading>.controls label:not(:first-child){display:grid;flex:none;min-width:0;gap:2px;font-size:12px;line-height:18px}.conditions-panel .panel-heading select{width:100%;min-width:0;min-height:28px;max-width:100%;padding:3px 2px;font-size:12px;line-height:18px}.condition-metrics>div{padding:2px 0;gap:8px}.condition-metrics dt,.condition-metrics dd{font-size:13px;line-height:18px}.condition-metrics dt{flex-shrink:0}.condition-metrics dd{min-width:0}.condition-metrics{margin-top:0}}

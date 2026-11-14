@@ -110,11 +110,6 @@
     const position = singleIds(report).indexOf(id);
     return position < 0 ? "모델" : `모델 ${position + 1}`;
   }
-  function memberCount(report, id) {
-    const declared = definitions(report).find(row => row.id === id);
-    const deployed = report.deployment_candidate;
-    return declared?.members?.length || (deployed?.id === id ? deployed.members?.length : 0) || singleIds(report).length;
-  }
   function appendCell(row, text) {
     const node = document.createElement("td");
     node.textContent = String(text);
@@ -405,12 +400,6 @@
             }
           }
         }
-      }
-      const note = $("overview-note");
-      if (note) {
-        note.hidden = compareSettings || !deployed;
-        note.textContent = note.hidden ? ""
-          : `평가 당시 실행 모델 · ${modelLabel(report, deployed)}${isEnsemble(report, deployed) ? ` (${memberCount(report, deployed)}개 모델)` : ""}`;
       }
     }
     source.onchange = draw; modelSelect.onchange = draw; draw();
