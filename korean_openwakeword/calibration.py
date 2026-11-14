@@ -326,6 +326,100 @@ def load_recommendation(project, bundle, evaluation, output, verify_inputs=True)
     return read_recommendation(project, bundle, evaluation, output, verify_inputs=verify_inputs)
 
 
+def _strong_snr_zero_diagnostics(clips, scores, offsets, candidates, selected):
+    """Replay only the report's strongest noise condition using the saved gates."""
+    from .tune import iter_replay
+
+    rows, frames, starts = [], [], [0]
+    for index, row in enumerate(clips):
+        if (row["kind"] == "positive" and row.get("reverb_condition") == "strong"
+                and row.get("snr_db") == 0 and row["category"] in CATEGORIES):
+            block = scores[offsets[index]:offsets[index + 1]]
+            rows.append(row)
+            frames.append(block)
+            starts.append(starts[-1] + len(block))
+    if not rows:
+        return {}
+    frames = np.concatenate(frames)
+    columns = {candidate["id"]: index for index, candidate in enumerate(candidates)}
+    measured = {}
+    for candidate in selected:
+        model_id = candidate["id"]
+        settings = {"chosen": candidate, "baseline": candidate.get("baseline")}
+        by_setting = measured[model_id] = {}
+        for label, setting in settings.items():
+            if not setting:
+                continue
+            totals = {category: [0, 0] for category in CATEGORIES}
+            for row in iter_replay(rows, frames, starts, [model_id], setting["runtime"], columns=[columns[model_id]]):
+                calls = row["results"][model_id]["calls"]
+                totals[row["category"]][0] += len(calls)
+                totals[row["category"]][1] += sum(call["success"] for call in calls)
+            by_setting[label] = {f"{category}:0": {"calls": calls, "successes": successes,
+                "recall": successes / calls if calls else None}
+                for category, (calls, successes) in totals.items()}
+    return measured
+
+
+def _add_report_diagnostics(recommendation, measured):
+    if not measured:
+        return recommendation
+    result = deepcopy(recommendation)
+    for candidate in result["candidates"]:
+        for label, setting in (("chosen", candidate), ("baseline", candidate.get("baseline"))):
+            conditions = measured.get(candidate["id"], {}).get(label)
+            if conditions and setting:
+                strong = setting["metrics"].setdefault("reverb_conditions", {}).setdefault("strong", {})
+                strong.setdefault("conditions", {}).update(conditions)
+    return result
+
+
+def report_recommendation(project, bundle, evaluation, output, recommendation, *, compute=True):
+    """Supplement a verified older recommendation without rewriting its artifacts.
+
+    Report pages may check the small cache first and run a cold replay separately.
+    """
+    rows = recommendation["candidates"]
+    if not rows or all(all(f"{category}:0" in row["metrics"].get("reverb_conditions", {}).get("strong", {}).get("conditions", {})
+                       for category in CATEGORIES) for row in rows):
+        return recommendation
+    publication = Path(output) / "recommendation.json"
+    evaluation = Path(evaluation)
+    sources = [evaluation / name for name in ("clips.json", "scores.npz")]
+    if not all(path.is_file() for path in sources):
+        return recommendation
+
+    def evidence():
+        sources_identity = []
+        for path in sources:
+            stat = path.stat()
+            sources_identity.append([stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino])
+        return {"schema_version": 1, "sources": sources_identity,
+                "bindings": recommendation["bindings"], "recommendation_sha256": digest(publication)}
+
+    binding = evidence()
+    cache = publication.parent.parent / ("report_diagnostics_" + binding["recommendation_sha256"][:24] + ".json")
+    if cache.is_file():
+        try:
+            saved = read_json(cache)
+            if saved.get("binding") == binding and saved.get("checksum") == identity(saved["measured"]):
+                return _add_report_diagnostics(recommendation, saved["measured"])
+        except (OSError, ValueError, KeyError, AttributeError, TypeError):
+            pass  # Rebuild a disposable projection from verified evidence.
+    if not compute:
+        return None
+
+    if read_recommendation(project, bundle, evaluation, output) != recommendation:
+        raise ValueError("Recommendation changed while preparing report diagnostics")
+    from .selection import verified_evaluation
+    _, _, _, _, clips, scores, offsets, candidates = verified_evaluation(project, bundle, evaluation)
+    measured = _strong_snr_zero_diagnostics(clips, scores, offsets, candidates, rows)
+    if evidence() != binding:
+        raise ValueError("Evaluation evidence changed while preparing report diagnostics")
+    write_json(cache, {"binding": binding, "measured": measured, "checksum": identity(measured)})
+    return _add_report_diagnostics(recommendation, measured)
+
+
 @project_storage
 def recommend(project, bundle, evaluation, output, progress_callback=None):
     """Recommend one jointly searched gate for every single and mean candidate.
@@ -428,15 +522,16 @@ def recommend(project, bundle, evaluation, output, progress_callback=None):
             selected.append(best)
             print(f"Detection settings: {candidate['id']} threshold={best['runtime']['threshold']:g} frames={best['runtime']['consecutive_frames']} recommendation_available={best['recommendation_available']} targets_passed={best['passed']}", flush=True)
             del rolling
-        if _bindings(project, bundle, evaluation) != bindings:
-            raise ValueError("Automatic detection recommendation inputs changed during search")
         result = {"schema_version": 1, "method": METHOD, "stage": "development", "created_at": now(),
                   "bindings": bindings, "search_policy": SEARCH_POLICY,
                   "adoption_criteria": declaration["adoption_criteria"],
                   "recommendation_criteria": declaration["recommendation_criteria"], "candidates": selected,
                   "selection_applied": False, "network_rerun": False, "Final_used_for_selection": False}
+        result = _add_report_diagnostics(result, _strong_snr_zero_diagnostics(prepared.rows, scores, offsets, candidates, selected))
+        if _bindings(project, bundle, evaluation) != bindings:
+            raise ValueError("Automatic detection recommendation inputs changed during search")
         write_json(output / "recommendation.json", result)
         write_json(output / "receipt.json", {"schema_version": 1, "bindings": bindings,
                    "recommendation_sha256": digest(output / "recommendation.json"), "completed_at": now()})
     return {"recommendation": str(output / "recommendation.json"), "receipt": str(output / "receipt.json"),
-            "candidates": selected, "network_rerun": False, "selection_applied": False}
+            "candidates": result["candidates"], "network_rerun": False, "selection_applied": False}

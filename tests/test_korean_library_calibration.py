@@ -14,6 +14,9 @@ from korean_openwakeword.runtime import bundle_candidates, deployment_candidate,
 from korean_openwakeword.tune import iter_replay
 
 
+SNR_ZERO_CATEGORIES = ("environment", "music", "competing_speech")
+
+
 @pytest.mark.parametrize("warmup", [0, .13, 2])
 @pytest.mark.parametrize("cooldown", [0, .17, 1.03])
 @pytest.mark.parametrize("count", [1, 2, 3, 6])
@@ -83,9 +86,14 @@ def experiment(tmp_path, monkeypatch):
     candidates = bundle_candidates(package)
     ids = [row["id"] for row in candidates]
     clips, values, offsets = [], [], [0]
-    for reverb, category, snr in [("none", "clean", None)] + list(calibration.HARD_CONDITIONS):
+    conditions = [("none", "clean", None), *calibration.HARD_CONDITIONS]
+    with_hit_frames = [(reverb, category, snr, 5) for reverb, category, snr in conditions]
+    with_hit_frames.extend(("strong", category, 0, hits) for category, hits in
+                           (("environment", 1), ("music", 2), ("music", 0), ("competing_speech", 0)))
+    for reverb, category, snr, hit_frames in with_hit_frames:
         score = np.zeros((45, len(ids)), np.float32)
         score[27:32] = [.65, .96, .01, .65]
+        score[27 + hit_frames:32, 0] = 0
         row = {"sample_id": f"positive{len(clips)}", "kind": "positive", "category": category, "snr_db": snr,
                "reverb_condition": reverb,
                "provenance": "qwen_tts", "duration_s": 3.6,
@@ -118,6 +126,29 @@ def experiment(tmp_path, monkeypatch):
     return project, bundle, evaluation, ids
 
 
+def assert_report_snr_zero_diagnostics(evaluation, candidates):
+    clips = read_json(evaluation / "clips.json")
+    with np.load(evaluation / "scores.npz", allow_pickle=False) as archive:
+        scores, offsets, ids = archive["scores"], archive["offsets"], archive["model_ids"].tolist()
+    for candidate in candidates:
+        candidate_id = candidate["id"]
+        for setting in (candidate, candidate["baseline"]):
+            replayed = iter_replay(clips, scores, offsets, [candidate_id], setting["runtime"],
+                                   columns=[ids.index(candidate_id)])
+            conditions = setting["metrics"]["reverb_conditions"]["strong"]["conditions"]
+            measured = {}
+            for row in replayed:
+                if row.get("reverb_condition") == "strong" and row.get("snr_db") == 0:
+                    measured.setdefault(row["category"], []).extend(row["results"][candidate_id]["calls"])
+            assert set(measured) == set(SNR_ZERO_CATEGORIES)
+            for category, calls in measured.items():
+                actual = conditions[f"{category}:0"]
+                successes = sum(call["success"] for call in calls)
+                assert actual["calls"] == len(calls)
+                assert actual["successes"] == successes
+                assert actual["recall"] == successes / len(calls)
+
+
 def test_recommendations_per_candidate_and_no_source_mutation(experiment, tmp_path):
     project, bundle, evaluation, ids = experiment
     protected = {path: digest(path) for directory in (bundle, evaluation) for path in directory.rglob("*") if path.is_file()}
@@ -142,6 +173,52 @@ def test_recommendations_per_candidate_and_no_source_mutation(experiment, tmp_pa
     assert progress[-1]["completed"] == progress[-1]["total"]
     assert all(digest(path) == sha for path, sha in protected.items())
     assert recommend(project, bundle, evaluation, output)["candidates"] == report["candidates"]
+    assert_report_snr_zero_diagnostics(evaluation, report["candidates"])
+    recommended_conditions = first["metrics"]["reverb_conditions"]["strong"]["conditions"]
+    baseline_conditions = first["baseline"]["metrics"]["reverb_conditions"]["strong"]["conditions"]
+    assert {key: row["recall"] for key, row in recommended_conditions.items()} == {
+        "environment:0": 0., "music:0": .5, "competing_speech:0": 0.,
+    }
+    assert {key: row["recall"] for key, row in baseline_conditions.items()} == {
+        "environment:0": 1., "music:0": .5, "competing_speech:0": 0.,
+    }
+
+
+def test_report_diagnostics_replay_archived_runtimes_without_rewriting_receipt(experiment, tmp_path):
+    project, bundle, evaluation, ids = experiment
+    output = tmp_path / "archived_recommendation"
+    recommend(project, bundle, evaluation, output)
+    publication, receipt_path = output / "recommendation.json", output / "receipt.json"
+    archived = read_json(publication)
+    for candidate in archived["candidates"]:
+        candidate["metrics"].pop("reverb_conditions")
+        candidate["baseline"]["metrics"].pop("reverb_conditions")
+    write_json(publication, archived)
+    write_json(receipt_path, dict(read_json(receipt_path), recommendation_sha256=digest(publication)))
+    protected = {path: path.read_bytes() for directory in (output, evaluation) for path in directory.iterdir()
+                 if path.is_file()}
+
+    source = read_recommendation(project, bundle, evaluation, output)
+    original_output_files = set(output.iterdir())
+    assert calibration.report_recommendation(project, bundle, evaluation, output, source, compute=False) is None
+    projected = calibration.report_recommendation(project, bundle, evaluation, output, source)
+    assert [row["id"] for row in projected["candidates"]] == ids
+    assert_report_snr_zero_diagnostics(evaluation, projected["candidates"])
+    matched_archive = deepcopy(projected)
+    for candidate in matched_archive["candidates"]:
+        del candidate["metrics"]["reverb_conditions"]
+        del candidate["baseline"]["metrics"]["reverb_conditions"]
+    assert matched_archive == archived
+    assert source == archived
+    assert set(output.iterdir()) == original_output_files
+    assert calibration.report_recommendation(project, bundle, evaluation, output, source, compute=False) == projected
+    cache, = tmp_path.glob("report_diagnostics_*.json")
+    saved = read_json(cache)
+    saved["measured"][ids[0]]["chosen"]["environment:0"]["recall"] = 1.
+    write_json(cache, saved)
+    assert calibration.report_recommendation(project, bundle, evaluation, output, source, compute=False) is None
+    assert calibration.report_recommendation(project, bundle, evaluation, output, source) == projected
+    assert {path: path.read_bytes() for path in protected} == protected
 
 
 def test_interrupted_search_resumes_and_source_change_rejected(experiment, tmp_path):

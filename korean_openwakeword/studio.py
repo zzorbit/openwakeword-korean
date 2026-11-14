@@ -313,6 +313,7 @@ def _execution_contract(*, legacy_reference_review=False):
         bindings["gpu_evaluation.py"] = _GPU_LOADER_COMPATIBLE_DIGESTS[gpu_loader]
     for name in _COMPUTE_DISPATCH_COMPATIBLE_DIGESTS:
         bindings[name] = _compute_dispatch_compatible_digest(name, bindings[name])
+    bindings["calibration.py"] = _CALIBRATION_REPORT_COMPATIBLE_DIGESTS.get(bindings["calibration.py"], bindings["calibration.py"])
     if legacy_reference_review:
         # Only project the previous contract for this audited, opt-in change.
         if (bindings.get("pilot.py"), bindings.get("reference_voice_review.py")) != _REFERENCE_REVIEW_COMPATIBLE_FILES:
@@ -437,6 +438,15 @@ _COMPUTE_DISPATCH_COMPATIBLE_DIGESTS = {
         "9b95a05cab54245642a1287c92087bff6c120b3ed699f28a3f4385b6d0f6f020":
             "3f9f5cc654808c8e205dfa6fc5b5f818306d7e7b18701112f2d368c1e6b2d38c",
     },
+}
+
+# These versions add report-only SNR 0 diagnostics after gate selection.
+# Their search, thresholds, and evaluation checkpoints remain compatible.
+_CALIBRATION_REPORT_COMPATIBLE_DIGESTS = {
+    "dbc8a7d6e1d2c89c5a23e02372b11709eec3d4034f1140b186a059a8c23385de":
+        "247affb60a241181eab12f8c2932f40444437409550c8e4dc2ae56297f48f2b1",
+    "dd152678cf6315a50f7a9696b382d81dd33ae595b28e17e17e2722df00a3a084":
+        "56dd92a3ecae2347cad0135d49377e80b7533584a9d9a9d59c4c1c5b0ec4fdd2",
 }
 
 
@@ -1175,6 +1185,7 @@ class StudioManager:
         self.registry_path = self.directory / "projects.json"
         self.token = secrets.token_urlsafe(32)
         self._lock = threading.RLock()
+        self._report_diagnostics_lock = threading.Lock()
         self._popen = popen or subprocess.Popen
         self._children = {}
         self._reference_worker = None
@@ -5347,12 +5358,8 @@ class StudioManager:
                 self._analysis_service = StudioAnalysis(self)
             return self._analysis_service
 
-    def runtime_recommendations(self, state):
-        """Read a separately completed recommendation, never rewrite history.
-
-        Serving its frozen summary needs the bound reports, not another scan
-        of the hundreds of MB of score/clip evidence already checked at search.
-        """
+    def runtime_recommendations(self, state, *, report_diagnostics=None):
+        """Read the frozen recommendation, optionally with report-only diagnostics."""
         def result(key):
             row = state.get("results", {}).get(key, {})
             return row.get("result", row)
@@ -5361,12 +5368,20 @@ class StudioManager:
             return None
         root = Path(state["project"]).resolve().parent
         report = Path(evaluation) / "report.json"
-        from .calibration import LEGACY_SEARCH_POLICY, SEARCH_POLICY, read_recommendation, recommendation_is_available
+        from .calibration import (LEGACY_SEARCH_POLICY, SEARCH_POLICY, read_recommendation,
+                                  recommendation_is_available, report_recommendation)
         prefix = "studio_runtime_recommendations_" + digest(report)[:16] + "_"
         for policy in (SEARCH_POLICY, LEGACY_SEARCH_POLICY):
             directory = root / "reports" / (prefix + identity(policy)[:12])
             if (directory / "receipt.json").is_file():
                 recommendation = read_recommendation(state["project"], bundle, evaluation, directory, verify_inputs=False)
+                if report_diagnostics is not None:
+                    if report_diagnostics:
+                        with self._report_diagnostics_lock:
+                            recommendation = report_recommendation(state["project"], bundle, evaluation, directory, recommendation)
+                    else:
+                        ready = report_recommendation(state["project"], bundle, evaluation, directory, recommendation, compute=False)
+                        recommendation = ready if ready is not None else dict(recommendation, report_diagnostics_pending=True)
                 # Project an archived choice into the current policy for display and microphone testing.
                 recommendation["candidates"] = [
                     dict(row, recommendation_available=True, status="recommended_over_false_alarm_limit")
@@ -5635,9 +5650,11 @@ def make_studio_server(manager, port=8793):
                     if name in view_assets:
                         kind = "text/html; charset=utf-8" if name.endswith("html") else "text/css; charset=utf-8" if name.endswith("css") else "text/javascript; charset=utf-8"
                         return self.respond((resources / view_assets[name]).read_bytes(), kind=kind)
+                    if name == "report-diagnostics.json":
+                        return self.respond(manager.runtime_recommendations(state, report_diagnostics=True))
                     if name == "results-data.js":
                         data = target.read_bytes()
-                        recommendation = manager.runtime_recommendations(state)
+                        recommendation = manager.runtime_recommendations(state, report_diagnostics=False)
                         if recommendation:
                             data += ("\nwindow.KOWW_RESULTS.report.runtime_recommendations=" +
                                      json.dumps(recommendation, ensure_ascii=False, allow_nan=False).replace("<", "\\u003c") + ";\n").encode("utf-8")

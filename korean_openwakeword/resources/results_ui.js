@@ -8,7 +8,8 @@
   const categories = ["environment", "music", "competing_speech"];
   const levels = [20, 15, 10, 5, 0];
   const worstReverb = "strong";
-  const worstSnr = 5;
+  const worstSnr = 0;
+  const reportDiagnostics = new WeakSet();
   let dashboardView = "models";
   let compactAudio = null;
   let resultClipPicker;
@@ -178,6 +179,21 @@
   function renderSummary(report) {
     renderOverview(report);
     renderCriteria(report);
+    const recommendation = report.runtime_recommendations;
+    if (recommendation?.report_diagnostics_pending && !reportDiagnostics.has(report)) {
+      reportDiagnostics.add(report);
+      fetch("report-diagnostics.json").then(response => {
+        if (!response.ok) throw new Error("평가 자료를 불러오지 못했습니다.");
+        return response.json();
+      }).then(result => {
+        if (result?.schema_version !== 1 || !Array.isArray(result.candidates)) throw new Error("평가 자료 형식이 올바르지 않습니다.");
+        return result;
+      }).catch(() => ({...recommendation, report_diagnostics_pending: false})).then(result => {
+        if (report.runtime_recommendations !== recommendation) return;
+        report.runtime_recommendations = result;
+        renderOverview(report);
+      });
+    }
   }
   function renderCriteria(report) {
     const target = $("searchCriteria");
@@ -310,7 +326,7 @@
     return {
       hard: {title: "강한 소음·울림", paragraphs: noiseComparisonConditions(policy)},
       worst: {title: "최악 조건", paragraphs: [
-        `울림: ${reverbLabel(worstReverb)}\n소음 크기: 호출어보다 ${worstSnr} dB 작게 (SNR ${worstSnr} dB)`,
+        `울림: ${reverbLabel(worstReverb)}\n소음 크기: 호출어와 같은 크기 (SNR ${worstSnr} dB)`,
         "이 조건에서 배경 소리별 감지율을 같은 비중으로 평균합니다."
       ]},
       latency: {title: "반응 시간", paragraphs: ["감지에 성공한 호출의 약 95%가 이 시간 안에 감지됐습니다(P95).",
@@ -370,7 +386,8 @@
       const settings = compareSettings && tested && !recommendationApplies(tested) ? "추천값 없음"
         : validSettings(runtime) ? `${thresholdText(runtime.threshold)} · ${runtime.consecutive_frames}회` : "기록 없음";
       const worstRecall = worstConditionRecall(metric) ?? worstConditionRecall(sameRuntimeMetrics);
-      const worstValue = metric && worstRecall === undefined ? "자료 부족" : percent(worstRecall);
+      const worstValue = metric && worstRecall === undefined
+        ? (compareSettings && calibration?.report_diagnostics_pending ? "계산 중" : "자료 부족") : percent(worstRecall);
       const falseRate = finite(negative?.fa_per_hour) ? `${Number(negative.fa_per_hour.toFixed(3))}회` : "결과 없음";
       const entries = [
         {label: "종합 감지율", value: percent(metric?.primary?.recall)},

@@ -56,7 +56,7 @@ test("both report layouts put the comparison metrics in the models panel", () =>
   }
 });
 const fullText = element => [element.textContent, ...element.children.map(fullText)].filter(Boolean).join(" ");
-function browser({dashboard = false} = {}) {
+function browser({dashboard = false, fetch} = {}) {
   class Element {
     constructor(tag = "div") { this.tagName = tag; this.children = []; this.value = ""; this.textContent = ""; this.disabled = false; this.attributes = {}; this.dataset = {}; this.style = {}; this.listeners = new Map(); this.open = false; }
     append(...nodes) {
@@ -100,7 +100,7 @@ function browser({dashboard = false} = {}) {
     elements.set("audio", Object.assign(new Element("audio"), {src: "unchanged.wav", currentTime: 2.5}));
   }
   const context = vm.createContext({document: {getElementById: id => elements.get(id), createElement: tag => new Element(tag),
-    querySelectorAll: selector => selector === "[data-overview-help]" ? [criteria, ...headers] : []}});
+    querySelectorAll: selector => selector === "[data-overview-help]" ? [criteria, ...headers] : []}, fetch});
   context.window = context; context.innerWidth = 1024; context.innerHeight = 768;
   vm.runInContext(source, context);
   return {elements, headers, ui: context.KowwResultsUI,
@@ -323,18 +323,23 @@ test("one comparison shows measured settings and fixed worst-case means in both 
   const {ui, elements, rows} = browser(), report = sample();
   report.runtime = {threshold: .5, consecutive_frames: 1};
   Object.assign(report.models[0], {clean: {recall: .999}, negative: {fa_per_hour: 9.399818}});
-  const hard = (cell_mean, targetRecalls) => ({complete: true, cell_mean, worst_recall: 0,
-    conditions: Object.fromEntries(["environment", "music", "competing_speech"].map((category, index) =>
-      [`strong:${category}:5`, {recall: targetRecalls[index], calls: 10 ** index,
-        reverb_condition: "strong", category, snr_db: 5}]))});
+  const backgrounds = ["environment", "music", "competing_speech"];
+  const hard = cell_mean => ({complete: true, cell_mean, worst_recall: 0,
+    conditions: Object.fromEntries(backgrounds.map(category =>
+      [`strong:${category}:5`, {recall: .9, calls: 10, reverb_condition: "strong", category, snr_db: 5}]))});
+  const strong = recalls => ({strong: {conditions: Object.fromEntries(backgrounds.map((category, index) =>
+    [`${category}:0`, {recall: recalls[index], calls: 10 ** index}]))}});
   report.runtime_recommendations = {schema_version: 1, recommendation_criteria: {fa_per_hour: 1}, adoption_criteria: {fa_per_hour: .1}, candidates: [
     {id: "mean", recommendation_available: true, runtime: {threshold: .97, consecutive_frames: 3}, passed: false,
       adoption: {passed: false, reasons: ["FA/hour target failed or unmeasured"]},
-      metrics: {clean: {recall: .995}, hard_conditions: hard(.73, [.5, .6, .7]), negative: {fa_per_hour: .9}, primary: {recall: .81, latency_p95_s: -.02}}},
+      metrics: {clean: {recall: .995}, hard_conditions: hard(.73), reverb_conditions: strong([.5, .6, .7]),
+        negative: {fa_per_hour: .9}, primary: {recall: .81, latency_p95_s: -.02}}},
     {id: "member2_seed2", recommendation_available: true, status: "recommended_over_false_alarm_limit", recommendation_reasons: ["FA/hour target failed or unmeasured"],
       runtime: {threshold: .99, consecutive_frames: 5}, adoption: {passed: false, reasons: ["Latency target failed or unmeasured"]},
-      metrics: {clean: {recall: .9855}, hard_conditions: hard(.62785, [1, .5, 0]), negative: {fa_per_hour: 1.199976889}, primary: {recall: .69, latency_p95_s: .44}},
-      baseline: {runtime: report.runtime, metrics: {hard_conditions: hard(.783125, [.4, .8, .9]), clean: {recall: .8}, negative: {fa_per_hour: 8}}}},
+      metrics: {clean: {recall: .9855}, hard_conditions: hard(.62785), reverb_conditions: strong([1, .5, 0]),
+        negative: {fa_per_hour: 1.199976889}, primary: {recall: .69, latency_p95_s: .44}},
+      baseline: {runtime: report.runtime, metrics: {hard_conditions: hard(.783125), reverb_conditions: strong([.4, .8, .9]),
+        clean: {recall: .8}, negative: {fa_per_hour: 8}}}},
     {id: "member3_seed3", recommendation_available: false, runtime: {threshold: .9, consecutive_frames: 2}, metrics: null}
   ]};
   const before = JSON.stringify(report); ui.renderSummary(report);
@@ -378,12 +383,29 @@ test("one comparison shows measured settings and fixed worst-case means in both 
   candidate.recommendation_reasons = ["Hard noise/reverberation conditions incomplete"];
   ui.renderSummary(report);
   assert.deepEqual(rows("storySummary")[1].slice(3, 5), ["자료 부족", "50.00%"]);
-  delete candidate.metrics.hard_conditions.conditions["strong:music:5"];
+  delete candidate.metrics.reverb_conditions.strong.conditions["music:0"];
   ui.renderSummary(report);
   assert.deepEqual(rows("storySummary")[1].slice(3, 5), ["자료 부족", "자료 부족"]);
   assert.equal(rows("storySummary")[1][7], "추천값 없음");
   assert.equal(modelCells()[3].children.length, 0);
   assert.equal(modelCells()[4].children.length, 0);
+});
+test("legacy recommendation records never substitute original or 5 dB results for an unmeasured 0 dB condition", () => {
+  const {ui, elements, rows} = browser(), report = sample();
+  const model = report.models.find(row => row.id === "mean");
+  const backgrounds = ["environment", "music", "competing_speech"];
+  const atSnr = (snr, recall) => Object.fromEntries(backgrounds.map(category =>
+    [`${category}:${snr}`, {recall, calls: 10}]));
+  model.reverb_conditions.strong.conditions = atSnr(0, .4);
+  report.runtime_recommendations = {schema_version: 1, candidates: [{
+    id: model.id, runtime: {threshold: .9, consecutive_frames: 3}, recommendation_available: true,
+    metrics: {reverb_conditions: {strong: {conditions: atSnr(5, .99)}}, hard_conditions: {complete: true, cell_mean: .92}}
+  }]};
+  ui.renderSummary(report);
+  assert.deepEqual(rows("storySummary")[3].slice(3, 5), ["92.00%", "자료 부족"]);
+  const source = elements.get("overview-source");
+  source.value = "baseline"; source.onchange();
+  assert.equal(rows("storySummary")[3][4], "40.00%");
 });
 test("false-alarm heading shows the general limit while per-model measurements stay in the comparison", () => {
   const {ui, elements, headers, rows} = browser(), report = sample();
@@ -487,14 +509,17 @@ test("metric help opens only from headings and describes the archived comparison
     ["environment", "music", "competing_speech"].flatMap(category =>
       [10, 5].map(snr_db => ({reverb_condition, category, snr_db}))));
   hardPolicy.push(reverbOnly, {...reverbOnly, reverb_condition: "strong"});
-  const withFixedCases = (cell_mean, fixedRecalls) => ({complete: true, cell_mean, worst_recall: 0,
-    expected_cells: hardPolicy.length, conditions: hardPolicy.map(cell => ({...cell,
-      recall: cell.reverb_condition === "strong" && cell.snr_db === 5 ? fixedRecalls[cell.category] : 0}))});
-  model.hard_conditions = withFixedCases(.8, {environment: .3, music: .9, competing_speech: .6});
+  const hardResults = cell_mean => ({complete: true, cell_mean, worst_recall: 0,
+    expected_cells: hardPolicy.length, conditions: hardPolicy.map(cell => ({...cell, recall: 0}))});
+  const strong = recalls => ({strong: {conditions: Object.fromEntries(Object.entries(recalls).map(([category, recall]) =>
+    [`${category}:0`, {recall, calls: 10}]))}});
+  model.hard_conditions = hardResults(.8);
+  model.reverb_conditions = strong({environment: .3, music: .9, competing_speech: .6});
   report.runtime_recommendations = {schema_version: 1,
     search_policy: {hard_conditions: hardPolicy},
     candidates: [{id: model.id, runtime: {threshold: .9, consecutive_frames: 3}, recommendation_available: true,
-      metrics: {noise_cell_mean: .92, hard_conditions: withFixedCases(.7, {environment: .1, music: .7, competing_speech: .4})}}]};
+      metrics: {noise_cell_mean: .92, hard_conditions: hardResults(.7),
+        reverb_conditions: strong({environment: .1, music: .7, competing_speech: .4})}}]};
   const saved = JSON.stringify(report);
   ui.renderSummary(report);
 
@@ -534,7 +559,7 @@ test("metric help opens only from headings and describes the archived comparison
   headers[1].dispatch("click");
   assert.equal(dialog.open, true);
   assert.equal(label(), "최악 조건");
-  assert.equal(content(), "울림: 강한 울림\n소음 크기: 호출어보다 5 dB 작게 (SNR 5 dB) 이 조건에서 배경 소리별 감지율을 같은 비중으로 평균합니다.");
+  assert.equal(content(), "울림: 강한 울림\n소음 크기: 호출어와 같은 크기 (SNR 0 dB) 이 조건에서 배경 소리별 감지율을 같은 비중으로 평균합니다.");
   assert.doesNotMatch(content(), /가장 낮|보통 울림|SNR 10|추천값 결과|평가 당시 결과|모델 [123]|앙상블|%/);
   assert.equal(elements.get("overview-help-content").children.some(child => child.className === "overview-help-models"), false);
   const worstHelp = content();
@@ -570,7 +595,7 @@ test("fixed worst-case help describes its definition even when legacy records la
   assert.equal(elements.get("overview-help").open, true);
   const content = fullText(elements.get("overview-help-content"));
   assert.match(content, /강한 울림/);
-  assert.match(content, /SNR 5 dB/);
+  assert.match(content, /호출어와 같은 크기 \(SNR 0 dB\)/);
   assert.match(content, /배경 소리별 감지율을 같은 비중으로 평균/);
   assert.doesNotMatch(content, /환경소음|음악·전자음|다른 사람 말소리|가장 낮았던 시험 조건|[0-9.]+%/);
 });
@@ -613,30 +638,31 @@ test("fixed worst-case values prefer the original measured conditions and exclud
   const {ui, rows} = browser(), report = sample();
   const model = report.models.find(row => row.id === "mean");
   const measured = {
-    "environment:5.0": {recall: .25, calls: 4},
-    "music:5": {recall: .5, calls: 10},
-    "competing_speech:5": {recall: .75, calls: 100},
+    "environment:0.0": {recall: .25, calls: 4},
+    "music:0": {recall: .5, calls: 10},
+    "competing_speech:0": {recall: .75, calls: 100},
+    "competing_speech:5": {recall: .9, calls: 100},
     "competing_speech:10": {recall: 0, calls: 20},
     "clean:none": {recall: 1, calls: 20}
   };
   model.reverb_conditions.strong.conditions = measured;
   model.hard_conditions = {complete: true, cell_mean: .8, worst_recall: 0, conditions: [
-    {reverb_condition: "strong", category: "environment", snr_db: 5, recall: .9},
-    {reverb_condition: "strong", category: "music", snr_db: 5, recall: .9},
-    {reverb_condition: "strong", category: "competing_speech", snr_db: 5, recall: .9}
+    {reverb_condition: "strong", category: "environment", snr_db: 0, recall: .9},
+    {reverb_condition: "strong", category: "music", snr_db: 0, recall: .9},
+    {reverb_condition: "strong", category: "competing_speech", snr_db: 0, recall: .9}
   ]};
   const before = JSON.stringify(report);
   ui.renderSummary(report);
   assert.deepEqual(rows("storySummary")[3].slice(3, 5), ["80.00%", "50.00%"]);
   assert.equal(JSON.stringify(report), before);
   delete model.hard_conditions;
-  const untested = measured["competing_speech:5"];
+  const untested = measured["competing_speech:0"];
   for (const invalid of [{recall: .75, calls: 0}, {recall: 1.2, calls: 100}, {recall: null, calls: 100}]) {
-    measured["competing_speech:5"] = invalid;
+    measured["competing_speech:0"] = invalid;
     ui.renderSummary(report);
     assert.equal(rows("storySummary")[3][4], "자료 부족");
   }
-  measured["competing_speech:5"] = untested;
+  measured["competing_speech:0"] = untested;
   ui.renderSummary(report);
   assert.equal(rows("storySummary")[3][4], "50.00%");
 });
@@ -658,4 +684,40 @@ test("compact condition rows use the same stored cells as the full table for eac
   assert.equal(elements.get("conditionMetrics").children[0].children[1].textContent, "0.00%\n0 / 12회");
   assert.equal(JSON.stringify(report), before);
 });
-console.log(`${cases.length} result presentation tests passed`);
+async function testArchivedDiagnosticLoading() {
+  const report = sample();
+  const original = report.models.find(row => row.id === "mean");
+  original.reverb_conditions.strong.conditions = {"environment:0": {recall: .6},
+    "music:0": {recall: .5}, "competing_speech:0": {recall: .4}};
+  report.runtime_recommendations = {schema_version: 1, report_diagnostics_pending: true,
+    candidates: [{id: "mean", runtime: {threshold: .9, consecutive_frames: 3}, metrics: {}}]};
+  let requests = 0, resolveResponse;
+  const {ui, rows, elements} = browser({fetch(url) {
+    assert.equal(url, "report-diagnostics.json");
+    requests += 1;
+    return new Promise(resolve => { resolveResponse = resolve; });
+  }});
+  ui.renderSummary(report);
+  ui.renderSummary(report);
+  assert.equal(requests, 1);
+  assert.equal(rows("storySummary")[3][4], "계산 중");
+  const source = elements.get("overview-source");
+  source.value = "baseline";
+  source.onchange();
+  assert.equal(rows("storySummary")[3][4], "50.00%");
+  const projection = JSON.parse(JSON.stringify(report.runtime_recommendations));
+  delete projection.report_diagnostics_pending;
+  projection.candidates[0].metrics.reverb_conditions = {strong: {conditions: {"environment:0": {recall: .5},
+    "music:0": {recall: .3}, "competing_speech:0": {recall: .1}}}};
+  resolveResponse({ok: true, json: async () => projection});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(source.value, "baseline");
+  assert.equal(rows("storySummary")[3][4], "50.00%");
+  source.value = "recommended";
+  source.onchange();
+  assert.equal(rows("storySummary")[3][4], "30.00%");
+}
+testArchivedDiagnosticLoading().then(() => console.log(`${cases.length + 1} result presentation tests passed`)).catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});
