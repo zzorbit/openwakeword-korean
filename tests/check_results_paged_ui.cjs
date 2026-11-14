@@ -268,7 +268,7 @@ const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "posi
     assert.equal(comparison[5].textContent, "0.1회");
     assert.match(comparison[5].title, /3회.*30/);
     assert.equal(comparison[6].textContent, "0.20초");
-    assert.equal(comparison[8].textContent, "미달");
+    assert.equal(comparison.length, 8);
     assert.equal(b.elements.get("conditions").tBodies[0].children.length, 3);
     assert.equal(b.elements.get("conditions").tBodies[0].children[0].children[3].textContent, "83.33%\n10 / 12회");
     b.elements.get("condition-reverb").value = "strong"; b.elements.get("condition-reverb").onchange();

@@ -42,11 +42,14 @@ test("both report layouts put the comparison metrics in the models panel", () =>
     assert.doesNotMatch(html, /result-full-details|상세 결과|model-tab-|targetComparison|id="summary"|id="recommendations"/);
     assert.deepEqual([...models.matchAll(/<th scope="col"[^>]*>([\s\S]*?)<\/th>/g)]
       .map(match => match[1].replace(/<[^>]+>/g, "").trim()), [
-      "모델", "종합 감지율", "소음·울림 없음", "강한 소음·울림", "최약 조건", "오호출/시간", "반응 시간", "추천 감지 설정", "평가 목표"
+      "모델", "종합 감지율", "소음·울림 없음", "강한 소음·울림", "최약 조건", "오호출/시간", "반응 시간", "추천 감지 설정"
     ]);
     assert.match(models, /aria-describedby="overview-latency-note"/);
     assert.equal([...models.matchAll(/id="overview-latency-note"/g)].length, 1);
-    assert.deepEqual([...models.matchAll(/<button[^>]+data-overview-help="([^"]+)"/g)].map(match => match[1]), ["hard", "worst", "fa"]);
+    assert.deepEqual([...models.matchAll(/<button[^>]+data-overview-help="([^"]+)"/g)].map(match => match[1]), ["criteria", "hard", "worst", "fa"]);
+    assert.match(models, /id="overview-criteria"[^>]+data-overview-help="criteria"/);
+    assert.doesNotMatch(models, /평가 목표|충족|미달/);
+    assert.doesNotMatch(html, /evaluationCriteria|기존 평가 목표/);
     assert.match(html, /id="overview-help"[^>]*popover="auto"[^>]*role="dialog"[^>]*aria-labelledby="overview-help-title"/);
     for (const id of ["overview-help", "overview-help-content", "overview-help-close"]) {
       assert.equal([...html.matchAll(new RegExp(`id="${id}"`, "g"))].length, 1);
@@ -81,12 +84,15 @@ function browser({dashboard = false} = {}) {
     hidePopover() { this.open = false; this.dispatch("toggle", {newState: "closed"}); }
   }
   const elements = new Map();
-  for (const id of ["responses", "scores", "condition-model", "condition-reverb", "condition-clean", "conditions", "storySummary", "overview-source", "overview-model", "overview-settings-label", "storySummaryMetrics", "overview-note", "searchCriteria", "searchCriteriaNote", "evaluationCriteria", "condition-snr", "conditionMetrics", "overview-help", "overview-help-title", "overview-help-content", "overview-help-close"]) {
+  for (const id of ["responses", "scores", "condition-model", "condition-reverb", "condition-clean", "conditions", "storySummary", "overview-source", "overview-model", "overview-settings-label", "storySummaryMetrics", "overview-note", "searchCriteria", "searchCriteriaNote", "condition-snr", "conditionMetrics", "overview-help", "overview-help-title", "overview-help-content", "overview-help-close"]) {
     elements.set(id, new Element());
   }
   const headers = ["hard", "worst", "fa"].map(key => {
     const element = new Element("button"); element.dataset.overviewHelp = key; return element;
   });
+  const criteria = new Element("button");
+  criteria.dataset.overviewHelp = "criteria";
+  elements.set("overview-criteria", criteria);
   for (const id of ["storySummary", "responses", "scores", "conditions"]) elements.get(id).tBodies = [new Element("tbody")];
   elements.get("condition-snr").value = "10";
   if (dashboard) {
@@ -95,7 +101,7 @@ function browser({dashboard = false} = {}) {
     elements.set("audio", Object.assign(new Element("audio"), {src: "unchanged.wav", currentTime: 2.5}));
   }
   const context = vm.createContext({document: {getElementById: id => elements.get(id), createElement: tag => new Element(tag),
-    querySelectorAll: selector => selector === "[data-overview-help]" ? headers : []}});
+    querySelectorAll: selector => selector === "[data-overview-help]" ? [criteria, ...headers] : []}});
   context.window = context; context.innerWidth = 1024; context.innerHeight = 768;
   vm.runInContext(source, context);
   return {elements, headers, ui: context.KowwResultsUI,
@@ -180,14 +186,14 @@ test("plain labels describe background, relative noise level and reverberation",
   assert.equal(ui.snrLabel(null), "소음 크기 · SNR — dB");
   assert.equal(ui.reverbLabel("strong"), "강한 울림");
 });
-test("evaluation comparison preserves saved statistics and decisions", () => {
+test("evaluation comparison displays saved measurements and keeps saved decisions out of the UI", () => {
   const {ui, rows, elements} = browser(), report = sample(), before = JSON.stringify(report);
   ui.renderSummary(report);
   const model = elements.get("storySummary").tBodies[0].children[1].children;
   assert.equal(elements.get("overview-source").value, "baseline");
-  assert.deepEqual(rows("storySummary")[1].slice(0, 7), ["모델 2", "93.33%", "100.00%", "결과 없음", "결과 없음", "0.1회", "0.20초"]);
-  assert.equal(rows("storySummary")[1][8], "미달");
-  assert.equal(rows("storySummary")[3][8], "충족");
+  assert.deepEqual(rows("storySummary")[1], ["모델 2", "93.33%", "100.00%", "결과 없음", "결과 없음", "0.1회", "0.20초", "기록 없음"]);
+  assert.equal(rows("storySummary").every(row => row.length === 8), true);
+  assert.doesNotMatch(fullText(elements.get("storySummary").tBodies[0]), /충족|미달/);
   assert.match(model[5].title, /3회.*30/);
   assert.equal(model[6].children.length, 0);
   assert.equal(JSON.stringify(report), before);
@@ -208,39 +214,48 @@ test("runtime model and evaluation selection are not conflated", () => {
   assert.equal(elements.get("overview-model").value, "mean");
   assert.equal(elements.get("condition-model").value, "member2_seed2");
 });
-test("criteria show frozen original goals without repeating measured noise results", () => {
+test("the shared evaluation guide shows reference levels without grading or listing model results", () => {
   const {ui, rows, elements} = browser(), report = sample();
   report.adoption_criteria = {schema_version: 1, clean_recall: 0.98, snr10_recall: 0.95, snr5_recall: 0.9, fa_per_hour: 0.1, latency_p95_s: 0.5, minimum_negative_hours: 20};
+  report.runtime_recommendations = {schema_version: 1,
+    recommendation_criteria: {clean_recall: .98, fa_per_hour: 1, latency_p95_s: .5},
+    candidates: [{id: "mean", runtime: {threshold: .8, consecutive_frames: 2}, metrics: report.models[3]}]};
   const before = JSON.stringify(report);
   ui.renderSummary(report);
-  const text = node => [node.textContent, ...node.children.map(text)].join(" ");
-  const criteria = text(elements.get("evaluationCriteria"));
+  const dialog = elements.get("overview-help");
+  const button = elements.get("overview-criteria");
+  button.dispatch("click");
+  assert.equal(dialog.open, true);
+  assert.match(fullText(elements.get("overview-help-title")), /평가 기준/);
+  const criteria = fullText(elements.get("overview-help-content"));
   assert.match(criteria, /98(?:\.00)?%/);
-  assert.match(criteria, /95(?:\.00)?%/);
-  assert.match(criteria, /90(?:\.00)?%/);
-  assert.match(criteria, /0\.1회/);
+  assert.match(criteria, /시간당 1회 이하/);
   assert.match(criteria, /0\.5초/);
-  assert.match(criteria, /20시간/);
-  assert.doesNotMatch(criteria, /83\.33%|75\.00%/);
-  assert.equal(rows("storySummary")[1][8], "미달");
+  assert.match(criteria, /감지율.*높|높.*감지율/s);
+  assert.doesNotMatch(criteria, /모델 [123]|앙상블|83\.33%|75\.00%|0\.1회|충족|미달/);
+  assert.equal(rows("storySummary")[1].length, 8);
+  elements.get("overview-source").value = "baseline"; elements.get("overview-source").onchange();
+  assert.equal(dialog.open, false);
+  button.dispatch("click");
+  assert.equal(fullText(elements.get("overview-help-content")), criteria);
+  elements.get("overview-help-close").dispatch("click");
+  assert.equal(dialog.open, false);
   assert.equal(JSON.stringify(report), before);
 });
-test("the comparison uses recorded decisions at threshold boundaries", () => {
+test("changing a saved judgment does not change displayed trial measurements", () => {
   const {ui, rows} = browser(), report = sample();
   report.adoption_criteria = {schema_version: 1, clean_recall: 1, snr10_recall: 10 / 12, snr5_recall: 0.9, fa_per_hour: 0.1, latency_p95_s: 0.2, minimum_negative_hours: 30};
   ui.renderSummary(report);
-  assert.equal(rows("storySummary")[1][8], "미달");
+  const before = rows("storySummary");
   report.candidate_adoptions.member2_seed2.passed = true; ui.renderSummary(report);
-  assert.equal(rows("storySummary")[1][8], "충족");
+  assert.deepEqual(rows("storySummary"), before);
 });
-test("legacy or invalid criteria never silently borrow current default targets", () => {
-  const {ui, rows, elements} = browser(), report = sample();
-  for (const criteria of [undefined, {}, {schema_version: 1, clean_recall: 0.98}, {schema_version: 999}, {schema_version: 1, clean_recall: 2, snr10_recall: 0.95, snr5_recall: 0.9, fa_per_hour: 0.1, latency_p95_s: 0.5, minimum_negative_hours: 20}]) {
-    report.adoption_criteria = criteria; ui.renderSummary(report);
-    const target = elements.get("evaluationCriteria");
-    assert.ok(target.hidden || target.children.length === 0);
-    assert.equal(rows("storySummary")[1][8], "미달");
-  }
+test("the evaluation guide still opens for historical reports without grades", () => {
+  const {ui, elements} = browser(), report = sample();
+  ui.renderSummary(report);
+  elements.get("overview-criteria").dispatch("click");
+  assert.equal(elements.get("overview-help").open, true);
+  assert.doesNotMatch(fullText(elements.get("overview-help-content")), /모델 [123]|앙상블|충족|미달/);
 });
 test("conditions show actual cells in fixed noise order including zero successes", () => {
   const {ui, rows, elements} = browser(), report = sample(), before = JSON.stringify(report);
@@ -270,7 +285,7 @@ test("missing results stay distinct from measured zero and explicit empty trials
   assert.equal(rows("storySummary")[2][2], "시험 안 함");
   assert.equal(rows("storySummary")[2][3], "결과 없음");
   assert.equal(rows("storySummary")[2][5], "결과 없음");
-  assert.equal(rows("storySummary")[2][8], "기록 없음");
+  assert.equal(rows("storySummary")[2][7], "기록 없음");
   ui.renderConditions({models: []});
   assert.equal(elements.get("condition-model").disabled, true);
 });
@@ -301,12 +316,12 @@ test("missing, invalid and cache-only recommendations are presented honestly", (
   }]};
   ui.renderSummary(report);
   elements.get("overview-source").value = "recommended"; elements.get("overview-source").onchange();
-  assert.deepEqual(rows("storySummary")[1].slice(7), ["0.9999999 · 2회", "미달"]);
+  assert.deepEqual(rows("storySummary")[1].slice(7), ["0.9999999 · 2회"]);
   assert.match(elements.get("overview-note").textContent, /저장.*점수/);
   report.runtime_recommendations.candidates[0].runtime.threshold = 1; ui.renderSummary(report);
   assert.equal(elements.get("overview-source").value, "baseline");
 });
-test("one comparison shows measured settings, weakest conditions and goal status in both layouts", () => {
+test("one comparison shows measured settings and weakest conditions in both layouts", () => {
   const {ui, elements, rows} = browser(), report = sample();
   report.runtime = {threshold: .5, consecutive_frames: 1};
   Object.assign(report.models[0], {clean: {recall: .999}, negative: {fa_per_hour: 9.399818}});
@@ -324,12 +339,12 @@ test("one comparison shows measured settings, weakest conditions and goal status
   ]};
   const before = JSON.stringify(report); ui.renderSummary(report);
   assert.equal(elements.get("overview-source").value, "recommended");
-  assert.deepEqual(rows("storySummary")[3], ["앙상블", "81.00%", "99.50%", "73.00%", "50.00%", "0.9회", "0.02초 전", "0.97 · 3회", "미달"]);
-  assert.deepEqual(rows("storySummary")[1].slice(1), ["69.00%", "98.55%", "62.79%", "0.00%", "1.2회", "0.44초", "0.99 · 5회", "미달"]);
+  assert.deepEqual(rows("storySummary")[3], ["앙상블", "81.00%", "99.50%", "73.00%", "50.00%", "0.9회", "0.02초 전", "0.97 · 3회"]);
+  assert.deepEqual(rows("storySummary")[1].slice(1), ["69.00%", "98.55%", "62.79%", "0.00%", "1.2회", "0.44초", "0.99 · 5회"]);
   assert.equal(elements.get("overview-settings-label").textContent, "추천 감지 설정");
   for (const index of [0, 2]) {
     assert.deepEqual(rows("storySummary")[index].slice(1, 7), Array(6).fill("결과 없음"));
-    assert.equal(rows("storySummary")[index][8], "기록 없음");
+    assert.equal(rows("storySummary")[index][7], "기록 없음");
   }
   const modelCells = () => elements.get("storySummary").tBodies[0].children[1].children;
   assert.equal(modelCells()[0].children.length, 0);
@@ -337,7 +352,6 @@ test("one comparison shows measured settings, weakest conditions and goal status
   assert.deepEqual(modelCells()[7].children.map(node => node.textContent), ["시험값"]);
   assert.ok(modelCells()[7].children.every(node => node.tagName !== "button"));
   assert.match(elements.get("overview-note").textContent, /시험값.*마이크.*평가 당시 설정/);
-  assert.equal(modelCells()[8].title, "반응 시간");
   const mobileMetrics = () => elements.get("storySummaryMetrics").children.map(item =>
     [fullText(item.children[0]), item.children[1].textContent]);
   assert.deepEqual(mobileMetrics()[2], ["강한 소음·울림", "73.00%"]);
@@ -345,12 +359,12 @@ test("one comparison shows measured settings, weakest conditions and goal status
   assert.deepEqual(mobileMetrics(), [
     ["종합 감지율", "69.00%"], ["소음·울림 없음", "98.55%"], ["강한 소음·울림", "62.79%"],
     ["최약 조건", "0.00%"], ["오호출/시간", "1.2회"], ["반응 시간", "0.44초"],
-    ["추천 감지 설정", "0.99 · 5회"], ["평가 목표", "미달"]
+    ["추천 감지 설정", "0.99 · 5회"]
   ]);
   assert.deepEqual(elements.get("storySummaryMetrics").children[6].children[1].children.map(node => node.textContent), ["시험값"]);
   assert.equal(elements.get("storySummaryMetrics").children[3].children[1].children.length, 0);
   elements.get("overview-source").value = "baseline"; elements.get("overview-source").onchange();
-  assert.deepEqual(rows("storySummary")[1], ["모델 2", "93.33%", "99.90%", "78.31%", "50.00%", "9.4회", "0.20초", "0.5 · 1회", "미달"]);
+  assert.deepEqual(rows("storySummary")[1], ["모델 2", "93.33%", "99.90%", "78.31%", "50.00%", "9.4회", "0.20초", "0.5 · 1회"]);
   assert.equal(elements.get("overview-settings-label").textContent, "평가 당시 감지 설정");
   assert.deepEqual(mobileMetrics()[6], ["평가 당시 감지 설정", "0.5 · 1회"]);
   assert.equal(modelCells()[7].children.length, 0);
@@ -372,7 +386,7 @@ test("one comparison shows measured settings, weakest conditions and goal status
   faHeading.dispatch("click");
   assert.match(fullText(elements.get("overview-help-content")), /강한 소음·울림 시험 자료 부족/);
 });
-test("false-alarm heading explains the two saved limits and lists only non-recommended settings", () => {
+test("false-alarm heading explains the saved recommendation limit and describes trial settings", () => {
   const {ui, elements, headers} = browser(), report = sample();
   report.runtime = {threshold: .5, consecutive_frames: 1};
   report.runtime_recommendations = {schema_version: 1, recommendation_criteria: {fa_per_hour: 1},
@@ -391,7 +405,7 @@ test("false-alarm heading explains the two saved limits and lists only non-recom
   assert.equal(dialog.open, true);
   assert.match(fullText(elements.get("overview-help-title")), /오호출/);
   assert.match(content(), /추천.*(?<![.\d])1회/);
-  assert.match(content(), /평가.*0\.1회/);
+  assert.doesNotMatch(content(), /0\.1회/);
   assert.match(content(), /모델 2.*1\.2회/s);
   assert.match(content(), /모델 3.*반응 시간/s);
   assert.doesNotMatch(content(), /모델 1/);
@@ -400,7 +414,7 @@ test("false-alarm heading explains the two saved limits and lists only non-recom
   assert.equal(dialog.open, false);
   headers[2].dispatch("click");
   assert.equal(dialog.open, true);
-  assert.match(content(), /0\.1회/);
+  assert.match(content(), /시간당 1회 이하/);
   assert.doesNotMatch(content(), /모델 [123]/);
 });
 test("metric help opens only from headings and describes the archived comparison policy", () => {

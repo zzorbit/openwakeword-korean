@@ -153,14 +153,6 @@
     if (text.includes("Latency")) return "반응 시간";
     return "추가 확인 필요";
   }
-  function criteriaFor(report) {
-    const value = report.adoption_criteria;
-    if (value?.schema_version !== 1) return null;
-    const recalls = ["clean_recall", "snr10_recall", "snr5_recall"];
-    if (recalls.some(key => !finite(value[key]) || value[key] < 0 || value[key] > 1)) return null;
-    if (["fa_per_hour", "latency_p95_s", "minimum_negative_hours"].some(key => !finite(value[key]) || value[key] < 0)) return null;
-    return value;
-  }
   function matchRuntime(left, right) {
     return validSettings(left) && validSettings(right) && Object.keys(left).length === Object.keys(right).length
       && Object.entries(left).every(([key, value]) => right[key] === value);
@@ -203,19 +195,6 @@
     if (note) note.textContent = criteria
       ? "위 기준을 지키면서 소음·울림 감지율이 높은 설정을 고릅니다."
       : "이 평가에는 추천 기준이 기록되지 않았습니다.";
-    const original = $("evaluationCriteria"), goals = criteriaFor(report);
-    if (!original) return;
-    const group = original.closest?.(".evaluation-criteria");
-    if (group) group.hidden = !goals;
-    original.replaceChildren();
-    if (!goals) return;
-    for (const [name, value] of [
-      ["조용할 때 감지율", `${percent(goals.clean_recall)} 이상`],
-      ["울림 없는 소음 조건", `SNR 10 dB ${percent(goals.snr10_recall)} 이상 · SNR 5 dB ${percent(goals.snr5_recall)} 이상`],
-      ["오호출 허용량", `시간당 ${goals.fa_per_hour}회 이하`],
-      ["반응 시간", `95%가 ${goals.latency_p95_s}초 이내`],
-      ["오호출 시험 시간", `${goals.minimum_negative_hours}시간 이상`]
-    ]) appendMetric(original, name, value);
   }
   function appendMetric(list, label, value, rowClass) {
     const item = document.createElement("div"), term = document.createElement("dt"), description = document.createElement("dd");
@@ -288,7 +267,7 @@
     window.addEventListener?.("resize", position);
     return {bind, hide};
   }
-  function metricHelp(policy) {
+  function metricHelp(policy, criteria) {
     const hard = ["비교에 포함된 소음·울림 조건의 감지율을 같은 비중으로 평균한 값입니다."];
     if (Array.isArray(policy) && policy.length) {
       const noiseLevels = [...new Set(policy.map(cell => cell.snr_db).filter(finite))].sort((left, right) => right - left);
@@ -305,7 +284,13 @@
     }
     return {
       hard: {title: "강한 소음·울림", paragraphs: hard},
-      worst: {title: "최약 조건", paragraphs: ["같은 소음·울림 시험에서 각 모델의 감지율이 가장 낮았던 조건입니다."]}
+      worst: {title: "최약 조건", paragraphs: ["같은 소음·울림 시험에서 각 모델의 감지율이 가장 낮았던 조건입니다."]},
+      criteria: {title: "평가 기준", paragraphs: ["모델을 비교할 때 참고할 기준입니다."], models: [
+        {label: "소음·울림 없음", value: finite(criteria?.clean_recall) ? `${Number((criteria.clean_recall * 100).toFixed(2))}% 이상` : "높을수록 좋습니다."},
+        {label: "종합·소음·최약 조건", value: "감지율이 높을수록 좋습니다."},
+        {label: "오호출", value: finite(criteria?.fa_per_hour) ? `시간당 ${criteria.fa_per_hour}회 이하` : "적을수록 좋습니다."},
+        {label: "반응 시간", value: finite(criteria?.latency_p95_s) ? `감지된 호출의 95%가 ${criteria.latency_p95_s}초 이내` : "짧을수록 좋습니다."}
+      ]}
     };
   }
   function weakestResult(hard, value) {
@@ -328,7 +313,7 @@
     const table = body("storySummary"), source = $("overview-source"), modelSelect = $("overview-model");
     if (!table || !source || !modelSelect) return;
     const calibration = report.runtime_recommendations;
-    const sharedHelp = metricHelp(calibration?.search_policy?.hard_conditions);
+    const sharedHelp = metricHelp(calibration?.search_policy?.hard_conditions, calibration?.recommendation_criteria);
     overviewHelp ??= createOverviewHelp();
     const candidates = calibration?.schema_version === 1 && Array.isArray(calibration.candidates) ? calibration.candidates : [];
     const models = report.models || [];
@@ -357,9 +342,6 @@
       const hard = metric?.hard_conditions ?? sameRuntimeHard
         ?? (compareSettings ? null : recordedHardConditions(model, calibration?.search_policy?.hard_conditions));
       const trial = compareSettings && tested?.recommendation_available === false;
-      const goal = compareSettings ? tested?.adoption
-        : report.candidate_adoptions?.[model.id] || (report.adoption?.candidate === model.id ? report.adoption : null);
-      const passed = (compareSettings ? tested?.passed : undefined) ?? goal?.passed;
       const negative = metric?.negative;
       const rawFalse = finite(negative?.events) && finite(negative?.hours) ? `${count(negative.events)}회 / ${negative.hours.toFixed(2)}시간` : "";
       const clean = metric?.clean;
@@ -376,9 +358,7 @@
         {label: "최약 조건", value: worstValue, help: "worst"},
         {label: "오호출/시간", value: falseRate, title: rawFalse, help: "fa"},
         {label: "반응 시간", value: reactionTime(metric?.primary?.latency_p95_s)},
-        {label: settingsLabel, value: settings, title: "감지 기준 · 연속 감지 횟수", trial},
-        {label: "평가 목표", value: passed === true ? "충족" : passed === false ? "미달" : "기록 없음",
-          title: passed === false ? [...new Set((goal?.reasons || []).map(goalReason))].join(" · ") : ""}
+        {label: settingsLabel, value: settings, title: "감지 기준 · 연속 감지 횟수", trial}
       ];
       const trialNote = trial ? [falseRate === "결과 없음" ? "오호출률 기록 없음" : `시간당 ${falseRate}`,
         `추천에 쓰지 못한 항목 · ${reasons.join(", ") || "기록 없음"}`].join("\n") : "";
@@ -391,15 +371,13 @@
       const settingsHeader = $("overview-settings-label");
       if (settingsHeader) settingsHeader.textContent = settingsLabel;
       const resultLabel = compareSettings ? "추천값 결과" : "평가 당시 결과";
-      const explanations = {hard: sharedHelp.hard, worst: {...sharedHelp.worst,
+      const explanations = {...sharedHelp, worst: {...sharedHelp.worst,
         paragraphs: [`${resultLabel} 기준. ${sharedHelp.worst.paragraphs[0]}`], models: []}};
       const recommendationLimit = calibration?.recommendation_criteria?.fa_per_hour;
-      const evaluationLimit = report.adoption_criteria?.fa_per_hour ?? calibration?.adoption_criteria?.fa_per_hour;
-      const falseAlarmLimits = [];
-      if (finite(recommendationLimit)) falseAlarmLimits.push(`감지 설정 추천 한도 · 시간당 ${recommendationLimit}회 이하`);
-      if (finite(evaluationLimit)) falseAlarmLimits.push(`기존 평가 목표의 한도 · 시간당 ${evaluationLimit}회 이하`);
+      const falseAlarmExplanation = ["호출어가 없는 음원에서 시간당 잘못 감지한 횟수입니다."];
+      if (finite(recommendationLimit)) falseAlarmExplanation.push(`감지 설정 추천 한도 · 시간당 ${recommendationLimit}회 이하`);
       explanations.fa = {title: "오호출/시간",
-        paragraphs: ["호출어가 없는 음원에서 시간당 잘못 감지한 횟수입니다.", ...falseAlarmLimits], models: []};
+        paragraphs: falseAlarmExplanation, models: []};
       if (overviewHelp) for (const button of document.querySelectorAll("[data-overview-help]")) {
         overviewHelp.bind(button, explanations[button.dataset.overviewHelp]);
       }
@@ -429,7 +407,7 @@
       }
       const note = $("overview-note");
       if (note) note.textContent = compareSettings
-        ? explanations.fa.models.length ? "시험값으로 표시된 모델은 마이크에서 평가 당시 설정을 사용합니다." : "저장된 점수로 감지 설정을 비교했습니다."
+        ? explanations.fa.models.length ? "시험값은 비교용입니다. 해당 모델의 마이크 시험에는 평가 당시 설정을 사용합니다." : "저장된 점수로 감지 설정을 비교했습니다."
         : deployed ? `평가 당시 실행 모델 · ${modelLabel(report, deployed)}${isEnsemble(report, deployed) ? ` (${memberCount(report, deployed)}개 모델)` : ""}` : "";
     }
     source.onchange = draw; modelSelect.onchange = draw; draw();
