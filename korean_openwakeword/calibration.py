@@ -326,13 +326,16 @@ def load_recommendation(project, bundle, evaluation, output, verify_inputs=True)
     return read_recommendation(project, bundle, evaluation, output, verify_inputs=verify_inputs)
 
 
-def _strong_snr_zero_diagnostics(clips, scores, offsets, candidates, selected):
-    """Replay only the report's strongest noise condition using the saved gates."""
+_REPORT_REVERB_LEVELS = ("moderate", "strong")
+
+
+def _snr_zero_diagnostics(clips, scores, offsets, candidates, selected):
+    """Replay the report's SNR 0 trials with the already selected gates."""
     from .tune import iter_replay
 
     rows, frames, starts = [], [], [0]
     for index, row in enumerate(clips):
-        if (row["kind"] == "positive" and row.get("reverb_condition") == "strong"
+        if (row["kind"] == "positive" and row.get("reverb_condition") in _REPORT_REVERB_LEVELS
                 and row.get("snr_db") == 0 and row["category"] in CATEGORIES):
             block = scores[offsets[index]:offsets[index + 1]]
             rows.append(row)
@@ -350,14 +353,17 @@ def _strong_snr_zero_diagnostics(clips, scores, offsets, candidates, selected):
         for label, setting in settings.items():
             if not setting:
                 continue
-            totals = {category: [0, 0] for category in CATEGORIES}
+            totals = {reverb: {category: [0, 0] for category in CATEGORIES}
+                      for reverb in _REPORT_REVERB_LEVELS}
             for row in iter_replay(rows, frames, starts, [model_id], setting["runtime"], columns=[columns[model_id]]):
                 calls = row["results"][model_id]["calls"]
-                totals[row["category"]][0] += len(calls)
-                totals[row["category"]][1] += sum(call["success"] for call in calls)
-            by_setting[label] = {f"{category}:0": {"calls": calls, "successes": successes,
-                "recall": successes / calls if calls else None}
-                for category, (calls, successes) in totals.items()}
+                counts = totals[row["reverb_condition"]][row["category"]]
+                counts[0] += len(calls)
+                counts[1] += sum(call["success"] for call in calls)
+            by_setting[label] = {
+                reverb: {f"{category}:0": {"calls": calls, "successes": successes, "recall": successes / calls if calls else None}
+                         for category, (calls, successes) in cells.items()}
+                for reverb, cells in totals.items()}
     return measured
 
 
@@ -367,10 +373,11 @@ def _add_report_diagnostics(recommendation, measured):
     result = deepcopy(recommendation)
     for candidate in result["candidates"]:
         for label, setting in (("chosen", candidate), ("baseline", candidate.get("baseline"))):
-            conditions = measured.get(candidate["id"], {}).get(label)
-            if conditions and setting:
-                strong = setting["metrics"].setdefault("reverb_conditions", {}).setdefault("strong", {})
-                strong.setdefault("conditions", {}).update(conditions)
+            groups = measured.get(candidate["id"], {}).get(label)
+            if groups and setting:
+                reverb_conditions = setting["metrics"].setdefault("reverb_conditions", {})
+                for reverb, cells in groups.items():
+                    reverb_conditions.setdefault(reverb, {}).setdefault("conditions", {}).update(cells)
     return result
 
 
@@ -380,8 +387,12 @@ def report_recommendation(project, bundle, evaluation, output, recommendation, *
     Report pages may check the small cache first and run a cold replay separately.
     """
     rows = recommendation["candidates"]
-    if not rows or all(all(f"{category}:0" in row["metrics"].get("reverb_conditions", {}).get("strong", {}).get("conditions", {})
-                       for category in CATEGORIES) for row in rows):
+    def has_diagnostics(setting):
+        groups = setting["metrics"].get("reverb_conditions", {})
+        return all(f"{category}:0" in groups.get(reverb, {}).get("conditions", {})
+                   for reverb in _REPORT_REVERB_LEVELS for category in CATEGORIES)
+
+    if all(has_diagnostics(row) and (not row.get("baseline") or has_diagnostics(row["baseline"])) for row in rows):
         return recommendation
     publication = Path(output) / "recommendation.json"
     evaluation = Path(evaluation)
@@ -394,7 +405,7 @@ def report_recommendation(project, bundle, evaluation, output, recommendation, *
         for path in sources:
             stat = path.stat()
             sources_identity.append([stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino])
-        return {"schema_version": 1, "sources": sources_identity,
+        return {"schema_version": 2, "sources": sources_identity,
                 "bindings": recommendation["bindings"], "recommendation_sha256": digest(publication)}
 
     binding = evidence()
@@ -413,7 +424,7 @@ def report_recommendation(project, bundle, evaluation, output, recommendation, *
         raise ValueError("Recommendation changed while preparing report diagnostics")
     from .selection import verified_evaluation
     _, _, _, _, clips, scores, offsets, candidates = verified_evaluation(project, bundle, evaluation)
-    measured = _strong_snr_zero_diagnostics(clips, scores, offsets, candidates, rows)
+    measured = _snr_zero_diagnostics(clips, scores, offsets, candidates, rows)
     if evidence() != binding:
         raise ValueError("Evaluation evidence changed while preparing report diagnostics")
     write_json(cache, {"binding": binding, "measured": measured, "checksum": identity(measured)})
@@ -527,7 +538,7 @@ def recommend(project, bundle, evaluation, output, progress_callback=None):
                   "adoption_criteria": declaration["adoption_criteria"],
                   "recommendation_criteria": declaration["recommendation_criteria"], "candidates": selected,
                   "selection_applied": False, "network_rerun": False, "Final_used_for_selection": False}
-        result = _add_report_diagnostics(result, _strong_snr_zero_diagnostics(prepared.rows, scores, offsets, candidates, selected))
+        result = _add_report_diagnostics(result, _snr_zero_diagnostics(prepared.rows, scores, offsets, candidates, selected))
         if _bindings(project, bundle, evaluation) != bindings:
             raise ValueError("Automatic detection recommendation inputs changed during search")
         write_json(output / "recommendation.json", result)

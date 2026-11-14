@@ -190,7 +190,7 @@ test("evaluation comparison displays saved measurements and keeps saved decision
   ui.renderSummary(report);
   const model = elements.get("storySummary").tBodies[0].children[1].children;
   assert.equal(elements.get("overview-source").value, "baseline");
-  assert.deepEqual(rows("storySummary")[1], ["모델 2", "93.33%", "100.00%", "결과 없음", "자료 부족", "0.1회", "0.20초", "기록 없음"]);
+  assert.deepEqual(rows("storySummary")[1], ["모델 2", "93.33%", "100.00%", "자료 부족", "자료 부족", "0.1회", "0.20초", "기록 없음"]);
   assert.equal(rows("storySummary").every(row => row.length === 8), true);
   assert.doesNotMatch(fullText(elements.get("storySummary").tBodies[0]), /충족|미달/);
   assert.match(model[5].title, /3회.*30/);
@@ -282,7 +282,7 @@ test("missing results stay distinct from measured zero and explicit empty trials
   delete report.candidate_adoptions.member3_seed3;
   ui.renderSummary(report);
   assert.equal(rows("storySummary")[2][2], "시험 안 함");
-  assert.equal(rows("storySummary")[2][3], "결과 없음");
+  assert.equal(rows("storySummary")[2][3], "자료 부족");
   assert.equal(rows("storySummary")[2][5], "결과 없음");
   assert.equal(rows("storySummary")[2][7], "기록 없음");
   ui.renderConditions({models: []});
@@ -319,33 +319,34 @@ test("missing, invalid and cache-only recommendations are presented honestly", (
   report.runtime_recommendations.candidates[0].runtime.threshold = 1; ui.renderSummary(report);
   assert.equal(elements.get("overview-source").value, "baseline");
 });
-test("one comparison shows measured settings and fixed worst-case means in both layouts", () => {
+test("one comparison shows measured settings and fixed acoustic means in both layouts", () => {
   const {ui, elements, rows} = browser(), report = sample();
   report.runtime = {threshold: .5, consecutive_frames: 1};
   Object.assign(report.models[0], {clean: {recall: .999}, negative: {fa_per_hour: 9.399818}});
   const backgrounds = ["environment", "music", "competing_speech"];
-  const hard = cell_mean => ({complete: true, cell_mean, worst_recall: 0,
-    conditions: Object.fromEntries(backgrounds.map(category =>
-      [`strong:${category}:5`, {recall: .9, calls: 10, reverb_condition: "strong", category, snr_db: 5}]))});
-  const strong = recalls => ({strong: {conditions: Object.fromEntries(backgrounds.map((category, index) =>
-    [`${category}:0`, {recall: recalls[index], calls: 10 ** index}]))}});
+  const hard = (cell_mean, recall) => ({complete: true, cell_mean, worst_recall: 0,
+    conditions: ["moderate", "strong"].flatMap(reverb_condition => [10, 5].flatMap(snr_db =>
+      backgrounds.map(category => ({recall, calls: 7, reverb_condition, category, snr_db}))))});
+  const zeroSnr = (moderate, strong) => Object.fromEntries(Object.entries({moderate, strong}).map(([room, recalls]) =>
+    [room, {conditions: Object.fromEntries(backgrounds.map((category, index) =>
+      [`${category}:0`, {recall: recalls[index], calls: 10 ** index}]))}]));
   report.runtime_recommendations = {schema_version: 1, recommendation_criteria: {fa_per_hour: 1}, adoption_criteria: {fa_per_hour: .1}, candidates: [
     {id: "mean", recommendation_available: true, runtime: {threshold: .97, consecutive_frames: 3}, passed: false,
       adoption: {passed: false, reasons: ["FA/hour target failed or unmeasured"]},
-      metrics: {clean: {recall: .995}, hard_conditions: hard(.73), reverb_conditions: strong([.5, .6, .7]),
+      metrics: {clean: {recall: .995}, hard_conditions: hard(.73, .75), reverb_conditions: zeroSnr([.6, .6, .6], [.5, .6, .7]),
         negative: {fa_per_hour: .9}, primary: {recall: .81, latency_p95_s: -.02}}},
     {id: "member2_seed2", recommendation_available: true, status: "recommended_over_false_alarm_limit", recommendation_reasons: ["FA/hour target failed or unmeasured"],
       runtime: {threshold: .99, consecutive_frames: 5}, adoption: {passed: false, reasons: ["Latency target failed or unmeasured"]},
-      metrics: {clean: {recall: .9855}, hard_conditions: hard(.62785), reverb_conditions: strong([1, .5, 0]),
+      metrics: {clean: {recall: .9855}, hard_conditions: hard(.62785, .65), reverb_conditions: zeroSnr([.4, .4, .4], [1, .5, 0]),
         negative: {fa_per_hour: 1.199976889}, primary: {recall: .69, latency_p95_s: .44}},
-      baseline: {runtime: report.runtime, metrics: {hard_conditions: hard(.783125), reverb_conditions: strong([.4, .8, .9]),
+      baseline: {runtime: report.runtime, metrics: {hard_conditions: hard(.783125, .85), reverb_conditions: zeroSnr([.9, .9, .9], [.4, .8, .9]),
         clean: {recall: .8}, negative: {fa_per_hour: 8}}}},
     {id: "member3_seed3", recommendation_available: false, runtime: {threshold: .9, consecutive_frames: 2}, metrics: null}
   ]};
   const before = JSON.stringify(report); ui.renderSummary(report);
   assert.equal(elements.get("overview-source").value, "recommended");
-  assert.deepEqual(rows("storySummary")[3], ["앙상블", "81.00%", "99.50%", "73.00%", "60.00%", "0.9회", "0.02초 전", "0.97 · 3회"]);
-  assert.deepEqual(rows("storySummary")[1].slice(1), ["69.00%", "98.55%", "62.79%", "50.00%", "1.2회", "0.44초", "0.99 · 5회"]);
+  assert.deepEqual(rows("storySummary")[3], ["앙상블", "81.00%", "99.50%", "70.00%", "60.00%", "0.9회", "0.02초 전", "0.97 · 3회"]);
+  assert.deepEqual(rows("storySummary")[1].slice(1), ["69.00%", "98.55%", "58.33%", "50.00%", "1.2회", "0.44초", "0.99 · 5회"]);
   for (const index of [0, 2]) {
     assert.deepEqual(rows("storySummary")[index].slice(1, 7), Array(6).fill("결과 없음"));
     assert.equal(rows("storySummary")[index][7], "기록 없음");
@@ -356,17 +357,17 @@ test("one comparison shows measured settings and fixed worst-case means in both 
   assert.equal(modelCells()[7].children.length, 0);
   const mobileMetrics = () => elements.get("storySummaryMetrics").children.map(item =>
     [fullText(item.children[0]), item.children[1].textContent]);
-  assert.deepEqual(mobileMetrics()[2], ["강한 소음·울림", "73.00%"]);
+  assert.deepEqual(mobileMetrics()[2], ["강한 소음·울림", "70.00%"]);
   elements.get("overview-model").value = "member2_seed2"; elements.get("overview-model").onchange();
   assert.deepEqual(mobileMetrics(), [
-    ["종합 감지율", "69.00%"], ["소음·울림 없음", "98.55%"], ["강한 소음·울림", "62.79%"],
+    ["종합 감지율", "69.00%"], ["소음·울림 없음", "98.55%"], ["강한 소음·울림", "58.33%"],
     ["최악 조건", "50.00%"], ["오호출/시간", "1.2회"], ["반응 시간", "0.44초"],
     ["감지 기준", "0.99 · 5회"]
   ]);
   assert.equal(elements.get("storySummaryMetrics").children[6].children[1].children.length, 0);
   assert.equal(elements.get("storySummaryMetrics").children[3].children[1].children.length, 0);
   elements.get("overview-source").value = "baseline"; elements.get("overview-source").onchange();
-  assert.deepEqual(rows("storySummary")[1], ["모델 2", "93.33%", "99.90%", "78.31%", "70.00%", "9.4회", "0.20초", "0.5 · 1회"]);
+  assert.deepEqual(rows("storySummary")[1], ["모델 2", "93.33%", "99.90%", "83.33%", "70.00%", "9.4회", "0.20초", "0.5 · 1회"]);
   assert.deepEqual(mobileMetrics()[6], ["감지 기준", "0.5 · 1회"]);
   assert.equal(modelCells()[7].children.length, 0);
   assert.equal(mobileMetrics()[0][0], "종합 감지율");
@@ -374,10 +375,11 @@ test("one comparison shows measured settings and fixed worst-case means in both 
 
   report.runtime_recommendations.candidates[1].baseline.runtime = {...report.runtime, consecutive_frames: 2};
   ui.renderSummary(report);
-  assert.deepEqual(rows("storySummary")[1].slice(3, 5), ["결과 없음", "자료 부족"]);
+  assert.deepEqual(rows("storySummary")[1].slice(3, 5), ["자료 부족", "자료 부족"]);
   elements.get("overview-source").value = "recommended"; elements.get("overview-source").onchange();
   const candidate = report.runtime_recommendations.candidates[1];
   candidate.metrics.hard_conditions.complete = false;
+  candidate.metrics.hard_conditions.conditions.pop();
   candidate.recommendation_available = false;
   candidate.status = "no_feasible_candidate";
   candidate.recommendation_reasons = ["Hard noise/reverberation conditions incomplete"];
@@ -402,7 +404,7 @@ test("legacy recommendation records never substitute original or 5 dB results fo
     metrics: {reverb_conditions: {strong: {conditions: atSnr(5, .99)}}, hard_conditions: {complete: true, cell_mean: .92}}
   }]};
   ui.renderSummary(report);
-  assert.deepEqual(rows("storySummary")[3].slice(3, 5), ["92.00%", "자료 부족"]);
+  assert.deepEqual(rows("storySummary")[3].slice(3, 5), ["자료 부족", "자료 부족"]);
   const source = elements.get("overview-source");
   source.value = "baseline"; source.onchange();
   assert.equal(rows("storySummary")[3][4], "40.00%");
@@ -477,6 +479,7 @@ test("the same detection heading explains the settings for each result view", ()
   assert.match(content(), /저장된 평가 점수.*비교/s);
   assert.match(content(), /시간당 1회 이하/);
   assert.match(content(), /평균 감지율.*가장 높/s);
+  assert.match(content(), /추천 비교에 기록된 소음·울림 시험 조건/);
   assert.match(content(), /오호출이 가장 적은/);
   const recommendedHelp = content();
   assert.equal(rows("storySummary")[3][7], "0.9 · 3회");
@@ -500,7 +503,7 @@ test("the same detection heading explains the settings for each result view", ()
   assert.equal(title(), "감지 기준");
   assert.equal(content(), baselineHelp);
 });
-test("metric help opens only from headings and describes the archived comparison policy", () => {
+test("metric help opens only from headings and describes the fixed displayed acoustic conditions", () => {
   const {ui, elements, headers} = browser(), report = sample();
   report.runtime = {threshold: .5, consecutive_frames: 1};
   const model = report.models.find(row => row.id === "mean");
@@ -509,17 +512,19 @@ test("metric help opens only from headings and describes the archived comparison
     ["environment", "music", "competing_speech"].flatMap(category =>
       [10, 5].map(snr_db => ({reverb_condition, category, snr_db}))));
   hardPolicy.push(reverbOnly, {...reverbOnly, reverb_condition: "strong"});
-  const hardResults = cell_mean => ({complete: true, cell_mean, worst_recall: 0,
-    expected_cells: hardPolicy.length, conditions: hardPolicy.map(cell => ({...cell, recall: 0}))});
-  const strong = recalls => ({strong: {conditions: Object.fromEntries(Object.entries(recalls).map(([category, recall]) =>
-    [`${category}:0`, {recall, calls: 10}]))}});
-  model.hard_conditions = hardResults(.8);
-  model.reverb_conditions = strong({environment: .3, music: .9, competing_speech: .6});
+  const hardResults = recall => ({complete: true, cell_mean: .95, worst_recall: 0,
+    expected_cells: hardPolicy.length, conditions: hardPolicy.map(cell => ({...cell, recall}))});
+  const zeroSnr = (moderateRecall, strong) => Object.fromEntries(Object.entries({
+    moderate: Object.fromEntries(Object.keys(strong).map(category => [category, moderateRecall])), strong
+  }).map(([room, recalls]) => [room, {conditions: Object.fromEntries(Object.entries(recalls).map(([category, recall]) =>
+    [`${category}:0`, {recall, calls: 10}]))}]));
+  model.hard_conditions = hardResults(.6);
+  model.reverb_conditions = zeroSnr(.6, {environment: .3, music: .9, competing_speech: .6});
   report.runtime_recommendations = {schema_version: 1,
     search_policy: {hard_conditions: hardPolicy},
     candidates: [{id: model.id, runtime: {threshold: .9, consecutive_frames: 3}, recommendation_available: true,
-      metrics: {noise_cell_mean: .92, hard_conditions: hardResults(.7),
-        reverb_conditions: strong({environment: .1, music: .7, competing_speech: .4})}}]};
+      metrics: {noise_cell_mean: .92, hard_conditions: hardResults(.4),
+        reverb_conditions: zeroSnr(.4, {environment: .1, music: .7, competing_speech: .4})}}]};
   const saved = JSON.stringify(report);
   ui.renderSummary(report);
 
@@ -541,14 +546,14 @@ test("metric help opens only from headings and describes the archived comparison
       assert.equal(dialog.open, false);
     }
   }
-  checkPlainValues("70.00%", "40.00%");
+  checkPlainValues("40.00%", "40.00%");
 
   headers[0].dispatch("click");
   assert.equal(dialog.open, true);
   assert.match(label(), /강한 소음·울림/);
   assert.deepEqual(elements.get("overview-help-content").children.map(node => node.textContent), [
-    "울림: 울림 추가 없음, 보통 울림, 강한 울림\n소음 크기: 호출어보다 10 dB 또는 5 dB 작게 (SNR 10 dB, 5 dB)",
-    "배경 소리 없이 보통 울림 또는 강한 울림만 적용한 조건도 포함해, 총 20가지 조건의 감지율을 같은 비중으로 평균합니다."
+    "울림: 보통 울림, 강한 울림\n소음 크기: 호출어보다 10 dB 또는 5 dB 작게, 또는 호출어와 같은 크기 (SNR 10 dB, 5 dB, 0 dB)",
+    "총 18가지 조건의 감지율을 같은 비중으로 평균합니다."
   ]);
   const hardHelp = content();
   close();
@@ -574,7 +579,7 @@ test("metric help opens only from headings and describes the archived comparison
   source.value = "baseline"; source.onchange();
   assert.equal(dialog.open, false);
   assert.equal(compactLabel.attributes["aria-expanded"], "false");
-  checkPlainValues("80.00%", "60.00%");
+  checkPlainValues("60.00%", "60.00%");
   headers[1].dispatch("click");
   assert.equal(dialog.open, true);
   assert.equal(content(), worstHelp);
@@ -599,22 +604,22 @@ test("fixed worst-case help describes its definition even when legacy records la
   assert.match(content, /배경 소리별 감지율을 같은 비중으로 평균/);
   assert.doesNotMatch(content, /환경소음|음악·전자음|다른 사람 말소리|가장 낮았던 시험 조건|[0-9.]+%/);
 });
-test("hard-condition help preserves the recorded comparison pairs", () => {
+test("criteria summarize the archived selection conditions without reusing the display aggregate label", () => {
   const {ui, elements, headers} = browser(), report = sample();
   const policy = [
     {reverb_condition: "strong", category: "music", snr_db: 0},
     {reverb_condition: "none", category: "competing_speech", snr_db: 5}
   ];
-  report.runtime_recommendations = {search_policy: {hard_conditions: policy}};
+  report.runtime_recommendations = {search_policy: {hard_conditions: policy}, recommendation_criteria: {fa_per_hour: 1}};
   ui.renderSummary(report);
   const content = elements.get("overview-help-content");
+  const criteria = elements.get("searchCriteria");
+  assert.equal(fullText(criteria.children.at(-1)), "우선 비교 소음·울림 시험 평균 · 2가지");
+  assert.match(elements.get("searchCriteriaNote").textContent, /기록된 소음·울림 시험 조건/);
   headers[0].dispatch("click");
-  assert.deepEqual(content.children.map(node => node.textContent), [
-    "강한 울림 · 호출어와 같은 크기의 소음 (SNR 0 dB)\n울림 추가 없음 · 호출어보다 5 dB 작은 소음 (SNR 5 dB)",
-    "총 2가지 조건의 감지율을 같은 비중으로 평균합니다."
-  ]);
+  assert.equal(content.children[1].textContent, "총 18가지 조건의 감지율을 같은 비중으로 평균합니다.");
 });
-test("baseline aggregates only the recorded cells named by the archived policy", () => {
+test("missing displayed acoustic conditions never borrow a different-runtime baseline or archived average", () => {
   const {ui, elements, rows} = browser(), report = sample();
   report.runtime = {threshold: .5, consecutive_frames: 1};
   const model = report.models.find(row => row.id === "mean");
@@ -625,14 +630,11 @@ test("baseline aggregates only the recorded cells named by the archived policy",
     baseline: {runtime: {threshold: .5, consecutive_frames: 2}, metrics: {hard_conditions: {complete: true, cell_mean: .99, worst_recall: .99}}}}]};
   const before = JSON.stringify(report);
   ui.renderSummary(report);
-  assert.deepEqual(rows("storySummary")[3].slice(3, 5), ["결과 없음", "자료 부족"]);
+  assert.deepEqual(rows("storySummary")[3].slice(3, 5), ["자료 부족", "자료 부족"]);
   const source = elements.get("overview-source");
   source.value = "baseline"; source.onchange();
-  assert.deepEqual(rows("storySummary")[3].slice(3, 5), ["70.83%", "자료 부족"]);
-  assert.equal(JSON.stringify(report), before);
-  delete model.reverb_conditions.strong.clean;
-  ui.renderSummary(report);
   assert.deepEqual(rows("storySummary")[3].slice(3, 5), ["자료 부족", "자료 부족"]);
+  assert.equal(JSON.stringify(report), before);
 });
 test("fixed worst-case values prefer the original measured conditions and exclude untested data", () => {
   const {ui, rows} = browser(), report = sample();
@@ -653,7 +655,7 @@ test("fixed worst-case values prefer the original measured conditions and exclud
   ]};
   const before = JSON.stringify(report);
   ui.renderSummary(report);
-  assert.deepEqual(rows("storySummary")[3].slice(3, 5), ["80.00%", "50.00%"]);
+  assert.deepEqual(rows("storySummary")[3].slice(3, 5), ["자료 부족", "50.00%"]);
   assert.equal(JSON.stringify(report), before);
   delete model.hard_conditions;
   const untested = measured["competing_speech:0"];
@@ -687,8 +689,11 @@ test("compact condition rows use the same stored cells as the full table for eac
 async function testArchivedDiagnosticLoading() {
   const report = sample();
   const original = report.models.find(row => row.id === "mean");
-  original.reverb_conditions.strong.conditions = {"environment:0": {recall: .6},
-    "music:0": {recall: .5}, "competing_speech:0": {recall: .4}};
+  const acousticCells = recall => Object.fromEntries(["moderate", "strong"].map(room => [room, {
+    conditions: Object.fromEntries([10, 5, 0].flatMap(snr =>
+      ["environment", "music", "competing_speech"].map(category => [`${category}:${snr}`, {recall}])))
+  }]));
+  original.reverb_conditions = acousticCells(.5);
   report.runtime_recommendations = {schema_version: 1, report_diagnostics_pending: true,
     candidates: [{id: "mean", runtime: {threshold: .9, consecutive_frames: 3}, metrics: {}}]};
   let requests = 0, resolveResponse;
@@ -700,22 +705,21 @@ async function testArchivedDiagnosticLoading() {
   ui.renderSummary(report);
   ui.renderSummary(report);
   assert.equal(requests, 1);
-  assert.equal(rows("storySummary")[3][4], "계산 중");
+  assert.deepEqual(rows("storySummary")[3].slice(3, 5), ["계산 중", "계산 중"]);
   const source = elements.get("overview-source");
   source.value = "baseline";
   source.onchange();
-  assert.equal(rows("storySummary")[3][4], "50.00%");
+  assert.deepEqual(rows("storySummary")[3].slice(3, 5), ["50.00%", "50.00%"]);
   const projection = JSON.parse(JSON.stringify(report.runtime_recommendations));
   delete projection.report_diagnostics_pending;
-  projection.candidates[0].metrics.reverb_conditions = {strong: {conditions: {"environment:0": {recall: .5},
-    "music:0": {recall: .3}, "competing_speech:0": {recall: .1}}}};
+  projection.candidates[0].metrics.reverb_conditions = acousticCells(.3);
   resolveResponse({ok: true, json: async () => projection});
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(source.value, "baseline");
-  assert.equal(rows("storySummary")[3][4], "50.00%");
+  assert.deepEqual(rows("storySummary")[3].slice(3, 5), ["50.00%", "50.00%"]);
   source.value = "recommended";
   source.onchange();
-  assert.equal(rows("storySummary")[3][4], "30.00%");
+  assert.deepEqual(rows("storySummary")[3].slice(3, 5), ["30.00%", "30.00%"]);
 }
 testArchivedDiagnosticLoading().then(() => console.log(`${cases.length + 1} result presentation tests passed`)).catch(error => {
   console.error(error);

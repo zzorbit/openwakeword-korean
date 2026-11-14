@@ -443,6 +443,10 @@ _COMPUTE_DISPATCH_COMPATIBLE_DIGESTS = {
 # These versions add report-only SNR 0 diagnostics after gate selection.
 # Their search, thresholds, and evaluation checkpoints remain compatible.
 _CALIBRATION_REPORT_COMPATIBLE_DIGESTS = {
+    "17b43d547f62ec5946672a880c44948046072c709494b1a138ad941698c45218":
+        "247affb60a241181eab12f8c2932f40444437409550c8e4dc2ae56297f48f2b1",
+    "64419394ad173ad9722b7740cd256ebb33622c81e9734e8604eb6a8e3dfb89c9":
+        "56dd92a3ecae2347cad0135d49377e80b7533584a9d9a9d59c4c1c5b0ec4fdd2",
     "dbc8a7d6e1d2c89c5a23e02372b11709eec3d4034f1140b186a059a8c23385de":
         "247affb60a241181eab12f8c2932f40444437409550c8e4dc2ae56297f48f2b1",
     "dd152678cf6315a50f7a9696b382d81dd33ae595b28e17e17e2722df00a3a084":
