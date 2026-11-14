@@ -5361,11 +5361,20 @@ class StudioManager:
             return None
         root = Path(state["project"]).resolve().parent
         report = Path(evaluation) / "report.json"
-        from .calibration import read_recommendation, SEARCH_POLICY
-        directory = root / "reports" / ("studio_runtime_recommendations_" + digest(report)[:16] + "_" + identity(SEARCH_POLICY)[:12])
-        if not (directory / "receipt.json").is_file():
-            return None
-        return read_recommendation(state["project"], bundle, evaluation, directory, verify_inputs=False)
+        from .calibration import LEGACY_SEARCH_POLICY, SEARCH_POLICY, read_recommendation, recommendation_is_available
+        prefix = "studio_runtime_recommendations_" + digest(report)[:16] + "_"
+        for policy in (SEARCH_POLICY, LEGACY_SEARCH_POLICY):
+            directory = root / "reports" / (prefix + identity(policy)[:12])
+            if (directory / "receipt.json").is_file():
+                recommendation = read_recommendation(state["project"], bundle, evaluation, directory, verify_inputs=False)
+                # Project an archived choice into the current policy for display and microphone testing.
+                recommendation["candidates"] = [
+                    dict(row, recommendation_available=True, status="recommended_over_false_alarm_limit")
+                    if row.get("recommendation_available") is False and recommendation_is_available(row) else row
+                    for row in recommendation["candidates"]
+                ]
+                return recommendation
+        return None
 
     def microphone(self, project_id):
         if project_id not in self._microphones:
@@ -5385,10 +5394,10 @@ class StudioManager:
                 # The microphone is a comparison of all original models. Old
                 # per-candidate selection artifacts remain separate records.
                 recommendation = self.runtime_recommendations(state)
-                # A best tradeoff is not a protected recommendation. Keep that
-                # model's recorded settings unless the user makes a manual trial.
-                runtimes = {row["id"]: {key: (row["original_runtime"] if row.get("recommendation_available") is False
-                                              else row["runtime"])[key] for key in ("threshold", "consecutive_frames")}
+                from .calibration import recommendation_is_available
+                # Keep original settings when a recommendation is unavailable.
+                runtimes = {row["id"]: {key: (row["runtime"] if recommendation_is_available(row)
+                                              else row["original_runtime"])[key] for key in ("threshold", "consecutive_frames")}
                             for row in recommendation["candidates"]} if recommendation else None
                 self._microphones[project_id] = MicrophoneService(WakeWordDetector(original_bundle), model_labels=labels,
                     runtime_recommendations=recommendation, recommended_runtimes=runtimes)

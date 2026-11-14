@@ -161,7 +161,8 @@ def test_interrupted_search_resumes_and_source_change_rejected(experiment, tmp_p
         recommend(project, bundle, evaluation, directory)
 
 
-def test_resume_partway_through_fixed_grid_reconstructs_the_same_search(experiment, tmp_path):
+@pytest.mark.parametrize("legacy_policy", [False, True])
+def test_resume_partway_through_fixed_grid_reconstructs_the_same_search(experiment, tmp_path, monkeypatch, legacy_policy):
     project, bundle, evaluation, _ = experiment
     complete = tmp_path / "complete"
     expected = recommend(project, bundle, evaluation, complete)
@@ -171,9 +172,15 @@ def test_resume_partway_through_fixed_grid_reconstructs_the_same_search(experime
             raise InterruptedError("pause partway through the fixed grid")
     with pytest.raises(InterruptedError):
         recommend(project, bundle, evaluation, resumed, interrupt)
+    if legacy_policy:
+        policy = dict(calibration.LEGACY_SEARCH_POLICY, coarse_thresholds=[.5, .9], consecutive_frames=[1, 2])
+        monkeypatch.setattr(calibration, "LEGACY_SEARCH_POLICY", policy)
+        declaration = read_json(resumed / "search.json")
+        write_json(resumed / "search.json", dict(declaration, search_policy=policy))
     actual = recommend(project, bundle, evaluation, resumed)
     assert actual["candidates"] == expected["candidates"]
     assert list(iter_rows(resumed / "comparisons.jsonl")) == list(iter_rows(complete / "comparisons.jsonl"))
+    assert read_json(resumed / "recommendation.json")["search_policy"] == calibration.SEARCH_POLICY
 
 
 def test_all_counts_use_exactly_the_declared_fixed_grid_without_refinement(experiment, tmp_path):
@@ -203,23 +210,24 @@ def test_default_threshold_grid_has_only_one_hundredth_steps():
     assert len(expected) * len(calibration.CONSECUTIVE_COUNTS) == 594
 
 
-def test_recommendation_ceiling_is_distinct_from_original_adoption(experiment, tmp_path):
+@pytest.mark.parametrize("false_alarms", [1, 2])
+def test_recommendation_ceiling_is_distinct_from_original_adoption(experiment, tmp_path, false_alarms):
     project, bundle, evaluation, _ = experiment
     clips = read_json(evaluation / "clips.json")
     with np.load(evaluation / "scores.npz", allow_pickle=False) as archive:
         scores, offsets, ids = archive["scores"].copy(), archive["offsets"].copy(), archive["model_ids"].copy()
-    # A single spurious event in one eligible hour passes the selected 1/h
-    # ceiling, while still failing the unchanged historical .1/h target.
     # One-frame hard calls make that gate outperform the two-frame alternative.
+    # The over-limit scenario leaves no strict gate by requiring one frame on
+    # the quiet calls too. Both scenarios fail the frozen .1/h adoption target.
     for index, row in enumerate(clips[:-1]):
-        if row["category"] == "clean" and row["reverb_condition"] == "none":
+        if false_alarms == 1 and row["category"] == "clean" and row["reverb_condition"] == "none":
             continue
         scores[offsets[index]:offsets[index + 1], 0] = 0
         scores[offsets[index] + 27, 0] = .65
     warmup = verify_bundle(bundle)["runtime"]["warmup_s"]
     negative_length = int(round((3600 + warmup) / .08))
     negative = np.zeros((negative_length, len(ids)), np.float32)
-    negative[29, 0] = .7
+    negative[29:29 + 20 * false_alarms:20, 0] = .7
     scores = np.concatenate([scores[:offsets[-2]], negative])
     offsets[-1] = len(scores)
     clips[-1].update(duration_s=negative_length * .08, eligible_seconds=3600.)
@@ -238,8 +246,15 @@ def test_recommendation_ceiling_is_distinct_from_original_adoption(experiment, t
     selected = result["candidates"][0]
     saved = read_recommendation(project, bundle, evaluation, directory)
     assert selected["runtime"]["consecutive_frames"] == 1
-    assert selected["metrics"]["negative"]["fa_per_hour"] == 1.
-    assert selected["recommendation_available"] and selected["recommendation_reasons"] == []
+    assert selected["metrics"]["negative"]["fa_per_hour"] == float(false_alarms)
+    assert selected["recommendation_available"] and calibration.recommendation_is_available(selected)
+    if false_alarms == 1:
+        assert selected["status"] == "recommended"
+        assert selected["protection_passed"] and selected["recommendation_reasons"] == []
+    else:
+        assert selected["status"] == "recommended_over_false_alarm_limit"
+        assert not selected["protection_passed"]
+        assert selected["recommendation_reasons"] == ["FA/hour target failed or unmeasured"]
     assert selected["passed"] is False and "FA/hour target failed or unmeasured" in selected["adoption"]["reasons"]
     assert saved["recommendation_criteria"]["fa_per_hour"] == 1.
     assert saved["adoption_criteria"]["fa_per_hour"] == .1
@@ -266,7 +281,7 @@ def test_final_lock_blocks_automatic_search(experiment, tmp_path):
 
 
 def test_no_pass_fallback_protects_clean_false_activation_and_latency_targets():
-    targets = {"clean_recall": .98, "fa_per_hour": .1, "latency_p95_s": .5, "minimum_negative_hours": 20}
+    targets = {"clean_recall": .98, "fa_per_hour": 1, "latency_p95_s": .5, "minimum_negative_hours": 20}
     def result(noise, clean, false, latency, passed=False):
         metrics = {"noise_cell_mean": noise, "clean": {"recall": clean},
                    "hard_conditions": {"cell_mean": noise, "worst_recall": noise, "complete": True},
@@ -280,8 +295,12 @@ def test_no_pass_fallback_protects_clean_false_activation_and_latency_targets():
     assert max([safe, noisy_always_on, delayed, clean_loss], key=calibration._rank) is safe
     eligible = result(.95, .99, 0, .2, True)
     assert calibration._rank(eligible) > calibration._rank(safe)
-    almost_safe = result(.7, .99, .2, .2)
+    almost_safe = result(.7, .99, 1.2, .2)
+    equal_alarms_better_hard = result(.8, .99, 1.2, .2)
+    assert calibration._rank(safe) > calibration._rank(equal_alarms_better_hard)
     assert calibration._rank(almost_safe) > calibration._rank(noisy_always_on)
+    assert calibration._rank(almost_safe) > calibration._rank(delayed)
+    assert calibration._rank(equal_alarms_better_hard) > calibration._rank(almost_safe)
 
 
 def test_hard_conditions_have_equal_weight_and_easy_or_unknown_conditions_do_not_vote():
@@ -372,3 +391,44 @@ def test_display_loader_checks_lightweight_source_receipt(experiment, tmp_path):
     write_json(evaluation / "receipt.json", receipt)
     with pytest.raises(ValueError, match="inputs or receipt changed"):
         read_recommendation(project, bundle, evaluation, output, verify_inputs=False)
+
+
+def test_legacy_recommendation_uses_the_measured_false_alarm_exception_only():
+    checks = {"clean": True, "false_activations": False, "latency": True, "negative_duration": True,
+              "hard_conditions": True}
+    row = {"recommendation_available": False, "constraint_checks": checks,
+           "metrics": {"negative": {"fa_per_hour": 1.2}}}
+    assert calibration.recommendation_is_available(row)
+    assert row["recommendation_available"] is False
+    for key in ("clean", "latency", "negative_duration", "hard_conditions"):
+        assert not calibration.recommendation_is_available(dict(row, constraint_checks=dict(checks, **{key: False})))
+        assert not calibration.recommendation_is_available(dict(row, constraint_checks={k: v for k, v in checks.items() if k != key}))
+    for rate in (None, -1, float("nan"), float("inf"), True):
+        assert not calibration.recommendation_is_available(dict(row, metrics={"negative": {"fa_per_hour": rate}}))
+    assert not calibration.recommendation_is_available(dict(row, constraint_checks=dict(checks, additional=False)))
+    assert not calibration.recommendation_is_available({"recommendation_available": False})
+    assert calibration.recommendation_is_available({"recommendation_available": True})
+    assert calibration.recommendation_is_available({})
+
+
+def test_completed_legacy_policy_is_verified_and_never_rewritten(experiment, tmp_path, monkeypatch):
+    project, bundle, evaluation, _ = experiment
+    directory = tmp_path / "legacy"
+    policy = dict(calibration.LEGACY_SEARCH_POLICY, coarse_thresholds=[.5, .9], consecutive_frames=[1, 2])
+    monkeypatch.setattr(calibration, "LEGACY_SEARCH_POLICY", policy)
+    recommend(project, bundle, evaluation, directory)
+    publication, receipt_path = directory / "recommendation.json", directory / "receipt.json"
+    legacy, receipt = read_json(publication), read_json(receipt_path)
+    legacy.update(method=policy["method"], search_policy=policy)
+    write_json(publication, legacy)
+    write_json(receipt_path, dict(receipt, recommendation_sha256=digest(publication)))
+    original = {path: digest(path) for path in directory.iterdir() if path.is_file()}
+    assert read_recommendation(project, bundle, evaluation, directory, verify_inputs=False) == legacy
+    assert recommend(project, bundle, evaluation, directory)["candidates"] == legacy["candidates"]
+    assert {path: digest(path) for path in original} == original
+
+    # A matching hash by itself cannot validate a mismatched policy/method pair.
+    write_json(publication, dict(legacy, method=calibration.METHOD))
+    write_json(receipt_path, dict(receipt, recommendation_sha256=digest(publication)))
+    with pytest.raises(ValueError, match="inputs or receipt changed"):
+        read_recommendation(project, bundle, evaluation, directory, verify_inputs=False)

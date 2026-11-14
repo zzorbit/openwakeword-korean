@@ -18,15 +18,15 @@ from .project import load_project
 from .storage import project_storage
 
 
-METHOD = "joint_cached_hard_conditions_v3"
+METHOD = "joint_cached_hard_conditions_v4"
 COARSE_THRESHOLDS = tuple(i / 100 for i in range(1, 100))
 CONSECUTIVE_COUNTS = (1, 2, 3, 4, 5, 6)
 HARD_CONDITIONS = tuple(
     [(reverb, category, snr) for reverb in ("none", "moderate", "strong")
      for category in CATEGORIES for snr in (10, 5)]
     + [(reverb, "clean", None) for reverb in ("moderate", "strong")])
-SEARCH_POLICY = {
-    "method": METHOD,
+LEGACY_SEARCH_POLICY = {
+    "method": "joint_cached_hard_conditions_v3",
     "starting_threshold": .5,
     "starting_consecutive_frames": 1,
     "coarse_thresholds": list(COARSE_THRESHOLDS),
@@ -42,6 +42,42 @@ SEARCH_POLICY = {
     "no_feasible_candidate": "Show the conservative tradeoff separately; preserve the original runtime for microphone testing instead of silently applying the tradeoff",
     "scope": "Best among this declared finite grid; not a global optimum or independent Final result",
 }
+SEARCH_POLICY = dict(
+    LEGACY_SEARCH_POLICY,
+    method=METHOD,
+    selection_order=[
+        "all protections and complete hard-condition coverage passed",
+        "only the false-activation limit was exceeded, with a measured rate",
+        "lower false activations/hour among candidates exceeding the limit",
+        "higher hard-condition mean recall",
+        "higher worst hard-condition recall",
+        "lower false activations/hour",
+        "lower primary latency p95",
+        "fewer consecutive frames",
+        "lower threshold",
+    ],
+    no_feasible_candidate="Show the diagnostic comparison and use the original runtime for microphone testing "
+    "when the other protections or hard-condition coverage are not met",
+)
+
+
+def _measured_false_alarm_rate(value):
+    return type(value) in (int, float) and math.isfinite(value) and value >= 0
+
+
+def _over_false_alarm_limit(row):
+    checks = row.get("constraint_checks") or {}
+    negative = (row.get("metrics") or {}).get("negative") or {}
+    return (checks.get("false_activations") is False
+            and all(checks.get(key) is True for key in ("clean", "latency", "negative_duration", "hard_conditions"))
+            and all(passed is True for key, passed in checks.items() if key != "false_activations")
+            and _measured_false_alarm_rate(negative.get("fa_per_hour")))
+
+
+def recommendation_is_available(row):
+    """Interpret a saved row while preserving the original recommendation evidence."""
+    recorded = row.get("recommendation_available")
+    return recorded is None or recorded is True or (recorded is False and _over_false_alarm_limit(row))
 
 
 def _point_statistics(success, latency):
@@ -200,24 +236,25 @@ def _rank(item):
     checks = item["constraint_checks"]
     hard = summary["hard_conditions"]
     false, latency = summary["negative"]["fa_per_hour"], summary["primary"]["latency_p95_s"]
-    # Only protected, fully measured candidates can become recommendations.
-    # A no-pass tradeoff stays conservative and is never applied automatically.
-    false_failure = 0 if checks["false_activations"] else (false if false is not None else math.inf)
-    return (all(checks.values()),
+    # Prefer candidates within the limit, then measured over-limit candidates
+    # meeting every other protection. Keep the remaining rows diagnostic.
+    priority = 2 if all(checks.values()) else 1 if _over_false_alarm_limit(item) else 0
+    false_failure = 0 if checks["false_activations"] else (false if _measured_false_alarm_rate(false) else math.inf)
+    return (priority,
             checks["clean"], checks["false_activations"], -false_failure, checks["latency"], checks["negative_duration"],
             checks["hard_conditions"],
             hard["cell_mean"] if hard["cell_mean"] is not None else -1,
             hard["worst_recall"] if hard["worst_recall"] is not None else -1,
-            -false if false is not None else -math.inf,
+            -false if _measured_false_alarm_rate(false) else -math.inf,
             -latency if latency is not None else -math.inf,
             -runtime["consecutive_frames"], -runtime["threshold"])
 
 
 def _constraint_checks(metrics, targets):
-    """Keep no-pass fallbacks conservative instead of rewarding always-high gates."""
+    """Record the measured outcome of each recommendation protection."""
     clean, false, latency = metrics["clean"]["recall"], metrics["negative"]["fa_per_hour"], metrics["primary"]["latency_p95_s"]
     return {"clean": clean is not None and clean >= targets["clean_recall"],
-            "false_activations": false is not None and false <= targets["fa_per_hour"],
+            "false_activations": _measured_false_alarm_rate(false) and false <= targets["fa_per_hour"],
             "latency": latency is not None and latency <= targets["latency_p95_s"],
             "negative_duration": metrics["negative"]["hours"] >= targets["minimum_negative_hours"],
             "hard_conditions": metrics["hard_conditions"]["complete"]}
@@ -269,10 +306,11 @@ def read_recommendation(project, bundle, evaluation, output, verify_inputs=True)
         if (completion.get("report_sha256") != bindings["source_report_sha256"]
                 or completion.get("bundle_sha256") != bindings["source_bundle_manifest_sha256"]):
             raise ValueError("Automatic detection recommendation source completion receipt changed")
-    if (result.get("schema_version") != 1 or result.get("method") != METHOD
+    policy_matches = any(result.get("method") == policy["method"] and result.get("search_policy") == policy
+                         for policy in (SEARCH_POLICY, LEGACY_SEARCH_POLICY))
+    if (result.get("schema_version") != 1 or not policy_matches
             or result.get("bindings") != bindings or receipt.get("bindings") != bindings
             or receipt.get("recommendation_sha256") != digest(directory / "recommendation.json")
-            or result.get("search_policy") != SEARCH_POLICY
             or result.get("stage") != "development" or result.get("Final_used_for_selection") is not False):
         raise ValueError("Automatic detection recommendation inputs or receipt changed")
     return result
@@ -323,7 +361,10 @@ def recommend(project, bundle, evaluation, output, progress_callback=None):
     with writer_lock(output):
         declaration_path = output / "search.json"
         if declaration_path.exists():
-            if read_json(declaration_path) != declaration:
+            # The previous policy measured exactly the same grid and constraints.
+            # Its unfinished journal can continue under the new ranking.
+            legacy_declaration = dict(declaration, search_policy=LEGACY_SEARCH_POLICY)
+            if read_json(declaration_path) not in (declaration, legacy_declaration):
                 raise ValueError("Resumable detection search inputs or policy changed; use a new directory")
         elif any(path.name != ".writer.lock" for path in output.iterdir()):
             raise ValueError("Recommendation output is not a matching resumable search")
@@ -369,19 +410,23 @@ def recommend(project, bundle, evaluation, output, progress_callback=None):
                     compare(threshold, count)
             baseline = cache[(.5, 1)]
             best = deepcopy(max(cache.values(), key=_rank))
-            available = all(best["constraint_checks"].values())
+            checks = best["constraint_checks"]
+            within_limit = all(checks.values())
+            over_limit = _over_false_alarm_limit(best)
+            status = "recommended" if within_limit else (
+                "recommended_over_false_alarm_limit" if over_limit else "no_feasible_candidate")
             best.update(id=candidate["id"], kind=candidate["kind"],
                         passed=best["adoption"]["passed"],
-                        status="recommended" if available else "no_feasible_candidate",
-                        recommendation_available=available,
-                        protection_passed=all(value for key, value in best["constraint_checks"].items() if key != "hard_conditions"),
-                        recommendation_reasons=_recommendation_reasons(best["constraint_checks"], declaration["recommendation_criteria"]),
+                        status=status,
+                        recommendation_available=within_limit or over_limit,
+                        protection_passed=all(value for key, value in checks.items() if key != "hard_conditions"),
+                        recommendation_reasons=_recommendation_reasons(checks, declaration["recommendation_criteria"]),
                         original_runtime=deepcopy(package["runtime"]),
                         baseline=baseline, tested_combinations=len(cache),
                         source_scoring_protocol=protocol, deployment_backend_verified=cpu,
                         verification_scope="reference_cpu_scores" if cpu else "cached_score_protocol_only")
             selected.append(best)
-            print(f"Detection settings: {candidate['id']} threshold={best['runtime']['threshold']:g} frames={best['runtime']['consecutive_frames']} recommendation_available={available} targets_passed={best['passed']}", flush=True)
+            print(f"Detection settings: {candidate['id']} threshold={best['runtime']['threshold']:g} frames={best['runtime']['consecutive_frames']} recommendation_available={best['recommendation_available']} targets_passed={best['passed']}", flush=True)
             del rolling
         if _bindings(project, bundle, evaluation) != bindings:
             raise ValueError("Automatic detection recommendation inputs changed during search")

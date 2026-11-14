@@ -295,10 +295,28 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
     assert.equal(b.streams[0].track.stopped, true);
     assert.equal(b.calls.some(call => call.url === "/api/stop"), true);
   });
-  await test("target-miss and cache-only recommendations remain explicitly qualified", async () => {
+  await test("cache-only recommendations identify the evidence without repeating the historical goal verdict", async () => {
     const b = browser({recommendedRuntimes: recommendations, recommendations: {candidates: [{id: "head1", passed: false, deployment_backend_verified: false}]}}); await flush();
-    assert.match(b.elements.get("recommendationHint").textContent, /목표 미달/);
+    assert.doesNotMatch(b.elements.get("recommendationHint").textContent, /목표 미달/);
     assert.match(b.elements.get("recommendationHint").textContent, /저장 점수 기준/);
+  });
+  await test("a recommended setting above only the false-alarm limit is shown and used for microphone tests", async () => {
+    const runtime = {threshold: .99, consecutive_frames: 5};
+    const b = browser({recommendedRuntimes: {...recommendations, head2: runtime}, recommendations: {
+      recommendation_criteria: {fa_per_hour: 1},
+      candidates: [{id: "head2", runtime, recommendation_available: true, status: "recommended_over_false_alarm_limit",
+        metrics: {negative: {fa_per_hour: 1.2}}, deployment_backend_verified: false}]
+    }}); await flush();
+    assert.equal(b.elements.get("trial-mode").value, "recommended");
+    const hint = b.elements.get("recommendationHint").textContent;
+    assert.match(hint, /모델 2.*1\.2회/s);
+    assert.match(hint, /오호출이 가장 적은/);
+    assert.doesNotMatch(hint, /기존 설정을 유지|목표 미달/);
+    assert.equal(b.elements.get("threshold").textContent, "모델별 추천값 적용");
+    await b.click("start"); await flush();
+    assert.deepEqual(JSON.parse(b.calls.find(call => call.url === "/api/start").options.body), {mode: "recommended"});
+    assert.deepEqual(b.elements.get("models").children[1].children.slice(5).map(cell => cell.textContent), ["0.99", "5회"]);
+    b.click("stop"); await flush();
   });
   await test("a model without a protected recommendation clearly keeps its original gate", async () => {
     const original = {threshold: .9862500429153442, consecutive_frames: 2};
@@ -320,8 +338,8 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
       search_policy: {threshold_step: .01}, recommendation_criteria: {fa_per_hour: 1}, adoption_criteria: {fa_per_hour: .1},
       candidates: [{id: "head1", recommendation_available: true, passed: false, deployment_backend_verified: false}]
     }}); await flush();
-    assert.match(b.elements.get("recommendationHint").textContent, /감지 기준 0.01 간격 · 시간당 오작동 1회 이하/);
-    assert.match(b.elements.get("recommendationHint").textContent, /기존 평가 목표 미달/);
+    assert.match(b.elements.get("recommendationHint").textContent, /감지 기준 0\.01 간격 · 오호출 상한 시간당 1회/);
+    assert.doesNotMatch(b.elements.get("recommendationHint").textContent, /기존 평가 목표 미달/);
     assert.doesNotMatch(b.elements.get("recommendationHint").textContent, /추천 기준을 만족하는 조합이 없어/);
     assert.equal(b.elements.get("trial-mode").value, "recommended");
   });

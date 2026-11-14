@@ -294,8 +294,8 @@ def test_new_policy_does_not_add_stages_or_enable_final_access():
         assert not any("final" in row["id"].lower() for row in plan)
 
 
-@pytest.mark.parametrize("available", [None, True, False])
-def test_studio_microphone_uses_original_gate_for_unavailable_recommendations_only(tmp_path, monkeypatch, available):
+@pytest.mark.parametrize("available, false_alarm_only", [(None, False), (True, False), (False, False), (False, True)])
+def test_studio_microphone_uses_original_gate_for_unavailable_recommendations_only(tmp_path, monkeypatch, available, false_alarm_only):
     import threading
     from korean_openwakeword.studio import StudioManager
     detector = RecommendationDetector()
@@ -308,6 +308,12 @@ def test_studio_microphone_uses_original_gate_for_unavailable_recommendations_on
                                for key, value in choices.items()]}
     if available is not None:
         evidence["candidates"][1]["recommendation_available"] = available
+    if false_alarm_only:
+        evidence["candidates"][1].update(
+            constraint_checks={"clean": True, "latency": True, "negative_duration": True,
+                               "hard_conditions": True, "false_activations": False},
+            metrics={"negative": {"fa_per_hour": 1.2}},
+        )
     state = {"project": str(tmp_path / "project.json"), "results": {
         "package": {"result": {"bundle": str(bundle)}}}}
     manager = object.__new__(StudioManager)
@@ -319,7 +325,7 @@ def test_studio_microphone_uses_original_gate_for_unavailable_recommendations_on
     service = manager.microphone("fixture")
     selected = service.info()["recommended_runtimes"]
     original_gate = {key: detector.runtime[key] for key in ("threshold", "consecutive_frames")}
-    assert selected["head2"] == (original_gate if available is False else choices["head2"])
+    assert selected["head2"] == (original_gate if available is False and not false_alarm_only else choices["head2"])
     assert selected["head1"] == choices["head1"]
     assert selected["head3"] == choices["head3"] and selected["mean"] == choices["mean"]
     start = service.start({"mode": "recommended"})
