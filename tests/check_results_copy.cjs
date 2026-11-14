@@ -40,25 +40,54 @@ test("both report layouts put the comparison metrics in the models panel", () =>
       assert.match(models, new RegExp(`id="${id}"`));
     }
     assert.doesNotMatch(html, /result-full-details|상세 결과|model-tab-|targetComparison|id="summary"|id="recommendations"/);
-    assert.deepEqual([...models.matchAll(/<th scope="col"[^>]*>([^<]+)<\/th>/g)].map(match => match[1]), [
+    assert.deepEqual([...models.matchAll(/<th scope="col"[^>]*>([\s\S]*?)<\/th>/g)]
+      .map(match => match[1].replace(/<[^>]+>/g, "").trim()), [
       "모델", "종합 감지율", "조용할 때", "강한 소음·울림", "최약 조건", "오호출/시간", "반응 시간", "감지 설정", "평가 목표"
     ]);
     assert.match(models, /aria-describedby="overview-latency-note"/);
     assert.equal([...models.matchAll(/id="overview-latency-note"/g)].length, 1);
+    assert.deepEqual([...models.matchAll(/<button[^>]+data-overview-help="([^"]+)"/g)].map(match => match[1]), ["hard", "worst"]);
+    assert.match(html, /id="overview-help"[^>]*popover="auto"[^>]*role="dialog"[^>]*aria-labelledby="overview-help-title"/);
+    for (const id of ["overview-help", "overview-help-content", "overview-help-close"]) {
+      assert.equal([...html.matchAll(new RegExp(`id="${id}"`, "g"))].length, 1);
+    }
   }
 });
+const displayedValue = cell => cell.children.find(node => node.className === "overview-value-button")?.textContent || cell.textContent;
+const fullText = element => [element.textContent, ...element.children.map(fullText)].filter(Boolean).join(" ");
 function browser({dashboard = false} = {}) {
   class Element {
-    constructor(tag = "div") { this.tagName = tag; this.children = []; this.value = ""; this.textContent = ""; this.disabled = false; this.attributes = {}; }
-    append(...nodes) { this.children.push(...nodes); }
-    replaceChildren(...nodes) { this.children = nodes; }
+    constructor(tag = "div") { this.tagName = tag; this.children = []; this.value = ""; this.textContent = ""; this.disabled = false; this.attributes = {}; this.dataset = {}; this.style = {}; this.listeners = new Map(); this.open = false; }
+    append(...nodes) {
+      for (const node of nodes) node.parentElement = this;
+      this.children.push(...nodes);
+    }
+    replaceChildren(...nodes) { this.children = []; this.textContent = ""; this.append(...nodes); }
+    get previousElementSibling() {
+      const items = this.parentElement?.children || [];
+      return items[items.indexOf(this) - 1] ?? null;
+    }
     setAttribute(name, value) { this.attributes[name] = value; }
+    getAttribute(name) { return this.attributes[name]; }
     focus() { this.focused = true; }
+    addEventListener(name, listener) { this.listeners.set(name, listener); }
+    dispatch(name, details = {}) {
+      const event = {target: this, currentTarget: this, preventDefault() {}, ...details};
+      this[`on${name}`]?.(event);
+      this.listeners.get(name)?.(event);
+    }
+    getBoundingClientRect() { return {top: 0, bottom: 20, left: 0, right: 20, width: 20, height: 20}; }
+    matches(selector) { return selector === ":popover-open" && this.open; }
+    showPopover({source} = {}) { this.open = true; this.popoverSource = source; this.dispatch("toggle", {newState: "open"}); }
+    hidePopover() { this.open = false; this.dispatch("toggle", {newState: "closed"}); }
   }
   const elements = new Map();
-  for (const id of ["responses", "scores", "condition-model", "condition-reverb", "condition-clean", "conditions", "storySummary", "overview-source", "overview-model", "storySummaryMetrics", "overview-note", "searchCriteria", "searchCriteriaNote", "evaluationCriteria", "condition-snr", "conditionMetrics"]) {
+  for (const id of ["responses", "scores", "condition-model", "condition-reverb", "condition-clean", "conditions", "storySummary", "overview-source", "overview-model", "storySummaryMetrics", "overview-note", "searchCriteria", "searchCriteriaNote", "evaluationCriteria", "condition-snr", "conditionMetrics", "overview-help", "overview-help-title", "overview-help-content", "overview-help-close"]) {
     elements.set(id, new Element());
   }
+  const headers = ["hard", "worst"].map(key => {
+    const element = new Element("button"); element.dataset.overviewHelp = key; return element;
+  });
   for (const id of ["storySummary", "responses", "scores", "conditions"]) elements.get(id).tBodies = [new Element("tbody")];
   elements.get("condition-snr").value = "10";
   if (dashboard) {
@@ -66,9 +95,12 @@ function browser({dashboard = false} = {}) {
       for (const kind of ["tab", "panel"]) elements.set(`results-${kind}-${name}`, new Element());
     elements.set("audio", Object.assign(new Element("audio"), {src: "unchanged.wav", currentTime: 2.5}));
   }
-  const context = vm.createContext({document: {getElementById: id => elements.get(id), createElement: tag => new Element(tag)}});
-  context.window = context; vm.runInContext(source, context);
-  return {elements, ui: context.KowwResultsUI, rows: id => elements.get(id).tBodies[0].children.map(row => row.children.map(cell => cell.textContent))};
+  const context = vm.createContext({document: {getElementById: id => elements.get(id), createElement: tag => new Element(tag),
+    querySelectorAll: selector => selector === "[data-overview-help]" ? headers : []}});
+  context.window = context; context.innerWidth = 1024; context.innerHeight = 768;
+  vm.runInContext(source, context);
+  return {elements, headers, ui: context.KowwResultsUI,
+    rows: id => elements.get(id).tBodies[0].children.map(row => row.children.map(displayedValue))};
 }
 function sample() {
   const stats = (successes, calls) => ({successes, calls, recall: calls ? successes / calls : null});
@@ -294,9 +326,10 @@ test("one comparison shows measured settings, weakest conditions and goal status
   const modelCells = () => elements.get("storySummary").tBodies[0].children[1].children;
   const details = cell => cell.children.map(node => node.textContent).join(" ");
   assert.equal(modelCells()[0].children.find(node => node.className === "recommendation-status")?.textContent, status);
-  assert.match(details(modelCells()[4]), /강한 울림.*다른 사람 말소리.*5 dB/);
+  assert.deepEqual(modelCells()[4].children.map(node => node.textContent), ["0.00%"]);
   assert.equal(modelCells()[8].title, "반응 시간");
-  const mobileMetrics = () => elements.get("storySummaryMetrics").children.map(item => item.children.map(cell => cell.textContent));
+  const mobileMetrics = () => elements.get("storySummaryMetrics").children.map(item =>
+    [fullText(item.children[0]), displayedValue(item.children[1])]);
   assert.deepEqual(mobileMetrics()[2], ["강한 소음·울림", "73.00%"]);
   elements.get("overview-model").value = "member2_seed2"; elements.get("overview-model").onchange();
   assert.deepEqual(mobileMetrics(), [
@@ -305,7 +338,7 @@ test("one comparison shows measured settings, weakest conditions and goal status
     ["감지 설정", "0.99 · 5회"], ["평가 목표", "미달"]
   ]);
   assert.equal(elements.get("storySummaryMetrics").children[0].className, "overview-status-row");
-  assert.match(details(elements.get("storySummaryMetrics").children[4].children[1]), /강한 울림.*다른 사람 말소리.*5 dB/);
+  assert.deepEqual(elements.get("storySummaryMetrics").children[4].children[1].children.map(node => node.textContent), ["0.00%"]);
   elements.get("overview-source").value = "baseline"; elements.get("overview-source").onchange();
   assert.deepEqual(rows("storySummary")[1], ["모델 2", "93.33%", "99.90%", "78.31%", "50.00%", "9.400회", "0.20초", "0.5 · 1회", "미달"]);
   assert.equal(mobileMetrics()[0][0], "종합 감지율");
@@ -320,7 +353,96 @@ test("one comparison shows measured settings, weakest conditions and goal status
   candidate.recommendation_reasons = ["Hard noise/reverberation conditions incomplete"];
   ui.renderSummary(report);
   assert.deepEqual(rows("storySummary")[1].slice(3, 5), ["자료 부족", "자료 부족"]);
+  assert.equal(modelCells()[3].children.length, 0);
+  assert.equal(modelCells()[4].children.length, 0);
   assert.match(details(modelCells()[0]), /강소음·울림 시험 자료 부족/);
+});
+test("metric help opens from headers or measured values and uses the selected settings", () => {
+  const {ui, elements, headers} = browser(), report = sample();
+  report.runtime = {threshold: .5, consecutive_frames: 1};
+  const model = report.models.find(row => row.id === "mean");
+  model.hard_conditions = {
+    complete: true, cell_mean: .8, worst_recall: .6, conditions: [
+      {reverb_condition: "strong", category: "environment", snr_db: 5, recall: .6},
+      {reverb_condition: "moderate", category: "clean", snr_db: null, recall: 1}
+    ]
+  };
+  report.runtime_recommendations = {schema_version: 1, candidates: [{
+    id: model.id, runtime: {threshold: .9, consecutive_frames: 3}, recommendation_available: true,
+    metrics: {hard_conditions: {complete: true, cell_mean: .7, worst_recall: .64, conditions: [
+      {reverb_condition: "strong", category: "competing_speech", snr_db: 5, recall: .64},
+      {reverb_condition: "moderate", category: "music", snr_db: 10, recall: .64},
+      {reverb_condition: "none", category: "environment", snr_db: 10, recall: .82}
+    ]}}
+  }]};
+  const saved = JSON.stringify(report);
+  ui.renderSummary(report);
+
+  const dialog = elements.get("overview-help");
+  const label = () => fullText(elements.get("overview-help-title"));
+  const content = () => fullText(elements.get("overview-help-content"));
+  const close = () => elements.get("overview-help-close").dispatch("click");
+  const desktopRow = () => elements.get("storySummary").tBodies[0].children[3].children;
+  const mobileRow = name => elements.get("storySummaryMetrics").children.find(row => fullText(row.children[0]) === name);
+  const mobileCell = name => mobileRow(name).children[1];
+  const openFrom = element => {
+    const button = element.children.find(node => node.className === "overview-value-button");
+    assert.ok(button);
+    button.dispatch("click");
+    assert.equal(dialog.open, true);
+    assert.equal(button.attributes["aria-expanded"], "true");
+    return button;
+  };
+
+  headers[0].dispatch("click");
+  assert.equal(dialog.open, true);
+  assert.match(label(), /강한 소음·울림/);
+  assert.match(content(), /평균/);
+  assert.doesNotMatch(content(), /70\.00%/);
+  close();
+  assert.equal(dialog.open, false);
+
+  headers[1].dispatch("click");
+  assert.equal(dialog.open, true);
+  assert.match(label(), /최약 조건/);
+  assert.match(content(), /낮/);
+  assert.doesNotMatch(content(), /64\.00%/);
+  close();
+
+  const desktopHard = openFrom(desktopRow()[3]);
+  assert.match(label(), /앙상블 · 강한 소음·울림/);
+  assert.match(content(), /70\.00%/);
+  assert.doesNotMatch(content(), /80\.00%/);
+  close();
+  assert.equal(desktopHard.attributes["aria-expanded"], "false");
+  assert.equal(desktopHard.focused, true);
+  const compactLabel = mobileRow("최약 조건").children[0].children.find(node => node.tagName === "button");
+  assert.ok(compactLabel);
+  compactLabel.dispatch("click");
+  assert.equal(dialog.open, true);
+  assert.match(label(), /최약 조건/);
+  assert.doesNotMatch(content(), /64\.00%/);
+  close();
+  const compactWorst = openFrom(mobileCell("최약 조건"));
+  assert.match(content(), /64\.00%/);
+  assert.match(content(), /강한 울림.*다른 사람 말소리.*5 dB/);
+  assert.match(content(), /보통 울림.*음악·전자음.*10 dB/);
+  assert.doesNotMatch(content(), /환경소음/);
+  assert.doesNotMatch(fullText(mobileCell("최약 조건")), /말소리|전자음/);
+  const source = elements.get("overview-source");
+  source.value = "baseline"; source.onchange();
+  assert.equal(dialog.open, false);
+  assert.equal(compactWorst.attributes["aria-expanded"], "false");
+  openFrom(mobileCell("강한 소음·울림"));
+  assert.match(content(), /80\.00%/);
+  assert.doesNotMatch(content(), /70\.00%/);
+  close();
+  openFrom(desktopRow()[4]);
+  assert.match(content(), /60\.00%/);
+  assert.match(content(), /강한 울림.*환경소음.*5 dB/);
+  assert.doesNotMatch(content(), /말소리|전자음/);
+  close();
+  assert.equal(JSON.stringify(report), saved);
 });
 test("baseline aggregates only the recorded cells named by the archived policy", () => {
   const {ui, elements, rows} = browser(), report = sample();
@@ -338,7 +460,8 @@ test("baseline aggregates only the recorded cells named by the archived policy",
   source.value = "baseline"; source.onchange();
   assert.deepEqual(rows("storySummary")[3].slice(3, 5), ["70.83%", "66.67%"]);
   const weakest = elements.get("storySummary").tBodies[0].children[3].children[4];
-  assert.match(weakest.children[0].textContent, /강한 울림.*조용한 환경/);
+  weakest.children[0].dispatch("click");
+  assert.match(fullText(elements.get("overview-help-content")), /강한 울림.*조용한 환경/);
   assert.equal(JSON.stringify(report), before);
   delete model.reverb_conditions.strong.clean;
   ui.renderSummary(report);

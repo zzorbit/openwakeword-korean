@@ -10,6 +10,7 @@
   let dashboardView = "models";
   let compactAudio = null;
   let resultClipPicker;
+  let overviewHelp;
   function fitAudioControls() {
     if (typeof window === "undefined" || !Number.isFinite(window.innerHeight)) return;
     const compact = window.innerHeight < 520;
@@ -32,6 +33,7 @@
   function dashboard(view, focus = false) {
     if (!["models", "conditions", "audio", "criteria"].includes(view)) return;
     if (view !== "audio") resultClipPicker?.close();
+    if (view !== "models") overviewHelp?.hide();
     dashboardView = view; activateTabs("results", ["models", "conditions", "audio", "criteria"], view, focus);
   }
   function bindTabs(prefix, names, select) {
@@ -74,6 +76,7 @@
         || event.origin !== window.location.origin || event.source !== window.parent
         || event.data?.type !== "koww:pause") return;
     resultClipPicker?.close();
+    overviewHelp?.hide();
     const pause = $("pause");
     // Reuse the viewer's own pause path so queue state and in-flight autoplay
     // cancellation stay consistent in both static and paged exports.
@@ -223,23 +226,118 @@
     term.textContent = label; description.textContent = value; item.append(term, description); list.append(item);
     return description;
   }
-  function appendMetricDetail(cell, detail, className = "overview-metric-detail") {
-    if (!detail) return;
-    const text = document.createElement("small");
-    text.className = className; text.textContent = detail; cell.append(text);
+  function createOverviewHelp() {
+    const popup = $("overview-help"), title = $("overview-help-title");
+    const content = $("overview-help-content"), close = $("overview-help-close");
+    if (!popup?.showPopover || !title || !content || !close) return null;
+    let active;
+    function resetTrigger() {
+      active?.setAttribute("aria-expanded", "false");
+      active = null;
+    }
+    function hide(restoreFocus = false) {
+      const trigger = active;
+      if (popup.matches(":popover-open")) popup.hidePopover();
+      resetTrigger();
+      if (restoreFocus) trigger?.focus();
+    }
+    function position() {
+      if (!active || !popup.matches(":popover-open")) return;
+      // Use iframe-local coordinates and keep the panel inside the viewport.
+      const anchor = active.getBoundingClientRect(), rect = popup.getBoundingClientRect();
+      const margin = 12, gap = 6;
+      const width = window.innerWidth, height = window.innerHeight;
+      const left = anchor.left + (anchor.width - rect.width) / 2;
+      const below = anchor.bottom + gap, above = anchor.top - rect.height - gap;
+      const top = below + rect.height <= height - margin || above < margin ? below : above;
+      popup.style.left = `${Math.max(margin, Math.min(left, width - rect.width - margin))}px`;
+      popup.style.top = `${Math.max(margin, Math.min(top, height - rect.height - margin))}px`;
+    }
+    function bind(trigger, help) {
+      trigger.setAttribute("aria-haspopup", "dialog");
+      trigger.setAttribute("aria-controls", popup.id || "overview-help");
+      trigger.setAttribute("aria-expanded", "false");
+      trigger.setAttribute("popovertarget", popup.id || "overview-help");
+      trigger.onclick = event => {
+        event.preventDefault();
+        if (active === trigger && popup.matches(":popover-open")) {
+          hide(true);
+          return;
+        }
+        hide();
+        title.textContent = help.title;
+        content.replaceChildren();
+        for (const text of help.paragraphs) {
+          const paragraph = document.createElement("p");
+          paragraph.textContent = text;
+          content.append(paragraph);
+        }
+        if (help.conditions?.length) {
+          const list = document.createElement("ul");
+          for (const text of help.conditions) {
+            const item = document.createElement("li");
+            item.textContent = text;
+            list.append(item);
+          }
+          content.append(list);
+        }
+        active = trigger;
+        popup.showPopover({source: trigger});
+        trigger.setAttribute("aria-expanded", "true");
+        content.scrollTop = 0;
+        position();
+        close.focus({preventScroll: true});
+      };
+    }
+    close.onclick = () => hide(true);
+    popup.ontoggle = () => { if (!popup.matches(":popover-open")) resetTrigger(); };
+    window.addEventListener?.("resize", position);
+    return {bind, hide};
   }
-  function weakestCondition(hard) {
-    if (hard?.complete === false || !finite(hard?.worst_recall)) return "";
-    const weakest = Object.values(hard.conditions || {}).filter(cell => cell.recall === hard.worst_recall);
-    if (!weakest.length) return "";
-    const {reverb_condition: reverb, category, snr_db: snr} = weakest[0];
-    const ties = weakest.length > 1 ? ` 외 ${weakest.length - 1}개 조건` : "";
-    return `${reverbLabel(reverb)} · ${noiseLabel(category)}${finite(snr) ? ` · ${snr} dB` : ""}${ties}`;
+  function metricHelp(policy) {
+    const hard = ["비교에 포함된 소음·울림 조건의 감지율을 같은 비중으로 평균한 값입니다."];
+    if (Array.isArray(policy) && policy.length) {
+      const noiseLevels = [...new Set(policy.map(cell => cell.snr_db).filter(finite))].sort((left, right) => right - left);
+      const noise = [...new Set(policy.map(cell => cell.category).filter(category => category !== "clean"))].map(noiseLabel);
+      const rooms = [...new Set(policy.filter(cell => cell.category !== "clean").map(cell => cell.reverb_condition))].map(reverbLabel);
+      const groups = [`비교 조건 ${policy.length}개`];
+      if (rooms.length) groups.push(`울림 · ${rooms.join(", ")}`);
+      if (noise.length) groups.push(`배경 · ${noise.join(", ")}`);
+      if (noiseLevels.length) groups.push(`소음 크기 · SNR ${noiseLevels.join(", ")} dB`);
+      hard.push(groups.join("\n"));
+      if (policy.some(cell => cell.category === "clean" && cell.reverb_condition !== "none")) {
+        hard.push("배경 소음 없이 울림만 있는 조건도 포함합니다.");
+      }
+    }
+    return {
+      hard: {title: "강한 소음·울림", paragraphs: hard},
+      worst: {title: "최약 조건", paragraphs: ["강한 소음·울림 비교에 포함된 조건 중 감지율이 가장 낮은 값입니다.",
+        "모델의 수치를 누르면 해당 시험 조건을 볼 수 있습니다."]}
+    };
+  }
+  function weakestConditions(hard) {
+    return Object.values(hard.conditions || {}).filter(cell => cell.recall === hard.worst_recall)
+      .map(({reverb_condition: reverb, category, snr_db: snr}) =>
+        `${reverbLabel(reverb)} · ${noiseLabel(category)}${finite(snr) ? ` · SNR ${snr} dB` : ""}`);
+  }
+  function metricButton(cell, text, className, help) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = className;
+    button.textContent = text;
+    if (className === "overview-value-button") button.setAttribute("aria-label", `${help.title} ${text}, 설명 열기`);
+    overviewHelp.bind(button, help);
+    cell.replaceChildren(button);
   }
   function renderOverview(report) {
     const table = body("storySummary"), source = $("overview-source"), modelSelect = $("overview-model");
     if (!table || !source || !modelSelect) return;
     const calibration = report.runtime_recommendations;
+    const explanations = metricHelp(calibration?.search_policy?.hard_conditions);
+    overviewHelp ??= createOverviewHelp();
+    if (overviewHelp) for (const button of document.querySelectorAll("[data-overview-help]")) {
+      overviewHelp.bind(button, explanations[button.dataset.overviewHelp]);
+    }
     const candidates = calibration?.schema_version === 1 && Array.isArray(calibration.candidates) ? calibration.candidates : [];
     const models = report.models || [];
     const order = [...singleIds(report), ...models.filter(row => isEnsemble(report, row.id)).map(row => row.id)];
@@ -282,39 +380,61 @@
       const entries = [
         {label: "종합 감지율", value: percent(metric?.primary?.recall)},
         {label: "조용할 때", value: clean?.calls === 0 ? "시험 안 함" : percent(clean?.recall), title: cleanCount},
-        {label: "강한 소음·울림", value: hard?.complete === false ? "자료 부족" : percent(hard?.cell_mean), title: dryNoise},
-        {label: "최약 조건", value: hard?.complete === false ? "자료 부족" : percent(hard?.worst_recall), detail: weakestCondition(hard)},
+        {label: "강한 소음·울림", value: hard?.complete === false ? "자료 부족" : percent(hard?.cell_mean),
+          help: "hard", measured: hard?.complete !== false && finite(hard?.cell_mean), title: dryNoise},
+        {label: "최약 조건", value: hard?.complete === false ? "자료 부족" : percent(hard?.worst_recall),
+          help: "worst", measured: hard?.complete !== false && finite(hard?.worst_recall)},
         {label: "오호출/시간", value: finite(negative?.fa_per_hour) ? `${negative.fa_per_hour.toFixed(3)}회` : "결과 없음", title: rawFalse},
         {label: "반응 시간", value: reactionTime(metric?.primary?.latency_p95_s)},
         {label: "감지 설정", value: settings, title: "감지 기준 · 연속 감지 횟수"},
         {label: "평가 목표", value: passed === true ? "충족" : passed === false ? "미달" : "기록 없음",
           title: passed === false ? [...new Set((goal?.reasons || []).map(goalReason))].join(" · ") : ""}
       ];
-      return {entries, status};
+      return {entries, status, hard};
+    }
+    function showMetric(cell, entry, model, hard) {
+      if (!overviewHelp || !entry.measured) {
+        if (entry.title) cell.title = entry.title;
+        return;
+      }
+      const {help, label, value} = entry;
+      const mode = source.value === "recommended" ? "추천값 결과" : "평가 당시 결과";
+      const paragraphs = [`${mode} · ${value}`];
+      const conditions = help === "worst" ? weakestConditions(hard) : [];
+      if (help === "hard") {
+        paragraphs.push(...explanations.hard.paragraphs);
+        if (entry.title) paragraphs.push(entry.title);
+      } else if (!conditions.length) {
+        paragraphs.push("이 보고서에는 세부 시험 조건이 기록되지 않았습니다.");
+      }
+      metricButton(cell, value, "overview-value-button", {title: `${modelLabel(report, model.id)} · ${label}`, paragraphs, conditions});
     }
     function draw() {
+      overviewHelp?.hide();
       table.replaceChildren();
       const metrics = $("storySummaryMetrics");
       metrics?.replaceChildren();
       for (const model of sorted) {
-        const {entries, status} = overviewFor(model);
+        const {entries, status, hard} = overviewFor(model);
         const row = document.createElement("tr");
         if (isEnsemble(report, model.id)) row.className = "ensemble";
         const name = appendCell(row, modelLabel(report, model.id));
-        appendMetricDetail(name, status, "recommendation-status");
-        for (const {value, detail, title} of entries) {
-          const cell = appendCell(row, value);
-          if (title) cell.title = title;
-          appendMetricDetail(cell, detail);
+        if (status) {
+          const detail = document.createElement("small");
+          detail.className = "recommendation-status"; detail.textContent = status;
+          name.append(detail);
         }
+        for (const entry of entries) showMetric(appendCell(row, entry.value), entry, model, hard);
         table.append(row);
         if (metrics && model.id === modelSelect.value) {
           if (status) appendMetric(metrics, "추천 상태", status, "overview-status-row").className = "recommendation-status";
-          for (const {label, value, detail, title} of entries) {
-            const description = appendMetric(metrics, label, value);
-            if (title) description.title = title;
-            if (label === "반응 시간") description.setAttribute("aria-describedby", "overview-latency-note");
-            appendMetricDetail(description, detail);
+          for (const entry of entries) {
+            const description = appendMetric(metrics, entry.label, entry.value);
+            if (entry.label === "반응 시간") description.setAttribute("aria-describedby", "overview-latency-note");
+            if (overviewHelp && entry.help) {
+              metricButton(description.previousElementSibling, entry.label, "overview-help-button", explanations[entry.help]);
+            }
+            showMetric(description, entry, model, hard);
           }
         }
       }

@@ -17,9 +17,51 @@ button,select,input{font:inherit;font-size:15px;color:#e9edf2;min-height:40px;bo
 .story-summary th:nth-child(5){width:16%}
 .story-summary th:nth-child(7){width:8%}
 .story-summary th:nth-child(8),.story-summary th:nth-child(9){width:12%}
-.recommendation-status,.overview-metric-detail{display:block;margin-top:2px;font-size:12px;font-weight:400;line-height:1.4;word-break:keep-all;overflow-wrap:anywhere}
-.recommendation-status{color:var(--amber);font-weight:500}
-.overview-metric-detail{color:var(--muted)}
+.overview-help-button,.overview-value-button{
+  min-height:0;
+  padding:0;
+  border:0;
+  border-radius:2px;
+  background:transparent;
+  color:inherit;
+  font:inherit;
+  text-align:inherit;
+  text-decoration:underline dotted;
+  text-underline-offset:.2em;
+}
+.overview-help-button:hover:enabled,.overview-value-button:hover:enabled,
+.overview-help-button[aria-expanded=true],.overview-value-button[aria-expanded=true]{
+  background:transparent;
+  color:var(--blue);
+  text-decoration-style:solid;
+}
+#overview-help{
+  display:none;
+  position:fixed;
+  inset:auto;
+  top:12px;
+  left:12px;
+  width:min(390px,calc(100vw - 24px));
+  max-height:calc(100dvh - 24px);
+  margin:0;
+  padding:0;
+  overflow:hidden;
+  border:1px solid var(--border);
+  border-radius:10px;
+  background:#232830;
+  color:var(--fg);
+  box-shadow:0 12px 30px #0007;
+}
+#overview-help:popover-open{display:flex;flex-direction:column}
+.overview-help-heading{display:flex;flex:none;align-items:center;justify-content:space-between;gap:12px;padding:10px 14px 6px}
+#overview-help-title{font-size:15px;line-height:1.4}
+#overview-help-close{min-height:28px;padding:2px 7px;border-color:transparent;background:transparent;color:var(--muted);font-size:12px}
+#overview-help-close:hover:enabled{background:var(--control);color:var(--fg)}
+#overview-help-content{min-height:0;overflow:auto;overscroll-behavior:contain;padding:0 14px 12px;font-size:13px;line-height:1.5;overflow-wrap:anywhere}
+#overview-help-content p{white-space:pre-line}
+#overview-help-content>*+*{margin-top:8px}
+#overview-help-content ul{margin-bottom:0;padding-inline-start:18px}
+.recommendation-status{display:block;margin-top:2px;color:var(--amber);font-size:12px;font-weight:500;line-height:1.4;word-break:keep-all;overflow-wrap:anywhere}
 .story-summary-metrics dt,.story-summary-metrics dd{min-width:0;word-break:keep-all;overflow-wrap:anywhere}
 #overview-latency-note{margin-top:3px}
 #overview-model,.story-summary-metrics,.condition-snr-control,.condition-metrics{display:none}
@@ -65,7 +107,6 @@ html:has(body.embedded){background:transparent}
   .story-summary-metrics>div{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline;gap:5px;padding:3px 0}
   .story-summary-metrics dt,.story-summary-metrics dd{font-size:13px;line-height:1.25}
   .story-summary-metrics dd{text-align:right}
-  .story-summary-metrics>div:has(.overview-metric-detail){grid-template-columns:auto minmax(0,1fr)}
   .model-comparison>.table-note{font-size:12px;line-height:1.35}
 }
 /* The compact viewer keeps all three condition selectors on one line. */
