@@ -477,15 +477,20 @@ test("metric help opens only from headings and describes the archived comparison
   const {ui, elements, headers} = browser(), report = sample();
   report.runtime = {threshold: .5, consecutive_frames: 1};
   const model = report.models.find(row => row.id === "mean");
-  model.hard_conditions = {complete: true, cell_mean: .8, worst_recall: .6};
+  const reverbOnly = {reverb_condition: "moderate", category: "clean", snr_db: null};
+  const hardPolicy = ["none", "moderate", "strong"].flatMap(reverb_condition =>
+    ["environment", "music", "competing_speech"].flatMap(category =>
+      [10, 5].map(snr_db => ({reverb_condition, category, snr_db}))));
+  hardPolicy.push(reverbOnly, {...reverbOnly, reverb_condition: "strong"});
+  const withMinimum = (cell_mean, worst_recall, minimum) => ({complete: true, cell_mean, worst_recall,
+    expected_cells: hardPolicy.length, conditions: hardPolicy.map(cell => ({...cell,
+      recall: minimum(cell) ? worst_recall : .95}))});
+  model.hard_conditions = withMinimum(.8, .6, cell => cell === reverbOnly);
   report.runtime_recommendations = {schema_version: 1,
-    search_policy: {hard_conditions: [
-      {reverb_condition: "strong", category: "environment", snr_db: 5},
-      {reverb_condition: "none", category: "competing_speech", snr_db: 10},
-      {reverb_condition: "moderate", category: "clean", snr_db: null}
-    ]},
+    search_policy: {hard_conditions: hardPolicy},
     candidates: [{id: model.id, runtime: {threshold: .9, consecutive_frames: 3}, recommendation_available: true,
-      metrics: {noise_cell_mean: .92, hard_conditions: {complete: true, cell_mean: .7, worst_recall: .64}}}]};
+      metrics: {noise_cell_mean: .92, hard_conditions: withMinimum(.7, .64,
+        cell => cell.reverb_condition === "strong" && cell.category === "competing_speech" && cell.snr_db === 5)}}]};
   const saved = JSON.stringify(report);
   ui.renderSummary(report);
 
@@ -512,8 +517,8 @@ test("metric help opens only from headings and describes the archived comparison
   headers[0].dispatch("click");
   assert.equal(dialog.open, true);
   assert.match(label(), /강한 소음·울림/);
+  assert.match(content(), /^배경 소리 · 환경소음, 음악·전자음, 다른 사람 말소리/);
   assert.match(content(), /같은 비중으로 평균/);
-  assert.match(content(), /비교 조건 3개/);
   assert.doesNotMatch(content(), /70\.00%|92\.00%|앙상블/);
   const hardHelp = content();
   close();
@@ -524,10 +529,11 @@ test("metric help opens only from headings and describes the archived comparison
   headers[1].dispatch("click");
   assert.equal(dialog.open, true);
   assert.match(label(), /최약 조건/);
-  assert.match(content(), /시험 조건에서 측정한 감지율 중 가장 낮은/);
+  assert.match(content(), /^가장 낮았던 시험 조건 · 강한 울림 · 다른 사람 말소리 · 호출어보다 5 dB 작은 소음/);
+  assert.match(content(), /이 조건들에서 측정한 감지율 중 가장 낮은 값을 표시합니다\.$/);
   for (const detail of [
-    /비교 조건 3개/, /울림.*강한 울림.*울림 추가 없음.*보통 울림/s, /배경 소리.*환경소음.*다른 사람 말소리/s,
-    /소음 크기.*SNR 10, 5 dB/, /배경 소리 포함 2개 \+ 울림만 1개/, /배경 소음 없이 울림만 있는 조건.*보통 울림/
+    /울림 · 울림 추가 없음, 보통 울림, 강한 울림/, /배경 소리 · 환경소음, 음악·전자음, 다른 사람 말소리/,
+    /소음 크기 · 호출어보다 10 dB 또는 5 dB 작게/, /18가지에 배경 소리 없이 시험한 2가지\(보통 울림, 강한 울림\).*총 20가지/
   ]) {
     assert.match(content(), detail);
     assert.match(hardHelp, detail);
@@ -549,7 +555,8 @@ test("metric help opens only from headings and describes the archived comparison
   checkPlainValues("80.00%", "60.00%");
   headers[1].dispatch("click");
   assert.equal(dialog.open, true);
-  assert.equal(content(), worstHelp);
+  assert.match(content(), /^가장 낮았던 시험 조건 · 보통 울림 · 배경 소리 없음/);
+  assert.doesNotMatch(content(), /호출어보다 5 dB 작은 소음/);
   close();
   const compactHard = mobileRow("강한 소음·울림").children[0].children.find(node => node.tagName === "button");
   compactHard.dispatch("click");
@@ -566,8 +573,30 @@ test("the weakest-condition help shows no invented test policy for legacy report
   headers[1].dispatch("click");
   assert.equal(elements.get("overview-help").open, true);
   const content = fullText(elements.get("overview-help-content"));
-  assert.match(content, /소음·울림.*낮/);
-  assert.doesNotMatch(content, /비교 조건 \d+개|배경 소리 ·|소음 크기 · SNR|다른 사람 말소리|강한 울림/);
+  assert.match(content, /^이 보고서에는 비교한 소음·울림 조합이 기록되어 있지 않습니다\./);
+  assert.doesNotMatch(content, /가장 낮았던 시험 조건|배경 소리 ·|소음 크기 ·|다른 사람 말소리|강한 울림/);
+});
+test("condition help preserves the tested pairs and shows every tied minimum", () => {
+  const {ui, elements, headers} = browser(), report = sample();
+  const policy = [
+    {reverb_condition: "strong", category: "music", snr_db: 0},
+    {reverb_condition: "none", category: "competing_speech", snr_db: 5}
+  ];
+  report.runtime_recommendations = {search_policy: {hard_conditions: policy}};
+  report.models[0].hard_conditions = {complete: true, worst_recall: .3, expected_cells: 2,
+    conditions: policy.map(cell => ({...cell, recall: .3}))};
+  ui.renderSummary(report);
+  const content = elements.get("overview-help-content");
+  headers[0].dispatch("click");
+  assert.equal(content.children[0].textContent, ["시험한 2가지 조합", "강한 울림 · 음악·전자음 · 호출어와 같은 크기의 소음",
+    "울림 추가 없음 · 다른 사람 말소리 · 호출어보다 5 dB 작은 소음"].join("\n"));
+  headers[1].dispatch("click");
+  assert.equal(content.children[0].textContent, ["가장 낮았던 시험 조건", "강한 울림 · 음악·전자음 · 호출어와 같은 크기의 소음",
+    "울림 추가 없음 · 다른 사람 말소리 · 호출어보다 5 dB 작은 소음"].join("\n"));
+  report.models[0].hard_conditions.conditions.pop();
+  ui.renderSummary(report);
+  headers[1].dispatch("click");
+  assert.match(content.children[0].textContent, /가장 낮았던 시험 조합의 상세 기록이 없습니다/);
 });
 test("baseline aggregates only the recorded cells named by the archived policy", () => {
   const {ui, elements, rows} = browser(), report = sample();

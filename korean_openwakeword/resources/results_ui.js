@@ -259,32 +259,60 @@
     window.addEventListener?.("resize", position);
     return {bind, hide};
   }
+  function comparisonConditionLabel({reverb_condition, category, snr_db}) {
+    const room = reverbLabel(reverb_condition);
+    if (category === "clean") return `${room} · 배경 소리 없음`;
+    const noise = noiseLabel(category);
+    if (!finite(snr_db)) return `${room} · ${noise} · 소음 크기 기록 없음`;
+    if (snr_db === 0) return `${room} · ${noise} · 호출어와 같은 크기의 소음`;
+    return `${room} · ${noise} · 호출어보다 ${Math.abs(snr_db)} dB ${snr_db > 0 ? "작은" : "큰"} 소음`;
+  }
   function noiseComparisonConditions(policy) {
-    if (!Array.isArray(policy) || !policy.length) return [];
+    if (!Array.isArray(policy) || !policy.length) return ["이 보고서에는 비교한 소음·울림 조합이 기록되어 있지 않습니다."];
     const withNoise = policy.filter(cell => cell.category !== "clean");
-    const reverbOnly = policy.filter(cell => cell.category === "clean" && cell.reverb_condition !== "none");
-    const noiseLevels = [...new Set(withNoise.map(cell => cell.snr_db).filter(finite))].sort((left, right) => right - left);
-    const noise = [...new Set(withNoise.map(cell => cell.category))].map(noiseLabel);
-    const rooms = [...new Set(policy.map(cell => cell.reverb_condition))].map(reverbLabel);
-    let total = `비교 조건 ${policy.length}개`;
-    if (withNoise.length && reverbOnly.length && withNoise.length + reverbOnly.length === policy.length) {
-      total += ` (배경 소리 포함 ${withNoise.length}개 + 울림만 ${reverbOnly.length}개)`;
+    const clean = policy.filter(cell => cell.category === "clean");
+    const noiseLevels = [...new Set(withNoise.map(cell => cell.snr_db))].sort((left, right) => right - left);
+    const backgrounds = [...new Set(withNoise.map(cell => cell.category))];
+    const rooms = [...new Set(withNoise.map(cell => cell.reverb_condition))];
+    const combinations = new Set(withNoise.map(cell => JSON.stringify([cell.category, cell.snr_db, cell.reverb_condition])));
+    if (!noiseLevels.length || !noiseLevels.every(level => finite(level) && level > 0) ||
+        combinations.size !== withNoise.length ||
+        combinations.size !== backgrounds.length * noiseLevels.length * rooms.length) {
+      return [`시험한 ${policy.length}가지 조합\n${policy.map(comparisonConditionLabel).join("\n")}`];
     }
-    const groups = [total, `울림 · ${rooms.join(", ")}`];
-    if (noise.length) groups.push(`배경 소리 · ${noise.join(", ")}`);
-    if (noiseLevels.length) groups.push(`소음 크기 · SNR ${noiseLevels.join(", ")} dB`);
-    const paragraphs = [groups.join("\n")];
-    if (reverbOnly.length) {
-      const addedRooms = [...new Set(reverbOnly.map(cell => cell.reverb_condition))].map(reverbLabel);
-      paragraphs.push(`배경 소음 없이 울림만 있는 조건 · ${addedRooms.join(", ")}`);
+    const details = [
+      `배경 소리 · ${backgrounds.map(noiseLabel).join(", ")}`,
+      `소음 크기 · 호출어보다 ${noiseLevels.map(level => `${level} dB`).join(" 또는 ")} 작게`,
+      `울림 · ${rooms.map(reverbLabel).join(", ")}`
+    ].join("\n");
+    const coverage = clean.length
+      ? `위 ${withNoise.length}가지에 배경 소리 없이 시험한 ${clean.length}가지(${clean.map(cell => reverbLabel(cell.reverb_condition)).join(", ")})를 더해 총 ${policy.length}가지를 비교합니다.`
+      : `위 조건을 조합한 ${policy.length}가지를 비교합니다.`;
+    return [details, coverage];
+  }
+  function weakestConditionHelp(results) {
+    const reported = results.map(({hard}) => hard).filter(hard => hard?.complete !== false && finite(hard?.worst_recall));
+    if (!reported.length) return null;
+    const conditions = new Set();
+    for (const hard of reported) {
+      const cells = Object.values(hard.conditions ?? {});
+      const weakest = cells.filter(cell => cell?.recall === hard.worst_recall);
+      if (!weakest.length || weakest.some(cell => !cell.category || !cell.reverb_condition) ||
+          cells.some(cell => !finite(cell?.recall) || cell.recall < hard.worst_recall) ||
+          (finite(hard.expected_cells) && cells.length !== hard.expected_cells)) {
+        return "이 결과에는 감지율이 가장 낮았던 시험 조합의 상세 기록이 없습니다.";
+      }
+      for (const cell of weakest) conditions.add(comparisonConditionLabel(cell));
     }
-    return paragraphs;
+    return conditions.size === 1
+      ? `가장 낮았던 시험 조건 · ${[...conditions][0]}`
+      : `가장 낮았던 시험 조건\n${[...conditions].join("\n")}`;
   }
   function metricHelp(policy, criteria) {
     const conditions = noiseComparisonConditions(policy);
     return {
-      hard: {title: "강한 소음·울림", paragraphs: ["소음·울림 시험 조건별 감지율을 같은 비중으로 평균한 값입니다.", ...conditions]},
-      worst: {title: "최약 조건", paragraphs: ["같은 소음·울림 시험 조건에서 측정한 감지율 중 가장 낮은 값입니다.", ...conditions]},
+      hard: {title: "강한 소음·울림", paragraphs: [...conditions, "조건마다 감지율을 구해 같은 비중으로 평균합니다."]},
+      worst: {title: "최약 조건", paragraphs: [...conditions, "이 조건들에서 측정한 감지율 중 가장 낮은 값을 표시합니다."]},
       latency: {title: "반응 시간", paragraphs: ["감지에 성공한 호출의 약 95%가 이 시간 안에 감지됐습니다(P95).",
         "시간은 발화 종료 시점을 기준으로 잽니다. 값에 ‘전’이 붙으면 발화가 끝나기 전에 감지됐다는 뜻입니다."]},
       criteria: {title: "평가 기준", paragraphs: ["모델을 비교할 때 참고할 기준입니다."], models: [
@@ -353,11 +381,13 @@
         {label: "반응 시간", value: reactionTime(metric?.primary?.latency_p95_s), help: "latency"},
         {label: "감지 기준", value: settings, help: "settings"}
       ];
-      return entries;
+      return {model, entries, hard};
     }
     function draw() {
       overviewHelp?.hide();
       const compareSettings = source.value === "recommended";
+      const results = sorted.map(model => overviewFor(model, compareSettings));
+      const weakest = weakestConditionHelp(results);
       const recommendationLimit = calibration?.recommendation_criteria?.fa_per_hour;
       const selection = finite(recommendationLimit) ? [
         `다른 추천 조건을 충족하는 설정 중 오호출이 시간당 ${recommendationLimit}회 이하인 후보를 먼저 봅니다. 그중 소음·울림 시험의 평균 감지율이 가장 높은 설정을 추천합니다.`,
@@ -365,6 +395,7 @@
       ] : [];
       const explanations = {
         ...sharedHelp,
+        worst: {...sharedHelp.worst, paragraphs: weakest ? [weakest, ...sharedHelp.worst.paragraphs] : sharedHelp.worst.paragraphs},
         fa: {title: "오호출/시간", paragraphs: ["호출어가 없는 음원에서 호출어를 잘못 감지한 횟수를 1시간 기준으로 환산한 값입니다.",
           ...(finite(recommendationLimit) ? [`감지 기준을 추천할 때 오호출 상한은 시간당 ${recommendationLimit}회입니다.`] : [])]},
         settings: {title: "감지 기준", paragraphs: [
@@ -380,8 +411,7 @@
       table.replaceChildren();
       const metrics = $("storySummaryMetrics");
       metrics?.replaceChildren();
-      for (const model of sorted) {
-        const entries = overviewFor(model, compareSettings);
+      for (const {model, entries} of results) {
         const label = modelLabel(report, model.id);
         const row = document.createElement("tr");
         if (isEnsemble(report, model.id)) row.className = "ensemble";
