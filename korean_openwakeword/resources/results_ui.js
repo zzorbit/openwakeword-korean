@@ -133,7 +133,6 @@
     const rounded = Number(value.toPrecision(6));
     return String(rounded > 0 && rounded < 1 ? rounded : value);
   }
-  const recommendationMissed = "추천 기준 미달";
   function validSettings(runtime) {
     return finite(runtime?.threshold) && runtime.threshold > 0 && runtime.threshold < 1
       && Number.isInteger(runtime.consecutive_frames) && runtime.consecutive_frames > 0;
@@ -141,17 +140,15 @@
   function measuredSettings(candidate) {
     return Boolean(candidate?.metrics && validSettings(candidate.runtime));
   }
-  function recommendationReasons(candidate, criteria) {
+  function recommendationReasons(candidate) {
     return [...new Set((candidate.recommendation_reasons || []).map(reason =>
-      String(reason).includes("FA/hour") && finite(criteria?.fa_per_hour)
-        ? `오호출 한도 ${criteria.fa_per_hour}회/시간`
-        : String(reason).includes("Hard noise/reverberation conditions") ? "강소음·울림 시험 자료 부족" : goalReason(reason)))];
+      String(reason).includes("Hard noise/reverberation conditions") ? "강한 소음·울림 시험 자료 부족" : goalReason(reason)))];
   }
   function goalReason(reason) {
     const text = String(reason);
     if (categories.some(category => text.includes(category))) return "소음 조건";
     if (text.includes("FP duration below")) return "오호출 시험 시간";
-    if (text.includes("Clean recall")) return "조용할 때 감지율";
+    if (text.includes("Clean recall")) return "소음·울림 없음 감지율";
     if (text.includes("FA/hour")) return "시간당 오호출";
     if (text.includes("Latency")) return "반응 시간";
     return "추가 확인 필요";
@@ -272,6 +269,12 @@
           paragraph.textContent = text;
           content.append(paragraph);
         }
+        if (help.models?.length) {
+          const list = document.createElement("dl");
+          list.className = "overview-help-models";
+          for (const {label, value} of help.models) appendMetric(list, label, value);
+          content.append(list);
+        }
         active = trigger;
         popup.showPopover({source: trigger});
         trigger.setAttribute("aria-expanded", "true");
@@ -302,9 +305,16 @@
     }
     return {
       hard: {title: "강한 소음·울림", paragraphs: hard},
-      worst: {title: "최약 조건", paragraphs: ["모든 모델에 같은 소음·울림 조건을 적용합니다. 각 모델의 감지율 중 가장 낮은 값이 최약 조건입니다.",
-        "감지율이 가장 낮게 나온 조건은 모델마다 다를 수 있습니다."]}
+      worst: {title: "최약 조건", paragraphs: ["같은 소음·울림 시험에서 각 모델의 감지율이 가장 낮았던 조건입니다."]}
     };
+  }
+  function weakestResult(hard, value) {
+    if (hard?.complete === false || !finite(hard?.worst_recall)) return value;
+    const conditions = Object.values(hard.conditions || {})
+      .filter(cell => cell.recall === hard.worst_recall)
+      .map(({reverb_condition: reverb, category, snr_db: snr}) =>
+        `${reverbLabel(reverb)} · ${noiseLabel(category)}${finite(snr) ? ` · SNR ${snr} dB` : ""}`);
+    return [value, ...(conditions.length ? conditions : ["세부 시험 조건 기록 없음"])].join("\n");
   }
   function metricHeading(cell, text, help) {
     const button = document.createElement("button");
@@ -318,18 +328,14 @@
     const table = body("storySummary"), source = $("overview-source"), modelSelect = $("overview-model");
     if (!table || !source || !modelSelect) return;
     const calibration = report.runtime_recommendations;
-    const explanations = metricHelp(calibration?.search_policy?.hard_conditions);
+    const sharedHelp = metricHelp(calibration?.search_policy?.hard_conditions);
     overviewHelp ??= createOverviewHelp();
-    if (overviewHelp) for (const button of document.querySelectorAll("[data-overview-help]")) {
-      overviewHelp.bind(button, explanations[button.dataset.overviewHelp]);
-    }
     const candidates = calibration?.schema_version === 1 && Array.isArray(calibration.candidates) ? calibration.candidates : [];
     const models = report.models || [];
     const order = [...singleIds(report), ...models.filter(row => isEnsemble(report, row.id)).map(row => row.id)];
     const sorted = [...models].sort((left, right) => order.indexOf(left.id) - order.indexOf(right.id));
     const byModel = new Map(candidates.map(candidate => [candidate.id, candidate]));
     const hasComparison = models.some(model => measuredSettings(byModel.get(model.id)));
-    const hasMissedRecommendation = candidates.some(candidate => candidate.recommendation_available === false && measuredSettings(candidate));
     const previousSource = source.value, previousModel = modelSelect.value;
     const deployed = report.deployment_candidate?.id || report.selected_candidate || report.adoption?.candidate;
     source.replaceChildren();
@@ -350,8 +356,7 @@
         ? candidate.baseline.metrics?.hard_conditions : null;
       const hard = metric?.hard_conditions ?? sameRuntimeHard
         ?? (compareSettings ? null : recordedHardConditions(model, calibration?.search_policy?.hard_conditions));
-      const status = compareSettings && tested?.recommendation_available === false
-        ? [recommendationMissed, ...recommendationReasons(tested, calibration.recommendation_criteria)].join(" · ") : "";
+      const trial = compareSettings && tested?.recommendation_available === false;
       const goal = compareSettings ? tested?.adoption
         : report.candidate_adoptions?.[model.id] || (report.adoption?.candidate === model.id ? report.adoption : null);
       const passed = (compareSettings ? tested?.passed : undefined) ?? goal?.passed;
@@ -360,20 +365,24 @@
       const clean = metric?.clean;
       const cleanCount = finite(clean?.recall) && finite(clean.successes) && finite(clean.calls) ? `${count(clean.successes)} / ${count(clean.calls)}회` : "";
       const settings = validSettings(runtime) ? `${thresholdText(runtime.threshold)} · ${runtime.consecutive_frames}회` : "기록 없음";
+      const worstValue = hard?.complete === false ? "자료 부족" : percent(hard?.worst_recall);
+      const falseRate = finite(negative?.fa_per_hour) ? `${Number(negative.fa_per_hour.toFixed(3))}회` : "결과 없음";
+      const reasons = trial ? recommendationReasons(tested) : [];
       const entries = [
         {label: "종합 감지율", value: percent(metric?.primary?.recall)},
         {label: "소음·울림 없음", value: clean?.calls === 0 ? "시험 안 함" : percent(clean?.recall), title: cleanCount},
         {label: "강한 소음·울림", value: hard?.complete === false ? "자료 부족" : percent(hard?.cell_mean),
           help: "hard"},
-        {label: "최약 조건", value: hard?.complete === false ? "자료 부족" : percent(hard?.worst_recall),
-          help: "worst"},
-        {label: "오호출/시간", value: finite(negative?.fa_per_hour) ? `${Number(negative.fa_per_hour.toFixed(3))}회` : "결과 없음", title: rawFalse},
+        {label: "최약 조건", value: worstValue, help: "worst"},
+        {label: "오호출/시간", value: falseRate, title: rawFalse, help: "fa"},
         {label: "반응 시간", value: reactionTime(metric?.primary?.latency_p95_s)},
-        {label: settingsLabel, value: settings, title: "감지 기준 · 연속 감지 횟수"},
+        {label: settingsLabel, value: settings, title: "감지 기준 · 연속 감지 횟수", trial},
         {label: "평가 목표", value: passed === true ? "충족" : passed === false ? "미달" : "기록 없음",
           title: passed === false ? [...new Set((goal?.reasons || []).map(goalReason))].join(" · ") : ""}
       ];
-      return {entries, status};
+      const trialNote = trial ? [falseRate === "결과 없음" ? "오호출률 기록 없음" : `시간당 ${falseRate}`,
+        `추천에 쓰지 못한 항목 · ${reasons.join(", ") || "기록 없음"}`].join("\n") : "";
+      return {entries, trialNote, worst: weakestResult(hard, worstValue)};
     }
     function draw() {
       overviewHelp?.hide();
@@ -381,30 +390,37 @@
       const settingsLabel = compareSettings ? "추천 감지 설정" : "평가 당시 감지 설정";
       const settingsHeader = $("overview-settings-label");
       if (settingsHeader) settingsHeader.textContent = settingsLabel;
+      const resultLabel = compareSettings ? "추천값 결과" : "평가 당시 결과";
+      const explanations = {hard: sharedHelp.hard, worst: {...sharedHelp.worst,
+        paragraphs: [`${resultLabel} 기준. ${sharedHelp.worst.paragraphs[0]}`], models: []}};
+      const recommendationLimit = calibration?.recommendation_criteria?.fa_per_hour;
+      const evaluationLimit = report.adoption_criteria?.fa_per_hour ?? calibration?.adoption_criteria?.fa_per_hour;
+      const falseAlarmLimits = [];
+      if (finite(recommendationLimit)) falseAlarmLimits.push(`감지 설정 추천 한도 · 시간당 ${recommendationLimit}회 이하`);
+      if (finite(evaluationLimit)) falseAlarmLimits.push(`기존 평가 목표의 한도 · 시간당 ${evaluationLimit}회 이하`);
+      explanations.fa = {title: "오호출/시간",
+        paragraphs: ["호출어가 없는 음원에서 시간당 잘못 감지한 횟수입니다.", ...falseAlarmLimits], models: []};
+      if (overviewHelp) for (const button of document.querySelectorAll("[data-overview-help]")) {
+        overviewHelp.bind(button, explanations[button.dataset.overviewHelp]);
+      }
       table.replaceChildren();
       const metrics = $("storySummaryMetrics");
       metrics?.replaceChildren();
       for (const model of sorted) {
-        const {entries, status} = overviewFor(model, compareSettings, settingsLabel);
+        const {entries, trialNote, worst} = overviewFor(model, compareSettings, settingsLabel);
+        const label = modelLabel(report, model.id);
+        explanations.worst.models.push({label, value: worst});
+        if (trialNote) explanations.fa.models.push({label: `${label} · 시험값`, value: trialNote});
         const row = document.createElement("tr");
         if (isEnsemble(report, model.id)) row.className = "ensemble";
-        const name = appendCell(row, modelLabel(report, model.id));
-        if (status) {
-          const detail = document.createElement("small");
-          detail.className = "recommendation-status"; detail.textContent = status;
-          name.append(detail);
-        }
-        for (const {value, title} of entries) {
-          const cell = appendCell(row, value);
-          if (title) cell.title = title;
-        }
+        appendCell(row, label);
+        for (const entry of entries) decorateOverviewValue(appendCell(row, entry.value), entry);
         table.append(row);
         if (metrics && model.id === modelSelect.value) {
-          if (status) appendMetric(metrics, "추천 상태", status, "overview-status-row").className = "recommendation-status";
           for (const entry of entries) {
             const description = appendMetric(metrics, entry.label, entry.value);
             if (entry.label === "반응 시간") description.setAttribute("aria-describedby", "overview-latency-note");
-            if (entry.title) description.title = entry.title;
+            decorateOverviewValue(description, entry);
             if (overviewHelp && entry.help) {
               metricHeading(description.previousElementSibling, entry.label, explanations[entry.help]);
             }
@@ -413,10 +429,19 @@
       }
       const note = $("overview-note");
       if (note) note.textContent = compareSettings
-        ? hasMissedRecommendation ? "미달 모델은 마이크에서 평가 당시 설정을 사용합니다." : "저장된 점수로 감지 설정을 비교했습니다."
+        ? explanations.fa.models.length ? "시험값으로 표시된 모델은 마이크에서 평가 당시 설정을 사용합니다." : "저장된 점수로 감지 설정을 비교했습니다."
         : deployed ? `평가 당시 실행 모델 · ${modelLabel(report, deployed)}${isEnsemble(report, deployed) ? ` (${memberCount(report, deployed)}개 모델)` : ""}` : "";
     }
     source.onchange = draw; modelSelect.onchange = draw; draw();
+  }
+  function decorateOverviewValue(cell, {title, trial}) {
+    if (title) cell.title = title;
+    if (trial) {
+      const marker = document.createElement("small");
+      marker.className = "overview-trial";
+      marker.textContent = "시험값";
+      cell.append(marker);
+    }
   }
   function option(select, value, text) {
     const node = document.createElement("option"); node.value = value; node.textContent = text; select.append(node);

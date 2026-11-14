@@ -12,6 +12,7 @@ button,select,input{font:inherit;font-size:15px;color:#e9edf2;min-height:40px;bo
 .model-comparison:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
 .story-summary{table-layout:fixed}
 .story-summary th,.story-summary td{padding:8px;line-height:1.35}
+.story-summary td{padding-block:11px}
 .story-summary th{word-break:keep-all;overflow-wrap:anywhere}
 .story-summary th:first-child{width:13%}
 .story-summary th:nth-child(5){width:16%}
@@ -59,7 +60,11 @@ button,select,input{font:inherit;font-size:15px;color:#e9edf2;min-height:40px;bo
 #overview-help-content{min-height:0;overflow:auto;overscroll-behavior:contain;padding:0 14px 12px;font-size:13px;line-height:1.5;overflow-wrap:anywhere}
 #overview-help-content p{white-space:pre-line}
 #overview-help-content>*+*{margin-top:8px}
-.recommendation-status{display:block;margin-top:2px;color:var(--amber);font-size:12px;font-weight:500;line-height:1.4;word-break:keep-all;overflow-wrap:anywhere}
+.overview-help-models{margin-bottom:0}
+.overview-help-models>div{display:grid;grid-template-columns:minmax(53px,auto) 1fr;gap:8px;padding:6px 0;border-top:1px solid var(--line)}
+.overview-help-models dt,.overview-help-models dd{font-size:13px}
+.overview-help-models dd{text-align:left;white-space:pre-line}
+.overview-trial{display:block;margin-top:2px;color:var(--amber);font-size:12px;line-height:1.2}
 .story-summary-metrics dt,.story-summary-metrics dd{min-width:0;word-break:keep-all;overflow-wrap:anywhere}
 #overview-latency-note{margin-top:3px}
 #overview-model,.story-summary-metrics,.condition-snr-control,.condition-metrics{display:none}
@@ -95,9 +100,6 @@ html:has(body.embedded){background:transparent}
   .story-summary-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:16px;margin:0}
   .story-summary-metrics>div{display:block;min-width:0;padding:6px 0;border-bottom:1px solid var(--line)}
   .story-summary-metrics dd{text-align:left}
-  #storySummaryMetrics>.overview-status-row{grid-column:1/-1;display:flex;align-items:baseline;gap:8px;padding:4px 0}
-  .overview-status-row dt{flex:none}
-  .overview-status-row dd{color:var(--amber);text-align:right}
 }
 @media(max-width:950px) and (max-height:400px){
   main.results-dashboard:has(.models-panel:not([hidden])){gap:7px}

@@ -46,7 +46,7 @@ test("both report layouts put the comparison metrics in the models panel", () =>
     ]);
     assert.match(models, /aria-describedby="overview-latency-note"/);
     assert.equal([...models.matchAll(/id="overview-latency-note"/g)].length, 1);
-    assert.deepEqual([...models.matchAll(/<button[^>]+data-overview-help="([^"]+)"/g)].map(match => match[1]), ["hard", "worst"]);
+    assert.deepEqual([...models.matchAll(/<button[^>]+data-overview-help="([^"]+)"/g)].map(match => match[1]), ["hard", "worst", "fa"]);
     assert.match(html, /id="overview-help"[^>]*popover="auto"[^>]*role="dialog"[^>]*aria-labelledby="overview-help-title"/);
     for (const id of ["overview-help", "overview-help-content", "overview-help-close"]) {
       assert.equal([...html.matchAll(new RegExp(`id="${id}"`, "g"))].length, 1);
@@ -84,7 +84,7 @@ function browser({dashboard = false} = {}) {
   for (const id of ["responses", "scores", "condition-model", "condition-reverb", "condition-clean", "conditions", "storySummary", "overview-source", "overview-model", "overview-settings-label", "storySummaryMetrics", "overview-note", "searchCriteria", "searchCriteriaNote", "evaluationCriteria", "condition-snr", "conditionMetrics", "overview-help", "overview-help-title", "overview-help-content", "overview-help-close"]) {
     elements.set(id, new Element());
   }
-  const headers = ["hard", "worst"].map(key => {
+  const headers = ["hard", "worst", "fa"].map(key => {
     const element = new Element("button"); element.dataset.overviewHelp = key; return element;
   });
   for (const id of ["storySummary", "responses", "scores", "conditions"]) elements.get(id).tBodies = [new Element("tbody")];
@@ -331,27 +331,29 @@ test("one comparison shows measured settings, weakest conditions and goal status
     assert.deepEqual(rows("storySummary")[index].slice(1, 7), Array(6).fill("결과 없음"));
     assert.equal(rows("storySummary")[index][8], "기록 없음");
   }
-  const status = "추천 기준 미달 · 오호출 한도 1회/시간";
   const modelCells = () => elements.get("storySummary").tBodies[0].children[1].children;
-  const details = cell => cell.children.map(node => node.textContent).join(" ");
-  assert.equal(modelCells()[0].children.find(node => node.className === "recommendation-status")?.textContent, status);
+  assert.equal(modelCells()[0].children.length, 0);
   assert.equal(modelCells()[4].children.length, 0);
+  assert.deepEqual(modelCells()[7].children.map(node => node.textContent), ["시험값"]);
+  assert.ok(modelCells()[7].children.every(node => node.tagName !== "button"));
+  assert.match(elements.get("overview-note").textContent, /시험값.*마이크.*평가 당시 설정/);
   assert.equal(modelCells()[8].title, "반응 시간");
   const mobileMetrics = () => elements.get("storySummaryMetrics").children.map(item =>
     [fullText(item.children[0]), item.children[1].textContent]);
   assert.deepEqual(mobileMetrics()[2], ["강한 소음·울림", "73.00%"]);
   elements.get("overview-model").value = "member2_seed2"; elements.get("overview-model").onchange();
   assert.deepEqual(mobileMetrics(), [
-    ["추천 상태", status], ["종합 감지율", "69.00%"], ["소음·울림 없음", "98.55%"], ["강한 소음·울림", "62.79%"],
+    ["종합 감지율", "69.00%"], ["소음·울림 없음", "98.55%"], ["강한 소음·울림", "62.79%"],
     ["최약 조건", "0.00%"], ["오호출/시간", "1.2회"], ["반응 시간", "0.44초"],
     ["추천 감지 설정", "0.99 · 5회"], ["평가 목표", "미달"]
   ]);
-  assert.equal(elements.get("storySummaryMetrics").children[0].className, "overview-status-row");
-  assert.equal(elements.get("storySummaryMetrics").children[4].children[1].children.length, 0);
+  assert.deepEqual(elements.get("storySummaryMetrics").children[6].children[1].children.map(node => node.textContent), ["시험값"]);
+  assert.equal(elements.get("storySummaryMetrics").children[3].children[1].children.length, 0);
   elements.get("overview-source").value = "baseline"; elements.get("overview-source").onchange();
   assert.deepEqual(rows("storySummary")[1], ["모델 2", "93.33%", "99.90%", "78.31%", "50.00%", "9.4회", "0.20초", "0.5 · 1회", "미달"]);
   assert.equal(elements.get("overview-settings-label").textContent, "평가 당시 감지 설정");
   assert.deepEqual(mobileMetrics()[6], ["평가 당시 감지 설정", "0.5 · 1회"]);
+  assert.equal(modelCells()[7].children.length, 0);
   assert.equal(mobileMetrics()[0][0], "종합 감지율");
   assert.equal(JSON.stringify(report), before);
 
@@ -366,31 +368,75 @@ test("one comparison shows measured settings, weakest conditions and goal status
   assert.deepEqual(rows("storySummary")[1].slice(3, 5), ["자료 부족", "자료 부족"]);
   assert.equal(modelCells()[3].children.length, 0);
   assert.equal(modelCells()[4].children.length, 0);
-  assert.match(details(modelCells()[0]), /강소음·울림 시험 자료 부족/);
+  const faHeading = elements.get("storySummaryMetrics").children[4].children[0].children[0];
+  faHeading.dispatch("click");
+  assert.match(fullText(elements.get("overview-help-content")), /강한 소음·울림 시험 자료 부족/);
+});
+test("false-alarm heading explains the two saved limits and lists only non-recommended settings", () => {
+  const {ui, elements, headers} = browser(), report = sample();
+  report.runtime = {threshold: .5, consecutive_frames: 1};
+  report.runtime_recommendations = {schema_version: 1, recommendation_criteria: {fa_per_hour: 1},
+    adoption_criteria: {fa_per_hour: .1}, candidates: [
+      {id: "member1_seed1", runtime: report.runtime, recommendation_available: true,
+        metrics: {negative: {fa_per_hour: .9}}},
+      {id: "member2_seed2", runtime: report.runtime, recommendation_available: false,
+        recommendation_reasons: ["FA/hour target failed or unmeasured"], metrics: {negative: {fa_per_hour: 1.2}}},
+      {id: "member3_seed3", runtime: report.runtime, recommendation_available: false,
+        recommendation_reasons: ["Latency failed"], metrics: {negative: {fa_per_hour: .2}}}
+    ]};
+  ui.renderSummary(report);
+  const dialog = elements.get("overview-help");
+  const content = () => fullText(elements.get("overview-help-content"));
+  headers[2].dispatch("click");
+  assert.equal(dialog.open, true);
+  assert.match(fullText(elements.get("overview-help-title")), /오호출/);
+  assert.match(content(), /추천.*(?<![.\d])1회/);
+  assert.match(content(), /평가.*0\.1회/);
+  assert.match(content(), /모델 2.*1\.2회/s);
+  assert.match(content(), /모델 3.*반응 시간/s);
+  assert.doesNotMatch(content(), /모델 1/);
+  const source = elements.get("overview-source");
+  source.value = "baseline"; source.onchange();
+  assert.equal(dialog.open, false);
+  headers[2].dispatch("click");
+  assert.equal(dialog.open, true);
+  assert.match(content(), /0\.1회/);
+  assert.doesNotMatch(content(), /모델 [123]/);
 });
 test("metric help opens only from headings and describes the archived comparison policy", () => {
   const {ui, elements, headers} = browser(), report = sample();
   report.runtime = {threshold: .5, consecutive_frames: 1};
   const model = report.models.find(row => row.id === "mean");
-  model.hard_conditions = {complete: true, cell_mean: .8, worst_recall: .6};
+  model.hard_conditions = {complete: true, cell_mean: .8, worst_recall: .6, conditions: [
+    {reverb_condition: "none", category: "environment", snr_db: 5, recall: .6},
+    {reverb_condition: "moderate", category: "clean", snr_db: null, recall: 1}
+  ]};
   report.runtime_recommendations = {schema_version: 1,
     search_policy: {hard_conditions: [
       {reverb_condition: "strong", category: "environment", snr_db: 5},
       {reverb_condition: "moderate", category: "clean", snr_db: null}
     ]},
-    candidates: [{
-      id: model.id, runtime: {threshold: .9, consecutive_frames: 3}, recommendation_available: true,
-      metrics: {noise_cell_mean: .92, hard_conditions: {complete: true, cell_mean: .7, worst_recall: .64, conditions: [
-      {reverb_condition: "strong", category: "competing_speech", snr_db: 5, recall: .64},
-      {reverb_condition: "moderate", category: "music", snr_db: 10, recall: .64}
-    ]}}
-  }]};
+    candidates: [
+      {id: "member1_seed1", runtime: report.runtime, metrics: {hard_conditions: {complete: true, cell_mean: .72, worst_recall: .52}}},
+      {id: "member2_seed2", runtime: report.runtime, metrics: {hard_conditions: {complete: false}}},
+      {id: model.id, runtime: {threshold: .9, consecutive_frames: 3}, recommendation_available: true,
+        metrics: {noise_cell_mean: .92, hard_conditions: {complete: true, cell_mean: .7, worst_recall: .64, conditions: {
+          "strong:competing_speech:5": {reverb_condition: "strong", category: "competing_speech", snr_db: 5, recall: .64},
+          "moderate:music:10": {reverb_condition: "moderate", category: "music", snr_db: 10, recall: .64},
+          "none:environment:10": {reverb_condition: "none", category: "environment", snr_db: 10, recall: .82}
+        }}}}
+    ]};
   const saved = JSON.stringify(report);
   ui.renderSummary(report);
 
   const dialog = elements.get("overview-help");
   const label = () => fullText(elements.get("overview-help-title"));
   const content = () => fullText(elements.get("overview-help-content"));
+  const worstRows = () => {
+    const list = elements.get("overview-help-content").children.find(child => child.className === "overview-help-models");
+    assert.ok(list);
+    return Object.fromEntries(list.children.map(row => [fullText(row.children[0]), fullText(row.children[1])]));
+  };
   const close = () => elements.get("overview-help-close").dispatch("click");
   const desktopRow = () => elements.get("storySummary").tBodies[0].children[3].children;
   const mobileRow = name => elements.get("storySummaryMetrics").children.find(row => fullText(row.children[0]) === name);
@@ -424,8 +470,15 @@ test("metric help opens only from headings and describes the archived comparison
   assert.equal(dialog.open, true);
   assert.match(label(), /최약 조건/);
   assert.match(content(), /낮/);
-  assert.match(content(), /모델.*(다르|다를)/);
-  assert.doesNotMatch(content(), /64\.00%|전자음|5 dB/);
+  assert.match(content(), /같은 소음·울림 시험.*각 모델/);
+  assert.match(content(), /추천값 결과/);
+  const recommendedRows = worstRows();
+  assert.match(recommendedRows["모델 1"], /52\.00%.*세부 시험 조건 기록 없음/s);
+  assert.match(recommendedRows["모델 2"], /자료 부족/);
+  assert.match(recommendedRows["모델 3"], /결과 없음/);
+  assert.match(recommendedRows["앙상블"], /64\.00%.*강한 울림.*다른 사람 말소리.*5 dB/s);
+  assert.match(recommendedRows["앙상블"], /보통 울림.*음악·전자음.*10 dB/s);
+  assert.doesNotMatch(recommendedRows["앙상블"], /환경소음|60\.00%/);
   const worstHelp = content();
   close();
 
@@ -439,6 +492,13 @@ test("metric help opens only from headings and describes the archived comparison
   assert.equal(dialog.open, false);
   assert.equal(compactLabel.attributes["aria-expanded"], "false");
   checkPlainValues("80.00%", "60.00%");
+  headers[1].dispatch("click");
+  assert.equal(dialog.open, true);
+  assert.match(content(), /평가 당시 결과/);
+  const baselineRows = worstRows();
+  assert.match(baselineRows["앙상블"], /60\.00%.*울림 추가 없음.*환경소음.*5 dB/s);
+  assert.doesNotMatch(baselineRows["앙상블"], /64\.00%|다른 사람 말소리|음악·전자음|조용한 환경/);
+  close();
   const compactHard = mobileRow("강한 소음·울림").children[0].children.find(node => node.tagName === "button");
   compactHard.dispatch("click");
   assert.equal(dialog.open, true);
