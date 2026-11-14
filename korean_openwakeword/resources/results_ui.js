@@ -476,9 +476,9 @@
     modelSelect.onchange = draw; reverbSelect.onchange = drawValues; draw();
   }
   function renderResponses(report, clip) {
-    const rows = body("responses"), scores = body("scores");
+    const rows = body("responses");
     if (!rows) return;
-    rows.replaceChildren(); scores?.replaceChildren();
+    rows.replaceChildren();
     for (const [id, result] of Object.entries(clip.results || {})) {
       const row = document.createElement("tr");
       const response = clip.kind === "negative"
@@ -486,13 +486,6 @@
         : typeof result.success === "boolean" ? result.success ? "감지" : "놓침" : "결과 없음";
       const latency = clip.kind === "negative" || result.success === false ? "—" : reactionTime(result.latency_s);
       [modelLabel(report, id), response, latency].forEach(value => appendCell(row, value)); rows.append(row);
-      if (scores) {
-        const detail = document.createElement("tr");
-        [modelLabel(report, id), finite(result.max_score) ? result.max_score.toFixed(4) : "결과 없음",
-          finite(result.clean_score_drop) ? result.clean_score_drop.toFixed(4) : "결과 없음"]
-          .forEach(value => appendCell(detail, value));
-        scores.append(detail);
-      }
     }
   }
   function clipLabel(clip) {

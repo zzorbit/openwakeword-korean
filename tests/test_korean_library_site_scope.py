@@ -124,7 +124,7 @@ def test_background_detail_uses_actual_recorded_type_without_inventing_a_speech_
                                         "실제 기록된 빗소리 조건", "재즈", "기침", "영화풍 관현악"]
 
 
-def test_export_adds_scope_asset_without_changing_scores_or_scored_audio(tmp_path):
+def test_export_preserves_scores_and_scored_audio_without_loading_the_legacy_scope_asset(tmp_path):
     evaluation, site = tmp_path / "evaluation", tmp_path / "site"
     evaluation.mkdir()
     source = evaluation / "fixture.wav"
@@ -142,7 +142,7 @@ def test_export_adds_scope_asset_without_changing_scores_or_scored_audio(tmp_pat
     assert (site / "results_scope.js").read_bytes() == SCOPE_SCRIPT.read_bytes()
     assert (site / "results_ui.js").read_bytes() == (SCOPE_SCRIPT.parent / "results_ui.js").read_bytes()
     html = (site / "index.html").read_text(encoding="utf-8")
-    assert html.index('src="results_scope.js"') < html.index('src="results.js"')
+    assert 'src="results_scope.js"' not in html
     assert html.index('src="results_ui.js"') < html.index('src="results.js"')
     payload = (site / "results-data.js").read_text(encoding="utf-8")
     exported = json.loads(payload.removeprefix("window.KOWW_RESULTS=").removesuffix(";\n"))

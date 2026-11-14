@@ -45,22 +45,23 @@ test("noise and audio panels retain labelled controls without the extra disclosu
     assert.doesNotMatch(html, /표 안내|시험에 쓴 배경 소리|condition-clean|conditions-help|noiseCoverage|coverage-details/);
   }
 });
-test("audio details group the closed filter and clip information disclosures", () => {
+test("audio tools contain the filter and extra clips without the score and file disclosure", () => {
   for (const name of ["results.html", "results_paged.html"]) {
     const html = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources", name), "utf8");
     const audio = html.slice(html.indexOf('id="results-panel-audio"'));
     const tools = audio.slice(audio.indexOf('class="audio-details'));
     const filter = tools.match(/<details\b([^>]*id="audio-filter-details"[^>]*)>\s*<summary[^>]*>소음·울림 선택<\/summary>([\s\S]*?)<\/details>/);
-    const info = tools.match(/<summary[^>]*>상세 점수와 파일 정보<\/summary>([\s\S]*?)<\/details>/);
+    const extra = tools.match(/<summary[^>]*>조용한 원본 · 호출어 없는 오디오<\/summary>([\s\S]*?)<\/details>/);
     assert.ok(filter, `${name} audio filter belongs to the tools`);
     assert.doesNotMatch(filter[1], /\sopen(?:\s|=|$)/);
     for (const id of ["snr", "category", "reverb"]) assert.match(filter[2], new RegExp(`id="${id}"`));
-    assert.ok(info, `${name} audio details disclosure`);
-    for (const id of ["original", "clipInfo", "scores", "sample-id", "download", "hash"]) {
-      assert.match(info[1], new RegExp(`id="${id}"`));
+    assert.ok(extra, `${name} extra clips disclosure`);
+    assert.match(extra[1], /id="extra"/);
+    for (const id of ["original", "original-go", "clipInfo", "scores", "sample-id", "download", "hash"]) {
+      assert.doesNotMatch(audio, new RegExp(`id="${id}"`));
     }
-    if (name === "results_paged.html") assert.match(info[1], /id="original-go"/);
-    assert.doesNotMatch(audio, /clip-select-details|음성 번호 · 정보/);
+    assert.match(audio, /id="responses"/);
+    assert.doesNotMatch(audio, /clip-select-details|음성 번호 · 정보|상세 점수와 파일 정보/);
     assert.match(audio, /id="playState"[^>]*role="status"[^>]*>\s*<\/p>/);
   }
 });
@@ -124,7 +125,7 @@ function browser({dashboard = false, fetch} = {}) {
     hidePopover() { this.open = false; this.dispatch("toggle", {newState: "closed"}); }
   }
   const elements = new Map();
-  for (const id of ["responses", "scores", "condition-model", "condition-reverb", "conditions", "storySummary", "overview-source", "overview-model", "storySummaryMetrics", "condition-snr", "conditionMetrics", "overview-help", "overview-help-title", "overview-help-content", "overview-help-close"]) {
+  for (const id of ["responses", "condition-model", "condition-reverb", "conditions", "storySummary", "overview-source", "overview-model", "storySummaryMetrics", "condition-snr", "conditionMetrics", "overview-help", "overview-help-title", "overview-help-content", "overview-help-close"]) {
     elements.set(id, new Element());
   }
   const headers = ["hard", "worst", "fa", "latency", "settings"].map(key => {
@@ -133,7 +134,7 @@ function browser({dashboard = false, fetch} = {}) {
   const criteria = new Element("button");
   criteria.dataset.overviewHelp = "criteria";
   elements.set("overview-criteria", criteria);
-  for (const id of ["storySummary", "responses", "scores", "conditions"]) elements.get(id).tBodies = [new Element("tbody")];
+  for (const id of ["storySummary", "responses", "conditions"]) elements.get(id).tBodies = [new Element("tbody")];
   elements.get("condition-snr").value = "10";
   if (dashboard) {
     for (const name of ["models", "conditions", "audio"])
@@ -331,12 +332,11 @@ test("missing results stay distinct from measured zero and explicit empty trials
   ui.renderConditions({models: []});
   assert.equal(elements.get("condition-model").disabled, true);
 });
-test("audio reactions expose detection and time while retaining separate numeric details", () => {
+test("audio reactions show detection, reaction time and false alarms with legacy score data", () => {
   const {ui, rows} = browser(), report = sample();
   const clip = {kind: "positive", results: {member2_seed2: {success: false, max_score: 0.97, clean_score_drop: -0.02, latency_s: null}, mean: {success: true, max_score: 0.99991, clean_score_drop: 0, latency_s: 0.08}}};
   const before = JSON.stringify(clip); ui.renderResponses(report, clip);
   assert.deepEqual(rows("responses"), [["모델 2", "놓침", "—"], ["앙상블", "감지", "0.08초"]]);
-  assert.deepEqual(rows("scores"), [["모델 2", "0.9700", "-0.0200"], ["앙상블", "0.9999", "0.0000"]]);
   assert.equal(JSON.stringify(clip), before);
   ui.renderResponses(report, {kind: "positive", results: {mean: {success: true, latency_s: -0.08}}});
   assert.deepEqual(rows("responses"), [["앙상블", "감지", "0.08초 전"]]);

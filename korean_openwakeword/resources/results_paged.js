@@ -80,11 +80,6 @@
   function show(clip) {
     audio.src = clip.path;
     $("clipTitle").textContent = ui.clipLabel(clip);
-    const background = evaluationBackgroundTypeText(clip);
-    $("clipInfo").textContent = `${clip.duration_s.toFixed(2)}초${clip.calls?.length ? ` · 호출어 위치 ${clip.calls[0].start_s.toFixed(2)}–${clip.calls[0].end_s.toFixed(2)}초` : " · 호출어 없음"}${background ? ` · 배경: ${background}` : ""}`;
-    $("download").href = clip.path; $("download").download = "";
-    $("hash").textContent = `SHA256 ${clip.sha256}`;
-    $("sample-id").textContent = `파일 이름: ${clip.sample_id}`;
     ui.renderResponses(report, clip);
   }
   function progress(reset = false) {
@@ -96,7 +91,6 @@
       for (let position = page * OPTION_LIMIT; position < Math.min(queue.length, (page + 1) * OPTION_LIMIT); position++) { const clip = metadata[queue[position]]; option($("item"), position, `${position + 1} · 음성 ${clip[6] || clip[5]} · ${labels[clip[2]] || clip[2]}`); }
     }
     $("item").value = String(index);
-    $("original").value = queue.length ? String(metadata[queue[index]][6] || "") : "";
     listPage = Math.floor(index / 5); renderList(reset);
   }
   async function activate(sourceIndex, autoplay = false, source = "main") {
@@ -172,8 +166,6 @@
       $("clip-list-next").onclick = () => { if ((listPage + 1) * 5 < queue.length) { listPage++; renderList(); } };
     }
     $("item").onchange = () => move(Number($("item").value));
-    const original = () => { const value = Number($("original").value), position = queue.findIndex(sourceIndex => metadata[sourceIndex][6] === value); if (position >= 0) return move(position); $("playState").textContent = "이 조건에 해당하는 음성 번호가 없습니다."; };
-    $("original-go").onclick = original; $("original").onchange = original;
     for (const id of ["snr", "category", "reverb"]) $(id).onchange = rebuild;
     $("extra-prev").onclick = () => { if (extraPage > 0) { extraPage--; renderExtras(); } };
     $("extra-next").onclick = () => { if ((extraPage + 1) * EXTRA_LIMIT < extras.length) { extraPage++; renderExtras(); } };

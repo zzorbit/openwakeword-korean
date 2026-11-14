@@ -26,12 +26,12 @@ function browser(tuples, {deferPages = false, pageFailure = false, indexFailure 
   const html = staticViewer ? staticHtml : pagedHtml;
   for (const match of html.matchAll(/id="([^"]+)"/g)) elements.set(match[1], new Element());
   for (const [tag, id] of html.matchAll(/<details\b[^>]*id="([^"]+)"[^>]*>/g)) elements.get(id).open = /\sopen(?:\s|=|>)/.test(tag);
-  for (const id of ["storySummary", "conditions", "responses", "scores"]) elements.get(id).tBodies = [new Element("tbody")];
+  for (const id of ["storySummary", "conditions", "responses"]) elements.get(id).tBodies = [new Element("tbody")];
   for (const value of ["none", "moderate", "strong"]) { const option = new Element("option"); option.value = value; elements.get("reverb").append(option); }
   elements.get("reverb").value = "none"; elements.get("category").value = "all";
   const row = (tuple, sourceIndex) => ({sample_id: tuple[0], path: `audio/${sourceIndex}.wav`, sha256: `sha${sourceIndex}`, kind: tuple[1], category: tuple[2], snr_db: tuple[3], reverb_condition: tuple[4], original_id: tuple[5], original_order: tuple[6], duration_s: tuple[7], calls: tuple[1] === "positive" ? [{start_s: 2, end_s: 3}] : [], noise_eval_label: "시험 배경", results: {mean: {success: true, false_activations: 0, max_score: 0.999, clean_score_drop: 0.01, latency_s: 0.08}}});
   const page = number => ({start: number * 128, clips: tuples.slice(number * 128, (number + 1) * 128).map((tuple, offset) => row(tuple, number * 128 + offset))});
-  const context = vm.createContext({document: {getElementById: id => elements.get(id), createElement: tag => new Element(tag)}, console, evaluationBackgroundTypeText: clip => clip.noise_eval_label || "", fetch: async url => {
+  const context = vm.createContext({document: {getElementById: id => elements.get(id), createElement: tag => new Element(tag)}, console, fetch: async url => {
     calls.push(url);
     if (url === indexPath) return {ok: !indexFailure, status: indexFailure ? 503 : 200, json: async () => ({schema_version: invalidIndex ? 99 : 1, scope_text: "정확한 평가 범위", noise_coverage_text: "전체 음원 사용", clips: tuples})};
     const number = Number(url.match(/page-(\d+)\.json/)[1]);
@@ -123,7 +123,6 @@ const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "posi
     assert.deepEqual(b.calls, ["viewer-index.json", "http://127.0.0.1/results/bora/clips/page-000000.json"]);
     assert.equal(b.elements.get("item").children.length, 100);
     assert.equal(b.elements.get("extra").children.length, 100);
-    assert.equal(b.elements.get("original").children.length, 0);
   });
   await test("continuous playback crosses detail and selector pages without skipping audio", async () => {
     const b = browser(Array.from({length: 400}, (_, index) => tuple(index))); await b.helper.boot();
@@ -131,7 +130,7 @@ const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "posi
     assert.equal(b.helper.state().index, 128); assert.equal(b.elements.get("audio").src, "audio/128.wav");
     assert.equal(b.elements.get("item").children.length, 100);
     assert.equal(b.elements.get("item").value, "128");
-    assert.equal(b.elements.get("hash").textContent, "SHA256 sha128");
+    assert.equal(b.elements.get("clipTitle").textContent, "음성 43 · 다른 사람 말소리");
   });
   await test("dashboard navigation keeps continuous audio and the current queue position", async () => {
     const b = browser(Array.from({length: 400}, (_, index) => tuple(index))); await b.helper.boot();
@@ -241,28 +240,6 @@ const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "posi
     b.elements.get("snr").value = "5"; b.elements.get("reverb").value = "strong";
     const changed = b.helper.rebuild(); await flush(); b.deferred.get(2)(); await changed; b.deferred.get(1)(); await old;
     assert.equal(b.helper.state().queueLength, 1); assert.equal(b.elements.get("audio").src, "audio/256.wav");
-  });
-  await test("original number jump navigates the complete queue", async () => {
-    const b = browser(Array.from({length: 3000}, (_, index) => tuple(index))); await b.helper.boot();
-    b.elements.get("original").value = "900"; await b.elements.get("original-go").onclick();
-    assert.equal(b.helper.state().index, 2697); assert.equal(b.elements.get("audio").src, "audio/2697.wav");
-    assert.ok(b.elements.get("item").children.length <= 100);
-    assert.match(b.elements.get("clipInfo").textContent, /호출어 위치 2\.00–3\.00초/);
-    assert.equal(b.elements.get("playState").textContent, "");
-    b.elements.get("original").value = "1001"; await b.elements.get("original-go").onclick();
-    assert.equal(b.elements.get("audio").src, "audio/2697.wav");
-    assert.match(b.elements.get("playState").textContent, /해당하는 음성 번호가 없습니다/);
-  });
-  await test("static original selector still navigates the queue and updates file information", async () => {
-    const b = browser(Array.from({length: 12}, (_, index) => tuple(index)), {staticViewer: true});
-    const original = b.elements.get("original");
-    assert.equal(original.children.length, 4);
-    original.value = original.children[3].value; await original.onchange();
-    assert.equal(b.elements.get("audio").src, "audio/9.wav");
-    assert.equal(b.elements.get("clipTitle").textContent, "음성 4 · 환경소음");
-    assert.match(b.elements.get("clipInfo").textContent, /호출어 위치 2\.00–3\.00초/);
-    assert.equal(b.elements.get("hash").textContent, "SHA256 sha9");
-    assert.equal(b.elements.get("playState").textContent, "");
   });
   await test("Clean and negative browsing is paginated and loads only selected detail", async () => {
     const tuples = Array.from({length: 500}, (_, index) => tuple(index, {1: index > 0 ? "negative" : "positive"}));
@@ -405,6 +382,20 @@ const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "posi
       assert.equal(audio.src, source); assert.equal(source, "audio/1.wav"); assert.equal(audio.currentTime, 1.25);
       await audio.onended(); assert.equal(audio.src, source); assert.equal(b.elements.get("resume").textContent, "재생");
       assert.equal(b.elements.get("playState").textContent, "");
+    });
+    await test(`${mode} keeps model reactions available without score and file controls`, async () => {
+      const b = browser([tuple(0), tuple(1, {1: "negative"})], {staticViewer}); if (b.helper) await b.helper.boot();
+      for (const id of ["original", "original-go", "clipInfo", "scores", "sample-id", "download", "hash"]) {
+        assert.equal(b.elements.has(id), false);
+      }
+      const reaction = () => b.elements.get("responses").tBodies[0].children[0].children.map(cell => cell.textContent);
+      assert.deepEqual(reaction().slice(1), ["감지", "0.08초"]);
+      b.elements.get("audio-view-settings").onclick();
+      b.elements.get("extra").value = staticViewer ? "clip_1" : "0";
+      await b.elements.get("extra").onchange();
+      b.elements.get("audio-view-reactions").onclick();
+      assert.deepEqual(reaction().slice(1), ["오작동 0회", "—"]);
+      assert.equal(b.elements.get("audio").src, "audio/1.wav");
     });
     await test(`${mode} cancelled pending autoplay cannot restart audio or override the stopped transport`, async () => {
       let finishPlay;
