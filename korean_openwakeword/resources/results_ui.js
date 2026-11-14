@@ -7,6 +7,8 @@
   const percent = value => finite(value) ? `${(value * 100).toFixed(2)}%` : "결과 없음";
   const categories = ["environment", "music", "competing_speech"];
   const levels = [20, 15, 10, 5, 0];
+  const worstReverb = "strong";
+  const worstSnr = 5;
   let dashboardView = "models";
   let compactAudio = null;
   let resultClipPicker;
@@ -152,14 +154,26 @@
   function recordedHardConditions(model, policy) {
     if (!Array.isArray(policy) || !policy.length) return null;
     // Average only the declared cells, using detection rates already recorded in this report.
-    const cells = policy.map(({reverb_condition, category, snr_db}) => {
+    const recalls = policy.map(({reverb_condition, category, snr_db}) => {
       const result = reverb_condition === "none" ? model : model.reverb_conditions?.[reverb_condition];
       const stats = category === "clean" ? cleanValue(result) : conditionValue(result?.conditions, category, snr_db);
-      return {reverb_condition, category, snr_db, recall: stats?.recall};
+      return stats?.recall;
     });
-    if (cells.some(cell => !finite(cell.recall))) return {complete: false};
-    return {complete: true, conditions: cells, cell_mean: cells.reduce((sum, cell) => sum + cell.recall, 0) / cells.length,
-      worst_recall: Math.min(...cells.map(cell => cell.recall))};
+    if (!recalls.every(finite)) return {complete: false};
+    return {complete: true, cell_mean: recalls.reduce((sum, recall) => sum + recall, 0) / recalls.length};
+  }
+  function worstConditionRecall(metric) {
+    if (!metric) return undefined;
+    const mean = cells => {
+      if (!cells.every(cell => finite(cell?.recall) && cell.recall >= 0 && cell.recall <= 1 && cell.calls !== 0)) return undefined;
+      return cells.reduce((sum, cell) => sum + cell.recall, 0) / cells.length;
+    };
+    const reverbConditions = metric.reverb_conditions?.[worstReverb]?.conditions;
+    const recorded = mean(categories.map(category => conditionValue(reverbConditions, category, worstSnr)));
+    if (recorded !== undefined) return recorded;
+    const cells = Object.values(metric.hard_conditions?.conditions ?? {});
+    return mean(categories.map(category => cells.find(cell => cell?.category === category &&
+      cell.reverb_condition === worstReverb && cell.snr_db === worstSnr)));
   }
   function renderSummary(report) {
     renderOverview(report);
@@ -290,34 +304,19 @@
       : `위 조건을 조합한 ${policy.length}가지를 비교합니다.`;
     return [details, coverage];
   }
-  function weakestConditionHelp(results) {
-    const reported = results.map(({hard}) => hard).filter(hard => hard?.complete !== false && finite(hard?.worst_recall));
-    if (!reported.length) return null;
-    const conditions = new Set();
-    for (const hard of reported) {
-      const cells = Object.values(hard.conditions ?? {});
-      const weakest = cells.filter(cell => cell?.recall === hard.worst_recall);
-      if (!weakest.length || weakest.some(cell => !cell.category || !cell.reverb_condition) ||
-          cells.some(cell => !finite(cell?.recall) || cell.recall < hard.worst_recall) ||
-          (finite(hard.expected_cells) && cells.length !== hard.expected_cells)) {
-        return "이 결과에는 감지율이 가장 낮았던 시험 조합의 상세 기록이 없습니다.";
-      }
-      for (const cell of weakest) conditions.add(comparisonConditionLabel(cell));
-    }
-    return conditions.size === 1
-      ? `가장 낮았던 시험 조건 · ${[...conditions][0]}`
-      : `가장 낮았던 시험 조건\n${[...conditions].join("\n")}`;
-  }
   function metricHelp(policy, criteria) {
     const conditions = noiseComparisonConditions(policy);
     return {
       hard: {title: "강한 소음·울림", paragraphs: [...conditions, "조건마다 감지율을 구해 같은 비중으로 평균합니다."]},
-      worst: {title: "최약 조건", paragraphs: [...conditions, "이 조건들에서 측정한 감지율 중 가장 낮은 값을 표시합니다."]},
+      worst: {title: "최악 조건", paragraphs: [
+        `울림 · ${reverbLabel(worstReverb)}\n소음 크기 · 호출어보다 ${worstSnr} dB 작게 (SNR ${worstSnr} dB)\n배경 소리 · ${categories.map(noiseLabel).join(", ")}`,
+        "가장 강한 울림과 본 평가에서 가장 큰 배경 소음으로 고정하고, 세 배경 소리의 감지율을 같은 비중으로 평균합니다."
+      ]},
       latency: {title: "반응 시간", paragraphs: ["감지에 성공한 호출의 약 95%가 이 시간 안에 감지됐습니다(P95).",
         "시간은 발화 종료 시점을 기준으로 잽니다. 값에 ‘전’이 붙으면 발화가 끝나기 전에 감지됐다는 뜻입니다."]},
       criteria: {title: "평가 기준", paragraphs: ["모델을 비교할 때 참고할 기준입니다."], models: [
         {label: "소음·울림 없음", value: finite(criteria?.clean_recall) ? `${Number((criteria.clean_recall * 100).toFixed(2))}% 이상` : "높을수록 좋습니다."},
-        {label: "종합·소음·최약 조건", value: "감지율이 높을수록 좋습니다."},
+        {label: "종합·소음·최악 조건", value: "감지율이 높을수록 좋습니다."},
         {label: "오호출", value: finite(criteria?.fa_per_hour) ? `시간당 ${criteria.fa_per_hour}회 이하` : "적을수록 좋습니다."},
         {label: "반응 시간", value: finite(criteria?.latency_p95_s) ? `감지된 호출의 95%가 ${criteria.latency_p95_s}초 이내` : "짧을수록 좋습니다."}
       ]}
@@ -359,9 +358,9 @@
       const tested = measuredSettings(candidate) ? candidate : null;
       const metric = compareSettings ? tested?.metrics : model;
       const runtime = compareSettings ? tested?.runtime : report.runtime;
-      const sameRuntimeHard = !compareSettings && matchRuntime(runtime, candidate?.baseline?.runtime)
-        ? candidate.baseline.metrics?.hard_conditions : null;
-      const hard = metric?.hard_conditions ?? sameRuntimeHard
+      const sameRuntimeMetrics = !compareSettings && matchRuntime(runtime, candidate?.baseline?.runtime)
+        ? candidate.baseline.metrics : null;
+      const hard = metric?.hard_conditions ?? sameRuntimeMetrics?.hard_conditions
         ?? (compareSettings ? null : recordedHardConditions(model, calibration?.search_policy?.hard_conditions));
       const negative = metric?.negative;
       const rawFalse = finite(negative?.events) && finite(negative?.hours) ? `${count(negative.events)}회 / ${negative.hours.toFixed(2)}시간` : "";
@@ -369,25 +368,24 @@
       const cleanCount = finite(clean?.recall) && finite(clean.successes) && finite(clean.calls) ? `${count(clean.successes)} / ${count(clean.calls)}회` : "";
       const settings = compareSettings && tested && !recommendationApplies(tested) ? "추천값 없음"
         : validSettings(runtime) ? `${thresholdText(runtime.threshold)} · ${runtime.consecutive_frames}회` : "기록 없음";
-      const worstValue = hard?.complete === false ? "자료 부족" : percent(hard?.worst_recall);
+      const worstRecall = worstConditionRecall(metric) ?? worstConditionRecall(sameRuntimeMetrics);
+      const worstValue = metric && worstRecall === undefined ? "자료 부족" : percent(worstRecall);
       const falseRate = finite(negative?.fa_per_hour) ? `${Number(negative.fa_per_hour.toFixed(3))}회` : "결과 없음";
       const entries = [
         {label: "종합 감지율", value: percent(metric?.primary?.recall)},
         {label: "소음·울림 없음", value: clean?.calls === 0 ? "시험 안 함" : percent(clean?.recall), title: cleanCount},
         {label: "강한 소음·울림", value: hard?.complete === false ? "자료 부족" : percent(hard?.cell_mean),
           help: "hard"},
-        {label: "최약 조건", value: worstValue, help: "worst"},
+        {label: "최악 조건", value: worstValue, help: "worst"},
         {label: "오호출/시간", value: falseRate, title: rawFalse, help: "fa"},
         {label: "반응 시간", value: reactionTime(metric?.primary?.latency_p95_s), help: "latency"},
         {label: "감지 기준", value: settings, help: "settings"}
       ];
-      return {model, entries, hard};
+      return entries;
     }
     function draw() {
       overviewHelp?.hide();
       const compareSettings = source.value === "recommended";
-      const results = sorted.map(model => overviewFor(model, compareSettings));
-      const weakest = weakestConditionHelp(results);
       const recommendationLimit = calibration?.recommendation_criteria?.fa_per_hour;
       const selection = finite(recommendationLimit) ? [
         `다른 추천 조건을 충족하는 설정 중 오호출이 시간당 ${recommendationLimit}회 이하인 후보를 먼저 봅니다. 그중 소음·울림 시험의 평균 감지율이 가장 높은 설정을 추천합니다.`,
@@ -395,7 +393,6 @@
       ] : [];
       const explanations = {
         ...sharedHelp,
-        worst: {...sharedHelp.worst, paragraphs: weakest ? [weakest, ...sharedHelp.worst.paragraphs] : sharedHelp.worst.paragraphs},
         fa: {title: "오호출/시간", paragraphs: ["호출어가 없는 음원에서 호출어를 잘못 감지한 횟수를 1시간 기준으로 환산한 값입니다.",
           ...(finite(recommendationLimit) ? [`감지 기준을 추천할 때 오호출 상한은 시간당 ${recommendationLimit}회입니다.`] : [])]},
         settings: {title: "감지 기준", paragraphs: [
@@ -411,7 +408,8 @@
       table.replaceChildren();
       const metrics = $("storySummaryMetrics");
       metrics?.replaceChildren();
-      for (const {model, entries} of results) {
+      for (const model of sorted) {
+        const entries = overviewFor(model, compareSettings);
         const label = modelLabel(report, model.id);
         const row = document.createElement("tr");
         if (isEnsemble(report, model.id)) row.className = "ensemble";
