@@ -17,7 +17,7 @@ button,select,input{font:inherit;font-size:15px;color:#e9edf2;min-height:40px;bo
 .story-summary th:nth-child(5){width:16%}
 .story-summary th:nth-child(7){width:8%}
 .story-summary th:nth-child(8),.story-summary th:nth-child(9){width:12%}
-.overview-help-button,.overview-value-button{
+.overview-help-button{
   min-height:0;
   padding:0;
   border:0;
@@ -29,8 +29,7 @@ button,select,input{font:inherit;font-size:15px;color:#e9edf2;min-height:40px;bo
   text-decoration:underline dotted;
   text-underline-offset:.2em;
 }
-.overview-help-button:hover:enabled,.overview-value-button:hover:enabled,
-.overview-help-button[aria-expanded=true],.overview-value-button[aria-expanded=true]{
+.overview-help-button:hover:enabled,.overview-help-button[aria-expanded=true]{
   background:transparent;
   color:var(--blue);
   text-decoration-style:solid;
@@ -60,7 +59,6 @@ button,select,input{font:inherit;font-size:15px;color:#e9edf2;min-height:40px;bo
 #overview-help-content{min-height:0;overflow:auto;overscroll-behavior:contain;padding:0 14px 12px;font-size:13px;line-height:1.5;overflow-wrap:anywhere}
 #overview-help-content p{white-space:pre-line}
 #overview-help-content>*+*{margin-top:8px}
-#overview-help-content ul{margin-bottom:0;padding-inline-start:18px}
 .recommendation-status{display:block;margin-top:2px;color:var(--amber);font-size:12px;font-weight:500;line-height:1.4;word-break:keep-all;overflow-wrap:anywhere}
 .story-summary-metrics dt,.story-summary-metrics dd{min-width:0;word-break:keep-all;overflow-wrap:anywhere}
 #overview-latency-note{margin-top:3px}

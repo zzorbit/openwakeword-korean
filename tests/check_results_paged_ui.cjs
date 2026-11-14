@@ -265,7 +265,7 @@ const tuple = (index, overrides = {}) => { const value = [`clip_${index}`, "posi
     const comparison = b.elements.get("storySummary").tBodies[0].children[0].children;
     assert.equal(comparison[0].textContent, "모델 2");
     assert.equal(comparison[1].textContent, "93.33%");
-    assert.equal(comparison[5].textContent, "0.100회");
+    assert.equal(comparison[5].textContent, "0.1회");
     assert.match(comparison[5].title, /3회.*30/);
     assert.equal(comparison[6].textContent, "0.20초");
     assert.equal(comparison[8].textContent, "미달");
