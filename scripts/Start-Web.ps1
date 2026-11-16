@@ -91,9 +91,12 @@ function Get-InstallIdentity {
             $_.Extension -in @('.py', '.json', '.html', '.js', '.css', '.svg', '.txt', '.md', '.onnx', '.wav')
         }
     )
-    $entries = $files | Sort-Object FullName | ForEach-Object {
-        $relative = $_.FullName.Substring($Target.Length).TrimStart([char[]]@('\', '/')).Replace('\', '/')
-        (Get-InstallFileHash $_.FullName) + ' ' + $relative
+    # Use the same order in Windows PowerShell and PowerShell 7.
+    $paths = [string[]]@($files.FullName)
+    [Array]::Sort($paths, [StringComparer]::Ordinal)
+    $entries = $paths | ForEach-Object {
+        $relative = $_.Substring($Target.Length).TrimStart([char[]]@('\', '/')).Replace('\', '/')
+        (Get-InstallFileHash $_) + ' ' + $relative
     }
     $hasher = [Security.Cryptography.SHA256]::Create()
     try {

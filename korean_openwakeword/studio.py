@@ -1069,6 +1069,8 @@ _REFACTOR_TARGET_CONTRACTS = {
         "2c13b40a580bb0eca9e2256d49acd2184d0bd4dad063b827ffafcf5ebedcb6f1",
     "7a6218a51809fb4364dbe4bf484b57acb255f8c083a31c2da9fb75d6a9c21894":
         "c801be32d8fa7aeade0ac5df063f63aff5a5b72b98eb5ce3d915906a1d85e30c",
+    "f25a46ac9977e15a0a4baa6c01aad750c98c3c1c12c7f8434f5ca56c6120a0d0":
+        "3c3de079ba18c586073ef8d01c375632e82cfd6cb4bcff32bb12d7f2068bc19b",
 }
 
 
