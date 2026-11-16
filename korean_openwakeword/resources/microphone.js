@@ -434,7 +434,7 @@
       setDefaultFields();
       renderModels(info.models);
       syncDetectionDisplay();
-      setStatus("시험 준비 완료", "시험 시작을 누르면 마이크 입력을 분석합니다.");
+      setStatus("시험 준비 완료", "");
     } catch (error) {
       initializationError = error.message || "모델 정보를 읽지 못했습니다.";
       info = null;

@@ -111,8 +111,6 @@ meter::-webkit-meter-optimum-value { border-radius: 4px; background: #8aa895; }
 .mic-model-row.detected .mic-event-count { color: var(--green); }
 .mic-model-row.detected .mic-score-fill { background: #8aa895; }
 
-footer { text-align: center; color: var(--muted); font-size: 11px; line-height: 1.45; }
-
 @media (max-width: 480px) {
   .mic-dashboard { gap: 8px; }
   .device-row { grid-template-columns: auto minmax(0, 1fr) auto auto; gap: 5px; }

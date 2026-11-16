@@ -157,6 +157,7 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
     assert.deepEqual(b.readiness,[{status:'loading'}]);assert.equal(b.state.permissionCalls,0);
     pending.resolve(b.response(b.info));await flush();
     assert.deepEqual(b.readiness.at(-1),{status:'ready',startDisabled:false,heading:'시험 준비 완료',responses:4});
+    assert.equal(b.elements.get("statusText").textContent, "");
     assert.deepEqual(b.calls.map(call=>call.url),['/api/info']);
     assert.equal(b.contexts.length,0);assert.equal(b.workers.length,0);assert.equal(b.streams.length,0);
   });
@@ -227,7 +228,7 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
     const markup = fs.readFileSync(path.join(resources, "microphone.html"), "utf8");
     assert.match(markup, /<meter id="level"/);
     assert.match(markup, /id="model-bars"/);
-    assert.match(markup, /마이크 음성은 저장하지 않습니다/);
+    assert.doesNotMatch(markup, /화면을 벗어나면 시험이 멈춥니다|마이크 음성은 저장하지 않습니다/);
     assert.doesNotMatch(markup, /상세 값 보기|감지 안내|마이크 처리 설정|id="(?:model-values|models|model-detail-toggle|trial-notes|detectionHint|recommendationHint|captureSettings)"/);
   });
   await test("all four models are visible and a readable default retains its exact original threshold on start", async () => {
