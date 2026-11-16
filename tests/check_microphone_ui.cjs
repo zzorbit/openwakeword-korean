@@ -40,7 +40,8 @@ function browser(config = {}) {
     streams.push(stream); return stream;
   }
   const devices = [{ kind: "audioinput", deviceId: "mic1", label: "모의 마이크" }];
-  const document = { hidden: false, title: "", getElementById(id) { if (!elements.has(id)) elements.set(id, new Element(id)); return elements.get(id); }, createElement: () => new Element(), addEventListener(name, handler) { listeners[name] = handler; } };
+  const captureDetails = {open: false};
+  const document = { hidden: false, querySelectorAll(selector) { assert.equal(selector, "details[open]"); return captureDetails.open ? [captureDetails] : []; }, title: "", getElementById(id) { if (!elements.has(id)) elements.set(id, new Element(id)); return elements.get(id); }, createElement: () => new Element(), addEventListener(name, handler) { listeners[name] = handler; } };
   const pageConfig = config.pageConfig || {};
   document.getElementById("koww-page-config").textContent = JSON.stringify(pageConfig);
   const mediaDevices = { enumerateDevices: async () => {
@@ -104,10 +105,10 @@ function browser(config = {}) {
   context.isSecureContext = true;
   context.addEventListener = (name, handler) => { listeners[name] = handler; };
   context.KowwChapterReady={loading:()=>readiness.push({status:'loading'}),
-    ready:()=>readiness.push({status:'ready',startDisabled:elements.get('start').disabled,heading:elements.get('statusHeading').textContent,models:elements.get('models').children.length}),
+    ready:()=>readiness.push({status:'ready',startDisabled:elements.get('start').disabled,heading:elements.get('statusHeading').textContent,responses:elements.get('model-bars').children.length}),
     fail:message=>readiness.push({status:'error',message,retryHidden:elements.get('retry').hidden})};
   vm.runInContext(fs.readFileSync(path.join(resources, "microphone.js"), "utf8"), context);
-  return { state, elements, listeners, mediaListeners, contexts, workers, calls, streams, readiness, timers, intervals, devices, makeStream, info, parent: context.parent,
+  return { state, elements, listeners, mediaListeners, contexts, workers, calls, streams, readiness, timers, intervals, devices, captureDetails, makeStream, info, parent: context.parent,
     click(id) { return elements.get(id).handlers.click({ type: "click", target: elements.get(id) }); },
     frame() { const worker = workers.at(-1); const pcm = vm.runInContext("new ArrayBuffer(2560)", context); worker.port.onmessage?.({ data: { type: "frame", pcm } }); },
     tick(ms) { clock += ms; for (const timer of [...intervals.values()]) timer.callback(); },
@@ -156,7 +157,7 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
     const pending=deferred(),b=browser({deferredInfo:pending});await flush();
     assert.deepEqual(b.readiness,[{status:'loading'}]);assert.equal(b.state.permissionCalls,0);
     pending.resolve(b.response(b.info));await flush();
-    assert.deepEqual(b.readiness.at(-1),{status:'ready',startDisabled:false,heading:'시험 준비 완료',models:4});
+    assert.deepEqual(b.readiness.at(-1),{status:'ready',startDisabled:false,heading:'시험 준비 완료',responses:4});
     assert.deepEqual(b.calls.map(call=>call.url),['/api/info']);
     assert.equal(b.contexts.length,0);assert.equal(b.workers.length,0);assert.equal(b.streams.length,0);
   });
@@ -178,7 +179,6 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
     assert.equal(bars[0].children[1].children[0].attributes["aria-valuenow"], "0.2");
     assert.equal(bars[0].children[1].children[0].children[0].attributes.style, "width:20%");
     assert.equal(bars[0].children[1].children[1].textContent, "0.20");
-    assert.equal(b.elements.get("models").children[0].children[1].textContent, "0.2000");
     b.click("stop"); await flush();
   });
   await test("only a same-origin parent pause can stop an embedded microphone session", async () => {
@@ -196,7 +196,7 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
     const b = browser({viewportHeight: 404}); await flush();
     assert.equal(b.elements.has("metrics-details"), false);
     await b.click("start"); b.frame(); await flush();
-    const calls = b.calls.length, models = b.elements.get("models").children;
+    const calls = b.calls.length, models = b.elements.get("model-bars").children;
     for (const height of [444, 600, 404]) {
       b.resize(height);
       assert.equal(b.elements.get("level").value, .16);
@@ -206,7 +206,7 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
       assert.equal(b.elements.get("lastEventTime").textContent, "");
     }
     assert.equal(b.calls.length, calls); assert.equal(b.streams[0].track.stopped, false);
-    assert.equal(b.elements.get("models").children, models); assert.equal(models.length, 4);
+    assert.equal(b.elements.get("model-bars").children, models); assert.equal(models.length, 4);
     b.click("stop"); await flush();
     assert.equal(b.elements.get("level").value, 0);
     assert.equal(b.elements.get("levelText").textContent, "마이크 중지됨");
@@ -219,32 +219,37 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
     assert.equal(b.elements.has("microphone-settings"), false);
     assert.match(b.elements.get("deviceHint").textContent, /마이크 권한이 거부/);
   });
-  await test("compact response details expand without restarting or changing an active microphone trial", async () => {
+  await test("the microphone view shows model bars and processing details without the retired table and guide", () => {
+    const markup = fs.readFileSync(path.join(resources, "microphone.html"), "utf8");
+    assert.match(markup, /id="model-bars"/);
+    assert.match(markup, /<summary>마이크 처리 설정<\/summary>/);
+    assert.match(markup, /id="captureSettings"/);
+    assert.doesNotMatch(markup, /상세 값 보기|감지 안내|id="(?:model-values|models|model-detail-toggle|trial-notes|detectionHint|recommendationHint)"/);
+  });
+  await test("closing retained processing details leaves active samples and model bars running", async () => {
     const b = browser(); await flush(); await b.click("start"); b.frame(); await flush();
-    const calls = b.calls.length, models = b.elements.get("models").children;
-    b.elements.get("model-detail-toggle").onclick();
-    assert.equal(b.elements.get("model-values").className, "table-wrap show-details");
-    assert.equal(b.elements.get("model-detail-toggle").attributes["aria-expanded"], "true");
-    assert.equal(b.elements.get("model-detail-toggle").textContent, "간단히 보기");
+    const calls = b.calls.length, bars = b.elements.get("model-bars").children;
+    const settings = b.elements.get("captureSettings").children.map(element => element.textContent);
+    assert.deepEqual(settings.slice(0, 2), ["마이크", "모의 마이크"]);
+    assert.ok(settings.includes("분석 샘플레이트"));
+    b.captureDetails.open = true;
+    b.listeners.keydown({key: "Escape"});
+    assert.equal(b.captureDetails.open, false);
     assert.equal(b.calls.length, calls); assert.equal(b.streams[0].track.stopped, false);
-    assert.equal(b.elements.get("models").children, models);
-    assert.equal(models.length, 4); assert.ok(models.every(row => row.children.length === 7));
-    b.elements.get("model-detail-toggle").onclick();
-    assert.equal(b.elements.get("model-values").className, "table-wrap");
-    assert.equal(b.elements.get("model-detail-toggle").attributes["aria-expanded"], "false");
+    assert.equal(b.elements.get("model-bars").children, bars); assert.equal(bars.length, 4);
     b.frame(); await flush(); assert.equal(b.calls.filter(call => call.url === "/api/frame").length, 2);
     b.click("stop"); await flush();
   });
   await test("all four models are visible and a readable default retains its exact original threshold on start", async () => {
     const b = browser(); await flush();
-    assert.equal(b.elements.get("models").children.length, 4);
+    assert.equal(b.elements.get("model-bars").children.length, 4);
     assert.equal(b.elements.get("trial-threshold").value, "0.98625");
     assert.equal(b.elements.get("trial-consecutive").value, "2");
     assert.equal(b.elements.get("trial-threshold").disabled, false);
     await b.click("start"); await flush();
     const payload = JSON.parse(b.calls.find(call => call.url === "/api/start").options.body);
     assert.deepEqual(payload, { threshold: b.info.threshold, consecutive_frames: 2 });
-    assert.equal(b.elements.get("models").children.length, 4);
+    assert.equal(b.elements.get("model-bars").children.length, 4);
     assert.equal(b.elements.get("trial-threshold").disabled, true);
     assert.match(b.elements.get("threshold").textContent, /0\.98625.*2회/);
     b.click("stop"); await flush();
@@ -256,14 +261,14 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
     assert.equal(b.elements.get("trial-mode").value, "recommended");
     assert.equal(b.elements.get("trial-threshold").disabled, true);
     assert.equal(b.elements.get("trial-mode").disabled, false);
-    const rows = b.elements.get("models").children;
+    const rows = b.elements.get("model-bars").children;
     assert.equal(rows.length, 4);
-    assert.deepEqual(rows.map(row => row.children.slice(5).map(cell => cell.textContent)), [["0.6", "1회"], ["0.7", "2회"], ["0.8", "3회"], ["0.9", "2회"]]);
+    assert.deepEqual(rows.map(row => row.children[1].children[2].textContent), ["0.6 · 1회", "0.7 · 2회", "0.8 · 3회", "0.9 · 2회"]);
     await b.click("start"); await flush();
     assert.deepEqual(JSON.parse(b.calls.find(call => call.url === "/api/start").options.body), {mode: "recommended"});
     assert.equal(b.elements.get("trial-mode").disabled, true);
     assert.equal(b.elements.get("threshold").textContent, "모델별 추천값 적용");
-    b.frame(); await flush(); assert.equal(b.elements.get("models").children.length, 4);
+    b.frame(); await flush(); assert.equal(b.elements.get("model-bars").children.length, 4);
     b.click("stop"); await flush();
   });
   await test("reset leaves recommendation mode and restores the project's exact starting settings", async () => {
@@ -281,10 +286,10 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
     const b = browser({recommendedRuntimes: recommendations}); await flush();
     b.elements.get("trial-mode").value = "manual"; b.elements.get("trial-mode").handlers.change();
     assert.equal(b.elements.get("trial-threshold").disabled, false);
-    assert.equal(b.elements.get("recommendationHint").hidden, true);
+    assert.match(b.elements.get("threshold").textContent, /감지 기준 0\.98625/);
     b.elements.get("trial-mode").value = "recommended"; b.elements.get("trial-mode").handlers.change();
     assert.equal(b.elements.get("trial-threshold").disabled, true);
-    assert.equal(b.elements.get("recommendationHint").hidden, false);
+    assert.equal(b.elements.get("threshold").textContent, "모델별 추천값 적용");
     assert.equal(b.state.permissionCalls, 0);
     assert.equal(b.calls.length, 1);
   });
@@ -304,11 +309,6 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
     assert.equal(b.streams[0].track.stopped, true);
     assert.equal(b.calls.some(call => call.url === "/api/stop"), true);
   });
-  await test("cache-only recommendations identify the evidence without repeating the historical goal verdict", async () => {
-    const b = browser({recommendedRuntimes: recommendations, recommendations: {candidates: [{id: "head1", passed: false, deployment_backend_verified: false}]}}); await flush();
-    assert.doesNotMatch(b.elements.get("recommendationHint").textContent, /목표 미달/);
-    assert.match(b.elements.get("recommendationHint").textContent, /저장 점수 기준/);
-  });
   await test("a recommended setting above only the false-alarm limit is shown and used for microphone tests", async () => {
     const runtime = {threshold: .99, consecutive_frames: 5};
     const b = browser({recommendedRuntimes: {...recommendations, head2: runtime}, recommendations: {
@@ -317,14 +317,10 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
         metrics: {negative: {fa_per_hour: 1.2}}, deployment_backend_verified: false}]
     }}); await flush();
     assert.equal(b.elements.get("trial-mode").value, "recommended");
-    const hint = b.elements.get("recommendationHint").textContent;
-    assert.match(hint, /모델 2.*1\.2회/s);
-    assert.match(hint, /오호출이 가장 적은/);
-    assert.doesNotMatch(hint, /기존 설정을 유지|목표 미달/);
     assert.equal(b.elements.get("threshold").textContent, "모델별 추천값 적용");
     await b.click("start"); await flush();
     assert.deepEqual(JSON.parse(b.calls.find(call => call.url === "/api/start").options.body), {mode: "recommended"});
-    assert.deepEqual(b.elements.get("models").children[1].children.slice(5).map(cell => cell.textContent), ["0.99", "5회"]);
+    assert.equal(b.elements.get("model-bars").children[1].children[1].children[2].textContent, "0.99 · 5회");
     b.click("stop"); await flush();
   });
   await test("a model without a protected recommendation clearly keeps its original gate", async () => {
@@ -334,23 +330,11 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
       {id: "head2", recommendation_available: false, original_runtime: original, passed: false, deployment_backend_verified: false}
     ]}}); await flush();
     assert.equal(b.elements.get("trial-mode").value, "recommended");
-    assert.match(b.elements.get("recommendationHint").textContent, /모델 2: 추천 기준을 만족하는 조합이 없어 기존 설정을 유지/);
-    assert.doesNotMatch(b.elements.get("recommendationHint").textContent, /가장 나은 값을 사용/);
     assert.equal(b.elements.get("threshold").textContent, "모델별 추천·기존값 적용");
     await b.click("start"); await flush();
-    assert.equal(b.elements.get("models").children.length, 4);
-    assert.equal(b.elements.get("models").children[1].children[5].textContent, "0.98625");
+    assert.equal(b.elements.get("model-bars").children.length, 4);
+    assert.equal(b.elements.get("model-bars").children[1].children[1].children[2].textContent, "0.98625 · 2회");
     b.click("stop"); await flush();
-  });
-  await test("microphone recommendations disclose the new selection ceiling without changing historical goals", async () => {
-    const b = browser({recommendedRuntimes: recommendations, recommendations: {
-      search_policy: {threshold_step: .01}, recommendation_criteria: {fa_per_hour: 1}, adoption_criteria: {fa_per_hour: .1},
-      candidates: [{id: "head1", recommendation_available: true, passed: false, deployment_backend_verified: false}]
-    }}); await flush();
-    assert.match(b.elements.get("recommendationHint").textContent, /감지 기준 0\.01 간격 · 오호출 상한 시간당 1회/);
-    assert.doesNotMatch(b.elements.get("recommendationHint").textContent, /기존 평가 목표 미달/);
-    assert.doesNotMatch(b.elements.get("recommendationHint").textContent, /추천 기준을 만족하는 조합이 없어/);
-    assert.equal(b.elements.get("trial-mode").value, "recommended");
   });
   await test("near-one defaults stay valid on display, reset and explicit trial start", async () => {
     for (const threshold of [.9999999, .9999999999999999]) {
@@ -362,7 +346,7 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
       assert.equal(b.elements.get("trial-threshold").value, String(threshold));
       await b.click("start"); await flush();
       assert.equal(JSON.parse(b.calls.find(call => call.url === "/api/start").options.body).threshold, threshold);
-      assert.equal(b.elements.get("models").children.length, 4);
+      assert.equal(b.elements.get("model-bars").children.length, 4);
       b.click("stop"); await flush();
     }
   });
@@ -376,7 +360,7 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
     assert.deepEqual(JSON.parse(b.calls.find(call => call.url === "/api/start").options.body), { threshold: .9, consecutive_frames: 3 });
     assert.match(b.elements.get("threshold").textContent, /0\.9.*3회/);
     assert.equal(JSON.stringify(b.info), original);
-    b.frame(); await flush(); assert.equal(b.elements.get("models").children.length, 4);
+    b.frame(); await flush(); assert.equal(b.elements.get("model-bars").children.length, 4);
     b.click("stop"); await flush();
     assert.equal(b.elements.get("trial-threshold").disabled, false);
     assert.equal(b.elements.get("trial-consecutive").disabled, false);

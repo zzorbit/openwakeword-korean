@@ -5,14 +5,7 @@
   const $ = id => document.getElementById(id);
   const config = JSON.parse($("koww-page-config")?.textContent || "{}");
   const apiUrl = path => (config.api_base || "") + path;
-  const ui = Object.fromEntries(["wakeword", "microphone", "connect", "refresh", "retry", "deviceHint", "detection-settings", "thresholdSetting", "consecutiveSetting", "detectionHint", "trial-mode", "trial-threshold", "trial-consecutive", "reset-detection", "recommendationHint", "start", "stop", "statusHeading", "statusText", "statusDot", "level", "levelText", "elapsed", "frameCount", "lastEvent", "lastEventTime", "models", "threshold", "captureSettings"].map(id => [id, $(id)]));
-  const detailToggle = $("model-detail-toggle"), modelValues = $("model-values");
-  if (detailToggle && modelValues) detailToggle.onclick = () => {
-    const expanded = modelValues.className === "table-wrap show-details";
-    modelValues.className = expanded ? "table-wrap" : "table-wrap show-details";
-    detailToggle.setAttribute?.("aria-expanded", String(!expanded));
-    detailToggle.textContent = expanded ? "상세 값 보기" : "간단히 보기";
-  };
+  const ui = Object.fromEntries(["wakeword", "microphone", "connect", "refresh", "retry", "deviceHint", "detection-settings", "thresholdSetting", "consecutiveSetting", "trial-mode", "trial-threshold", "trial-consecutive", "reset-detection", "start", "stop", "statusHeading", "statusText", "statusDot", "level", "levelText", "elapsed", "frameCount", "lastEvent", "lastEventTime", "model-bars", "threshold", "captureSettings"].map(id => [id, $(id)]));
   const rows = new Map();
   let info = null;
   let run = null;
@@ -43,11 +36,9 @@
       : `감지 기준 ${displayThreshold(runtime.threshold)} · 연속 ${runtime.consecutive_frames}회`;
     for (const [id, row] of rows) {
       const value = runtimes ? runtimes[id] : runtime;
-      row.cells[5].textContent = validRuntime(value) ? displayThreshold(value.threshold) : "—";
-      row.cells[6].textContent = validRuntime(value) ? `${value.consecutive_frames}회` : "—";
-      if (row.runtimeLabel) row.runtimeLabel.textContent = validRuntime(value)
-        ? `${displayThreshold(value.threshold)} · ${value.consecutive_frames}회` : "—";
-      if (row.thresholdMarker) row.thresholdMarker.setAttribute("style", validRuntime(value) ? `left:${value.threshold * 100}%` : "display:none");
+      const valid = validRuntime(value);
+      row.runtimeLabel.textContent = valid ? `${displayThreshold(value.threshold)} · ${value.consecutive_frames}회` : "—";
+      row.thresholdMarker.setAttribute("style", valid ? `left:${value.threshold * 100}%` : "display:none");
     }
   }
 
@@ -58,29 +49,9 @@
       const threshold = Number(ui["trial-threshold"].value), consecutive_frames = Number(ui["trial-consecutive"].value);
       if (validRuntime({threshold, consecutive_frames})) showTrialRuntime({threshold, consecutive_frames});
     }
-    ui.recommendationHint.hidden = !recommended;
     ui.thresholdSetting.hidden = !!recommended;
     ui.consecutiveSetting.hidden = !!recommended;
     ui["detection-settings"].className = `detection-settings${recommended ? " recommended" : ""}`;
-    ui.detectionHint.textContent = recommended ? "각 모델에 적용할 값은 아래 모델 반응 표에서 확인하세요."
-      : "감지 기준이나 연속 감지 수를 낮추면 더 쉽게 반응합니다. 변경값은 다음 마이크 시험에만 적용됩니다.";
-    if (recommended) {
-      const candidates = info.runtime_recommendations?.candidates || [];
-      const unavailable = candidates.filter(row => row.recommendation_available === false);
-      const overLimit = candidates.filter(row => row.status === "recommended_over_false_alarm_limit");
-      const unverified = candidates.some(row => row.deployment_backend_verified !== true);
-      const names = unavailable.map(row => info.models.find(model => model.id === row.id)?.label || "모델").join(" · ");
-      const raisedRates = overLimit.map(row => {
-        const label = info.models.find(model => model.id === row.id)?.label || "모델";
-        const rate = row.metrics?.negative?.fa_per_hour;
-        return Number.isFinite(rate) ? `${label} 시간당 ${Number(rate.toFixed(3))}회` : label;
-      }).join(" · ");
-      const step = info.runtime_recommendations?.search_policy?.threshold_step;
-      const faLimit = info.runtime_recommendations?.recommendation_criteria?.fa_per_hour;
-      const declaredSearch = Number.isFinite(step) && step > 0 && step < 1 && Number.isFinite(faLimit) && faLimit >= 0
-        ? `감지 기준 ${step} 간격 · 오호출 상한 시간당 ${faLimit}회. ` : "";
-      ui.recommendationHint.textContent = `${declaredSearch}${unavailable.length ? `${names}: 추천 기준을 만족하는 조합이 없어 기존 설정을 유지합니다. ` : ""}${overLimit.length ? `${raisedRates}. 상한 이내 설정이 없어 다른 조건을 충족한 조합 중 오호출이 가장 적은 설정을 적용합니다. ` : ""}${unverified ? "저장 점수 기준 추천입니다. 마이크 반응도 확인하세요." : "적용값은 아래 모델 반응 표에 표시합니다."}`;
-    }
   }
 
   function setDefaultFields() {
@@ -157,33 +128,29 @@
   function isCurrent(target) { return run === target && !target.cancelled && target.generation === generation; }
 
   function renderModels(models) {
-    ui.models.replaceChildren();
-    const bars = $("model-bars");
-    bars?.replaceChildren();
+    const bars = ui["model-bars"];
+    bars.replaceChildren();
     rows.clear();
     for (const model of models) {
-      const tr = document.createElement("tr");
-      if (model.kind === "ensemble") tr.className = "ensemble";
-      const cells = [model.label, "0.0000", "0.0000", "0", "—", "—", "—"].map(text => {
-        const td = document.createElement("td");
-        td.textContent = text;
-        tr.append(td);
-        return td;
-      });
-      const row = { tr, cells, ensemble: model.kind === "ensemble", flashUntil: 0 };
-      if (bars) {
-        const item = document.createElement("div"), heading = document.createElement("div"), name = document.createElement("span"), events = document.createElement("span");
-        item.className = "mic-model-row"; heading.className = "mic-model-top"; name.textContent = model.label; events.textContent = "감지 0회"; events.className = "mic-event-count";
-        heading.append(name, events);
-        const response = document.createElement("div"), track = document.createElement("div"), fill = document.createElement("span"), marker = document.createElement("span"), score = document.createElement("span"), runtime = document.createElement("span");
-        response.className = "mic-model-response"; track.className = "mic-score-track"; fill.className = "mic-score-fill"; marker.className = "mic-score-marker";
-        track.setAttribute("role", "progressbar"); track.setAttribute("aria-label", `${model.label} 현재 점수`); track.setAttribute("aria-valuemin", "0"); track.setAttribute("aria-valuemax", "1"); track.setAttribute("aria-valuenow", "0");
-        score.className = "mic-current-score"; score.textContent = "0.00"; runtime.className = "mic-runtime-label"; runtime.textContent = "—";
-        track.append(fill, marker); response.append(track, score, runtime); item.append(heading, response); bars.append(item);
-        Object.assign(row, {item, scoreTrack: track, scoreFill: fill, thresholdMarker: marker, scoreLabel: score, eventLabel: events, runtimeLabel: runtime});
-      }
-      rows.set(model.id, row);
-      ui.models.append(tr);
+      const item = document.createElement("div"), heading = document.createElement("div");
+      const name = document.createElement("span"), events = document.createElement("span");
+      item.className = "mic-model-row"; heading.className = "mic-model-top";
+      name.textContent = model.label; events.textContent = "감지 0회"; events.className = "mic-event-count";
+      heading.append(name, events);
+
+      const response = document.createElement("div"), track = document.createElement("div");
+      const fill = document.createElement("span"), marker = document.createElement("span");
+      const score = document.createElement("span"), runtime = document.createElement("span");
+      response.className = "mic-model-response"; track.className = "mic-score-track";
+      fill.className = "mic-score-fill"; marker.className = "mic-score-marker";
+      track.setAttribute("role", "progressbar");
+      track.setAttribute("aria-label", `${model.label} 현재 점수`);
+      track.setAttribute("aria-valuemin", "0"); track.setAttribute("aria-valuemax", "1"); track.setAttribute("aria-valuenow", "0");
+      score.className = "mic-current-score"; score.textContent = "0.00";
+      runtime.className = "mic-runtime-label"; runtime.textContent = "—";
+      track.append(fill, marker); response.append(track, score, runtime);
+      item.append(heading, response); bars.append(item);
+      rows.set(model.id, {item, scoreTrack: track, scoreFill: fill, thresholdMarker: marker, scoreLabel: score, eventLabel: events, runtimeLabel: runtime, flashUntil: 0});
     }
   }
 
@@ -324,20 +291,13 @@
     for (const response of data.responses) {
       const row = rows.get(response.id);
       if (!row || !Number.isFinite(response.score) || !Number.isFinite(response.max_score) || !Number.isInteger(response.events)) throw new Error("모델 반응을 읽을 수 없어 시험을 중지했습니다.");
-      row.cells[1].textContent = response.score.toFixed(4);
-      row.cells[2].textContent = response.max_score.toFixed(4);
-      row.cells[3].textContent = response.events.toLocaleString();
-      row.cells[4].textContent = Number.isFinite(response.last_event_s) ? `${response.last_event_s.toFixed(2)}초` : "—";
-      if (row.scoreTrack) {
-        const bounded = Math.min(1, Math.max(0, response.score));
-        row.scoreTrack.setAttribute("aria-valuenow", String(bounded));
-        row.scoreFill.setAttribute("style", `width:${bounded * 100}%`);
-        row.scoreLabel.textContent = response.score.toFixed(2);
-        row.eventLabel.textContent = `감지 ${response.events.toLocaleString()}회`;
-      }
+      const bounded = Math.min(1, Math.max(0, response.score));
+      row.scoreTrack.setAttribute("aria-valuenow", String(bounded));
+      row.scoreFill.setAttribute("style", `width:${bounded * 100}%`);
+      row.scoreLabel.textContent = response.score.toFixed(2);
+      row.eventLabel.textContent = `감지 ${response.events.toLocaleString()}회`;
       if (response.event) { detected.push(response.label); row.flashUntil = performance.now() + 700; }
-      row.tr.className = `${row.ensemble ? "ensemble " : ""}${performance.now() < row.flashUntil ? "detected" : ""}`.trim();
-      if (row.item) row.item.className = `mic-model-row${performance.now() < row.flashUntil ? " detected" : ""}`;
+      row.item.className = `mic-model-row${performance.now() < row.flashUntil ? " detected" : ""}`;
     }
     if (detected.length) {
       ui.lastEvent.textContent = detected.join(" · ");
@@ -464,7 +424,6 @@
   window.addEventListener("keydown", event => {
     if (event.key !== "Escape") return;
     for (const detail of document.querySelectorAll?.("details[open]") || []) detail.open = false;
-    if (modelValues?.className === "table-wrap show-details") detailToggle?.onclick?.();
   });
   navigator.mediaDevices?.addEventListener("devicechange", () => { if (!probe) refreshDevices(); });
 

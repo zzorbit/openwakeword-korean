@@ -112,23 +112,11 @@ meter::-webkit-meter-optimum-value { border-radius: 4px; background: #8aa895; }
 .mic-model-row.detected .mic-score-fill { background: #8aa895; }
 
 .diagnostics { display: flex; align-items: start; justify-content: center; flex-wrap: wrap; gap: 3px 7px; }
-.diagnostics :is(button, summary) { padding: 3px 6px; font-size: 12px; line-height: 18px; color: var(--muted); cursor: pointer; }
-.diagnostics button { min-height: 26px; border: 0; background: transparent; }
-.diagnostics summary { border-radius: 5px; }
+.diagnostics summary { width: max-content; margin-inline: auto; padding: 3px 6px; border-radius: 5px; font-size: 12px; line-height: 18px; color: var(--muted); cursor: pointer; }
 .diagnostics details[open] { flex-basis: 100%; }
 .diagnostic-content { padding: 8px; color: var(--muted); display: grid; gap: 6px; }
 #captureSettings { display: grid; grid-template-columns: minmax(80px, 130px) 1fr; gap: 4px 10px; margin: 0; font-size: 13px; }
 #captureSettings dd { margin: 0; overflow-wrap: anywhere; }
-.table-wrap { display: none; }
-.table-wrap.show-details { display: block; position: fixed; z-index: 30; inset: 16px; overflow: auto; padding: 46px 12px 12px; border: 1px solid var(--border); border-radius: 10px; background: #1c2027; box-shadow: 0 12px 50px #0008; }
-.diagnostics #model-detail-toggle[aria-expanded="true"] { position: fixed; z-index: 31; top: 24px; right: 28px; background: var(--control); border: 1px solid var(--border); }
-.table-wrap table { min-width: 650px; width: 100%; border-collapse: collapse; font-size: 14px; white-space: nowrap; }
-th, td { padding: 9px; text-align: right; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
-th { color: var(--muted); font-weight: 500; }
-th:first-child, td:first-child { text-align: left; }
-tr.detected td { color: var(--green); }
-tr.ensemble td:first-child { font-weight: 650; }
-tbody tr:last-child td { border-bottom: 0; }
 footer { text-align: center; color: var(--muted); font-size: 11px; line-height: 1.45; }
 
 @media (max-width: 480px) {
