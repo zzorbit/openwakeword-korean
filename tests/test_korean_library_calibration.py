@@ -1,4 +1,5 @@
 """Automatic gates must preserve strict event semantics and frozen evidence."""
+from contextlib import contextmanager
 from copy import deepcopy
 from pathlib import Path
 
@@ -283,6 +284,27 @@ def test_interrupted_search_resumes_and_source_change_rejected(experiment, tmp_p
         recommend(project, bundle, evaluation, directory)
 
 
+def test_recommendation_preserves_a_receipt_published_before_lock(experiment, tmp_path, monkeypatch):
+    project, bundle, evaluation, _ = experiment
+    output = tmp_path / "concurrent-recommendation"
+    original = calibration.writer_lock
+    published = {}
+
+    @contextmanager
+    def interleaved_lock(directory):
+        if not published:
+            monkeypatch.setattr(calibration, "writer_lock", original)
+            recommend(project, bundle, evaluation, output)
+            published.update({path.name: digest(path) for path in output.iterdir()})
+        with original(directory):
+            yield
+
+    monkeypatch.setattr(calibration, "writer_lock", interleaved_lock)
+    result = recommend(project, bundle, evaluation, output)
+    assert result["candidates"] == read_recommendation(project, bundle, evaluation, output)["candidates"]
+    assert {path.name: digest(path) for path in output.iterdir()} == published
+
+
 def test_resume_partway_through_fixed_grid_reconstructs_the_same_search(experiment, tmp_path):
     project, bundle, evaluation, _ = experiment
     complete = tmp_path / "complete"
@@ -297,6 +319,45 @@ def test_resume_partway_through_fixed_grid_reconstructs_the_same_search(experime
     assert actual["candidates"] == expected["candidates"]
     assert list(iter_rows(resumed / "comparisons.jsonl")) == list(iter_rows(complete / "comparisons.jsonl"))
     assert read_json(resumed / "recommendation.json")["search_policy"] == calibration.SEARCH_POLICY
+
+
+@pytest.mark.parametrize("tail", [b'{"candidate":"unfinished",', b'{"note":"\xe3'])
+def test_recommendation_repairs_only_a_torn_final_comparison(experiment, tmp_path, tail):
+    project, bundle, evaluation, _ = experiment
+    output = tmp_path / "torn-search"
+
+    def interrupt(progress):
+        if progress["completed"] == 3:
+            raise InterruptedError("pause after a complete comparison")
+
+    with pytest.raises(InterruptedError):
+        recommend(project, bundle, evaluation, output, interrupt)
+    journal = output / "comparisons.jsonl"
+    committed = journal.read_bytes()
+    journal.write_bytes(committed + tail)
+    complete = recommend(project, bundle, evaluation, tmp_path / "complete-search")
+    resumed = recommend(project, bundle, evaluation, output)
+    assert resumed["candidates"] == complete["candidates"]
+    assert journal.read_bytes().startswith(committed)
+    assert list(iter_rows(journal)) == list(iter_rows(tmp_path / "complete-search/comparisons.jsonl"))
+
+
+def test_recommendation_refuses_corrupt_completed_comparison(experiment, tmp_path):
+    project, bundle, evaluation, _ = experiment
+    output = tmp_path / "corrupt-search"
+
+    def interrupt(_progress):
+        raise InterruptedError("pause after a complete comparison")
+
+    with pytest.raises(InterruptedError):
+        recommend(project, bundle, evaluation, output, interrupt)
+    journal = output / "comparisons.jsonl"
+    corrupt = journal.read_bytes() + b"not json\n"
+    journal.write_bytes(corrupt)
+    with pytest.raises(ValueError):
+        recommend(project, bundle, evaluation, output)
+    assert journal.read_bytes() == corrupt
+    assert not (output / "receipt.json").exists()
 
 
 @pytest.mark.parametrize("policy_name", ["LEGACY_SEARCH_POLICY", "PREVIOUS_SEARCH_POLICY"])

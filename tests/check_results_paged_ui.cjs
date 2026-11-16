@@ -18,9 +18,12 @@ function browser(tuples, {deferPages = false, pageFailure = false, indexFailure 
     replaceChildren(...nodes) { this.children = nodes; }
     get options() { return this.children; }
     get src() { return this._src; }
-    set src(value) { this._src = value; this.currentTime = 0; this.ended = false; this.paused = true; }
+    set src(value) { this._src = value; this.currentTime = 0; this.ended = false; this.paused = true; this.error = null; }
     pause() { this.pauses++; this.paused = true; this.onpause?.(); }
     play() { this.plays++; this.paused = false; this.ended = false; this.onplay?.(); return playback ? playback(this.plays) : Promise.resolve(); }
+    load() { this.currentTime = 0; this.ended = false; this.error = null; }
+    finish() { this.ended = true; this.paused = true; return this.onended?.(); }
+    fail() { this.error = {code: 4}; return this.onerror?.(); }
     removeAttribute(name) { this[name] = ""; }
     setAttribute(name, value) { this.attributes[name] = value; }
   }
@@ -34,7 +37,8 @@ function browser(tuples, {deferPages = false, pageFailure = false, indexFailure 
     if (url === indexPath) return {ok: !indexFailure, status: indexFailure ? 503 : 200, json: async () => ({schema_version: invalidIndex ? 99 : 1, scope_text: "정확한 평가 범위", noise_coverage_text: "전체 음원 사용", clips: tuples})};
     const number = Number(url.match(/page-(\d+)\.json/)[1]);
     if (pageFailure) return {ok: false, status: 503};
-    if (deferPages) return new Promise(resolve => deferred.set(number, () => resolve({ok: true, json: async () => page(number)})));
+    if (deferPages) return new Promise(resolve => deferred.set(number, (ok = true) =>
+      resolve({ok, status: ok ? 200 : 503, json: async () => page(number)})));
     return {ok: true, json: async () => page(number)};
   }});
   context.window = context; context.location = new URL("http://127.0.0.1/results/bora/"); context.URL = URL; context.KOWW_RESULTS_TEST = !autoBoot;
@@ -141,7 +145,7 @@ const chooseClip = (viewer, sourceIndex) => {
   });
   await test("continuous playback crosses detail and selector pages without skipping audio", async () => {
     const b = browser(Array.from({length: 400}, (_, index) => tuple(index))); await b.helper.boot();
-    await b.elements.get("start").onclick(); await b.helper.move(127, true); await b.elements.get("audio").onended();
+    await b.elements.get("start").onclick(); await b.helper.move(127, true); await b.elements.get("audio").finish();
     assert.equal(b.helper.state().index, 128); assert.equal(b.elements.get("audio").src, "audio/128.wav");
     assert.equal(b.picker.index, 128);
     assert.equal(b.elements.get("clipTitle").textContent, "음성 43 · 환경소음");
@@ -156,7 +160,7 @@ const chooseClip = (viewer, sourceIndex) => {
     assert.equal(b.helper.state().continuous, true); assert.equal(b.helper.state().index, 127);
     assert.equal(b.elements.get("audio").src, source); assert.equal(b.elements.get("audio").pauses, pauses);
     assert.equal(b.calls.length, calls);
-    await b.elements.get("audio").onended(); assert.equal(b.helper.state().index, 128);
+    await b.elements.get("audio").finish(); assert.equal(b.helper.state().index, 128);
   });
   await test("compact listening subviews preserve actual playback and the current folder", async () => {
     const b = browser(Array.from({length: 400}, (_, index) => tuple(index))); await b.helper.boot();
@@ -168,7 +172,7 @@ const chooseClip = (viewer, sourceIndex) => {
     assert.equal(b.elements.get("audio-view-player").attributes["aria-pressed"], "true");
     assert.equal(b.helper.state().continuous, true); assert.equal(b.helper.state().index, 127);
     assert.equal(b.elements.get("audio").src, source); assert.equal(b.elements.get("audio").pauses, pauses); assert.equal(b.calls.length, calls);
-    await b.elements.get("audio").onended(); assert.equal(b.helper.state().index, 128);
+    await b.elements.get("audio").finish(); assert.equal(b.helper.state().index, 128);
   });
   await test("only a same-origin exact parent can pause audio without resetting the active folder", async () => {
     const b = browser(Array.from({length: 400}, (_, index) => tuple(index))); await b.helper.boot();
@@ -185,7 +189,7 @@ const chooseClip = (viewer, sourceIndex) => {
     assert.equal(b.helper.state().index, 127); assert.equal(audio.src, source);
     assert.equal(b.picker.folder, folder);
     assert.equal(b.calls.length, calls);
-    await audio.onended(); assert.equal(b.helper.state().index, 127);
+    await audio.finish(); assert.equal(b.helper.state().index, 127);
     await b.elements.get("resume").onclick(); assert.equal(b.helper.state().continuous, true);
     assert.equal(b.helper.state().index, 127);
   });
@@ -195,9 +199,9 @@ const chooseClip = (viewer, sourceIndex) => {
     const audio = b.elements.get("audio"), source = audio.src, pauses = audio.pauses;
     b.message({origin: "https://unrelated.example"}); assert.equal(audio.pauses, pauses);
     b.message(); assert.equal(audio.pauses, pauses + 1);
-    audio.onended(); assert.equal(audio.src, source); assert.equal(b.picker.index, 2);
+    audio.finish(); assert.equal(audio.src, source); assert.equal(b.picker.index, 2);
     await b.elements.get("resume").onclick(); assert.equal(audio.src, source);
-    audio.onended(); await flush(); assert.notEqual(audio.src, source); assert.equal(b.picker.index, 3);
+    audio.finish(); await flush(); assert.notEqual(audio.src, source); assert.equal(b.picker.index, 3);
     assert.equal(b.calls.length, 0);
   });
   await test("only two detail pages are retained with LRU eviction", async () => {
@@ -248,9 +252,45 @@ const chooseClip = (viewer, sourceIndex) => {
     const b = browser([tuple(0)], {pageFailure: true}); await b.helper.boot();
     assert.match(b.elements.get("playState").textContent, /503/); assert.equal(b.helper.state().continuous, false);
   });
+  await test("a failed replacement page clears old audio and reactions and can be retried in place", async () => {
+    const b = browser(Array.from({length: 180}, (_, index) => tuple(index)), {deferPages: true});
+    const boot = b.helper.boot(); await flush(); b.deferred.get(0)(); await boot;
+    const audio = b.elements.get("audio"), title = b.elements.get("clipTitle");
+    const reactions = b.elements.get("responses").tBodies[0], notice = b.elements.get("playState");
+    assert.equal(audio.src, "audio/0.wav"); assert.ok(reactions.children.length);
+    const changed = b.helper.move(128); await flush();
+    assert.equal(audio.src, ""); assert.equal(title.textContent, ""); assert.equal(reactions.children.length, 0);
+    b.deferred.get(1)(false); assert.equal(await changed, false);
+    assert.match(notice.textContent, /503/); assert.equal(b.picker.index, 128);
+    assert.equal(audio.src, ""); assert.equal(title.textContent, ""); assert.equal(reactions.children.length, 0);
+    const retry = b.elements.get("resume").onclick(); await flush(); b.deferred.get(1)();
+    await retry;
+    assert.equal(audio.src, "audio/128.wav"); assert.ok(reactions.children.length);
+    assert.equal(notice.textContent, ""); assert.equal(b.picker.index, 128);
+    assert.equal(b.calls.filter(url => url.endsWith("clips/page-000001.json")).length, 2);
+  });
+  await test("a newer initial selection prepares the chapter without waiting for a superseded page", async () => {
+    const b = browser(Array.from({length: 180}, (_, index) => tuple(index)), {deferPages: true});
+    const boot = b.helper.boot(); await flush();
+    const newer = b.helper.move(128); await flush(); b.deferred.get(1)(); await newer; await flush();
+    assert.deepEqual(b.readiness.map(value => value.status), ["loading", "ready"]);
+    assert.equal(b.readiness[1].source, "audio/128.wav");
+    b.deferred.get(0)(false); await boot; await flush();
+    assert.equal(b.elements.get("audio").src, "audio/128.wav");
+    assert.equal(b.elements.get("playState").textContent, "");
+  });
+  await test("a late media ending cannot skip a replacement while its detail loads", async () => {
+    const b = browser(Array.from({length: 180}, (_, index) => tuple(index)), {deferPages: true});
+    const boot = b.helper.boot(); await flush(); b.deferred.get(0)(); await boot;
+    const pending = b.helper.move(128, true); await flush();
+    b.elements.get("audio").onended();
+    assert.equal(b.helper.state().index, 128);
+    b.deferred.get(1)(); await pending;
+    assert.equal(b.elements.get("audio").src, "audio/128.wav");
+  });
   await test("completed continuous playback stops at the final selected clip", async () => {
     const b = browser([tuple(0), tuple(1)]); await b.helper.boot(); await b.elements.get("start").onclick();
-    await b.elements.get("audio").onended(); await b.elements.get("audio").onended();
+    await b.elements.get("audio").finish(); await b.elements.get("audio").finish();
     assert.equal(b.helper.state().index, 1); assert.equal(b.helper.state().continuous, false);
     assert.equal(b.elements.get("playState").textContent, "");
   });
@@ -315,8 +355,11 @@ const chooseClip = (viewer, sourceIndex) => {
       audio.pause(); assert.equal(toggle.textContent, "재생");
       await audio.play(); assert.equal(toggle.textContent, "일시정지");
       assert.equal(notice.textContent, "");
-      audio.onerror(); assert.equal(toggle.textContent, "재생"); assert.equal(toggle.attributes["aria-pressed"], "false");
+      audio.fail(); assert.equal(toggle.textContent, "재생"); assert.equal(toggle.attributes["aria-pressed"], "false");
       assert.match(notice.textContent, /오디오를 불러올 수 없습니다/);
+      assert.equal(audio.src, ""); assert.equal(b.elements.get("clipTitle").textContent, "");
+      assert.equal(b.elements.get("responses").tBodies[0].children.length, 0);
+      await toggle.onclick(); assert.equal(audio.src, source); assert.equal(notice.textContent, "");
       await b.elements.get("next").onclick();
       assert.equal(audio.src, "audio/1.wav"); assert.equal(notice.textContent, "");
       await toggle.onclick(); assert.equal(notice.textContent, "");
@@ -330,7 +373,7 @@ const chooseClip = (viewer, sourceIndex) => {
       audio.currentTime = 1.25;
       await b.elements.get("resume").onclick();
       assert.equal(audio.src, source); assert.equal(source, "audio/1.wav"); assert.equal(audio.currentTime, 1.25);
-      await audio.onended(); assert.equal(audio.src, source); assert.equal(b.elements.get("resume").textContent, "재생");
+      await audio.finish(); assert.equal(audio.src, source); assert.equal(b.elements.get("resume").textContent, "재생");
       assert.equal(b.elements.get("playState").textContent, "");
     });
     await test(`${mode} keeps model reactions available for another folder`, async () => {
@@ -353,7 +396,18 @@ const chooseClip = (viewer, sourceIndex) => {
       b.message(); finishPlay(); await pendingPlay;
       assert.equal(b.elements.get("audio").paused, true); assert.equal(b.elements.get("resume").textContent, "재생");
       const source = b.elements.get("audio").src;
-      await b.elements.get("audio").onended(); assert.equal(b.elements.get("audio").src, source);
+      await b.elements.get("audio").finish(); assert.equal(b.elements.get("audio").src, source);
+    });
+    await test(`${mode} browser play rejection permits a retry without replacing a valid audio source`, async () => {
+      const b = browser([tuple(0)], {staticViewer, playback: count => count === 1
+        ? Promise.reject(new Error("browser refused playback")) : Promise.resolve()});
+      if (b.helper) await b.helper.boot();
+      const audio = b.elements.get("audio"), play = b.elements.get("resume"), notice = b.elements.get("playState");
+      audio.currentTime = 1.25;
+      await play.onclick(); assert.match(notice.textContent, /browser refused playback/);
+      assert.equal(audio.src, "audio/0.wav"); assert.equal(audio.currentTime, 1.25);
+      await play.onclick();
+      assert.equal(notice.textContent, ""); assert.equal(audio.src, "audio/0.wav"); assert.equal(audio.currentTime, 1.25);
     });
   }
   await test("cancelled pending detail is not allowed to autoplay after the parent closes the player", async () => {

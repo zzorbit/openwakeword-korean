@@ -86,7 +86,13 @@ function browser(config = {}) {
       return json({ session_id: `session${calls.filter(call => call.url === "/api/start").length}`, models: info.models,
         runtime: state.startRuntime || { ...defaultRuntime, ...JSON.parse(options.body) } });
     }
-    if (url === "/api/stop") return json({ stopped: true });
+    if (url === "/api/stop") {
+      if (state.deferredStop) return new Promise((resolve, reject) => {
+        options.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), {once: true});
+        state.deferredStop.promise.then(resolve, reject);
+      });
+      return json({ stopped: true });
+    }
     if (url === "/api/frame") {
       assert.equal(options.body.byteLength, 2560);
       if (state.failFrame) return json({ error: "모의 서버 오류" }, 500);
@@ -560,17 +566,53 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
   await test("stop while permission is pending disposes the late stream and never opens server session", async () => {
     const b = browser(); await flush(); b.state.deferredPermission = deferred();
     const start = b.click("start"); b.click("stop");
+    assert.equal(b.elements.get("start").disabled, false);
     const stream = b.makeStream(); b.state.deferredPermission.resolve(stream);
     await start; await flush();
     assert.equal(stream.track.stopped, true); assert.equal(b.calls.some(call => call.url === "/api/start"), false);
   });
-  await test("stop while start response is pending closes the late server session", async () => {
-    const b = browser(); await flush(); b.state.deferredStart = deferred();
-    const start = b.click("start"); await flush(); b.click("stop");
+  await test("restart waits until the previous server session closes", async () => {
+    const b = browser(); await flush(); await b.click("start");
+    b.state.deferredStop = deferred();
+    b.click("stop");
+    assert.equal(b.elements.get("start").disabled, true);
+    assert.equal(b.elements.get("statusHeading").textContent, "시험 연결 정리 중");
+    assert.equal(b.streams[0].track.stopped, true);
+    await b.click("start");
+    assert.deepEqual(b.calls.map(call => call.url), ["/api/info", "/api/start", "/api/stop"]);
+    assert.equal(b.calls.at(-1).options.keepalive, true);
+    b.state.deferredStop.resolve(b.response({stopped: true})); await flush();
+    assert.equal(b.elements.get("start").disabled, false);
+    await b.click("start");
+    assert.equal(b.calls.filter(call => call.url === "/api/start").length, 2);
+    assert.equal(b.streams[1].track.stopped, false);
+    b.click("stop"); await flush();
+  });
+  await test("stop during a pending start closes the returned session before another trial", async () => {
+    const b = browser(); await flush(); b.state.deferredStart = deferred(); b.state.deferredStop = deferred();
+    const start = b.click("start"); await flush(); b.listeners.pagehide();
+    assert.equal(b.elements.get("start").disabled, true);
+    await b.click("start");
+    assert.deepEqual(b.calls.map(call => call.url), ["/api/info", "/api/start"]);
     b.state.deferredStart.resolve(b.response({ session_id: "late-session", models: b.info.models }));
     await start; await flush();
     assert.equal(b.streams[0].track.stopped, true);
     assert.equal(JSON.parse(b.calls.find(call => call.url === "/api/stop").options.body).session_id, "late-session");
+    assert.equal(b.calls.at(-1).options.keepalive, true);
+    assert.equal(b.elements.get("start").disabled, true);
+    b.state.deferredStop.resolve(b.response({stopped: true})); await flush();
+    assert.equal(b.elements.get("start").disabled, false);
+  });
+  await test("a server stop timeout explains why cleanup could not finish and allows retry", async () => {
+    const b = browser(); await flush(); await b.click("start");
+    b.state.deferredStop = deferred();
+    b.click("stop");
+    const timeout = [...b.timers.values()].find(timer => timer.duration === 5000);
+    assert.ok(timeout);
+    timeout.callback(); await flush();
+    assert.equal(b.elements.get("start").disabled, false);
+    assert.match(b.elements.get("statusText").textContent, /5초 안에 시험 종료에 응답하지 않았습니다/);
+    assert.equal(b.streams[0].track.stopped, true);
   });
   await test("an unsupported actual AudioContext sample rate is rejected before server start", async () => {
     const b = browser(); await flush(); b.state.audioRate = 48000;

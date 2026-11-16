@@ -6,14 +6,15 @@ source bank.  No source WAV, journal or voice-family definition is rewritten.
 from copy import deepcopy
 from importlib.resources import files
 from pathlib import Path
-from .task_progress import emit as report_progress, generation_attempt
+from .task_progress import emit as report_progress
 import random
 import re
-from unicodedata import normalize
 import uuid
 
+from .clone_reference import GeneratedReferenceQualityError
 from .common import bound_file, digest, identity, now, read_json, read_rows, resolved, snapshot_json, write_immutable_rows, write_json, writer_lock
 from .project import load_project
+from .reference_attempt import check_reference_timing as _check_candidate_timing, prepare_reference_attempt, publish_reference_attempt
 from .reference_qc import _check_wave
 from .storage import project_storage
 
@@ -28,11 +29,6 @@ OPTIONAL_LISTENING_POLICY = "optional_candidate_listening_v1"
 _TERMINAL_CANDIDATE_QC_ERROR = "기술 검사를 통과한 서로 다른 목소리 후보를 만들지 못했습니다. 다시 시도하세요."
 BATCH_KIND = "reference_candidate_batch_v2"
 BATCH_SIZE = 5
-MAX_INTERNAL_SILENCE_S = 2.0
-_CANDIDATE_TIMING_POLICY = "reference_candidate_timing_v1"
-_CANDIDATE_MIN_SPAN_LIMIT_S = 8.0
-_CANDIDATE_SPAN_HEADROOM_S = 2.0
-_CANDIDATE_SECONDS_PER_TEXT_CHARACTER = 0.5
 GENDERS = ("man", "woman")
 AGES = ("child", "teenager", "young adult", "middle-aged", "older adult")
 GENDER_LABELS = {"man": "남성", "woman": "여성"}
@@ -335,43 +331,11 @@ def _validate_plan(plan, config):
         raise ValueError("목소리 후보의 난수가 서로 중복됩니다.")
 
 
-def _check_candidate_timing(path, text):
-    """Measure the audible span of the reference sentence after edge cleanup."""
-    import numpy as np
-    import soundfile as sf
-    from .clone_reference import RULES, GeneratedReferenceQualityError
-
-    samples, rate = sf.read(path, dtype="float64")
-    frame = max(1, round(rate * RULES["frame_ms"] / 1000))
-    starts = np.arange(0, len(samples), frame)
-    ends = np.minimum(starts + frame, len(samples))
-    powers = np.add.reduceat(np.square(samples), starts) / (ends - starts)
-    active = powers >= RULES["activity_rms"] ** 2
-    active_starts, active_ends = starts[active], ends[active]
-    if not len(active_starts):
-        raise GeneratedReferenceQualityError("기준 목소리 후보에서 발화 구간을 찾지 못했습니다.")
-    longest_pause = np.max(active_starts[1:] - active_ends[:-1], initial=0)
-    if longest_pause >= MAX_INTERNAL_SILENCE_S * rate:
-        raise GeneratedReferenceQualityError("기준 목소리 후보의 발화 사이에 긴 무음이 있습니다.")
-    # Allow deliberate slow delivery and a longer configured sentence. Unlike
-    # the raw file duration, this span excludes leading and trailing silence.
-    text_units = sum(character.isalnum() for character in normalize("NFC", text))
-    span_limit_s = max(_CANDIDATE_MIN_SPAN_LIMIT_S,
-        _CANDIDATE_SPAN_HEADROOM_S + text_units * _CANDIDATE_SECONDS_PER_TEXT_CHARACTER)
-    audible_span_s = float(active_ends[-1] - active_starts[0]) / rate
-    if audible_span_s > span_limit_s:
-        raise GeneratedReferenceQualityError("기준 목소리 후보의 발화가 예문 길이에 비해 너무 깁니다.")
-    return {"policy": _CANDIDATE_TIMING_POLICY, "audible_span_s": audible_span_s,
-            "span_limit_s": span_limit_s, "longest_internal_pause_s": float(longest_pause) / rate}
-
-
 @project_storage
 def generate_candidate_batch(project, output, job_key, plan, all_hashes, *, load_model=None):
     """Generate a persisted batch, reusing a caller-supplied resident loader."""
-    import soundfile as sf
-    from .tts import _load_model, _seed
+    from .tts import _load_model
     from .reference_voice_review import _original_pcm_hashes
-    from .clone_reference import prepare_generated_reference, GeneratedReferenceQualityError
     root, config = load_project(project)
     output = resolved(root, output)
     if not output.is_relative_to(candidate_jobs(root)) or output == candidate_jobs(root):
@@ -385,6 +349,15 @@ def generate_candidate_batch(project, output, job_key, plan, all_hashes, *, load
     except FileNotFoundError:
         pass
     rows, model = [], None
+
+    def resident_model():
+        nonlocal model
+        if model is None:
+            if load_model is None:
+                report_progress("tts_model_loading", "음성 생성 모델 준비", eta_eligible=False)
+            model = (load_model or _load_model)(config["tts"]["design_model"], config["tts"], root)
+        return model
+
     with writer_lock(output):
         plan_path = output / "plan.json"
         if plan_path.exists():
@@ -402,40 +375,18 @@ def generate_candidate_batch(project, output, job_key, plan, all_hashes, *, load
                 if row["plan_binding"] != plan_binding or row["sha256"] in hashes or row["decoded_pcm_sha256"] in hashes:
                     raise ValueError("재개할 목소리 후보의 기록이 다르거나 중복되었습니다.")
             else:
-                raw_directory = output / "raw"
-                raw_directory.mkdir(exist_ok=True)
                 for attempt, seed in enumerate(item["attempt_seeds"]):
-                    raw = raw_directory / f"{item['candidate_id']}_attempt{attempt}.wav"
-                    raw_base, recovery = raw, 0
-                    while raw.exists() and not raw.with_name(raw.name + ".raw.json").exists():
-                        recovery += 1
-                        raw = raw_base.with_name(raw_base.stem + f"_recovery{recovery}.wav")
+                    raw = output / "raw" / f"{item['candidate_id']}_attempt{attempt}.wav"
                     attempt_target = output / "prepared" / f"{item['candidate_id']}_attempt{attempt}.wav"
                     generation = {"kind": BATCH_KIND, "candidate_id": item["candidate_id"],
                                   "batch_id": plan["batch_id"], "plan_binding": plan_binding,
                                   "model": item["model"], "text": item["text"], "seed": seed,
                                   "attempt": attempt, "instruction": item["design_instruction"],
                                   "voice_controls": item["voice_controls"], "generation": plan["generation"]}
-                    timing = None
-                    if not raw.exists():
-                        if model is None:
-                            if load_model is None:
-                                report_progress("tts_model_loading", "음성 생성 모델 준비", eta_eligible=False)
-                            model = (load_model or _load_model)(config["tts"]["design_model"], config["tts"], root)
-                        _seed(seed)
-                        with generation_attempt() as timing:
-                            waves, rate = model.generate_voice_design(text=item["text"], language="Korean",
-                                instruct=item["design_instruction"], **plan["generation"])
-                        if len(waves) != 1:
-                            raise ValueError("목소리 후보 생성 결과의 수량이 다릅니다.")
-                        sf.write(raw, waves[0], rate, subtype="FLOAT")
                     try:
-                        preparation = prepare_generated_reference(root,
-                            {"path": raw.relative_to(root).as_posix(), "sha256": digest(raw), "generation": generation}, attempt_target)
-                        timing_check = _check_candidate_timing(attempt_target, item["text"])
+                        preparation, timing_check, timing = prepare_reference_attempt(
+                            root, raw, attempt_target, generation, plan["generation"], resident_model)
                     except GeneratedReferenceQualityError:
-                        if timing is not None:
-                            timing.committed(False)
                         continue
                     metrics = preparation["technical_metrics"]
                     sha, pcm = preparation["prepared"]["sha256"], metrics.get("decoded_pcm_sha256")
@@ -443,8 +394,7 @@ def generate_candidate_batch(project, output, job_key, plan, all_hashes, *, load
                         # Only a quality- and duplicate-checked choice is exposed
                         # as a published candidate WAV. Retain attempted inputs
                         # separately so an interrupted batch is fully auditable.
-                        preparation = prepare_generated_reference(root,
-                            {"path": raw.relative_to(root).as_posix(), "sha256": digest(raw), "generation": generation}, target)
+                        preparation = publish_reference_attempt(root, target, preparation)
                         metrics = preparation["technical_metrics"]
                         sha, pcm = preparation["prepared"]["sha256"], metrics["decoded_pcm_sha256"]
                         row = {"candidate_id": item["candidate_id"], "sample_id": item["candidate_id"],

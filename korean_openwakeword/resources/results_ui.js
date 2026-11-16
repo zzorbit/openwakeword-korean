@@ -1,4 +1,4 @@
-/* Presentation of frozen results. These helpers never recalculate or alter scores. */
+/* Present saved scores and play evaluation audio without running inference. */
 "use strict";
 (() => {
   const $ = id => document.getElementById(id);
@@ -629,13 +629,205 @@
       picker.setSelected(selectedEntry(), selectedLabel());
     };
   }
+
+  function createClipPlayer(report, library, {loadClip, labelAt, pageSize = 100}) {
+    const audio = $("audio"), play = $("resume"), title = $("clipTitle"), notice = $("playState");
+    const mediaError = "오디오를 불러올 수 없습니다. 파일 경로와 서버 상태를 확인하세요.";
+    let folder = null, index = 0, loadedIndex = null, continuous = false;
+    let token = 0, playRequest = null, loading = false, playing = false;
+    let selection, cancelSelection;
+    const currentIndex = () => folder?.clips[index];
+
+    function transport() {
+      const active = playing || loading;
+      play.textContent = active ? "일시정지" : "재생";
+      play.setAttribute("aria-pressed", String(active));
+      play.setAttribute("aria-busy", String(loading));
+      play.disabled = !folder;
+    }
+
+    function clearClip() {
+      loadedIndex = null;
+      if (audio.src) {
+        audio.removeAttribute("src");
+        audio.load();
+      }
+      title.textContent = "";
+      body("responses")?.replaceChildren();
+    }
+
+    function invalidate() {
+      token++;
+      cancelSelection?.();
+      cancelSelection = null;
+      playRequest = null;
+    }
+
+    function stop() {
+      invalidate();
+      continuous = false; loading = false; playing = false;
+      audio.pause();
+      transport();
+    }
+
+    function fail(mine, message, clear) {
+      if (mine === token) {
+        stop();
+        if (clear) clearClip();
+        notice.textContent = message;
+      }
+      return false;
+    }
+
+    function complete() {
+      loading = false; playing = !audio.paused;
+      transport();
+      return true;
+    }
+
+    async function startPlayback(mine) {
+      playRequest = mine;
+      try {
+        await audio.play();
+      } catch (error) {
+        if (audio.error) return fail(mine, mediaError, true);
+        return fail(mine, `재생 실패: ${error.message}. 재생을 다시 눌러주세요.`, false);
+      }
+      if (mine !== token) {
+        if (playRequest === null) audio.pause();
+        return false;
+      }
+      return complete();
+    }
+
+    function activate(sourceIndex, autoplay, resume = false) {
+      invalidate();
+      const mine = token;
+      loading = true; playing = false;
+      if (!resume) {
+        audio.pause();
+        clearClip();
+      }
+      notice.textContent = "";
+      transport();
+      if (resume) return startPlayback(mine);
+
+      function display(clip) {
+        if (mine !== token) return false;
+        if (typeof clip?.path !== "string" || !clip.path) throw new Error("평가 음원 경로가 없습니다.");
+        audio.src = clip.path;
+        loadedIndex = sourceIndex;
+        title.textContent = clipLabel(clip);
+        renderResponses(report, clip);
+        return autoplay ? startPlayback(mine) : complete();
+      }
+      function loadFailed(error) {
+        const message = error?.message || "평가 음원을 불러오지 못했습니다.";
+        return fail(mine, message + " 다시 선택하거나 재생을 눌러주세요.", true);
+      }
+      try {
+        const clip = loadClip(sourceIndex);
+        return typeof clip?.then === "function"
+          ? Promise.resolve(clip).then(display).catch(loadFailed)
+          : display(clip);
+      } catch (error) {
+        return loadFailed(error);
+      }
+    }
+
+    function progress() {
+      const length = folder?.clips.length || 0;
+      $("queue").textContent = length ? `${(index + 1).toLocaleString("ko-KR")} / ${length.toLocaleString("ko-KR")}` : "목록 없음";
+      $("prev").disabled = index <= 0;
+      $("next").disabled = index + 1 >= length;
+      updatePicker?.(folder, index);
+    }
+
+    function move(position, autoplay = continuous) {
+      if (!Number.isInteger(position) || !folder || position < 0 || position >= folder.clips.length) return;
+      index = position; continuous = autoplay && folder.continuous;
+      progress();
+      const result = activate(currentIndex(), autoplay);
+      if (typeof result?.then === "function") {
+        // Stop waiting for superseded page details without interrupting the shared page fetch.
+        const cancelled = new Promise(resolve => { cancelSelection = () => resolve(false); });
+        selection = Promise.race([result, cancelled]);
+      } else selection = result;
+      return selection;
+    }
+
+    function selectFolder(nextFolder, position = 0) {
+      if (!Number.isInteger(position) || !nextFolder?.clips || position < 0 || position >= nextFolder.clips.length) return;
+      if (nextFolder === folder) return move(position);
+      folder = nextFolder;
+      return move(position, false);
+    }
+
+    async function waitForSelection() {
+      let observed, ready;
+      do {
+        observed = selection;
+        ready = await observed;
+      } while (observed !== selection);
+      return ready;
+    }
+
+    const updatePicker = api.mountClipPicker?.(library, selectFolder, labelAt, pageSize);
+    if (!updatePicker) window.KowwListening?.enhance(audio, play.parentElement, {
+      play, previous: $("prev"), next: $("next"),
+    });
+    $("start").onclick = () => move(0, true);
+    $("pause").onclick = stop;
+    $("prev").onclick = () => move(index - 1);
+    $("next").onclick = () => move(index + 1);
+    play.onclick = () => {
+      if (playing || loading || !audio.paused) return stop();
+      if (!folder) return;
+      continuous = folder.continuous;
+      const sourceIndex = currentIndex();
+      return activate(sourceIndex, true, loadedIndex === sourceIndex);
+    };
+    audio.onplay = () => {
+      if (loadedIndex === null || audio.paused) return;
+      playing = true; transport(); notice.textContent = "";
+    };
+    audio.onpause = () => {
+      if (audio.ended || !audio.paused) return;
+      playing = false;
+      if (!loading) { continuous = false; playRequest = null; }
+      transport();
+    };
+    audio.onended = () => {
+      if (!audio.ended || loadedIndex !== currentIndex()) return;
+      playing = false; loading = false; playRequest = null;
+      if (continuous && index + 1 < folder.clips.length) return move(index + 1, true);
+      continuous = false;
+      transport();
+    };
+    audio.onerror = () => {
+      if (!audio.error || loadedIndex !== currentIndex()) return;
+      fail(token, mediaError, true);
+    };
+
+    function start() {
+      if (library.defaultFolder) return selectFolder(library.defaultFolder);
+      clearClip();
+      title.textContent = "시험한 오디오가 없습니다.";
+      progress(); transport();
+      selection = true;
+      return selection;
+    }
+
+    return {start, waitForSelection, move, selectFolder,
+      state: () => ({folder, index, queueLength: folder?.clips.length || 0, continuous})};
+  }
   initDashboard();
   if (typeof window !== "undefined") window.addEventListener?.("message", pauseFromParent);
   if (typeof window !== "undefined") window.addEventListener?.("keydown", event => {
     if (event.key === "Escape") document.querySelectorAll?.("details[open]")?.forEach(detail => { detail.open = false; });
   });
   const api = {modelLabel, noiseLabel, snrLabel, reverbLabel, renderSummary, renderConditions, renderResponses, clipLabel,
-    dashboard, buildClipFolders, mountClipPicker, dashboardState: () => ({view: dashboardView})};
+    dashboard, buildClipFolders, mountClipPicker, createClipPlayer, dashboardState: () => ({view: dashboardView})};
   if (typeof window !== "undefined") window.KowwResultsUI = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })();

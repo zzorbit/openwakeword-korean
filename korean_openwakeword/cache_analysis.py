@@ -15,13 +15,14 @@ from .paged_site import iter_clip_array
 
 def _identity(path):
     value = Path(path).stat()
-    return value.st_size, value.st_mtime_ns, value.st_ino
+    return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns
 
 
 class FrozenClipRows(Sequence):
     """Repeatable bounded-record view of an already hash-verified JSON array."""
-    def __init__(self, path, count):
+    def __init__(self, path, count, *, expected_sha256=None):
         self.path, self.count = Path(path), count
+        self.expected_sha256 = expected_sha256
         self.identity = _identity(path)
 
     def __len__(self):
@@ -31,7 +32,7 @@ class FrozenClipRows(Sequence):
         if _identity(self.path) != self.identity:
             raise ValueError("Frozen evaluation clips changed during analysis")
         count = 0
-        for row in iter_clip_array(self.path):
+        for row in iter_clip_array(self.path, expected_sha256=self.expected_sha256):
             count += 1
             yield row
         if count != self.count or _identity(self.path) != self.identity:
@@ -47,7 +48,8 @@ class FrozenClipRows(Sequence):
             index += len(self)
         if not 0 <= index < len(self):
             raise IndexError(index)
-        return next(row for i, row in enumerate(self) if i == index)
+        # Finish checking the bound stream before returning an individual row.
+        return [row for i, row in enumerate(self) if i == index][0]
 
 
 class RestrictedClipRows:

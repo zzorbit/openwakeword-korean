@@ -22,7 +22,6 @@ import os
 import re
 import secrets
 import shutil
-import statistics
 import subprocess
 import sys
 from sysconfig import get_platform
@@ -30,10 +29,13 @@ import threading
 import time
 import uuid
 
+from . import studio_reviews
 from .common import bound_file, digest, identity, now, read_json, read_rows, resolved, snapshot_json, write_json
 from .hard_pilot import HARD_SAMPLE_REVIEW_POLICY
 from .pilot import COMBINED_PILOT_POLICY, POSTGEN_PILOT_POLICY, PREPOST_PILOT_POLICY, TRAIN_PILOT_POLICY
 from .project import create_project, load_project
+from .studio_jobs import process_identity, request_stage_pause, worker_lock_paths as _lock_paths
+from .studio_progress import estimate_progress_eta, read_optional_progress
 from .web_page import render_page_config
 
 
@@ -67,46 +69,6 @@ _REFERENCE_PREVIEW_TRAIT_LABELS = {
     "speed": {"slow": "느리게", "natural": "자연스럽게", "quick": "빠르게"},
     "intonation": {"level": "평탄하게", "rising": "올리는 억양", "falling": "내리는 억양", "natural": "자연스러운 억양"},
 }
-
-
-def process_identity(pid):
-    """Creation identity, not just PID existence (PIDs may be recycled)."""
-    if type(pid) is not int or pid < 1:
-        return None
-    if os.name == "nt":
-        import ctypes
-        from ctypes import wintypes
-        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-        kernel.OpenProcess.restype = wintypes.HANDLE
-        handle = kernel.OpenProcess(0x1000, False, pid)
-        if not handle:
-            return None
-        try:
-            creation, exit_time, kernel_time, user_time = (wintypes.FILETIME() for _ in range(4))
-            kernel.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
-            kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
-            code = wintypes.DWORD()
-            if (not kernel.GetExitCodeProcess(handle, ctypes.byref(code)) or code.value != 259
-                    or not kernel.GetProcessTimes(handle, ctypes.byref(creation), ctypes.byref(exit_time),
-                                                 ctypes.byref(kernel_time), ctypes.byref(user_time))):
-                return None
-            return str((creation.dwHighDateTime << 32) | creation.dwLowDateTime)
-        finally:
-            kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-            kernel.CloseHandle(handle)
-    try:
-        stat = Path(f"/proc/{pid}/stat").read_text()
-        fields = stat[stat.rfind(")") + 2:].split()
-        return None if fields[0] == "Z" else fields[19]
-    except (OSError, IndexError):
-        # macOS/BSD have no /proc. lstart is stable for a given process lifetime.
-        try:
-            result = subprocess.run(["ps", "-p", str(pid), "-o", "lstart="], capture_output=True,
-                                    text=True, timeout=2, check=False)
-            return result.stdout.strip() or None
-        except (OSError, subprocess.TimeoutExpired):
-            return None
 
 
 def _safe_root(path):
@@ -265,14 +227,6 @@ def _elapsed(start):
         return 0
 
 
-def _lock_paths(root):
-    """Known writer directories only; don't walk hundreds of thousands of WAVs."""
-    roots = (root / "features", root / "runs", root / "data", root / ".studio")
-    patterns = (".writer.lock", "*/.writer.lock", "*/*/.writer.lock", "*/*/*/.writer.lock")
-    revision_locks = (root / "data/generated/hard_phrase_revisions").glob("*/*/.writer.lock")
-    return [path for base in roots if base.exists() for pattern in patterns for path in base.glob(pattern)] + list(revision_locks)
-
-
 def _implementation():
     root = Path(__file__).parent
     paths = sorted(root.glob("*.py")) + sorted((root / "resources").glob("*.json"))
@@ -299,7 +253,8 @@ def _execution_contract(*, legacy_reference_review=False):
     """
     root = Path(__file__).parent
     presentation = {"__init__.py", "__main__.py", "cli.py", "demo.py", "microphone.py",
-                    "paged_site.py", "site.py", "storage_budget.py", "studio.py", "studio_worker.py", "studio_analysis.py", "web_page.py"}
+                    "paged_site.py", "site.py", "storage_budget.py", "studio.py", "studio_worker.py", "studio_analysis.py", "studio_jobs.py", "studio_progress.py",
+                    "studio_reviews.py", "web_page.py"}
     paths = [p for p in sorted(root.glob("*.py")) if p.name not in presentation]
     paths += sorted((root / "resources").glob("*.json"))
     bindings = {p.relative_to(root).as_posix(): digest(p) for p in paths}
@@ -333,7 +288,7 @@ def _execution_contract(*, legacy_reference_review=False):
                  "downloads.py", "download_control.py", "evaluation_materials.py", "fma_download.py", "fma_selection.py", "fma_streaming.py",
                  "material_downloads.py", "material_policy.py", "provider_index.py", "range_zip.py", "source_waveform_index.py",
                  "studio_data.py", "studio_evaluation_data.py", "pool_review.py"},
-        "tts": {"reference_bank.py", "reference_qc.py", "reference_voice_review.py", "reference_candidates.py", "clone_reference.py", "call_generation_history.py", "pilot.py", "hard_tts.py", "tts.py", "tts_runtime.py", "tts_cuda_graph.py",
+        "tts": {"reference_bank.py", "reference_qc.py", "reference_voice_review.py", "reference_candidates.py", "reference_attempt.py", "clone_reference.py", "call_generation_history.py", "pilot.py", "hard_tts.py", "tts.py", "tts_runtime.py", "tts_cuda_graph.py",
                 "tts_cuda_predictor.py", "tts_cuda_sampling.py"},
         "hard_pilot": {"hard_pilot.py"},
         "postgeneration_repair": {"postgeneration_repair.py"},
@@ -418,6 +373,12 @@ _COMPUTE_DISPATCH_COMPATIBLE_DIGESTS = {
         "cf3359d89b53bf21531381658f3dabc0c5599d53170150fb0b61e2479c061d08":
             "4b80f8a5561ba98454b8e6fd8b0449301b6bf3852d6eb78b8f3af043b52bb488",
         "5714cd590420168112fec8540dc6c854b2ff94728dcabd449f94ed5a9018ac3f":
+            "35e797140ce4bc13235a0d9e259b129d63b7bbd66aac23fe2b1f8f624d9808bf",
+        # New attempts declare the saved-PCM check in their row. Bound historical
+        # rows, raw-QC rules, seeds and generation settings retain their identity.
+        "144aafb8abad5758d81db9e5f34c1f7fb0eebd2f28f85e741583b3a275832ac9":
+            "4b80f8a5561ba98454b8e6fd8b0449301b6bf3852d6eb78b8f3af043b52bb488",
+        "cc650deb82913457cc38924e2058171a2146578b4325e590a635bd9839c1c182":
             "35e797140ce4bc13235a0d9e259b129d63b7bbd66aac23fe2b1f8f624d9808bf",
     },
     "hard_pilot.py": {
@@ -1087,6 +1048,89 @@ def _audited_acquisition_update(previous, current):
             "evidence_sha256": audit["evidence_sha256"]}
 
 
+# Exact release contracts. The earlier frontend-only state predates the current
+# workflow. The other entries cover the release and supported checkout endings.
+_REFACTOR_SOURCE_CONTRACTS = {
+    "cc24819956322f867eb6ed5f709f11f3d5db85a750011079f5a3059551471b95":
+        ("f51dac506d3fe881ef0784a2c93ecb5b8394134151b6fd3c5c6b12d11ecd13ec", "stable_workflow"),
+    "390f571d486164696794d84fcfe2d1389f339d616b7dba6902302d5acdc8f97c":
+        ("b118008e36d81930a90a0b6c999ace0efb26712cbc2459c722bc1ea6d2b018f3", "stable_workflow"),
+    "db464351a60b9104729dc60653633629a955be7f6d1ed90f7f70cde3e9bea7a9":
+        ("5313d4c36596c66ad4e3e8fb64a64aef6c1e8cdece4c11902c2d482872bce383", "stable_workflow"),
+    "1098e002acf28cfa8d863b0dd6701a1b3c366de19f3267ef7c3eaf380bef402f":
+        ("5bb03ab00820d47d6d0bd4bd6cb20aa107c88533c0b543b567aefe672536a8c3", "frontend_only"),
+}
+_REFACTOR_TARGET_CONTRACTS = {
+    "3a183cff9f4e4ca9d803f12252328c484b3b321bc6b630ce3ed7c3bba26767ad":
+        "c8bf31ed4a262beb73215905bfc103dcdc23669fd33112647380b49466a7f105",
+    "44f052c866346c8b7bf64d46ceecb0e7c48a388839113517afcffbf8bfa14c94":
+        "19357b8698c6e2c88ad0edd1263b583388ca912f7cd578dc0df6cc76f87963c6",
+    "90390b874b598b8e1c3b88bb8576866338a6c5755f01808914d51c30ba52a548":
+        "2c13b40a580bb0eca9e2256d49acd2184d0bd4dad063b827ffafcf5ebedcb6f1",
+    "7a6218a51809fb4364dbe4bf484b57acb255f8c083a31c2da9fb75d6a9c21894":
+        "c801be32d8fa7aeade0ac5df063f63aff5a5b72b98eb5ce3d915906a1d85e30c",
+}
+
+
+def _audited_refactor_update(previous, current):
+    """Accept only fully audited source and destination execution contracts."""
+    source = _REFACTOR_SOURCE_CONTRACTS.get(previous.get("computation_sha256"))
+    target = _REFACTOR_TARGET_CONTRACTS.get(current.get("computation_sha256"))
+    if source is None or target is None:
+        return None
+    source_stages, scope = source
+    for contract, stages in ((previous, source_stages), (current, target)):
+        files = contract.get("files")
+        if (contract.get("schema_version") != 1 or not isinstance(files, dict)
+                or identity(files) != contract.get("computation_sha256")
+                or identity(contract.get("stages")) != stages):
+            return None
+    return {"kind": "audited_refactor_update", "scope": scope,
+            "source_computation_sha256": previous["computation_sha256"],
+            "target_computation_sha256": current["computation_sha256"],
+            "source_stages_sha256": source_stages, "target_stages_sha256": target}
+
+
+def _refactor_update_preserves_scope(state, audit):
+    root = Path(state["project"]).parent
+    if (root / "final_lock.json").exists():
+        return False
+    from .studio_steps import workflow_plan
+    if workflow_plan(state["settings"]) != state["plan"]:
+        return False
+    if audit["scope"] == "stable_workflow":
+        return True
+    if (audit["scope"] != "frontend_only" or state["index"] != 0
+            or state["plan"][0]["id"] != "frontend" or set(state.get("results", {})) - {"frontend"}
+            or set(state.get("inputs", {})) - {"dependency_backend"}
+            or any(row.get("stage") != "frontend" or row.get("artifact_bindings") for row in state.get("history", []))):
+        return False
+    # Project creation seeds empty manifests before the frontend stage can run.
+    data = root / "data"
+    try:
+        _, config = load_project(state["project"])
+        manifests = {Path(path) for path in config["manifests"].values()}
+        if data.is_symlink() or (data.exists() and not data.is_dir()):
+            return False
+        if data.is_dir():
+            for folder in data.iterdir():
+                if (folder.name not in {"positive", "negative", "materials", "eval"}
+                        or folder.is_symlink() or not folder.is_dir()):
+                    return False
+                for path in folder.iterdir():
+                    if (path.relative_to(root) not in manifests or path.is_symlink()
+                            or not path.is_file() or path.stat().st_size != 0):
+                        return False
+    except (OSError, ValueError):
+        return False
+    for name in ("features", "models", "review", "runs"):
+        folder = root / name
+        if folder.is_dir() and any(folder.iterdir()):
+            return False
+    reports = root / "reports"
+    return not reports.is_dir() or all(path.name == "setup_summary.json" for path in reports.iterdir())
+
+
 def _timestamp(value):
     try:
         return datetime.fromisoformat(value).timestamp()
@@ -1564,6 +1608,7 @@ class StudioManager:
             return blocked("현재 작업이 끝난 뒤 업데이트 호환성을 다시 확인합니다.")
         previous = state.get("execution_contract") or {}
         audited_update = None
+        refactor_update = None
         reference_update = None
         reference_admission_update = None
         pilot_update = None
@@ -1587,6 +1632,7 @@ class StudioManager:
                     changed = [stage for stage in remaining
                                if previous.get("stages", {}).get(stage) != comparison["stages"].get(stage)]
                 audited_update = _audited_acquisition_update(previous, comparison) if changed else None
+                refactor_update = _audited_refactor_update(previous, comparison) if changed else None
                 reference_update = _audited_reference_update(previous, comparison) if changed else None
                 reference_admission_update = _audited_reference_admission_update(previous, comparison) if changed else None
                 pilot_update = _audited_pilot_update(previous, comparison) if changed else None
@@ -1618,7 +1664,9 @@ class StudioManager:
                     return blocked("목소리별 발음 검수 수량 변경은 대량 생성 전 작업에만 적용할 수 있습니다. 기존 음원과 검수 기록은 보존됩니다.")
                 if reference_admission_update and not self._can_update_reference_admission(state):
                     return blocked("기준 목소리 자동 검사는 호출어 생성 전 작업에만 적용할 수 있습니다. 기존 자료와 검수 기록은 보존됩니다.")
-                if changed and all(update is None for update in (audited_update, reference_update, reference_admission_update, pilot_update, hard_update, hard_review_update, candidate_update, call_recovery_update)):
+                if refactor_update and not _refactor_update_preserves_scope(state, refactor_update):
+                    return blocked("저장된 작업 범위가 이 업데이트에서 검증한 이관 범위를 벗어났습니다. 기존 자료는 보존됩니다.")
+                if changed and all(update is None for update in (audited_update, refactor_update, reference_update, reference_admission_update, pilot_update, hard_update, hard_review_update, candidate_update, call_recovery_update)):
                     return blocked("남은 단계의 자료·생성·학습·채점 코드가 달라 호환 이관할 수 없습니다. 기존 자료를 보존하고 새 실험을 만드세요.")
         elif (_LEGACY_COMPATIBLE_CONTRACTS.get(state.get("implementation_id"))
               != self._execution_contract["computation_sha256"]):
@@ -1650,8 +1698,10 @@ class StudioManager:
                            "GPU 평가에 실패하면 CPU로 전환하지 않고 멈춥니다. 기존 CPU 점수는 보존하고 별도의 GPU 평가로 진행합니다."
                            if audited_update and audited_update.get("changed_files") == ["evaluation_backend.py", "gpu_runtime_install.py", "studio_steps.py"] else
                            "다운로드 순서·진행 표시 변경의 자료 동일성을 확인한 업데이트입니다. 기존 설정과 완료 결과를 검증한 뒤 적용할 수 있습니다."
-                           if audited_update else "남은 단계의 계산·자료 계약이 같습니다. 기존 설정과 완료 결과를 검증하고 업데이트를 적용할 수 있습니다."),
+                           if audited_update else "설정·검수·완료 기록을 검증하고 리팩토링 업데이트를 적용할 수 있습니다."
+                           if refactor_update else "남은 단계의 계산·자료 계약이 같습니다. 기존 설정과 완료 결과를 검증하고 업데이트를 적용할 수 있습니다."),
                 **({"audited_acquisition_update": audited_update} if audited_update else {}),
+                **({"audited_refactor_update": refactor_update} if refactor_update else {}),
                 **({"audited_reference_update": reference_update} if reference_update else {}),
                 **({"audited_reference_admission_update": reference_admission_update} if reference_admission_update else {}),
                 **({"audited_pilot_update": pilot_update} if pilot_update else {}),
@@ -1881,6 +1931,8 @@ class StudioManager:
                 "history_sha256": identity(state.get("history", [])), "inputs_sha256": identity(state.get("inputs", {})),
                 **({"audited_acquisition_update": compatibility["audited_acquisition_update"]}
                    if compatibility.get("audited_acquisition_update") else {}),
+                **({"audited_refactor_update": compatibility["audited_refactor_update"]}
+                   if compatibility.get("audited_refactor_update") else {}),
                 **({"audited_reference_update": compatibility["audited_reference_update"]}
                    if compatibility.get("audited_reference_update") else {}),
                 **({"audited_reference_admission_update": compatibility["audited_reference_admission_update"]}
@@ -2411,14 +2463,8 @@ class StudioManager:
             state["auto_continue"] = False
             job = state.get("job") or {}
             if self._job_alive(job):
-                if job["stage"] in ("hard_pilot", "hard_generation"):
-                    write_json(Path(job["directory"]) / "pause.json", {"task_id": job["task_id"], "requested_at": now()})
-                    next_action = "현재 생성 중인 음성을 저장한 뒤 일시정지합니다."
-                else:
-                    if job["stage"] == "references" and self._reference_preparation_required(state):
-                        write_json(Path(state["project"]).parent / ".studio/reference-candidates/preparation/pause.json",
-                                   {"task_id": job["task_id"], "requested_at": now()})
-                    next_action = "현재 단계를 완료한 뒤 일시정지합니다. 자료를 강제로 끊지 않습니다."
+                candidate_preparation = job["stage"] == "references" and self._reference_preparation_required(state)
+                next_action = request_stage_pause(state, job, candidate_preparation=candidate_preparation)
                 state.update(status="pausing", next_action=next_action)
             elif job.get("stage") in ("hard_pilot", "hard_generation") and self._finish_job(state):
                 if state["status"] == "ready":
@@ -2659,116 +2705,24 @@ class StudioManager:
             self._save(state)
             return self.start(project_id)
 
-    def review_descriptors(self, state):
-        if state["status"] != "waiting_review":
-            return []
-        stage = state["plan"][state["index"]]["id"]
-        reviews = state["results"][stage].get("reviews", [])
-        return [r for r in reviews if r["id"] not in state["inputs"].get("review_results", {})]
-
-    @staticmethod
-    def _call_review_phase(state, review):
-        if state["settings"].get("pilot_review_policy") == PREPOST_PILOT_POLICY:
-            return {"pilot": "pre", "positive": "post"}.get(review["kind"])
-        return None
+    review_descriptors = staticmethod(studio_reviews.review_descriptors)
+    _call_review_phase = staticmethod(studio_reviews.call_review_phase)
+    _preflight_draft_path = staticmethod(studio_reviews.preflight_draft_path)
+    _preflight_draft = staticmethod(studio_reviews.read_preflight_draft)
+    _draft_response = staticmethod(studio_reviews.draft_response)
+    _save_preflight_draft = staticmethod(studio_reviews.save_preflight_draft)
 
     def review_queue(self, project_id, queue_id):
         state = self._load(project_id)
         review = next((r for r in self.review_descriptors(state) if r["id"] == queue_id), None)
         if not review:
             raise ValueError("현재 검수 목록이 아닙니다. 화면을 새로고침하세요.")
-        path = Path(review["queue"])
-        if digest(path) != review.get("queue_sha256") or (review.get("pool_manifest") and
-                digest(review["pool_manifest"]) != review.get("pool_sha256")):
-            raise ValueError("검수 목록 또는 승인할 원본 목록이 변경되었습니다.")
-        if review.get("synthetic_review_policy"):
-            from .common import bound_file
-            selection = read_json(bound_file(Path(state["project"]).parent, review["representative_selection"]))
-            if (review["synthetic_review_policy"] not in ("one_per_phrase_v1", HARD_SAMPLE_REVIEW_POLICY)
-                    or selection.get("policy") != review["synthetic_review_policy"]
-                    or selection.get("source_manifest", {}).get("sha256") != review["pool_sha256"]
-                    or selection.get("representative_queue", {}).get("sha256") != review["queue_sha256"]):
-                raise ValueError("유사어 대표 선정 기록이 현재 검수 목록과 다릅니다.")
-        rows = read_rows(path)
-        if not rows:
-            raise ValueError("검수할 음원이 없습니다.")
-        return state, review, rows
-
-    @staticmethod
-    def _preflight_draft_path(state, review):
-        return Path(state["project"]).parent / ".studio/review-drafts" / (
-            identity([review["id"], review["queue_sha256"]]) + ".json")
-
-    def _preflight_draft(self, state, review, rows):
-        from .review import PLAY_STARTED_POLICY, validate_started_decision
-        if (self._call_review_phase(state, review) != "pre" or any(
-                row.get("pronunciation_policy") != PREPOST_PILOT_POLICY
-                or "preflight_round" not in row or row.get("qc", {}).get("passed") is not True for row in rows)):
-            raise ValueError("자동 저장할 호출어 사전 검수 목록이 아닙니다.")
-        expected = {"policy": PLAY_STARTED_POLICY, "project_id": state["id"],
-                    "queue_id": review["id"], "queue_sha256": review["queue_sha256"],
-                    "queued_audio_sha256": {row["sample_id"]: row["sha256"] for row in rows}}
-        path = self._preflight_draft_path(state, review)
-        if not path.exists():
-            return {**expected, "revision": 0, "decisions": {}}
-        draft = read_json(path)
-        if (any(draft.get(key) != value for key, value in expected.items())
-                or type(draft.get("revision")) is not int or draft["revision"] < 0
-                or not isinstance(draft.get("decisions"), dict)
-                or not set(draft["decisions"]).issubset(expected["queued_audio_sha256"])):
-            raise ValueError("자동 저장한 사전 검수 초안의 음원 연결이 바뀌었습니다.")
-        if (draft["revision"] == 0 and draft["decisions"]
-                or draft["revision"] > 0 and (
-                    not isinstance(draft.get("saved_at"), str) or not draft["saved_at"]
-                    or draft.get("source_scope") != "Playback events and explicit decisions entered through the local review screen")):
-            raise ValueError("자동 저장한 사전 검수 초안의 입력 출처가 올바르지 않습니다.")
-        for answer in draft["decisions"].values():
-            validate_started_decision(answer)
-        return draft
-
-    @staticmethod
-    def _draft_response(draft, rows):
-        return {"state": "draft_saved", "autosave_policy": draft["policy"],
-                "queue_sha256": draft["queue_sha256"],
-                "draft_decisions": draft["decisions"], "draft_revision": draft["revision"],
-                "complete": set(draft["decisions"]) == {row["sample_id"] for row in rows},
-                "kept": sum(answer["decision"] == "keep" for answer in draft["decisions"].values()), "total": len(rows)}
+        return state, review, studio_reviews.verify_review_queue(state, review)
 
     def preflight_draft(self, project_id, queue_id):
         with self._lock:
             state, review, rows = self.review_queue(project_id, queue_id)
             return self._draft_response(self._preflight_draft(state, review, rows), rows)
-
-    def _save_preflight_draft(self, state, review, rows, payload):
-        from .review import validate_started_decision
-        draft = self._preflight_draft(state, review, rows)
-        if type(payload.get("revision")) is not int or payload["revision"] != draft["revision"]:
-            raise ValueError("다른 화면에서 판정이 바뀌었습니다. 저장된 초안을 다시 불러오세요.")
-        sample = next((row for row in rows if row["sample_id"] == payload.get("sample_id")), None)
-        if not sample or payload.get("audio_sha256") != sample["sha256"]:
-            raise ValueError("자동 저장할 음원이 바뀌었습니다. 화면을 새로고침하세요.")
-        bound_file(Path(state["project"]).parent, sample)
-        decision = payload.get("decision")
-        started, completed = payload.get("playback_started"), payload.get("playback_completed")
-        if type(started) is not bool or type(completed) is not bool or completed and not started:
-            raise ValueError("재생 시작과 재생 완료 기록을 확인하세요.")
-        previous = draft["decisions"].get(sample["sample_id"], {})
-        if decision == "clear":
-            if started or completed or previous.get("playback_started") or previous.get("playback_completed"):
-                raise ValueError("실제로 재생한 기록은 지울 수 없습니다. 정상 또는 다시 생성을 선택하세요.")
-            changed = draft["decisions"].pop(sample["sample_id"], None) is not None
-        else:
-            answer = {"decision": decision, "playback_started": started or previous.get("playback_started", False),
-                      "playback_completed": completed or previous.get("playback_completed", False)}
-            answer["listened"] = answer["playback_completed"]
-            validate_started_decision(answer)
-            changed = answer != previous
-            draft["decisions"][sample["sample_id"]] = answer
-        if changed:
-            draft.update(revision=draft["revision"] + 1, saved_at=now(),
-                         source_scope="Playback events and explicit decisions entered through the local review screen")
-            write_json(self._preflight_draft_path(state, review), draft)
-        return self._draft_response(draft, rows)
 
     @staticmethod
     def _call_voice_reference(row):
@@ -4771,24 +4725,8 @@ class StudioManager:
             return progress
 
     def _read_optional_progress(self, path, scope, view, *, max_bytes=None):
-        """Read display-only JSON; retain same-task data through a sharing denial."""
-        try:
-            if max_bytes is not None and path.stat().st_size > max_bytes:
-                self._progress_snapshots.pop(path, None)
-                return {}
-            record = read_json(path)
-        except PermissionError:
-            view["progress_pending"] = True
-            previous_scope, previous = self._progress_snapshots.get(path, (None, {}))
-            return previous if previous_scope == scope else {}
-        except (OSError, ValueError):
-            self._progress_snapshots.pop(path, None)
-            return {}
-        if not isinstance(record, dict):
-            self._progress_snapshots.pop(path, None)
-            return {}
-        self._progress_snapshots[path] = scope, record
-        return record
+        return read_optional_progress(path, scope, view, self._progress_snapshots,
+                                      read_json=read_json, max_bytes=max_bytes)
 
     def _owned_task_progress(self, state, view):
         """Read small, current-worker telemetry without inspecting its outputs.
@@ -4826,59 +4764,189 @@ class StudioManager:
             return {}
 
     def _progress_eta(self, state, job, progress):
-        """Use the worker's measured rate, or a stable window for older producers."""
-        project = state["id"]
+        return estimate_progress_eta(state, job, progress, self._rates)
 
-        def valid_number(value):
-            return type(value) in (int, float) and math.isfinite(value)
+    def _describe_training_progress(self, state, job, view, owned_progress, progress_scope, read_progress):
+        preparation = {}
+        if owned_progress.get("phase") in _TRAINING_PREPARATION_PHASES:
+            preparation = owned_progress
+        elif not owned_progress:
+            # Older workers wrote preparation hints using the same path.
+            previous = self._read_optional_progress(Path(job["directory"]) / "progress.json",
+                                                    progress_scope, view, max_bytes=32768)
+            if (previous.get("kind") == "training_preparation_v1"
+                    and previous.get("task_id") == job["task_id"]
+                    and previous.get("phase") in _LEGACY_TRAINING_PREPARATION_PHASES):
+                preparation = previous
+        if preparation:
+            view["training_preparation"] = view["progress"] = preparation
+        else:
+            members = Path(state["project"]).parent / "runs" / "studio_run"
+            updates = state["settings"]["updates"]
+            done = 0
+            for path in members.glob("member*/progress.json"):
+                record = read_progress(path)
+                count = record.get("completed_updates", record.get("update", 0))
+                if type(count) is int and 0 <= count <= updates:
+                    done += count
+            view["progress"] = {"done": done, "total": updates * 3, "unit": "학습 업데이트",
+                                "label": "모델 3개 누적 학습량"}
+            if owned_progress.get("phase") == "training" and "worker_rate" in owned_progress:
+                view["progress"].update(phase="training", worker_rate=owned_progress["worker_rate"])
 
-        done, total = progress.get("done"), progress.get("total")
-        counter = progress.get("rate_done", done)
-        phase = progress.get("rate_phase", progress.get("phase") or progress.get("label"))
-        excluded = {"retry", "download_many", "feature_validation", "device_selection",
-                    "model_initialization", "gpu_cache_loading", "preparation_validation",
-                    "preparation_finalizing", "validation", "finalizing"}
-        if (state.get("status") != "running" or progress.get("eta_eligible") is False
-                or phase in excluded or progress.get("unit") == "완료 단계"
-                or not all(valid_number(value) for value in (done, total, counter))
-                or total <= 0 or not 0 <= done < total or counter < 0):
-            self._rates.pop(project, None)
-            return None
-        if "worker_rate" in progress:
-            self._rates.pop(project, None)
-            rate = progress["worker_rate"]
-            if not isinstance(rate, dict):
-                return None
-            speed, measured_at = rate.get("per_second"), rate.get("measured_at")
-            if (not valid_number(speed) or speed <= 0 or not valid_number(measured_at)
-                    or not -1 <= time.time() - measured_at <= 60):
-                return None
-            estimate = (total - done) / speed
-            return estimate if math.isfinite(estimate) else None
-        stamp = time.monotonic()
-        scope = (job.get("task_id"), job.get("stage"), phase, total, progress.get("unit"))
-        window = self._rates.get(project)
-        if (not isinstance(window, dict) or window.get("scope") != scope
-                or counter < window["points"][-1][1] or stamp < window["points"][-1][0]
-                or stamp - window["points"][-1][0] > 90):
-            window = self._rates[project] = {"scope": scope, "points": [(stamp, counter)]}
-            return None
-        points = window["points"]
-        if counter > points[-1][1]:
-            if points[-1][1] == 0:
-                # A long wait for the first output is startup, not per-item cost.
-                points[:] = [(stamp, counter)]
-            else:
-                points.append((stamp, counter))
-                points[:] = [point for point in points[-8:] if stamp - point[0] <= 90]
-        if len(points) < 4 or points[-1][0] - points[0][0] < 15 or stamp - points[-1][0] > 30:
-            return None
-        rates = [(right[1] - left[1]) / (right[0] - left[0])
-                 for left, right in zip(points, points[1:]) if right[0] > left[0]]
-        if len(rates) < 3 or min(rates) <= 0 or max(rates) > 2 * min(rates):
-            return None
-        estimate = (total - done) / statistics.median(rates)
-        return estimate if math.isfinite(estimate) and estimate >= 0 else None
+    def _describe_generation_progress(self, state, job, view, owned_progress):
+        root = Path(state["project"]).parent
+        folder = root / "data"
+        pilot_targets = None
+        initial_preparation = None
+        if job["stage"] == "references" and self._reference_preparation_required(state):
+            initial_preparation = view.get("reference_preparation") or self._reference_preparation_view(state)
+            paths = []
+            total = sum(row["total"] for row in initial_preparation["rows"])
+        elif job["stage"] == "references":
+            paths = [folder / "references" / split / "references.jsonl" for split in ("train", "validation")]
+            total = state["settings"]["train_references"] + state["settings"]["validation_references"]
+        elif (job["stage"] in ("pilot", "positives")
+              and state["settings"].get("pilot_review_policy") == PREPOST_PILOT_POLICY):
+            paths, total = self._call_generation_progress(state, folder, job["stage"])
+        elif job["stage"] == "pilot":
+            policy = state["settings"].get("pilot_review_policy")
+            splits = ("train", "validation") if policy == COMBINED_PILOT_POLICY else ("train",)
+            paths = [folder / "pilot" / split / "candidates.jsonl" for split in splits]
+            if policy in (TRAIN_PILOT_POLICY, COMBINED_PILOT_POLICY):
+                pilot_targets = [state["settings"][f"{split}_references"] for split in splits]
+            total = sum(pilot_targets) if pilot_targets else 24
+        elif job["stage"] in ("hard_pilot", "hard_generation"):
+            journal, total = self._hard_generation_progress(state, folder, job["stage"])
+            paths = [journal]
+        else:
+            bank = "pilot" if state["settings"].get("pilot_review_policy") == POSTGEN_PILOT_POLICY else "generated"
+            paths = [folder / bank / split / "candidates.jsonl" for split in ("train", "validation")]
+            total = state["settings"]["originals"] + state["settings"]["validation_originals"]
+        counters = [self._journal_counts(p) if p is not None else {"passed": 0, "attempts": 0} for p in paths]
+        done = sum(c["passed"] for c in counters)
+        if job["stage"] == "pilot" and state["settings"].get("pilot_review_policy") == PREPOST_PILOT_POLICY:
+            done = len(set().union(*(c.get("passed_families", ()) for c in counters)))
+        if pilot_targets:
+            done = sum(min(target, len(counter.get("passed_families", ())))
+                       for target, counter in zip(pilot_targets, counters))
+        labels = {"references": "기준 목소리 생성 완료", "pilot": "사전 검수용 호출어 생성 완료",
+                  "positives": "호출어 생성 완료", "hard_pilot": "발음 확인용 유사어 생성 완료",
+                  "hard_generation": "유사어 음성 생성 완료"}
+        view["progress"] = {"done": done, "total": total, "unit": "개", "label": labels[job["stage"]]}
+        view["counts"] = {"tts_generated": sum(c["attempts"] for c in counters), "technical_passed": done}
+        if initial_preparation is not None:
+            done = sum(row["done"] for row in initial_preparation["rows"])
+            view["progress"].update(done=done, phase="reference_candidates_generation",
+                rate_done=initial_preparation["generated_candidates"])
+            # Generated/reused candidates are not a count of TTS attempts.
+            view["counts"] = {"technical_passed": done}
+        if owned_progress:
+            for field in ("phase", "eta_eligible", "activity", "worker_rate", "phase_started_at"):
+                if field in owned_progress:
+                    view["progress"][field] = owned_progress[field]
+            if owned_progress.get("eta_eligible") is False:
+                view["progress"]["activity"] = {"phase": owned_progress.get("phase"),
+                    "label": owned_progress.get("label", "음성 생성 준비 중")}
+        if job["stage"] == "positives":
+            view["next_action"] = (f"학습용 {counters[0]['passed']:,} / {state['settings']['originals']:,}개 · "
+                                   f"공통 평가용 {counters[1]['passed']:,} / {state['settings']['validation_originals']:,}개")
+
+    def _describe_evaluation_progress(self, state, job, view, owned_progress, material_progress, read_progress):
+        view["progress"] = self._evaluation_checkpoint_progress(state, _evaluation_log_progress(job))
+        view["progress_note"] = "음원 수 기준이며, 긴 비호출 음원은 더 오래 걸립니다."
+        view["eta_seconds"] = None
+        phase = view["progress"]["phase"]
+        if phase == "validation" and owned_progress.get("phase") == "evaluation_environment":
+            view["progress"] = owned_progress
+            view["progress_note"] = ""
+            view["next_action"] = "선택한 GPU 평가 환경을 준비합니다."
+        elif phase == "validation":
+            view["next_action"] = "평가 음원의 무결성과 형식을 확인하고 있습니다."
+        elif phase == "finalizing":
+            view["next_action"] = "채점을 마쳤으며 결과를 정리하고 있습니다."
+        if material_progress.exists():
+            record = read_progress(material_progress)
+            if (record and record.get("stage") == "evaluation" and record.get("phase") == "runtime_recommendation"
+                    and record.get("updated_at", "") >= job.get("started_at", "")
+                    and record.get("task_id", job["task_id"]) == job["task_id"]):
+                view["progress"] = record
+                view["progress_note"] = "저장된 점수로 모델별 감지 기준과 연속 감지 수를 비교합니다."
+                view["next_action"] = "채점을 마쳤으며 모델별 추천 감지 설정을 찾고 있습니다."
+        if (owned_progress.get("phase") == "scoring_activity"
+                and view["progress"].get("phase") == "scoring"
+                and isinstance(owned_progress.get("activity"), dict)):
+            view["progress"]["activity"] = owned_progress["activity"]
+
+    def _describe_progress(self, state, stage, job, view):
+        progress_scope = (stage["id"], job.get("task_id") or (state.get("last_job") or {}).get("task_id"))
+
+        def read_progress(path):
+            return self._read_optional_progress(path, progress_scope, view)
+
+        material_progress = Path(state["project"]).parent / ".studio" / "progress.json"
+        download_record = (read_progress(material_progress)
+                           if "data_download" in (stage["id"], job.get("stage")) else {})
+        owned_progress = self._owned_task_progress(state, view) if job else {}
+        if state.get("status") != "running":
+            self._rates.pop(state["id"], None)
+        if job:
+            view["current_stage_elapsed_seconds"] = round(_elapsed(job.get("started_at")), 1)
+            view["process_alive"] = self._job_alive(job)
+            progress = Path(state["project"]).parent / ".studio" / "task_progress.json"
+            if progress.exists():
+                record = read_progress(progress)
+                if record.get("task_id") == job["task_id"]:
+                    view["progress"] = record
+                    view["eta_seconds"] = record.get("eta_seconds")
+            if owned_progress and job["stage"] != "evaluation":
+                current_download = (job["stage"] == "data_download"
+                    and download_record.get("stage") == "data_download"
+                    and download_record.get("updated_at", "") >= job["started_at"])
+                # The scoped file is intentionally small. File rows and the
+                # current hash event remain in the material producer's record.
+                view["progress"] = {**download_record, **owned_progress} if current_download else owned_progress
+                view["eta_seconds"] = None
+            if (job["stage"] == "data_download" and download_record.get("stage") == "data_download"
+                    and download_record.get("updated_at", "") >= job["started_at"]
+                    and not owned_progress):
+                view["progress"] = download_record
+                view["eta_seconds"] = download_record.get("eta_seconds")
+            if job["stage"] == "training":
+                self._describe_training_progress(state, job, view, owned_progress, progress_scope, read_progress)
+            if job["stage"] in ("references", "pilot", "positives", "hard_pilot", "hard_generation"):
+                self._describe_generation_progress(state, job, view, owned_progress)
+            if job["stage"] == "features" and not owned_progress:
+                matches = re.findall(r"(positive|korean_negative|hard_negative|generic_negative) R\d+: (\d+)/(\d+)", _job_log_tail(job))
+                if matches:
+                    role, done, total = matches[-1]
+                    view["progress"] = {"done": int(done), "total": int(total), "unit": "개 특징", "label": role}
+            if job["stage"] == "evaluation":
+                self._describe_evaluation_progress(state, job, view, owned_progress, material_progress, read_progress)
+            current = view["progress"]
+            phase_started_at = current.get("phase_started_at")
+            if type(phase_started_at) in (int, float) and math.isfinite(phase_started_at):
+                # A UI-only elapsed clock, independent of the worker's rate.
+                current = view["progress"] = {**current, "phase_elapsed_seconds": max(0, time.time() - phase_started_at)}
+            if job["stage"] != "evaluation":
+                estimate = self._progress_eta(state, job, current)
+                if view["eta_seconds"] is None:
+                    view["eta_seconds"] = estimate
+        stage_result = state.get("results", {}).get(stage["id"], {})
+        generation_held = state["status"] == "waiting_input" and stage_result.get("input_kind") == "generation_policy"
+        if not job and (state["status"] == "paused" or generation_held) and stage["id"] in ("hard_pilot", "hard_generation"):
+            journal, total = self._hard_generation_progress(state, Path(state["project"]).parent / "data", stage["id"])
+            counts = self._journal_counts(journal)
+            view["progress"] = {"done": counts["passed"], "total": total, "unit": "개",
+                                "label": "발음 확인용 유사어 생성 완료" if stage["id"] == "hard_pilot" else "유사어 음성 생성 완료"}
+            view["counts"] = {"tts_generated": counts["attempts"], "technical_passed": counts["passed"]}
+        repair_progress = self._postgeneration_repair_view(state)
+        if repair_progress is not None:
+            view["postgeneration_repair"] = repair_progress
+            if stage["id"] == "positive_review" and state["status"] != "waiting_review":
+                view["progress"] = {key: repair_progress.get(key) for key in ("done", "total", "unit", "label", "phase")}
+                view["eta_seconds"] = None
+        return owned_progress, download_record
 
     def describe(self, state):
         index, plan = state["index"], state["plan"]
@@ -4949,176 +5017,7 @@ class StudioManager:
             view["positive_preview"] = {"url": f"/positive-preview/?project={quote(state['id'])}",
                                         "count": sum(row["technical_pass"] for row in outputs)}
         job = state.get("job") or {}
-        progress_scope = (stage["id"], job.get("task_id") or (state.get("last_job") or {}).get("task_id"))
-
-        def read_progress(path):
-            return self._read_optional_progress(path, progress_scope, view)
-
-        material_progress = Path(state["project"]).parent / ".studio" / "progress.json"
-        download_record = (read_progress(material_progress)
-                           if "data_download" in (stage["id"], job.get("stage")) else {})
-        owned_progress = self._owned_task_progress(state, view) if job else {}
-        if state.get("status") != "running":
-            self._rates.pop(state["id"], None)
-        if job:
-            view["current_stage_elapsed_seconds"] = round(_elapsed(job.get("started_at")), 1)
-            view["process_alive"] = self._job_alive(job)
-            progress = Path(state["project"]).parent / ".studio" / "task_progress.json"
-            if progress.exists():
-                record = read_progress(progress)
-                if record.get("task_id") == job["task_id"]:
-                    view["progress"] = record
-                    view["eta_seconds"] = record.get("eta_seconds")
-            if owned_progress and job["stage"] != "evaluation":
-                current_download = (job["stage"] == "data_download"
-                    and download_record.get("stage") == "data_download"
-                    and download_record.get("updated_at", "") >= job["started_at"])
-                # The scoped file is intentionally small. File rows and the
-                # current hash event remain in the material producer's record.
-                view["progress"] = {**download_record, **owned_progress} if current_download else owned_progress
-                view["eta_seconds"] = None
-            if (job["stage"] == "data_download" and download_record.get("stage") == "data_download"
-                    and download_record.get("updated_at", "") >= job["started_at"]
-                    and not owned_progress):
-                view["progress"] = download_record
-                view["eta_seconds"] = download_record.get("eta_seconds")
-            if job["stage"] == "training":
-                preparation = {}
-                if owned_progress.get("phase") in _TRAINING_PREPARATION_PHASES:
-                    preparation = owned_progress
-                elif not owned_progress:
-                    # Older workers wrote preparation hints using the same path.
-                    previous = self._read_optional_progress(Path(job["directory"]) / "progress.json",
-                                                            progress_scope, view, max_bytes=32768)
-                    if (previous.get("kind") == "training_preparation_v1"
-                            and previous.get("task_id") == job["task_id"]
-                            and previous.get("phase") in _LEGACY_TRAINING_PREPARATION_PHASES):
-                        preparation = previous
-                if preparation:
-                    view["training_preparation"] = view["progress"] = preparation
-                else:
-                    members = Path(state["project"]).parent / "runs" / "studio_run"
-                    updates = state["settings"]["updates"]
-                    done = 0
-                    for path in members.glob("member*/progress.json"):
-                        record = read_progress(path)
-                        count = record.get("completed_updates", record.get("update", 0))
-                        if type(count) is int and 0 <= count <= updates:
-                            done += count
-                    view["progress"] = {"done": done, "total": updates * 3, "unit": "학습 업데이트",
-                                        "label": "모델 3개 누적 학습량"}
-                    if owned_progress.get("phase") == "training" and "worker_rate" in owned_progress:
-                        view["progress"].update(phase="training", worker_rate=owned_progress["worker_rate"])
-            if job["stage"] in ("references", "pilot", "positives", "hard_pilot", "hard_generation"):
-                root = Path(state["project"]).parent
-                folder = root / "data"
-                pilot_targets = None
-                initial_preparation = None
-                if job["stage"] == "references" and self._reference_preparation_required(state):
-                    initial_preparation = view.get("reference_preparation") or self._reference_preparation_view(state)
-                    paths = []
-                    total = sum(row["total"] for row in initial_preparation["rows"])
-                elif job["stage"] == "references":
-                    paths = [folder / "references" / split / "references.jsonl" for split in ("train", "validation")]
-                    total = state["settings"]["train_references"] + state["settings"]["validation_references"]
-                elif (job["stage"] in ("pilot", "positives")
-                      and state["settings"].get("pilot_review_policy") == PREPOST_PILOT_POLICY):
-                    paths, total = self._call_generation_progress(state, folder, job["stage"])
-                elif job["stage"] == "pilot":
-                    policy = state["settings"].get("pilot_review_policy")
-                    splits = ("train", "validation") if policy == COMBINED_PILOT_POLICY else ("train",)
-                    paths = [folder / "pilot" / split / "candidates.jsonl" for split in splits]
-                    if policy in (TRAIN_PILOT_POLICY, COMBINED_PILOT_POLICY):
-                        pilot_targets = [state["settings"][f"{split}_references"] for split in splits]
-                    total = sum(pilot_targets) if pilot_targets else 24
-                elif job["stage"] in ("hard_pilot", "hard_generation"):
-                    journal, total = self._hard_generation_progress(state, folder, job["stage"])
-                    paths = [journal]
-                else:
-                    bank = "pilot" if state["settings"].get("pilot_review_policy") == POSTGEN_PILOT_POLICY else "generated"
-                    paths = [folder / bank / split / "candidates.jsonl" for split in ("train", "validation")]
-                    total = state["settings"]["originals"] + state["settings"]["validation_originals"]
-                counters = [self._journal_counts(p) if p is not None else {"passed": 0, "attempts": 0} for p in paths]
-                done = sum(c["passed"] for c in counters)
-                if job["stage"] == "pilot" and state["settings"].get("pilot_review_policy") == PREPOST_PILOT_POLICY:
-                    done = len(set().union(*(c.get("passed_families", ()) for c in counters)))
-                if pilot_targets:
-                    done = sum(min(target, len(counter.get("passed_families", ())))
-                               for target, counter in zip(pilot_targets, counters))
-                labels = {"references": "기준 목소리 생성 완료", "pilot": "사전 검수용 호출어 생성 완료",
-                          "positives": "호출어 생성 완료", "hard_pilot": "발음 확인용 유사어 생성 완료",
-                          "hard_generation": "유사어 음성 생성 완료"}
-                view["progress"] = {"done": done, "total": total, "unit": "개", "label": labels[job["stage"]]}
-                view["counts"] = {"tts_generated": sum(c["attempts"] for c in counters), "technical_passed": done}
-                if initial_preparation is not None:
-                    done = sum(row["done"] for row in initial_preparation["rows"])
-                    view["progress"].update(done=done, phase="reference_candidates_generation",
-                        rate_done=initial_preparation["generated_candidates"])
-                    # Generated/reused candidates are not a count of TTS attempts.
-                    view["counts"] = {"technical_passed": done}
-                if owned_progress:
-                    for field in ("phase", "eta_eligible", "activity", "worker_rate", "phase_started_at"):
-                        if field in owned_progress:
-                            view["progress"][field] = owned_progress[field]
-                    if owned_progress.get("eta_eligible") is False:
-                        view["progress"]["activity"] = {"phase": owned_progress.get("phase"),
-                            "label": owned_progress.get("label", "음성 생성 준비 중")}
-                if job["stage"] == "positives":
-                    view["next_action"] = (f"학습용 {counters[0]['passed']:,} / {state['settings']['originals']:,}개 · "
-                                           f"공통 평가용 {counters[1]['passed']:,} / {state['settings']['validation_originals']:,}개")
-            if job["stage"] == "features" and not owned_progress:
-                matches = re.findall(r"(positive|korean_negative|hard_negative|generic_negative) R\d+: (\d+)/(\d+)", _job_log_tail(job))
-                if matches:
-                    role, done, total = matches[-1]
-                    view["progress"] = {"done": int(done), "total": int(total), "unit": "개 특징", "label": role}
-            if job["stage"] == "evaluation":
-                view["progress"] = self._evaluation_checkpoint_progress(state, _evaluation_log_progress(job))
-                view["progress_note"] = "음원 수 기준이며, 긴 비호출 음원은 더 오래 걸립니다."
-                view["eta_seconds"] = None
-                phase = view["progress"]["phase"]
-                if phase == "validation" and owned_progress.get("phase") == "evaluation_environment":
-                    view["progress"] = owned_progress
-                    view["progress_note"] = ""
-                    view["next_action"] = "선택한 GPU 평가 환경을 준비합니다."
-                elif phase == "validation":
-                    view["next_action"] = "평가 음원의 무결성과 형식을 확인하고 있습니다."
-                elif phase == "finalizing":
-                    view["next_action"] = "채점을 마쳤으며 결과를 정리하고 있습니다."
-                if material_progress.exists():
-                    record = read_progress(material_progress)
-                    if (record and record.get("stage") == "evaluation" and record.get("phase") == "runtime_recommendation"
-                            and record.get("updated_at", "") >= job.get("started_at", "")
-                            and record.get("task_id", job["task_id"]) == job["task_id"]):
-                        view["progress"] = record
-                        view["progress_note"] = "저장된 점수로 모델별 감지 기준과 연속 감지 수를 비교합니다."
-                        view["next_action"] = "채점을 마쳤으며 모델별 추천 감지 설정을 찾고 있습니다."
-                if (owned_progress.get("phase") == "scoring_activity"
-                        and view["progress"].get("phase") == "scoring"
-                        and isinstance(owned_progress.get("activity"), dict)):
-                    view["progress"]["activity"] = owned_progress["activity"]
-            current = view["progress"]
-            phase_started_at = current.get("phase_started_at")
-            if type(phase_started_at) in (int, float) and math.isfinite(phase_started_at):
-                # A UI-only elapsed clock, independent of the worker's rate.
-                current = view["progress"] = {**current, "phase_elapsed_seconds": max(0, time.time() - phase_started_at)}
-            if job["stage"] != "evaluation":
-                estimate = self._progress_eta(state, job, current)
-                if view["eta_seconds"] is None:
-                    view["eta_seconds"] = estimate
-        stage_result = state.get("results", {}).get(stage["id"], {})
-        generation_held = state["status"] == "waiting_input" and stage_result.get("input_kind") == "generation_policy"
-        if not job and (state["status"] == "paused" or generation_held) and stage["id"] in ("hard_pilot", "hard_generation"):
-            journal, total = self._hard_generation_progress(state, Path(state["project"]).parent / "data", stage["id"])
-            counts = self._journal_counts(journal)
-            view["progress"] = {"done": counts["passed"], "total": total, "unit": "개",
-                                "label": "발음 확인용 유사어 생성 완료" if stage["id"] == "hard_pilot" else "유사어 음성 생성 완료"}
-            view["counts"] = {"tts_generated": counts["attempts"], "technical_passed": counts["passed"]}
-        repair_progress = self._postgeneration_repair_view(state)
-        if repair_progress is not None:
-            view["postgeneration_repair"] = repair_progress
-            if stage["id"] == "positive_review" and state["status"] != "waiting_review":
-                view["progress"] = {key: repair_progress.get(key) for key in ("done", "total", "unit", "label", "phase")}
-                view["eta_seconds"] = None
+        owned_progress, download_record = self._describe_progress(state, stage, job, view)
         reviews = self.review_descriptors(state)
         material_results = state.get("results", {})
         downloaded = material_results.get("data_download", {})

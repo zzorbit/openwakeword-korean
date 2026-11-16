@@ -1,5 +1,7 @@
 """Selection must deploy the exact judged heads, with no network/audio rerun."""
+from contextlib import nullcontext
 from copy import deepcopy
+import os
 from pathlib import Path
 import shutil
 
@@ -7,6 +9,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 
+from korean_openwakeword import selection as selection_module
 from korean_openwakeword.common import digest, read_json, write_json
 from korean_openwakeword.project import create_project, load_project
 from korean_openwakeword.runtime import (WakeWordDetector, bundle_candidates,
@@ -123,6 +126,117 @@ def test_select_legacy_completed_report_without_rewriting_it(experiment, tmp_pat
     assert "adoption_criteria" not in report  # The old report itself stays immutable.
     assert read_json(Path(result["evaluation"]) / "report.json")["adoption_criteria"] == adoption_criteria(load_project(project)[1])
     assert digest(evaluation / "report.json") == original
+
+
+def test_selection_can_retry_after_a_failure_writing_staged_results(experiment, tmp_path, monkeypatch):
+    project, bundle, evaluation, ids = experiment
+    output = tmp_path / "selected"
+    output.mkdir()
+
+    def fail_clip_export(*args):
+        raise OSError("interrupted clip export")
+
+    with monkeypatch.context() as patches:
+        patches.setattr(selection_module, "write_clip_array", fail_clip_export)
+        with pytest.raises(OSError, match="interrupted clip export"):
+            select_candidate(project, bundle, evaluation, output, ids[0])
+    assert not any(output.iterdir())
+    assert not any(output.parent.glob(".bundle-*"))
+
+    result = select_candidate(project, bundle, evaluation, output, ids[0])
+    assert Path(result["bundle"]) == output / "bundle"
+    assert Path(result["evaluation"]) == output / "evaluation"
+    verified_evaluation(project, result["bundle"], result["evaluation"])
+
+
+def test_competing_selection_cannot_replace_a_completed_export(experiment, tmp_path, monkeypatch):
+    project, bundle, evaluation, ids = experiment
+    output = tmp_path / "selected"
+    copy_candidate = selection_module.copy_candidate_bundle
+    published = {}
+
+    def publish_other_candidate(*args, **kwargs):
+        if not published:
+            with monkeypatch.context() as inner:
+                inner.setattr(selection_module, "copy_candidate_bundle", copy_candidate)
+                select_candidate(project, bundle, evaluation, output, ids[1])
+            published.update({path: digest(path) for path in output.rglob("*") if path.is_file()})
+        return copy_candidate(*args, **kwargs)
+
+    monkeypatch.setattr(selection_module, "copy_candidate_bundle", publish_other_candidate)
+    with pytest.raises(ValueError, match="immutable"):
+        select_candidate(project, bundle, evaluation, output, ids[0])
+    assert published
+    assert published == {path: digest(path) for path in output.rglob("*") if path.is_file()}
+    assert deployment_candidate(verify_bundle(output / "bundle"))["id"] == ids[1]
+    verified_evaluation(project, output / "bundle", output / "evaluation")
+    assert not any(output.parent.glob(".bundle-*"))
+
+
+@pytest.mark.parametrize("source", ["project", "report", "score cache"])
+def test_selection_refuses_changed_inputs_after_loading_evidence(experiment, tmp_path, monkeypatch, source):
+    project, bundle, evaluation, ids = experiment
+    path = {"project": project, "report": evaluation / "report.json",
+            "score cache": evaluation / "scores.npz"}[source]
+    original = path.read_bytes()
+    restrict = selection_module.restrict_evaluation
+
+    def restrict_then_change(*args):
+        result = restrict(*args)
+        path.write_bytes(original + b" ")
+        return result
+
+    output = tmp_path / "selected"
+    monkeypatch.setattr(selection_module, "restrict_evaluation", restrict_then_change)
+    with pytest.raises(ValueError, match="evidence changed during candidate selection"):
+        select_candidate(project, bundle, evaluation, output, ids[1])
+    assert not output.exists()
+
+
+def test_verified_evaluation_loads_the_score_bytes_it_verified(experiment, tmp_path, monkeypatch):
+    project, bundle, evaluation, _ = experiment
+    path = evaluation / "scores.npz"
+    original = path.read_bytes()
+    load = np.load
+    spool = selection_module.SpooledTemporaryFile
+    with load(path) as archive:
+        values = {name: archive[name] for name in archive.files}
+    expected = values["scores"].copy()
+    values["scores"][0, 0] = .25
+    replacement = tmp_path / "replacement.npz"
+    np.savez_compressed(replacement, **values)
+
+    def force_disk_snapshot(**kwargs):
+        assert kwargs["dir"] == selection_module.storage_paths(project.parent)["temp"]
+        return spool(**{**kwargs, "max_size": 1})
+
+    def read_while_source_is_different(file, *args, **kwargs):
+        path.write_bytes(replacement.read_bytes())
+        try:
+            with load(file, *args, **kwargs) as archive:
+                return nullcontext({name: archive[name] for name in archive.files})
+        finally:
+            path.write_bytes(original)
+
+    monkeypatch.setattr(selection_module.np, "load", read_while_source_is_different)
+    monkeypatch.setattr(selection_module, "SpooledTemporaryFile", force_disk_snapshot)
+    assert np.array_equal(verified_evaluation(project, bundle, evaluation)[5], expected)
+
+
+def test_lazy_clip_iteration_checks_evaluation_bytes_even_if_size_and_mtime_match(experiment):
+    project, bundle, evaluation, _ = experiment
+    clips = verified_evaluation(project, bundle, evaluation)[4]
+    path = evaluation / "clips.json"
+    stat = path.stat()
+    original = path.read_bytes()
+    changed = original.replace(b'"sample_id": "p0"', b'"sample_id": "q0"', 1)
+    assert changed != original and len(changed) == len(original)
+    path.write_bytes(changed)
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    with pytest.raises(ValueError, match="clips changed"):
+        list(clips)
+    with pytest.raises(ValueError, match="clips changed"):
+        clips[0]
 
 
 def test_freeze_rejects_single_judgement_with_three_deployed_heads(experiment, tmp_path):

@@ -25,12 +25,14 @@ def _binding(root, entry):
     return path, {"path": str(path), "sha256": entry["sha256"]}
 
 
-def _bind_hard_implementation(root, implementation):
+def _bind_hard_implementation(root, implementation, technical_qc=None):
     try:
         _binding(root, implementation)
     except ValueError:
+        from .call_generation_history import compatible_short_clone_hard_release
         from .hard_tts import __file__ as current_source
         from .studio import _compute_dispatch_compatible_digest
+        from .tts import __file__ as qc_source
 
         if not (isinstance(implementation, dict) and set(implementation) == {"path", "sha256"}
                 and isinstance(implementation["path"], str)
@@ -50,8 +52,16 @@ def _bind_hard_implementation(root, implementation):
         audited_current = {"43d748a34bcc746b69852acfe3dd08269200e6174afcc94fa5a50ac08c9f0713",
                            "53d3bb6a2d9c346cfab015caa962499ac7f0a5564c200cf55609c12f4285836c",
                            "43deed598cefa6503d105761ccb9fd7c9c2a5cb56ee700bfea402688c838bcc3",
-                           "fa9ef4a2393fcf61f7df80097cceb656339e45588a66e4843c978212e948a061"}
-        if implementation["sha256"] not in audited_prior or current not in audited_current:
+                           "fa9ef4a2393fcf61f7df80097cceb656339e45588a66e4843c978212e948a061",
+                           # Saved-PCM validation on Git and Windows checkout bytes.
+                           "bbe435b58a3e21e4f6d5e24d3c6f809c7d0c3d5df02610b4343e35021cc39c37",
+                           "bd75d7e028246ac3da21722510b5250691461f968a14776d8511720439109350"}
+        short_clone_pair = (isinstance(technical_qc, dict) and set(technical_qc) == {"path", "sha256"}
+                            and isinstance(technical_qc["path"], str)
+                            and resolved(root, technical_qc["path"]) == Path(qc_source).resolve()
+                            and compatible_short_clone_hard_release(implementation["sha256"], technical_qc["sha256"],
+                                                                    pilot=False))
+        if current not in audited_current or (implementation["sha256"] not in audited_prior and not short_clone_pair):
             raise
 
 
@@ -120,7 +130,7 @@ def _synthetic_contract(root, row, config, contracts):
             raise ValueError("Synthetic Hard Negative contract must use Train synthetic-only clone references")
         if identity(contract.get("tts")) != identity(config["tts"]):
             raise ValueError("Synthetic generation settings differ from the frozen project settings")
-        _bind_hard_implementation(root, contract.get("implementation"))
+        _bind_hard_implementation(root, contract.get("implementation"), contract.get("technical_qc_implementation"))
         references = contract.get("references")
         if not isinstance(references, list) or not references or not isinstance(contract.get("texts"), list) or not contract["texts"]:
             raise ValueError("Synthetic contract needs actual references and declared phrases")

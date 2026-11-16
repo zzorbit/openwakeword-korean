@@ -1,37 +1,86 @@
 """Portable candidate bundles and hash-bound Final locks."""
+from contextlib import contextmanager, suppress
+from hashlib import sha256
+import json
 from pathlib import Path
 import shutil
-from .common import digest, now, read_json, resolved, write_json
-from .project import load_project
+from tempfile import TemporaryDirectory
+
+from .common import _retry_windows_sharing, digest, now, read_json, resolved, write_json
+from .project import load_project, validate_project
 from .runtime import verify_bundle, bundle_candidates, deployment_candidate
 
 
+def _require_empty_bundle_destination(output, occupied_error):
+    try:
+        if not any(output.iterdir()):
+            return
+    except FileNotFoundError:
+        return
+    except NotADirectoryError:
+        pass
+    raise ValueError(occupied_error)
+
+
+def _read_json_snapshot(path):
+    raw = _retry_windows_sharing(Path(path).read_bytes, read_access=True)
+    return json.loads(raw.decode("utf-8-sig")), sha256(raw).hexdigest()
+
+
+def _publish_bundle(staged, output, occupied_error):
+    try:
+        # Windows requires an absent rename target. Only an empty placeholder can be removed.
+        with suppress(FileNotFoundError):
+            _retry_windows_sharing(output.rmdir)
+        _retry_windows_sharing(lambda: staged.rename(output))
+    except OSError:
+        # A concurrent publisher may have installed a complete bundle since the initial check.
+        _require_empty_bundle_destination(output, occupied_error)
+        raise
+
+
+@contextmanager
+def _staged_bundle_output(output, *, occupied_error="Bundle destination must be empty"):
+    """Stage on the destination filesystem; publish a complete directory by rename."""
+    _require_empty_bundle_destination(output, occupied_error)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(dir=output.parent, prefix=".bundle-") as temporary:
+        staged = Path(temporary) / "bundle"
+        yield staged
+        _publish_bundle(staged, output, occupied_error)
+
+
 def package_run(project, run, output):
-    root, config = load_project(project)
-    run, output = Path(run).resolve(), Path(output).resolve()
-    if output.exists() and any(output.iterdir()):
-        raise ValueError("Bundle destination must be empty")
+    project, run, output = (Path(path).resolve() for path in (project, run, output))
+    config, project_sha256 = _read_json_snapshot(project)
+    config = validate_project(config)
+    with _staged_bundle_output(output) as staged:
+        result = _stage_bundle(project.parent, config, run, staged, project_sha256)
+        if digest(project) != project_sha256:
+            raise ValueError("Project configuration changed during packaging")
+    return result
+
+
+def _stage_bundle(root, config, run, staged, project_sha256):
     members = []
     for i, seed in enumerate(config["training"]["seeds"], 1):
         folder = run / f"member{i}_seed{seed}"
         receipt = read_json(folder / "receipt.json")
         contract = read_json(folder / "contract.json")
-        if contract["config"] != config or receipt["model_sha256"] != digest(folder / "model.onnx"):
-            raise ValueError("Run/config/model binding changed")
+        if contract["config"] != config:
+            raise ValueError("Run/config binding changed")
         if receipt["state"] not in ("trained_not_final_evaluated", "smoke_trained_not_performance_validated"):
             raise ValueError("Uncompleted training member")
-        destination = output / "models" / f"member{i}_seed{seed}.onnx"
+        destination = staged / "models" / f"member{i}_seed{seed}.onnx"
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(folder / "model.onnx", destination)
-        members.append({"path": str(destination.relative_to(output)).replace("\\", "/"),
-                        "sha256": digest(destination), "seed": seed, "smoke_test_only": contract["smoke_test_only"]})
+        members.append({"path": destination.relative_to(staged).as_posix(),
+                        "sha256": receipt["model_sha256"], "seed": seed, "smoke_test_only": contract["smoke_test_only"]})
     frontend = []
     from .frontend import PINNED_ASSETS
     for filename, expected in PINNED_ASSETS.items():
         source = resolved(root, config["frontend_dir"]) / filename
-        if digest(source) != expected:
-            raise ValueError("Frontend differs from pinned reference")
-        destination = output / "frontend" / filename
+        destination = staged / "frontend" / filename
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, destination)
         frontend.append({"path": "frontend/" + filename, "sha256": expected})
@@ -39,10 +88,10 @@ def package_run(project, run, output):
         "members": members, "frontend": frontend,
         "aggregation": "single" if len(members) == 1 else "ordered_float64_mean_to_float32",
         "runtime": config["runtime"], "training": config["training"], "rounds": config["augmentation_rounds"],
-        "created_at": now(), "stage": "candidate_not_final_validated", "project_config_sha256": digest(project)}
+        "created_at": now(), "stage": "candidate_not_final_validated", "project_config_sha256": project_sha256}
     manifest["selected_candidate"] = deployment_candidate(manifest)
-    write_json(output / "manifest.json", manifest)
-    return verify_bundle(output)
+    write_json(staged / "manifest.json", manifest)
+    return verify_bundle(staged)
 
 
 def freeze(project, bundle, development_report, output=None):

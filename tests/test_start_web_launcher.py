@@ -32,6 +32,39 @@ with Path(os.environ['KOWW_LAUNCH_TEST_LOG']).open('a', encoding='utf-8') as str
         'temp': os.environ['TEMP'],
     }) + '\\n')
 """
+CONSOLE_SERVER = WEB_STUB + """\
+from http.server import HTTPServer, SimpleHTTPRequestHandler
+
+port = int(sys.argv[sys.argv.index('--port') + 1])
+with HTTPServer(('127.0.0.1', port), SimpleHTTPRequestHandler) as server:
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+"""
+CONSOLE_ACTION = """\
+import ctypes
+from ctypes import wintypes
+import sys
+
+kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+user = ctypes.WinDLL('user32', use_last_error=True)
+kernel.GetConsoleWindow.restype = wintypes.HWND
+user.PostMessageW.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+kernel.FreeConsole()
+if not kernel.AttachConsole(int(sys.argv[1])):
+    raise ctypes.WinError(ctypes.get_last_error())
+try:
+    if sys.argv[2] == 'close':
+        window = kernel.GetConsoleWindow()
+        if not window or not user.PostMessageW(window, 0x0010, 0, 0):  # WM_CLOSE
+            raise ctypes.WinError(ctypes.get_last_error())
+    else:
+        if not kernel.SetConsoleCtrlHandler(None, True) or not kernel.GenerateConsoleCtrlEvent(0, 0):
+            raise ctypes.WinError(ctypes.get_last_error())
+finally:
+    kernel.FreeConsole()
+"""
 
 
 def make_wheel(directory, module, version, main=None):
@@ -82,7 +115,7 @@ def launcher(tmp_path):
     install = tmp_path / "web install"
     scripts = install / "scripts"
     scripts.mkdir(parents=True)
-    for name in ("Start-Web.cmd", "Start-Web.ps1", "Stop-Web.cmd", "Stop-Web.ps1", "Use-ProjectStorage.ps1"):
+    for name in ("Start-Web.cmd", "Start-Web.ps1", "Use-ProjectStorage.ps1"):
         shutil.copyfile(ROOT / "scripts" / name, scripts / name)
     wheels = tmp_path / "wheel house"
     wheels.mkdir()
@@ -94,14 +127,19 @@ def launcher(tmp_path):
     return install, scripts, wheels, log, env
 
 
-def run_cmd(script, args, *, cwd, env):
+def cmd_invocation(script, args, env):
     cmd = os.environ.get("ComSpec", "cmd.exe")
     prefix = subprocess.list2cmdline([cmd, "/d", "/s", "/c"])
     command = subprocess.list2cmdline([str(script), *args])
     process_env = os.environ.copy()
     process_env.pop("PIP_CONSTRAINT", None)
     process_env.update(env)
-    return subprocess.run(f'{prefix} "{command}"', executable=cmd, cwd=cwd, env=process_env,
+    return f'{prefix} "{command}"', cmd, process_env
+
+
+def run_cmd(script, args, *, cwd, env):
+    command, cmd, process_env = cmd_invocation(script, args, env)
+    return subprocess.run(command, executable=cmd, cwd=cwd, env=process_env,
                           stdin=subprocess.DEVNULL, capture_output=True, timeout=150)
 
 
@@ -154,52 +192,69 @@ def test_start_web_retries_incomplete_dependency_install(launcher, tmp_path):
     assert_launched(log, install, install, port=8793, count=1)
 
 
-def test_stop_web_cmd_stops_only_the_web_server_for_its_workspace(launcher, tmp_path):
-    install, scripts, _, _, env = launcher
-    stop = install / "Stop-Web.cmd"
-    shutil.copyfile(scripts / stop.name, stop)
+def test_start_web_replaces_a_different_same_version_wheel(launcher, tmp_path):
+    install, scripts, wheels, log, env = launcher
+    make_wheel(wheels, "openwakeword", "0.6.0")
+    selected = {}
+    for revision in ("first", "second"):
+        directory = tmp_path / revision
+        directory.mkdir()
+        main = WEB_STUB.replace("'args':", f"'artifact': {revision!r}, 'args':")
+        selected[revision] = make_wheel(directory, "korean_openwakeword", "0.33.2", main)
+
+    cmd = scripts / "Start-Web.cmd"
+    for revision in ("first", "second", "second"):
+        result = run_cmd(cmd, ["-NoBrowser", "-WheelPath", str(selected[revision])],
+                         cwd=tmp_path, env=env)
+        assert result.returncode == 0, (result.stdout, result.stderr)
+    assert b"Installing the library and web dependencies" not in result.stdout
+    rows = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert [row["artifact"] for row in rows] == ["first", "second", "second"]
+    assert_launched(log, install, install, port=8793, count=3)
+
+
+def test_start_web_console_exit_stops_listener_and_allows_restart(launcher, tmp_path):
+    install, scripts, wheels, calls, env = launcher
+    make_wheel(install, "korean_openwakeword", "0.33.2", CONSOLE_SERVER)
+    make_wheel(wheels, "openwakeword", "0.6.0")
     workspace = tmp_path / "separate workspace"
     workspace.mkdir()
-    logs = workspace / ".koww-studio"
-    lease = logs / "server.json"
     with socket.socket() as reservation:
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
 
-    with (workspace / "server.log").open("wb") as log:
-        server = subprocess.Popen([sys.executable, "-m", "korean_openwakeword", "web",
-            "--workspace", str(workspace), "--port", str(port), "--no-browser"],
-            cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
-        try:
-            deadline = time.monotonic() + 15
-            while not lease.is_file() and server.poll() is None and time.monotonic() < deadline:
-                time.sleep(.05)
-            assert lease.is_file(), (workspace / "server.log").read_bytes()
-            untouched = install / ".koww-studio"
-            untouched.mkdir()
-            shutil.copyfile(lease, untouched / lease.name)
-            (untouched / "server.lock").touch()
-            not_running = run_cmd(stop, [], cwd=tmp_path, env=env)
-            assert not_running.returncode == 0 and b"already stopped" in not_running.stdout
-            assert server.poll() is None
+    args = ["-Workspace", str(workspace), "-Port", str(port), "-NoBrowser"]
+    command, cmd, process_env = cmd_invocation(scripts / "Start-Web.cmd", args, env)
+    console = subprocess.STARTUPINFO(dwFlags=subprocess.STARTF_USESHOWWINDOW, wShowWindow=subprocess.SW_HIDE)
+    for action in ("close", "interrupt"):
+        log_path = workspace / f"{action}.log"
+        with log_path.open("wb") as log:
+            launcher_process = subprocess.Popen(command, executable=cmd, cwd=tmp_path, env=process_env,
+                startupinfo=console, creationflags=subprocess.CREATE_NEW_CONSOLE,
+                stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
+            try:
+                deadline = time.monotonic() + 60
+                while True:
+                    try:
+                        with socket.create_connection(("127.0.0.1", port), timeout=.2):
+                            break
+                    except OSError:
+                        assert launcher_process.poll() is None and time.monotonic() < deadline, log_path.read_bytes()
+                        time.sleep(.05)
 
-            original_lease = lease.read_bytes()
-            mismatched = json.loads(original_lease)
-            mismatched["creation_identity"] = "1"
-            lease.write_text(json.dumps(mismatched), encoding="utf-8")
-            args = ["-Workspace", str(workspace)]
-            denied = run_cmd(stop, args, cwd=tmp_path, env=env)
-            assert denied.returncode != 0 and b"does not match" in denied.stderr
-            assert server.poll() is None
-
-            lease.write_bytes(original_lease)
-            stopped = run_cmd(stop, args, cwd=tmp_path, env=env)
-            assert stopped.returncode == 0 and b"has stopped" in stopped.stdout, (stopped.stdout, stopped.stderr)
-            server.wait(timeout=5)
-            assert lease.read_bytes() == original_lease
-            repeat = run_cmd(stop, args, cwd=tmp_path, env=env)
-            assert repeat.returncode == 0 and b"already stopped" in repeat.stdout
-        finally:
-            if server.poll() is None:
-                server.terminate()
-                server.wait(timeout=5)
+                result = subprocess.run([sys.executable, "-I", "-c", CONSOLE_ACTION, str(launcher_process.pid), action],
+                    capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=10)
+                assert result.returncode == 0, (result.stdout, result.stderr)
+                launcher_process.wait(timeout=10)
+                with pytest.raises(ConnectionRefusedError), socket.create_connection(("127.0.0.1", port), timeout=5):
+                    pytest.fail("Web server still listens after the Start-Web console exits")
+            finally:
+                if launcher_process.poll() is None:
+                    subprocess.run([sys.executable, "-I", "-c", CONSOLE_ACTION, str(launcher_process.pid), "close"],
+                        capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=10)
+                    try:
+                        launcher_process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        launcher_process.kill()
+                        launcher_process.wait(timeout=5)
+    assert_launched(calls, install, workspace, port=port, count=2)

@@ -9,5 +9,6 @@ if not exist "%KOWW_START_WEB%" (
 )
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%KOWW_START_WEB%" %*
 set "KOWW_START_EXIT=%ERRORLEVEL%"
+if "%KOWW_START_EXIT%"=="-1073741510" exit /b 0
 if not "%KOWW_START_EXIT%"=="0" pause
 exit /b %KOWW_START_EXIT%

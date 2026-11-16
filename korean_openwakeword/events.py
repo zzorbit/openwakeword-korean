@@ -80,6 +80,11 @@ class EventDetector:
                     longest_eligible_high_streak_s=self.longest_high_streak * seconds_per_frame,
                     longest_eligible_qualified_streak_s=self.longest_qualified_streak * seconds_per_frame)
 
+def chronological_call_indices(calls):
+    """Schedule calls by start time, retaining input order for equal starts."""
+    return sorted(range(len(calls)), key=lambda index: calls[index]["start_s"])
+
+
 class PositiveTracker:
     """One emitted event matches at most one call, earliest unmatched eligible call."""
     def __init__(self, session: dict, postroll_s: float):
@@ -97,12 +102,16 @@ class PositiveTracker:
                                  max_wake_score=None, max_wake_score_time_s=None,
                                  success=False, event_time_s=None, latency_s=None,
                                  suppressed_cooldown_candidates=0, ambiguous_event_assignment=False))
+        self.schedule = chronological_call_indices(self.rows)
         self.active, self.next_index = [], 0
         self.duplicate_events, self.outside_call_events = 0, 0
 
     def update(self, timestamp_s: float, score: float, decision: dict) -> None:
-        while self.next_index < len(self.rows) and self.rows[self.next_index]["start_s"] <= timestamp_s + 1e-9:
-            self.active.append(self.rows[self.next_index])
+        while self.next_index < len(self.schedule):
+            row = self.rows[self.schedule[self.next_index]]
+            if row["start_s"] > timestamp_s + 1e-9:
+                break
+            self.active.append(row)
             self.next_index += 1
         self.active = [row for row in self.active if timestamp_s <= row["window_end_s"] + 1e-9]
         for row in self.active:

@@ -608,6 +608,61 @@ def _paused_after_first_stage(manager):
     return view
 
 
+def refactor_previous_state(manager, revision):
+    previous = read_json(Path(__file__).parent / "fixtures" / "refactor_previous_contracts.json")[revision]
+    project_id = create(manager)["id"]
+    state = manager._load(project_id)
+    state.update(status="paused", implementation_id=previous["implementation_id"])
+    state["execution_contract"] = {
+        **previous["execution_contract"], "settings_sha256": identity(state["settings"]),
+        "plan_sha256": identity(state["plan"]),
+    }
+    manager._save(state)
+    return state
+
+
+@pytest.mark.parametrize("revision,scope", [("6b33b72", "stable_workflow"), ("df33394", "frontend_only")])
+def test_refactor_migration_only_rebinds_verified_previous_workflow(manager, revision, scope):
+    state = refactor_previous_state(manager, revision)
+    root = Path(state["project"]).parent
+    setup = root / "reports" / "setup_summary.json"
+    write_json(setup, {"frontend": "preserved"})
+    protected = {path: digest(path) for path in (setup, root / "project.json", root / "approval.json", root / "voices.json")}
+    previous = manager._path(state["id"]).read_bytes()
+
+    view = manager._migration_view(state)
+    assert view["audited_refactor_update"]["scope"] == scope
+    outcome = manager.migrate(state["id"])
+    assert outcome["status"] == "paused" and not manager.workers.items
+    saved = manager._load(state["id"])
+    receipt = read_json(saved["migrations"][-1]["path"])
+    assert receipt["audited_refactor_update"] == view["audited_refactor_update"]
+    assert Path(receipt["previous_workflow"]["path"]).read_bytes() == previous
+    assert saved["execution_contract"]["computation_sha256"] == manager._execution_contract["computation_sha256"]
+    assert all(digest(path) == sha for path, sha in protected.items())
+
+
+@pytest.mark.parametrize("change", ["source_stage", "newer_frontend_output", "nonempty_manifest", "final_lock"])
+def test_refactor_migration_rejects_scope_or_contract_changes(manager, change):
+    revision = "6b33b72" if change == "final_lock" else "df33394"
+    state = refactor_previous_state(manager, revision)
+    root = Path(state["project"]).parent
+    if change == "source_stage":
+        state["execution_contract"]["stages"]["frontend"] = "0" * 64
+        manager._save(state)
+    elif change == "newer_frontend_output":
+        write_json(root / "runs" / "new_stage.json", {"protected": True})
+    elif change == "nonempty_manifest":
+        (root / "data" / "positive" / "train.jsonl").write_text('{}\n', encoding="utf-8")
+    else:
+        write_json(root / "final_lock.json", {"protected": True})
+    before = manager._path(state["id"]).read_bytes()
+    assert manager._migration_view(state)["state"] == "blocked"
+    with pytest.raises(ValueError):
+        manager.migrate(state["id"])
+    assert manager._path(state["id"]).read_bytes() == before
+
+
 def test_compatible_update_is_explicit_hash_verified_and_preserves_existing_outputs(manager, monkeypatch):
     view = _paused_after_first_stage(manager)
     state = manager._load(view["id"])
@@ -1127,8 +1182,13 @@ def test_http_live_progress_disappearance_after_exists_is_optional(manager, http
 
 @pytest.mark.parametrize("failure", [OSError(errno.EIO, "fixture unexpected I/O"),
     json.JSONDecodeError("fixture damaged JSON", "{", 1)])
-def test_http_live_progress_other_failures_are_not_masked_as_pending(manager, http_server, monkeypatch, failure):
-    _, progress, protected = live_progress_record(manager, "material")
+def test_http_live_progress_discards_unreadable_optional_snapshot(manager, http_server, monkeypatch, failure):
+    project_id, progress, protected = live_progress_record(manager, "material")
+    status, content, _ = http_server("/api/state")
+    assert status == 200
+    active = next(row for row in json.loads(content)["projects"] if row["id"] == project_id)
+    assert active["progress"]["done"] == 7 and active["progress"]["unit"] == "bytes"
+
     original = studio.read_json
     def read(path):
         if Path(path) == progress:
@@ -1136,8 +1196,12 @@ def test_http_live_progress_other_failures_are_not_masked_as_pending(manager, ht
         return original(path)
     monkeypatch.setattr(studio, "read_json", read)
     status, content, _ = http_server("/api/state")
-    assert status == 400 and "fixture" in json.loads(content)["error"]
-    assert "code" not in json.loads(content)
+    assert status == 200
+    active = next(row for row in json.loads(content)["projects"] if row["id"] == project_id)
+    assert active["status"] == "running" and active["error"] is None
+    assert not active.get("progress_pending")
+    assert active["progress"]["unit"] == active["stage_progress"]["unit"]
+    assert len(manager.workers.items) == 1
     assert all(path.read_bytes() == before for path, before in protected.items())
 
 

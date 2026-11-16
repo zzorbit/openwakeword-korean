@@ -226,6 +226,43 @@ def test_reference_journal_also_requires_its_original_contract(tmp_path, monkeyp
     assert not (directory / "contract.json").exists()
 
 
+@pytest.mark.parametrize("method", ["clone", "design"])
+def test_smaller_limit_reports_completion_without_replacing_larger_run(tmp_path, monkeypatch, method):
+    project = approved_project(tmp_path / "word", method)
+    config = read_json(project)
+    monkeypatch.setattr(tts, "_seed", cpu_seed)
+    model = SeededQwen(config)
+    first = tts.generate(project, limit=2, method=method, model=model)
+    output = project.parent / "data/generated/train"
+    manifest = project.parent / config["manifests"]["positive_train"]
+    protected = [output / "summary.json", output / "candidates.jsonl", manifest]
+    before = [path.read_bytes() for path in protected]
+    completed = list(model.seeds)
+    second = tts.generate(project, limit=1, method=method, model=model)
+    assert first["technical_pass"] == first["target"] == 2
+    assert second["technical_pass"] == second["target"] == 1 and second["full_target_reached"]
+    assert model.seeds == completed and [path.read_bytes() for path in protected] == before
+
+
+def test_positive_retries_an_attempt_that_only_fails_after_pcm16_quantization(tmp_path, monkeypatch):
+    project = approved_project(tmp_path / "word", "clone")
+    config = read_json(project)
+    monkeypatch.setattr(tts, "_seed", cpu_seed)
+    quiet = np.tile([.0009917, .001020, -.0009917, -.001020], 2400)
+
+    class Model(SeededQwen):
+        def generate_voice_clone(self, **options):
+            seed = int(np.random.get_state()[1][0])
+            return [quiet if seed == self.seed(0, 0) else self.waveform(seed)], 16000
+
+    result = tts.generate(project, limit=1, model=Model(config))
+    failed, passed = read_rows(result["review_queue"])
+    assert tts.technical_qc(quiet, 16000)[0]["passed"]
+    assert failed["qc"]["reasons"] == ["near_silence"] and not failed["qc"]["passed"]
+    assert failed["candidate_pcm_qc"] == passed["candidate_pcm_qc"] == tts.CANDIDATE_PCM_QC
+    assert passed["qc"]["passed"] and result["full_target_reached"]
+
+
 @pytest.mark.parametrize("choice", ["default", "custom", "legacy"])
 def test_reference_sentence_matches_generation_contract_and_review_without_rewriting_config(tmp_path, monkeypatch, choice):
     from korean_openwakeword.project import DEFAULT_VOICE_SAMPLE_TEXT, load_project

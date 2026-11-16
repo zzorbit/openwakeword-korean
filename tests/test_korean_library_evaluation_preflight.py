@@ -1,5 +1,6 @@
 """One-operation file verification reuses no cross-run trust or score state."""
 from collections import Counter
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -182,3 +183,68 @@ def test_cached_facts_do_not_skip_required_pcm_format_checks(tmp_path):
     with pytest.raises(ValueError, match="mono16kHz PCM16"):
         evaluate.evaluate(project, bundle, root / "reports/stereo", manifest=manifest, workers=1, smoke=True, backend="cpu")
     assert not (root / "reports/stereo").exists()
+
+
+def test_cpu_scoring_refuses_changed_wav_with_original_size_and_mtime(monkeypatch, tmp_path):
+    project, root, bundle, manifest, rows = _evaluation_inputs(tmp_path)
+    original = evaluate.score_sessions
+    target = Path(rows[0]["path"])
+    stamp = target.stat()
+
+    def replace_after_preflight(*args, **kwargs):
+        with target.open("r+b") as stream:
+            stream.seek(-1, 2)
+            byte = stream.read(1)
+            stream.seek(-1, 2)
+            stream.write(bytes([byte[0] ^ 1]))
+        os.utime(target, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        assert (target.stat().st_size, target.stat().st_mtime_ns) == (stamp.st_size, stamp.st_mtime_ns)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(evaluate, "score_sessions", replace_after_preflight)
+    output = root / "reports/changed-wave"
+    with pytest.raises(ValueError, match="changed before CPU scoring"):
+        evaluate.evaluate(project, bundle, output, manifest=manifest, workers=1, smoke=True, backend="cpu")
+    assert not (output / "receipt.json").exists()
+    assert read_json(output / "_evaluation_work/checkpoint.json")["committed_sessions"] == 0
+
+
+def test_publication_refuses_a_manifest_changed_after_snapshot(monkeypatch, tmp_path):
+    project, root, bundle, manifest, rows = _evaluation_inputs(tmp_path)
+    original = evaluate.score_sessions
+
+    def replace_after_preflight(*args, **kwargs):
+        replacement = [dict(rows[0], category="music"), *rows[1:]]
+        manifest.write_text("".join(json.dumps(row) + "\n" for row in replacement), encoding="utf-8")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(evaluate, "score_sessions", replace_after_preflight)
+    output = root / "reports/changed-manifest"
+    with pytest.raises(ValueError, match="manifest changed before publication"):
+        evaluate.evaluate(project, bundle, output, manifest=manifest, workers=1, smoke=True, backend="cpu")
+    assert not (output / "report.json").exists()
+    assert not (output / "receipt.json").exists()
+
+
+def test_evaluation_rechecks_completion_after_acquiring_writer_lock(monkeypatch, tmp_path):
+    project, root, bundle, manifest, _ = _evaluation_inputs(tmp_path)
+    output = root / "reports/concurrent"
+    original = evaluate.writer_lock
+    published = {}
+
+    def run():
+        return evaluate.evaluate(project, bundle, output, manifest=manifest, workers=1, smoke=True, backend="cpu")
+
+    @contextmanager
+    def interleaved_lock(directory):
+        if not published:
+            monkeypatch.setattr(evaluate, "writer_lock", original)
+            run()
+            published.update({path.name: digest(path) for path in output.iterdir()})
+        with original(directory):
+            yield
+
+    monkeypatch.setattr(evaluate, "writer_lock", interleaved_lock)
+    with pytest.raises(ValueError, match="outputs are immutable"):
+        run()
+    assert {path.name: digest(path) for path in output.iterdir()} == published

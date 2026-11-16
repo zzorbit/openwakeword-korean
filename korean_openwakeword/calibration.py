@@ -6,14 +6,17 @@ bootstrap intervals are not recomputed hundreds of times for identical calls.
 """
 from collections import defaultdict
 from copy import deepcopy
+import json
 import math
+import os
 from pathlib import Path
 
 import numpy as np
 
-from .common import append_row, digest, identity, iter_rows, now, read_json, write_json, writer_lock
+from .common import append_row, digest, identity, now, read_json, write_json, writer_lock
 from .data import CATEGORIES
-from .evaluate import adoption, adoption_criteria
+from .evaluate import CALL_MATCHING_REVISION, _calls_need_sort, adoption, adoption_criteria
+from .events import chronological_call_indices
 from .project import load_project
 from .storage import project_storage
 
@@ -131,7 +134,7 @@ class PreparedScores:
                 call_start.append(self.offsets[index] + max(0, int(math.ceil((call["start_s"] - 1e-9) / .08 - 1))))
                 call_end.append(min(self.offsets[index + 1] - 1, self.offsets[index] + int(math.floor((call["end_s"] + runtime["call_postroll_s"] + 1e-9) / .08 - 1))))
             if len(positions) > 1:
-                self.multiple[index] = positions
+                self.multiple[index] = [positions[call] for call in chronological_call_indices(row["calls"])]
         self.call_session = np.asarray(call_session, dtype=np.int64)
         self.call_start = np.asarray(call_start, dtype=np.int64)
         self.call_end = np.asarray(call_end, dtype=np.int64)
@@ -268,11 +271,7 @@ def _constraint_checks(metrics, targets):
 
 
 def recommendation_criteria(config):
-    """Selection protections are distinct from historical adoption targets.
-
-    The user-selected false-activation ceiling changes recommendation search,
-    never the source project, report or existing model adoption judgement.
-    """
+    """Use the search policy's false-alarm ceiling for recommendations only."""
     return dict(adoption_criteria(config), fa_per_hour=SEARCH_POLICY["max_false_activations_per_hour"])
 
 
@@ -435,6 +434,40 @@ def report_recommendation(project, bundle, evaluation, output, recommendation, *
     return _add_report_diagnostics(recommendation, measured)
 
 
+def _comparison_rows(path):
+    """Preserve checked rows and repair only an interrupted final append."""
+    if not path.exists():
+        return
+    with path.open("r+b") as stream:
+        while True:
+            offset = stream.tell()
+            raw = stream.readline()
+            if not raw:
+                return
+            terminated = raw.endswith(b"\n")
+            try:
+                line = raw.decode("utf-8" if offset else "utf-8-sig")
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                if terminated:
+                    raise
+                # Only an unterminated tail can be an interrupted append.
+                # The caller has already checked the search binding and all
+                # preceding comparison checksums before reaching this line.
+                stream.truncate(offset)
+                stream.flush()
+                os.fsync(stream.fileno())
+                return
+            yield row
+            if not terminated:
+                stream.write(b"\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+                return
+
+
 @project_storage
 def recommend(project, bundle, evaluation, output, progress_callback=None):
     """Recommend one jointly searched gate for every single and mean candidate.
@@ -444,19 +477,24 @@ def recommend(project, bundle, evaluation, output, progress_callback=None):
     output directory. GPU cache recommendations describe that exact numerical
     protocol; they do not certify CPU microphone/deployment decisions.
     """
-    from .selection import verified_evaluation
+    from .selection import _verified_evaluation_snapshot
     root, config = load_project(project)
     if (root / "final_lock.json").exists():
         raise ValueError("Final is frozen; start a versioned experiment before automatic recommendation")
     bundle, evaluation, output = map(lambda value: Path(value).resolve(), (bundle, evaluation, output))
     if any(output == source or output.is_relative_to(source) or source.is_relative_to(output) for source in (bundle, evaluation)):
         raise ValueError("Recommendation output must not modify or contain the source bundle/evaluation")
-    bindings = _bindings(project, bundle, evaluation)
-    if (output / "receipt.json").exists():
-        result = read_recommendation(project, bundle, evaluation, output)
+    def completed():
+        if not (output / "receipt.json").exists():
+            return None
+        saved = read_recommendation(project, bundle, evaluation, output)
         return {"recommendation": str(output / "recommendation.json"), "receipt": str(output / "receipt.json"),
-                "candidates": result["candidates"], "network_rerun": False, "selection_applied": False}
-    root, config, package, report, clips, scores, offsets, candidates = verified_evaluation(project, bundle, evaluation)
+                "candidates": saved["candidates"], "network_rerun": False, "selection_applied": False}
+
+    if result := completed():
+        return result
+    verified, bindings = _verified_evaluation_snapshot(project, bundle, evaluation)
+    root, config, package, report, clips, scores, offsets, candidates = verified
     prepared = PreparedScores(clips, offsets, package["runtime"])
     if _bindings(project, bundle, evaluation) != bindings:
         raise ValueError("Automatic detection recommendation inputs changed during verification")
@@ -465,9 +503,13 @@ def recommend(project, bundle, evaluation, output, progress_callback=None):
     declaration = {"bindings": bindings, "search_policy": SEARCH_POLICY,
                    "candidates": candidates, "adoption_criteria": adoption_criteria(config),
                    "recommendation_criteria": recommendation_criteria(config)}
+    if any(_calls_need_sort(clip) for clip in clips):
+        declaration["call_matching"] = CALL_MATCHING_REVISION
     journal = output / "comparisons.jsonl"
     comparisons = defaultdict(dict)
     with writer_lock(output):
+        if result := completed():
+            return result
         declaration_path = output / "search.json"
         if declaration_path.exists():
             if read_json(declaration_path) != declaration:
@@ -476,7 +518,7 @@ def recommend(project, bundle, evaluation, output, progress_callback=None):
             raise ValueError("Recommendation output is not a matching resumable search")
         else:
             write_json(declaration_path, declaration)
-        for row in iter_rows(journal):
+        for row in _comparison_rows(journal):
             if (row.get("candidate") not in {candidate["id"] for candidate in candidates}
                     or row.get("checksum") != identity({key: value for key, value in row.items() if key != "checksum"})):
                 raise ValueError("Resumable detection comparison record changed")

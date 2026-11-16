@@ -40,4 +40,4 @@
 
 ## Qwen CUDA 가속 구성요소
 
-`tts_cuda_predictor.py`와 `tts_cuda_sampling.py`는 [faster-qwen3-tts](https://github.com/andimarafioti/faster-qwen3-tts)의 MIT 코드에서 가져왔습니다. 원본 commit과 파일 해시는 `resources/faster_qwen3_tts_UPSTREAM.json`, 라이선스는 `resources/faster_qwen3_tts_LICENSE.txt`에 보존합니다. 한국어 라이브러리 adapter는 기본 Qwen 호출과 같은 출력인지 별도로 검증합니다.
+`tts_cuda_predictor.py`와 `tts_cuda_sampling.py`는 [faster-qwen3-tts](https://github.com/andimarafioti/faster-qwen3-tts)의 MIT 코드에서 가져왔습니다. 원본 commit과 파일 해시는 [상위 소스 기록](korean_openwakeword/resources/faster_qwen3_tts_UPSTREAM.json), 라이선스는 [MIT 원문](korean_openwakeword/resources/faster_qwen3_tts_LICENSE.txt)에 보존합니다. 한국어 라이브러리 adapter는 기본 Qwen 호출과 같은 출력인지 별도로 검증합니다.

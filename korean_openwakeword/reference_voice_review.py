@@ -2,14 +2,18 @@
 
 from pathlib import Path
 
+from .clone_reference import GeneratedReferenceQualityError, verify_generated_reference
 from .common import bound_file, digest, identity, now, read_json, read_rows, resolved, write_json, writer_lock
 from .project import load_project
+from .reference_attempt import check_reference_timing, prepare_reference_attempt, publish_reference_attempt
 from .reference_qc import _check_wave
 from .storage import project_storage
 
 
 REVIEW_KIND = "reference_voice_review_v1"
 _DESIGN_FIELDS = ("voice_family_id", "split", "text", "model", "description", "style", "speed", "intonation", "vocal_effort")
+_REPLACEMENT_ATTEMPTS = 4
+_REPLACEMENT_GENERATION = "reference_review_replacement"
 
 
 def _jobs(root):
@@ -39,6 +43,20 @@ def _verify_replacement(root, original, replacement):
     if not path.is_relative_to(_jobs(root)):
         raise ValueError("교체한 기준 목소리의 저장 위치가 다릅니다.")
     bound_file(root, replacement)
+    if "reference_replacement_attempt" in replacement:
+        attempt = replacement["reference_replacement_attempt"]
+        preparation = replacement["reference_preparation"]
+        generation = preparation["generation"]
+        if (type(attempt) is not int or not 0 <= attempt < _REPLACEMENT_ATTEMPTS
+                or generation.get("kind") != _REPLACEMENT_GENERATION
+                or generation.get("source_reference_sha256") != original["sha256"]
+                or generation.get("attempt") != attempt or generation.get("seed") != replacement["seed"]
+                or generation.get("text") != replacement["text"]
+                or preparation["prepared"]["sha256"] != replacement["sha256"]
+                or preparation["technical_metrics"]["decoded_pcm_sha256"] != replacement["decoded_pcm_sha256"]
+                or not verify_generated_reference(root, preparation).samefile(path)
+                or replacement.get("reference_timing_check") != check_reference_timing(path, replacement["text"])):
+            raise ValueError("교체한 기준 목소리의 생성·정리 기록이 다릅니다.")
 
 
 def _original_pcm_hashes(root):
@@ -50,11 +68,21 @@ def _original_pcm_hashes(root):
             if (pcm := check.get("metrics", {}).get("decoded_pcm_sha256"))}
 
 
+def _replacement_generation(tts, original, job_key, attempt):
+    from .tts import _reference_instruction
+
+    family = original["voice_family_id"]
+    seed = int(identity([tts["seed"], "reference-review", job_key, family, attempt])[:8], 16)
+    return {"kind": _REPLACEMENT_GENERATION, "model": tts["design_model"], "seed": seed,
+            "text": original["text"], "instruction": _reference_instruction(original),
+            "source_reference_sha256": original["sha256"], "attempt": attempt,
+            "tts_settings_id": identity(tts), "job_key": job_key}
+
+
 @project_storage
 def generate_replacements(project, output, job_key, rows, all_hashes, *, load_model=None):
     """Create fresh samples using one design model for all selected voices."""
-    import soundfile as sf
-    from .tts import _load_model, _reference_instruction, _seed
+    from .tts import _load_model
 
     root, config = load_project(project)
     output = resolved(root, output)
@@ -71,48 +99,64 @@ def generate_replacements(project, output, job_key, rows, all_hashes, *, load_mo
             hashes.add(pcm)
 
     replacements, model = {}, None
+
+    def resident_model():
+        nonlocal model
+        if model is None:
+            model = (load_model or _load_model)(tts["design_model"], tts, root)
+        return model
+
     with writer_lock(output):
         for original in rows:
             family = original["voice_family_id"]
             token = identity([job_key, family, original["sha256"]])[:20]
-            target = output / f"{token}.wav"
             record = output / f"{token}.json"
             if record.exists():
                 replacement = read_json(record)
                 _verify_replacement(root, original, replacement)
+                attempt = replacement.get("reference_replacement_attempt")
+                target = output / (f"{token}.wav" if attempt is None else f"{token}_attempt{attempt}.wav")
                 if (replacement["path"] != target.relative_to(root).as_posix()
                         or replacement.get("previous_reference_sha256") != original["sha256"]
+                        or attempt is not None and replacement["reference_preparation"]["generation"] !=
+                            _replacement_generation(tts, original, job_key, attempt)
                         or replacement["sha256"] in hashes or replacement["decoded_pcm_sha256"] in hashes):
                     raise ValueError("이전에 생성한 기준 목소리 기록이 다릅니다.")
             else:
-                if model is None:
-                    model = (load_model or _load_model)(tts["design_model"], tts, root)
-                candidate = output / f"{token}.tmp.wav"
-                try:
-                    for attempt in range(4):
-                        seed = int(identity([tts["seed"], "reference-review", job_key, family, attempt])[:8], 16)
-                        if seed == original.get("seed"):
-                            continue
-                        _seed(seed)
-                        wavs, rate = model.generate_voice_design(text=original["text"], language="Korean",
-                            instruct=_reference_instruction(original), **tts["generation"])
-                        sf.write(candidate, wavs[0], rate, subtype="FLOAT")
-                        reasons, metrics = _check_wave(candidate)
-                        sha = digest(candidate)
-                        pcm = metrics.get("decoded_pcm_sha256")
-                        if not reasons and pcm and sha not in hashes and pcm not in hashes:
-                            candidate.replace(target)
-                            replacement = {**original, "sample_id": f"{family}_{token}",
-                                "path": target.relative_to(root).as_posix(), "sha256": sha, "seed": seed,
-                                "created_at": now(), "decoded_pcm_sha256": pcm,
-                                "previous_reference_sha256": original["sha256"],
-                                "replaces_reference_sha256": original.get("replaces_reference_sha256", original["sha256"])}
-                            write_json(record, replacement)
-                            break
-                    else:
-                        raise ValueError("기술 검사를 통과한 다른 기준 목소리를 생성하지 못했습니다.")
-                finally:
-                    candidate.unlink(missing_ok=True)
+                for attempt in range(_REPLACEMENT_ATTEMPTS):
+                    generation = _replacement_generation(tts, original, job_key, attempt)
+                    seed = generation["seed"]
+                    if seed == original.get("seed"):
+                        continue
+                    name = f"{token}_attempt{attempt}.wav"
+                    try:
+                        prepared, timing_check, timing = prepare_reference_attempt(root, output / "raw" / name,
+                            output / "prepared" / name, generation, tts["generation"], resident_model)
+                    except GeneratedReferenceQualityError:
+                        continue
+                    sha = prepared["prepared"]["sha256"]
+                    pcm = prepared["technical_metrics"]["decoded_pcm_sha256"]
+                    if sha in hashes or pcm in hashes:
+                        if timing is not None:
+                            timing.committed(False)
+                        continue
+                    preparation = publish_reference_attempt(root, output / name, prepared)
+                    replacement = {key: value for key, value in original.items()
+                                   if key not in ("reference_generation_update", "reference_preparation", "reference_timing_check")}
+                    replacement.update(sample_id=f"{family}_{token}", path=preparation["prepared"]["path"],
+                        sha256=preparation["prepared"]["sha256"], seed=seed, created_at=now(), decoded_pcm_sha256=pcm,
+                        previous_reference_sha256=original["sha256"],
+                        replaces_reference_sha256=original.get("replaces_reference_sha256", original["sha256"]),
+                        reference_preparation=preparation, reference_timing_check=timing_check,
+                        reference_replacement_attempt=attempt)
+                    if "technical_metrics" in replacement:
+                        replacement["technical_metrics"] = preparation["technical_metrics"]
+                    write_json(record, replacement)
+                    if timing is not None:
+                        timing.committed(True)
+                    break
+                else:
+                    raise ValueError("기술 검사를 통과한 다른 기준 목소리를 생성하지 못했습니다.")
             replacements[family] = replacement
             hashes.update((replacement["sha256"], replacement["decoded_pcm_sha256"]))
     return replacements

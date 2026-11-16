@@ -61,10 +61,36 @@ _PREVIOUS_HARD_IMPLEMENTATIONS = {
 }
 
 
+_SHORT_CLONE_HARD_RELEASES = {
+    # 6b33b72 contracts store the normalized fingerprints for Git archive
+    # bytes or Windows checkout bytes. Match each release pair together.
+    "hard_tts.py": {
+        ("43deed598cefa6503d105761ccb9fd7c9c2a5cb56ee700bfea402688c838bcc3",
+         "4b80f8a5561ba98454b8e6fd8b0449301b6bf3852d6eb78b8f3af043b52bb488"),
+        ("fa9ef4a2393fcf61f7df80097cceb656339e45588a66e4843c978212e948a061",
+         "35e797140ce4bc13235a0d9e259b129d63b7bbd66aac23fe2b1f8f624d9808bf"),
+    },
+    "hard_pilot.py": {
+        ("4acf18a929dd6c6243b06fe67b9136125bb4e879558579588054cec28a534334",
+         "4b80f8a5561ba98454b8e6fd8b0449301b6bf3852d6eb78b8f3af043b52bb488"),
+        ("18ecacbb2cfc82db32c295644175bb7d2f68f2d3a3a664a927b06321535b1164",
+         "35e797140ce4bc13235a0d9e259b129d63b7bbd66aac23fe2b1f8f624d9808bf"),
+    },
+}
+
+
+def compatible_short_clone_hard_release(implementation, qc, *, pilot):
+    name = "hard_pilot.py" if pilot else "hard_tts.py"
+    return (isinstance(implementation, str) and isinstance(qc, str)
+            and (implementation, qc) in _SHORT_CLONE_HARD_RELEASES[name])
+
+
 def compatible_hard_contract(actual, expected, *, pilot=False):
-    """Runtime, pause and output-scope updates keep Hard's generation/QC rules intact."""
+    """Verify frozen Hard settings before applying an audited generation update."""
     if actual == expected:
         return True
+    if not isinstance(actual, dict):
+        return False
     adjusted = deepcopy(actual)
     if pilot:
         keys = "implementation_sha256", "technical_qc_sha256"
@@ -78,8 +104,12 @@ def compatible_hard_contract(actual, expected, *, pilot=False):
         implementation, qc = (actual[key]["sha256"] for key in keys)
         for key in keys:
             adjusted[key]["sha256"] = expected[key]["sha256"]
+    if "short_clone_policy" in actual:
+        return adjusted == expected and compatible_short_clone_hard_release(implementation, qc, pilot=pilot)
+    expected = {key: value for key, value in expected.items() if key != "short_clone_policy"}
     name = "hard_pilot.py" if pilot else "hard_tts.py"
-    return (adjusted == expected and implementation in _PREVIOUS_HARD_IMPLEMENTATIONS[name]
+    return (adjusted == expected and isinstance(implementation, str) and isinstance(qc, str)
+            and implementation in _PREVIOUS_HARD_IMPLEMENTATIONS[name]
             and qc in SCHEDULING_ONLY_TTS_DIGESTS)
 
 

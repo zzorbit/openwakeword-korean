@@ -1,4 +1,6 @@
 """Bounded display data for large frozen evaluations; never change scoring."""
+from codecs import getincrementaldecoder
+from hashlib import sha256
 import json
 import math
 from pathlib import Path
@@ -14,27 +16,35 @@ DISPLAY_FIELDS = INDEX_FIELDS + ("path", "sha256", "noise_section",
 RESULT_FIELDS = ("success", "false_activations", "max_score", "clean_score_drop", "latency_s")
 
 
-def iter_clip_array(path, chunk_size=65536):
+def iter_clip_array(path, chunk_size=65536, *, expected_sha256=None):
     """Incrementally decode an ordinary JSON array, including UTF-8/BOM files.
 
-    Only one object and a bounded input chunk are retained. Invalid separators,
-    incomplete objects and trailing data fail instead of publishing a subset.
+    Only a record and bounded input chunks are retained. When a digest is
+    supplied, verification covers the actual bytes parsed in this iteration.
     """
     if type(chunk_size) is not int or chunk_size < 1:
         raise ValueError("JSON stream chunk size must be a positive integer")
     def invalid_constant(value):
         raise ValueError("Non-finite number in evaluation clips: " + value)
     decoder = json.JSONDecoder(parse_constant=invalid_constant)
-    with Path(path).open(encoding="utf-8-sig") as stream:
+    decode_text = getincrementaldecoder("utf-8-sig")()
+    checksum = sha256() if expected_sha256 is not None else None
+    with Path(path).open("rb") as stream:
         buffer, position, ended = "", 0, False
 
         def refill():
             nonlocal buffer, position, ended
             buffer = buffer[position:]
             position = 0
-            value = stream.read(chunk_size)
-            buffer += value
-            ended = not value
+            while True:
+                raw = stream.read(chunk_size)
+                if checksum is not None:
+                    checksum.update(raw)
+                value = decode_text.decode(raw, final=not raw)
+                if value or not raw:
+                    buffer += value
+                    ended = not raw
+                    return
 
         def token():
             nonlocal position
@@ -81,6 +91,8 @@ def iter_clip_array(path, chunk_size=65536):
             yield row
         if token():
             raise ValueError("Trailing data after evaluation clips")
+        if checksum is not None and checksum.hexdigest() != expected_sha256:
+            raise ValueError("Frozen evaluation clips changed during analysis")
 
 
 def _display_clip(row):

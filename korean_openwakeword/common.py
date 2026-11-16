@@ -163,7 +163,7 @@ def require_final_lock(project):
 
 @contextmanager
 def writer_lock(directory):
-    """A failed owner leaves evidence; do not steal a possibly live job's lock."""
+    """Release the lock on normal exit or exception; a killed process leaves owner evidence."""
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / ".writer.lock"

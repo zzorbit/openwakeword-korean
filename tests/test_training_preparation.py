@@ -99,15 +99,19 @@ def test_preparation_callbacks_preserve_every_checkpoint_and_exported_model(tiny
     records = []
 
     def observe(row):
-        if row["phase"] == "training":
-            # First update telemetry is written only after preparation ends.
+        if row["phase"] == "training" and row["done"] == 0:
+            # The initial training event is emitted before the progress file.
             assert not (observed_dir / "progress.json").exists()
         records.append(deepcopy(row))
 
     with module.training_progress(observe):
         actual = module._train_member(config, root, metadata, pools, seed, observed_dir, True, False)
-    assert [row["phase"] for row in records] == ["model_initialization", "training"]
-    assert records[-1]["done"] == 0 and records[-1]["total"] == 4
+    assert [row["phase"] for row in records] == [
+        "model_initialization", "training", "training", "training", "training", "training_finalizing"
+    ]
+    updates = [row for row in records if row["phase"] == "training"]
+    assert [row["done"] for row in updates] == [0, 1, 2, 4]
+    assert all(row["total"] == 4 for row in updates)
     for field in ("model_sha256", "contract_id", "exposure", "delivery", "updates"):
         assert actual[field] == baseline[field]
     for update in config["training"]["checkpoints"]:

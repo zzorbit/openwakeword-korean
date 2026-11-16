@@ -82,11 +82,142 @@ def freeze_before_short_clone(root, directory, *, pilot=False, previous_source=N
     for row in rows:
         for key in ("short_clone_policy", "short_clone_update", "generation_token_limit", "clone_reference_preparation"):
             row.pop(key)
+        row.pop("candidate_pcm_qc", None)
         row["generation_contract"] = binding
         if not pilot:
             row["generation_contract_id"] = identity(contract)
     journal.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
     return rows
+
+
+def use_short_clone_release_fingerprints(patch, *, pilot, windows):
+    from korean_openwakeword import hard_pilot
+    from korean_openwakeword.studio import _COMPUTE_DISPATCH_COMPATIBLE_DIGESTS
+
+    implementation = hard_pilot if pilot else hard_tts
+    name = "hard_pilot.py" if pilot else "hard_tts.py"
+    variant = int(windows)
+    source_hashes = {
+        "hard_pilot.py": ("4ffa5d27c2ce746846c15e6eeb96767d786b3d533ba892a458c1269b45f25d77",
+                          "4168622e399f62b22ba95783731e57b10776c3498ea83059be8a16f8db66b4be"),
+        "hard_tts.py": ("63fffbc8ebee268c1cc70e64f80fb0c2c49a563668f2c52af462ad855caba105",
+                        "a68cfa27a8c5fd55d707c8bf2b718177c81f3b5010624c7af3e7bc8bb8d0d1ef"),
+        "tts.py": ("cf3359d89b53bf21531381658f3dabc0c5599d53170150fb0b61e2479c061d08",
+                   "5714cd590420168112fec8540dc6c854b2ff94728dcabd449f94ed5a9018ac3f"),
+    }
+    hard_hash = _COMPUTE_DISPATCH_COMPATIBLE_DIGESTS[name][source_hashes[name][variant]]
+    qc_hash = _COMPUTE_DISPATCH_COMPATIBLE_DIGESTS["tts.py"][source_hashes["tts.py"][variant]]
+    patch.setattr(implementation, "_implementation_sha256", lambda: hard_hash)
+    patch.setattr(hard_tts.tts, "_technical_qc_sha256", lambda: qc_hash)
+
+
+def test_short_clone_compatibility_requires_exact_release_pair_and_settings():
+    from korean_openwakeword.call_generation_history import compatible_hard_contract
+
+    expected = {"short_clone_policy": hard_tts.tts.SHORT_CLONE_POLICY,
+                "implementation_sha256": "current", "technical_qc_sha256": "current-qc",
+                "phrases": ["보리"], "samples_per_phrase": 2}
+    archived = {**expected,
+                "implementation_sha256": "4acf18a929dd6c6243b06fe67b9136125bb4e879558579588054cec28a534334",
+                "technical_qc_sha256": "4b80f8a5561ba98454b8e6fd8b0449301b6bf3852d6eb78b8f3af043b52bb488"}
+    assert compatible_hard_contract(archived, expected, pilot=True)
+    assert not compatible_hard_contract({**archived, "samples_per_phrase": 3}, expected, pilot=True)
+    mixed = {**archived, "technical_qc_sha256": "35e797140ce4bc13235a0d9e259b129d63b7bbd66aac23fe2b1f8f624d9808bf"}
+    assert not compatible_hard_contract(mixed, expected, pilot=True)
+
+
+@pytest.mark.parametrize("pilot", [False, True])
+@pytest.mark.parametrize("windows", [False, True])
+@pytest.mark.parametrize("legacy", [False, True])
+def test_resume_healthy_short_clone_release_without_rewriting_provenance(tmp_path, monkeypatch, pilot, windows, legacy):
+    from korean_openwakeword.hard_pilot import generate_hard_pilot
+
+    project = approved_project(tmp_path)
+    root = project.parent
+    output = root / "data/generated" / ("hard_pilot" if pilot else "hard")
+    model = FakeModel()
+    phrases = PHRASES[:3]
+
+    def generate(pause_requested=None):
+        if pilot:
+            return generate_hard_pilot(project, phrases, 1, model, pause_requested=pause_requested)[0]
+        return hard_tts.generate_hard(project, phrases, model=model, samples_per_phrase=1, pause_requested=pause_requested)
+
+    with monkeypatch.context() as patch:
+        use_short_clone_release_fingerprints(patch, pilot=pilot, windows=windows)
+        with pytest.raises(hard_tts.HardGenerationPaused):
+            generate(lambda: model.calls >= 1)
+        if legacy:
+            freeze_before_short_clone(root, output, pilot=pilot)
+            with pytest.raises(hard_tts.HardGenerationPaused):
+                generate(lambda: model.calls >= 2)
+
+    journal = output / "candidates.jsonl"
+    contract_path = output / "contract.json"
+    update_receipt = output / "short_clone_update.json"
+    before = read_rows(journal)
+    before[-1].pop("candidate_pcm_qc")
+    journal.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in before), encoding="utf-8")
+    original_journal, original_contract = journal.read_bytes(), contract_path.read_bytes()
+    original_update = update_receipt.read_bytes() if legacy else None
+
+    assert generate()["full_target_reached"] and model.calls == 3
+    assert journal.read_bytes().startswith(original_journal)
+    assert contract_path.read_bytes() == original_contract
+    assert all(digest(root / row["path"]) == row["sha256"] for row in before)
+    assert (update_receipt.read_bytes() if update_receipt.exists() else None) == original_update
+    completed = read_rows(journal)
+    assert completed[:len(before)] == before
+    assert all(row["candidate_pcm_qc"] == hard_tts.tts.CANDIDATE_PCM_QC for row in completed[len(before):])
+
+    contract = read_json(contract_path)
+    context = hard_tts.short_clone_admission_context(root, output, contract, pilot=pilot)
+    references = {entry["voice_family_id"]: entry for entry in contract["references"]}
+    for row in completed:
+        assert hard_tts.verify_short_clone_admission(root, row, references[row["voice_family_id"]], contract, context) == 3
+    after = journal.read_bytes()
+    assert generate()["full_target_reached"] and model.calls == 3
+    assert journal.read_bytes() == after
+
+
+@pytest.mark.parametrize("pilot", [False, True])
+def test_resume_refuses_pre_pcm_qc_acceptance_when_saved_audio_fails(tmp_path, monkeypatch, pilot):
+    from korean_openwakeword.audio import pcm16
+    from korean_openwakeword.hard_pilot import generate_hard_pilot
+
+    class BorderlineModel(FakeModel):
+        def generate_voice_clone(self, **kwargs):
+            self.calls += 1
+            samples = np.tile(np.array([32.49, -33.49, -32.49, 33.49]) / 32768, 4000)
+            assert hard_tts.tts.technical_qc(samples, 16000)[0]["passed"]
+            return [samples], 16000
+
+    project = approved_project(tmp_path)
+    root = project.parent
+    output = root / "data/generated" / ("hard_pilot" if pilot else "hard")
+    model = BorderlineModel()
+
+    def generate(pause_requested=None):
+        if pilot:
+            return generate_hard_pilot(project, PHRASES[:2], 1, model, pause_requested=pause_requested)[0]
+        return hard_tts.generate_hard(project, PHRASES[:2], 2, model, pause_requested=pause_requested)
+
+    with monkeypatch.context() as patch:
+        use_short_clone_release_fingerprints(patch, pilot=pilot, windows=False)
+        patch.setattr(hard_tts.tts, "encode_candidate_pcm16", lambda converted, qc: (pcm16(converted[0]), converted[1]))
+        with pytest.raises(hard_tts.HardGenerationPaused):
+            generate(lambda: model.calls == 1)
+    journal = output / "candidates.jsonl"
+    row, = read_rows(journal)
+    assert row["technical_pass"]
+    row.pop("candidate_pcm_qc")
+    journal.write_text(json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
+    protected = {path: digest(path) for path in (output / "contract.json", journal, root / row["path"])}
+
+    with pytest.raises(ValueError, match="Stored Hard candidate no longer passes technical QC"):
+        generate()
+    assert model.calls == 1
+    assert all(digest(path) == sha256 for path, sha256 in protected.items())
 
 
 @pytest.mark.parametrize("pilot", [False, True])
@@ -209,6 +340,43 @@ def test_reject_audio_at_length_cap_even_if_speech_itself_passes_qc(tmp_path, mo
     assert result["full_target_reached"] and calls == [(phrases[0], False), (phrases[1], False), (phrases[0], True)]
     assert rows[0]["qc"]["reasons"] == ["generation_length_limit"] and rows[0]["technical_pass"] is False
     assert rows[0]["generation_token_limit"] == 23
+
+
+@pytest.mark.parametrize("pilot", [False, True])
+def test_reject_audio_below_rms_threshold_after_pcm_quantization(tmp_path, pilot):
+    from korean_openwakeword.hard_pilot import generate_hard_pilot
+
+    class BorderlineThenValid(FakeModel):
+        def generate_voice_clone(self, **kwargs):
+            if not self.calls:
+                self.calls += 1
+                # Both levels round down in PCM16. Their float RMS passes the
+                # threshold, but their stored PCM16 RMS is below it.
+                cycle = np.array([32.49, -33.49, -32.49, 33.49]) / 32768
+                samples = np.tile(cycle, 4000)
+                assert hard_tts.tts.technical_qc(samples, 16000)[0]["passed"]
+                return [samples], 16000
+            return super().generate_voice_clone(**kwargs)
+
+    project = approved_project(tmp_path)
+    model = BorderlineThenValid()
+    if pilot:
+        def generate():
+            return generate_hard_pilot(project, PHRASES[:1], 1, model)[0]
+    else:
+        def generate():
+            return hard_tts.generate_hard(project, PHRASES[:1], 1, model)
+    output = project.parent / "data/generated" / ("hard_pilot" if pilot else "hard")
+    assert generate()["full_target_reached"]
+    journal = output / "candidates.jsonl"
+    rejected, accepted = read_rows(journal)
+    assert rejected["candidate_pcm_qc"] == accepted["candidate_pcm_qc"] == "stored_pcm16_v1"
+    assert not rejected["technical_pass"] and rejected["qc"]["reasons"] == ["near_silence"]
+    assert rejected["start_s"] is None and rejected["end_s"] is None
+    assert accepted["technical_pass"] and model.calls == 2
+    before = journal.read_bytes()
+    assert generate()["full_target_reached"] and model.calls == 2
+    assert journal.read_bytes() == before
 
 
 def test_revised_phrase_sample_review_bulk_generation_and_admission_use_the_same_scope(tmp_path, monkeypatch):

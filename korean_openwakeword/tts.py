@@ -20,6 +20,8 @@ from .common import append_row, bound_file, digest, identity, now, read_json, re
 from .task_progress import emit as report_progress, generation_attempt
 from . import clone_reference
 from .project import load_project
+from .reference_attempt import (check_reference_timing, prepare_reference_attempt, publish_reference_attempt,
+                                raw_receipt_path, reference_raw_path)
 from .storage import project_storage, local_tts_snapshot, storage_environment
 
 # Legacy projects without an explicit sentence keep their original generation
@@ -38,8 +40,11 @@ ORIGINAL_ATTEMPTS = 3
 CLONE_ATTEMPTS = 6
 _MAX_CALL_DURATION_S = 8
 SHORT_CLONE_POLICY = "qwen_short_clone_v1"
+CANDIDATE_PCM_QC = "stored_pcm16_v1"
 _QWEN_CODEC_RATE = 24000
 _QWEN_CODEC_FRAME_SAMPLES = 1920
+_REFERENCE_ATTEMPTS = 4
+_REFERENCE_ATTEMPT_POLICY = "bounded_reference_design_retries_v1"
 _REFERENCE_PREPARATION_PREVIOUS_IMPLEMENTATIONS = {
     LEGACY_CALL_IMPLEMENTATION, "9f39f255e364f0186f8e866bfb317dbef90d6c01f3481147c04637b3d0585aee"}
 
@@ -93,6 +98,18 @@ def technical_qc(samples, rate):
             reasons.append("no_active_audio")
     return {"passed": not reasons, "reasons": reasons, "duration_s": duration, "rms": level,
             "boundary_method": "energy_envelope_candidate_no_semantic_STT", "pronunciation_listened": False}, (mono, bounds)
+
+
+def encode_candidate_pcm16(converted, qc):
+    """Check the waveform that will be persisted before accepting an attempt."""
+    samples, bounds = converted
+    encoded = pcm16(np.clip(samples, -1, 1))
+    if qc["passed"]:
+        saved_qc, (_, bounds) = technical_qc(encoded.astype(np.float64) / 32768.0, 16000)
+        if not saved_qc["passed"]:
+            qc["passed"] = False
+            qc["reasons"].extend(saved_qc["reasons"])
+    return encoded, bounds
 
 
 def _load_model(model_path, config, project_root):
@@ -224,6 +241,21 @@ def _reference_instruction(family):
             + " Projected means vocal style, not room echo or microphone distance. Say only the provided Korean text once. No extra speech, laughter or echo.")
 
 
+def _reference_generation(config, family, text, attempt=None):
+    tts = config["tts"]
+    family_id = family["family_id"]
+    parts = [tts["seed"], family_id]
+    if attempt:
+        parts += [_REFERENCE_ATTEMPT_POLICY, attempt]
+    generation = {"kind": "synthetic_reference", "model": tts["design_model"],
+                  "seed": int(identity(parts)[:8], 16), "text": text,
+                  "instruction": _reference_instruction(family), "family_id": family_id,
+                  "tts_settings_id": identity(tts)}
+    if attempt is not None:
+        generation.update(attempt=attempt, attempt_policy=_REFERENCE_ATTEMPT_POLICY)
+    return generation
+
+
 def _reference_generation_journal(root, output, contract):
     """Keep exact old reference rows/contracts; bind only newly appended rows."""
     path, journal = output / "contract.json", output / "references.jsonl"
@@ -273,6 +305,14 @@ def generate_references(project, split="train", limit=None, model=None):
     families = [f for f in read_json(root / "voices.json")["families"] if f["split"] == split]
     selected = families[:limit] if limit is not None else families
     output = root / "data" / "references" / split
+
+    def resident_model():
+        nonlocal model
+        if model is None:
+            report_progress("tts_model_loading", "음성 생성 모델 준비", eta_eligible=False)
+            model = _load_model(config["tts"]["design_model"], config["tts"], root)
+        return model
+
     with writer_lock(output):
         reference_contract = {"tts": config["tts"], "families": families, "text": reference_text, "implementation_sha256": _generation_evidence_sha256(),
             "reference_preparation": {"policy": clone_reference.GENERATED_POLICY, "rules": dict(clone_reference.RULES),
@@ -286,48 +326,46 @@ def generate_references(project, split="train", limit=None, model=None):
             if "reference_preparation" in row:
                 prepared = clone_reference.verify_generated_reference(root, row["reference_preparation"])
                 family = family_by_id.get(row["voice_family_id"])
-                expected_generation = {"kind": "synthetic_reference", "model": config["tts"]["design_model"],
-                    "seed": int(identity([config["tts"]["seed"], row["voice_family_id"]])[:8], 16),
-                    "text": reference_text, "instruction": _reference_instruction(family) if family else None,
-                    "family_id": row["voice_family_id"], "tts_settings_id": identity(config["tts"])}
+                attempt = row["reference_preparation"]["generation"].get("attempt")
+                if (family is None or attempt is not None and
+                        (type(attempt) is not int or not 0 <= attempt < _REFERENCE_ATTEMPTS)):
+                    raise ValueError("Synthetic reference attempt or family changed")
+                expected_generation = _reference_generation(config, family, reference_text, attempt)
                 if (not prepared.samefile(resolved(root, row["path"]))
                         or row["reference_preparation"]["prepared"]["sha256"] != row["sha256"]
                         or row["reference_preparation"]["generation"] != expected_generation):
                     raise ValueError("Synthetic reference preparation changed")
+                if (attempt is not None or "reference_timing_check" in row) and (
+                        row.get("seed") != expected_generation["seed"]
+                        or row.get("reference_timing_check") != check_reference_timing(prepared, reference_text)):
+                    raise ValueError("Synthetic reference timing evidence changed")
         for family in selected:
-            if family["family_id"] in completed:
+            family_id = family["family_id"]
+            if family_id in completed:
                 continue
-            seed = int(identity([config["tts"]["seed"], family["family_id"]])[:8], 16)
-            path = output / (family["family_id"] + ".wav")
-            raw = output / "raw" / (family["family_id"] + ".wav")
-            raw.parent.mkdir(exist_ok=True)
-            raw_base, recovery = raw, 0
-            while raw.exists() and not raw.with_name(raw.name + ".raw.json").exists():
-                recovery += 1
-                raw = raw_base.with_name(raw_base.stem + f"_recovery{recovery}.wav")
-            if not raw.exists():
-                if model is None:
-                    report_progress("tts_model_loading", "음성 생성 모델 준비", eta_eligible=False)
-                    model = _load_model(config["tts"]["design_model"], config["tts"], root)
-                _seed(seed)
-                with generation_attempt() as timing:
-                    wavs, rate = model.generate_voice_design(text=reference_text, language="Korean",
-                        instruct=_reference_instruction(family), **config["tts"]["generation"])
-                if len(wavs) != 1:
-                    raise ValueError("Invalid synthetic reference waveform count")
-                sf.write(raw, wavs[0], rate, subtype="FLOAT")
-            else:
-                timing = None  # Resumed raw audio is not a new speed sample.
-            preparation = clone_reference.prepare_generated_reference(root,
-                {"path": raw.relative_to(root).as_posix(), "sha256": digest(raw), "generation": {
-                    "kind": "synthetic_reference", "model": config["tts"]["design_model"], "seed": seed,
-                    "text": reference_text, "instruction": _reference_instruction(family),
-                    "family_id": family["family_id"], "tts_settings_id": identity(config["tts"]) }}, path)
+            legacy_raw = reference_raw_path(output / "raw" / f"{family_id}.wav")
+            for attempt in range(_REFERENCE_ATTEMPTS):
+                attempt_name = f"{family_id}_attempt{attempt}.wav"
+                reuse_legacy = attempt == 0 and raw_receipt_path(legacy_raw).is_file()
+                raw = legacy_raw if reuse_legacy else output / "raw" / attempt_name
+                generation = _reference_generation(config, family, reference_text, None if reuse_legacy else attempt)
+                try:
+                    checked, timing_check, timing = prepare_reference_attempt(root, raw,
+                        output / "prepared" / attempt_name, generation, config["tts"]["generation"], resident_model)
+                except clone_reference.GeneratedReferenceQualityError as error:
+                    if attempt == _REFERENCE_ATTEMPTS - 1:
+                        raise ValueError(f"기준 목소리 {family_id} 생성 실패 ({_REFERENCE_ATTEMPTS}회): {error}") from error
+                    continue
+                # The attempted evidence has its own path, so a failed or
+                # interrupted waveform never has to be replaced to continue.
+                path = output / (f"{family_id}.wav" if attempt == 0 else attempt_name)
+                preparation = publish_reference_attempt(root, path, checked)
+                break
             row = {"sample_id": family["family_id"], "source_id": "qwen:" + family["family_id"],
                 "voice_family_id": family["family_id"], "split": split, "path": str(path.relative_to(root)),
                 "sha256": digest(path), "text": reference_text, "provenance": "qwen_synthetic_reference",
                 "human_reference_used": False, "status": "pending_review", "model": config["tts"]["design_model"],
-                "seed": seed, "reference_preparation": preparation,
+                "seed": generation["seed"], "reference_preparation": preparation, "reference_timing_check": timing_check,
                 **({"reference_generation_update": generation_update} if generation_update else {}),
                 "description": family["description"], "style": family.get("style", "neutral"), "speed": family.get("speed", "natural"),
                 "intonation": family.get("intonation", "natural"), "vocal_effort": family.get("vocal_effort", "normal"), "call_length": "reference_style", "created_at": now(), "axes_scope": "requested reference delivery; confirm actual acoustics in the pilot"}
@@ -459,6 +497,8 @@ def validate_call_rows(root, config, split, references, rows, context, *, scope=
                 or row.get("tts_settings_id") != tts_id
                 or (scope is not None and row.get("voice_reference_sha256") != reference["sha256"])):
             raise ValueError("Generated call identity, reference assignment or generation provenance changed")
+        if "candidate_pcm_qc" in row and (row["candidate_pcm_qc"] != CANDIDATE_PCM_QC or not row.get("path")):
+            raise ValueError("Stored PCM quality evidence changed")
         attempt = counts[slot]
         # Legacy journals have deterministic attempt IDs but no explicit seed.
         sample_id = f"{split}_{slot:06d}_attempt{attempt}"
@@ -651,6 +691,7 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
         generation_contract_id = context["current_id"] if method == "clone" else identity(settings)
         remaining = (Counter(slot % len(references) for slot in runnable)
                      if method == "clone" else {})
+        completed_for_target = sum(0 <= slot < target for slot in by_slot)
         for slot in runnable:
             reference_index = slot % len(references)
             reference = references[reference_index]
@@ -696,10 +737,8 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
                     raise ValueError("Nonfinite/empty TTS output; cannot persist or silently accept")
                 path, sha, bounds = None, None, None
                 if converted is not None:
-                    samples, bounds = converted
+                    samples, bounds = encode_candidate_pcm16(converted, qc)
                     path = output / (sample_id + ".wav")
-                    if np.max(np.abs(samples)) > 1:
-                        samples = np.clip(samples, -1, 1)  # quarantined QC-fail only, never training
                     if production and path.exists():
                         # An interruption can leave a WAV without its journal row.
                         # Keep that uncommitted output before retrying its exact seed.
@@ -709,7 +748,7 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
                             path.rename(orphan)
                         elif digest(path) != digest(orphan):
                             raise ValueError("An interrupted generation WAV differs from its archived copy")
-                    sf.write(path, pcm16(samples), 16000, subtype="PCM_16")
+                    sf.write(path, samples, 16000, subtype="PCM_16")
                     sha = digest(path)
                     if sha in existing_hashes:
                         qc["passed"] = False; qc["reasons"].append("exact_duplicate")
@@ -721,6 +760,8 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
                     "generation_contract_id": generation_contract_id, "generation_seconds": time.perf_counter() - started,
                     "generation_method": method, "tts_settings_id": tts_settings_id,
                     "individual_human_listening": False, "created_at": now()}
+                if converted is not None:
+                    row["candidate_pcm_qc"] = CANDIDATE_PCM_QC
                 if method == "clone":
                     row.update(attempt=attempt, seed=seed, clone_input_policy=CALL_RECOVERY_POLICY,
                         retry_phase=("conditioned_recovery" if attempt >= CLONE_ATTEMPTS else
@@ -745,10 +786,11 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
                 attempts_by_slot[slot] += 1
                 if qc["passed"]:
                     by_slot[slot] = row
+                    completed_for_target += 1
                     break
             if remaining:
                 remaining[reference_index] -= 1
-            print(f"TTS {split}: accepted technical {len(by_slot)}/{target}; attempts {len(rows)}", flush=True)
+            print(f"TTS {split}: accepted technical {completed_for_target}/{target}; attempts {len(rows)}", flush=True)
         report_progress("tts_finalizing", "생성 음원 목록·검사 결과 저장", eta_eligible=False)
         passed = sorted(by_slot.values(), key=lambda r: r["slot"])
         # Atomically publish the currently accepted candidates, including partial
@@ -758,29 +800,41 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
             temporary = dest.with_suffix(".tmp")
             temporary.write_text("".join(__import__("json").dumps(r, ensure_ascii=False) + "\n" for r in passed), encoding="utf-8")
             temporary.replace(dest)
-        summary = {"attempts": len(rows), "technical_pass": len(passed), "target": target,
-            "pilot": pilot, "human_listened": 0, "policy_admitted": 0 if pilot else len(passed),
-            "independent_STT_runs": 0, "distribution": {axis: dict(Counter(r["axes"][axis] for r in passed)) for axis in ("voice_family", "style", "speed", "intonation", "vocal_effort", "call_length", "text_profile")},
-            "review_queue": str(output / "candidates.jsonl"), "full_target_reached": len(passed) == target}
+        journal = output / "candidates.jsonl"
+        queue = journal
         if any(row.get("generation_error") for row in rows):
             # Failure-only attempts are audit facts, not playable audio. Keep
             # real QC-failed WAVs available to the standalone CLI reviewer.
             reviewable = [row for row in rows if row.get("path") and row.get("sha256")]
             queue = output / ("reviewable_" + identity(reviewable)[:16] + ".jsonl")
             write_immutable_rows(queue, reviewable)
-            summary["review_queue"] = str(queue)
-            summary["attempt_journal"] = str(output / "candidates.jsonl")
-        summary["exhausted_slots"] = _exhausted_slots(rows, references, target, by_slot, attempt_limit, split,
-                                                     recovery_slots=recovery_slots)
-        if method == "clone":
-            summary["clone_input_policy"] = CALL_RECOVERY_POLICY
-            summary["maximum_attempts_per_slot"] = attempt_limit
-        if method == "clone" and ("legacy_id" in context or "epochs" in context):
-            # Historical summaries are evidence too. A recovery publishes a
-            # separate current-version summary; a fully reused old bank writes
-            # neither a receipt nor any summary.
-            if len(rows) > initial_row_count:
-                write_json(output / ("summary_recovery_" + context["current_id"][:16] + ".json"), summary)
-        else:
-            write_json(output / "summary.json", summary)
+
+        def summary_for(goal):
+            selected_rows = [row for row in passed if 0 <= row["slot"] < goal]
+            count = len(selected_rows)
+            axes = ("voice_family", "style", "speed", "intonation", "vocal_effort", "call_length", "text_profile")
+            result = {"attempts": sum(attempts for slot, attempts in attempts_by_slot.items() if 0 <= slot < goal),
+                "technical_pass": count, "target": goal, "pilot": pilot, "human_listened": 0,
+                "policy_admitted": 0 if pilot else count, "independent_STT_runs": 0,
+                "distribution": {axis: dict(Counter(row["axes"][axis] for row in selected_rows)) for axis in axes},
+                "review_queue": str(queue), "full_target_reached": count == goal,
+                "exhausted_slots": _exhausted_slots(rows, references, goal, by_slot, attempt_limit, split,
+                                                    recovery_slots=recovery_slots)}
+            if queue != journal:
+                result["attempt_journal"] = str(journal)
+            if method == "clone":
+                result.update(clone_input_policy=CALL_RECOVERY_POLICY, maximum_attempts_per_slot=attempt_limit)
+            return result
+
+        summary = summary_for(target)
+        recovery = method == "clone" and ("legacy_id" in context or "epochs" in context)
+        summary_path = output / ("summary_recovery_" + context["current_id"][:16] + ".json" if recovery else "summary.json")
+        # A narrower rerun reports its own target without replacing a larger
+        # run's evidence. If it filled a gap, refresh the larger summary.
+        if not recovery or len(rows) > initial_row_count:
+            saved_target = read_json(summary_path).get("target") if summary_path.exists() else None
+            if type(saved_target) is not int or saved_target <= target:
+                write_json(summary_path, summary)
+            elif len(rows) > initial_row_count:
+                write_json(summary_path, summary_for(saved_target))
         return summary

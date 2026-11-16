@@ -658,6 +658,29 @@ def test_hard_implementation_accepts_only_audited_same_path_update(tmp_path, mon
         pool_review._bind_hard_implementation(tmp_path, binding)
 
 
+@pytest.mark.parametrize("implementation,qc", [
+    ("43deed598cefa6503d105761ccb9fd7c9c2a5cb56ee700bfea402688c838bcc3",
+     "4b80f8a5561ba98454b8e6fd8b0449301b6bf3852d6eb78b8f3af043b52bb488"),
+    ("fa9ef4a2393fcf61f7df80097cceb656339e45588a66e4843c978212e948a061",
+     "35e797140ce4bc13235a0d9e259b129d63b7bbd66aac23fe2b1f8f624d9808bf"),
+])
+def test_hard_pool_preserves_exact_archived_short_clone_pair(tmp_path, monkeypatch, implementation, qc):
+    from pathlib import Path
+
+    from korean_openwakeword import hard_tts, pool_review, tts
+
+    binding = {"path": str(Path(hard_tts.__file__).resolve()), "sha256": implementation}
+    qc_binding = {"path": str(Path(tts.__file__).resolve()), "sha256": qc}
+    pool_review._bind_hard_implementation(tmp_path, binding, qc_binding)
+    with pytest.raises(ValueError, match="changed bound file"):
+        pool_review._bind_hard_implementation(tmp_path, binding, {**qc_binding, "sha256": "0" * 64})
+    with pytest.raises(ValueError, match="changed bound file"):
+        pool_review._bind_hard_implementation(tmp_path, binding, {**qc_binding, "path": "different_tts.py"})
+    monkeypatch.setattr(pool_review, "digest", lambda path: "0" * 64)
+    with pytest.raises(ValueError, match="changed bound file"):
+        pool_review._bind_hard_implementation(tmp_path, binding, qc_binding)
+
+
 @pytest.mark.parametrize("per_phrase", [False, True])
 @pytest.mark.parametrize("representative_only", [False, True])
 def test_fresh_generated_references_review_pilot_and_hard_pool_need_no_manifest_rewrite(tmp_path, monkeypatch, per_phrase, representative_only):

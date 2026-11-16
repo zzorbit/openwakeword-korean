@@ -1,4 +1,5 @@
 """CPU ONNX reference: one shared frontend, ordered mean, frozen event rules."""
+from copy import deepcopy
 from importlib.resources import files
 import importlib.metadata
 from pathlib import Path
@@ -39,7 +40,12 @@ def deployment_candidate(manifest):
 
 def verify_bundle(directory):
     directory = Path(directory).resolve()
-    manifest = read_json(directory / "manifest.json")
+    return _verify_bundle_manifest(directory, read_json(directory / "manifest.json"))
+
+
+def _verify_bundle_manifest(directory, manifest):
+    from .frontend import PINNED_ASSETS
+
     if manifest.get("schema_version") != 1 or manifest.get("aggregation") not in ("single", "ordered_float64_mean_to_float32"):
         raise ValueError("Unsupported bundle schema or score aggregation")
     members = manifest["members"]
@@ -52,8 +58,17 @@ def verify_bundle(directory):
     selected = deployment_candidate(manifest)
     if manifest.get("selected_candidate", selected) != selected:
         raise ValueError("Selected candidate does not match deployed members/aggregation")
+    frontend = manifest.get("frontend")
+    if not isinstance(frontend, list) or any(
+        not isinstance(entry, dict) or not isinstance(entry.get("path"), str)
+        or not isinstance(entry.get("sha256"), str) for entry in frontend
+    ):
+        raise ValueError("Invalid bundle frontend asset manifest")
+    frontend_names = [Path(entry["path"]).name for entry in frontend]
+    if any(frontend_names.count(name) != 1 for name in PINNED_ASSETS):
+        raise ValueError("Bundle frontend must contain one melspectrogram and one embedding model")
     evidence = [manifest["candidate_selection_evidence"]] if manifest.get("candidate_selection_evidence") else []
-    for entry in members + manifest["frontend"] + evidence:
+    for entry in members + frontend + evidence:
         p = Path(entry["path"])
         if p.is_absolute() or not (directory / p).resolve().is_relative_to(directory):
             raise ValueError("Bundle assets must stay inside the portable bundle")
@@ -151,4 +166,4 @@ class WakeWordDetector:
             tail = audio.frames - frames * 1280
         return {"wakeword": self.manifest["wakeword"], "events": events, "max_score": maximum,
                 "frames": frames, "dropped_tail_samples": tail,
-                "runtime": self.runtime, "evaluation_scope": "single supplied audio file, not population validation"}
+                "runtime": deepcopy(self.runtime), "evaluation_scope": "single supplied audio file, not population validation"}

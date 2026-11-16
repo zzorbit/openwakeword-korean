@@ -1,39 +1,79 @@
 """Explicit Development candidate selection without rerunning audio or networks."""
 from copy import deepcopy
+from hashlib import sha256
 from pathlib import Path
 import shutil
+from tempfile import SpooledTemporaryFile
+
 import numpy as np
 
-from .common import bound_file, digest, now, read_json, write_json, writer_lock
+from .bundle import _read_json_snapshot, _staged_bundle_output
+from .common import bound_file, digest, now, read_json, write_json
 from .evaluate import adoption, adoption_criteria, candidate_adoptions
-from .project import load_project
-from .runtime import bundle_candidates, deployment_candidate, verify_bundle
-from .storage import project_storage
+from .project import validate_project
+from .runtime import _verify_bundle_manifest, bundle_candidates, deployment_candidate, verify_bundle
+from .storage import project_storage, storage_paths
 from .cache_analysis import FrozenClipRows, RestrictedClipRows, write_clip_array
+
+
+def _evaluation_source_paths(project, bundle, evaluation):
+    return {"project_config_sha256": project,
+            "source_bundle_manifest_sha256": bundle / "manifest.json",
+            "source_report_sha256": evaluation / "report.json",
+            "source_clips_sha256": evaluation / "clips.json",
+            "source_score_cache_sha256": evaluation / "scores.npz"}
+
+
+def _completion_matches(receipt, bindings):
+    return (receipt.get("report_sha256") == bindings["source_report_sha256"]
+            and receipt.get("bundle_sha256") == bindings["source_bundle_manifest_sha256"]
+            and receipt.get("clips_sha256") == bindings["source_clips_sha256"])
+
+
+def _load_bound_scores(path, expected_sha256, temp_directory):
+    # NPZ requires seeking. Hash the same compressed bytes that NumPy opens.
+    temp_directory.mkdir(parents=True, exist_ok=True)
+    checksum = sha256()
+    with SpooledTemporaryFile(max_size=8 * 1024 ** 2, prefix="koww-scores-", dir=temp_directory) as snapshot:
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 ** 2), b""):
+                checksum.update(chunk)
+                snapshot.write(chunk)
+        if checksum.hexdigest() != expected_sha256:
+            raise ValueError("Development score cache changed")
+        snapshot.seek(0)
+        with np.load(snapshot, allow_pickle=False) as cache:
+            return cache["scores"], cache["offsets"], cache["model_ids"].tolist()
 
 
 def verified_evaluation(project, bundle, evaluation):
     """Read immutable Development evidence and its exact bound score columns."""
-    root, config = load_project(project)
-    bundle, evaluation = Path(bundle).resolve(), Path(evaluation).resolve()
-    package = verify_bundle(bundle)
-    report = read_json(evaluation / "report.json")
+    verified, _ = _verified_evaluation_snapshot(project, bundle, evaluation)
+    return verified
+
+
+def _verified_evaluation_snapshot(project, bundle, evaluation):
+    project, bundle, evaluation = (Path(path).resolve() for path in (project, bundle, evaluation))
+    root = project.parent
+    config, project_sha256 = _read_json_snapshot(project)
+    config = validate_project(config)
+    package, bundle_sha256 = _read_json_snapshot(bundle / "manifest.json")
+    _verify_bundle_manifest(bundle, package)
+    report, report_sha256 = _read_json_snapshot(evaluation / "report.json")
     receipt = read_json(evaluation / "receipt.json")
     if package["wakeword"] != config["wakeword"] or report.get("wakeword") != config["wakeword"]:
         raise ValueError("Candidate/evaluation word differs from this project")
     if report.get("stage") != "development":
         raise ValueError("Only completed Development evidence can select a candidate")
-    expected = {"report_sha256": digest(evaluation / "report.json"),
-                "clips_sha256": digest(evaluation / "clips.json"),
-                "bundle_sha256": digest(bundle / "manifest.json")}
-    if any(receipt.get(key) != value for key, value in expected.items()):
+    bindings = {"project_config_sha256": project_sha256, "source_bundle_manifest_sha256": bundle_sha256,
+                "source_report_sha256": report_sha256, "source_clips_sha256": receipt.get("clips_sha256"),
+                "source_score_cache_sha256": report.get("score_cache_sha256")}
+    if not isinstance(bindings["source_clips_sha256"], str) or not _completion_matches(receipt, bindings):
         raise ValueError("Development completion receipt changed")
-    if report.get("bundle_manifest_sha256") != expected["bundle_sha256"]:
+    if report.get("bundle_manifest_sha256") != bundle_sha256:
         raise ValueError("Development evaluation belongs to a different bundle")
     if report.get("runtime") != package["runtime"]:
         raise ValueError("Development runtime does not match this bundle")
-    if report.get("score_cache_sha256") != digest(evaluation / "scores.npz"):
-        raise ValueError("Development score cache changed")
     candidates = bundle_candidates(package)
     if report.get("candidate_definitions", candidates) != candidates:
         raise ValueError("Candidate IDs do not bind the actual model members")
@@ -44,10 +84,9 @@ def verified_evaluation(project, bundle, evaluation):
     count = report.get("sessions")
     if type(count) is not int or count < 0:
         raise ValueError("Development report needs its exact session count")
-    clips = FrozenClipRows(evaluation / "clips.json", count)
-    with np.load(evaluation / "scores.npz", allow_pickle=False) as cache:
-        scores, offsets = cache["scores"], cache["offsets"]
-        ids = cache["model_ids"].tolist()
+    clips = FrozenClipRows(evaluation / "clips.json", count, expected_sha256=bindings["source_clips_sha256"])
+    scores, offsets, ids = _load_bound_scores(evaluation / "scores.npz", bindings["source_score_cache_sha256"],
+                                            storage_paths(root)["temp"])
     if ids != [row["id"] for row in candidates] or scores.ndim != 2 or scores.shape[1] != len(ids):
         raise ValueError("Cached score columns do not match candidate identities")
     if (scores.dtype != np.float32
@@ -71,7 +110,7 @@ def verified_evaluation(project, bundle, evaluation):
         if (not np.isclose(row.get("duration_s", -1), duration, atol=1e-8, rtol=0)
                 or not np.isclose(row.get("eligible_seconds", -1), eligible, atol=1e-8, rtol=0)):
             raise ValueError("Development duration does not match actual cached frames")
-    return root, config, package, report, clips, scores, offsets, candidates
+    return (root, config, package, report, clips, scores, offsets, candidates), bindings
 
 
 def copy_candidate_bundle(source, output, package, candidate, *, evidence=None):
@@ -132,37 +171,37 @@ def restrict_evaluation(report, clips, scores, candidates, chosen, config):
 @project_storage
 def select_candidate(project, bundle, evaluation, output, candidate):
     """Package an explicitly chosen single or mean from completed Development."""
-    root, config, package, report, clips, scores, offsets, candidates = verified_evaluation(project, bundle, evaluation)
+    project, bundle, evaluation, output = (Path(path).resolve() for path in (project, bundle, evaluation, output))
+    verified, bindings = _verified_evaluation_snapshot(project, bundle, evaluation)
+    root, config, package, report, clips, scores, offsets, candidates = verified
     if (root / "final_lock.json").exists():
         raise ValueError("Final is frozen; start a versioned experiment before candidate selection")
     chosen = next((row for row in candidates if row["id"] == candidate), None)
     if chosen is None:
         raise ValueError(f"Unknown evaluated candidate: {candidate}")
-    output, bundle, evaluation = Path(output).resolve(), Path(bundle).resolve(), Path(evaluation).resolve()
     if output == bundle or output == evaluation or output.is_relative_to(bundle) or output.is_relative_to(evaluation):
         raise ValueError("Selection output must not modify the source bundle/evaluation")
-    if output.exists() and any(output.iterdir()):
-        raise ValueError("Candidate selection output is immutable; choose a new directory")
-    selected_report, selected_clips, selected_scores = restrict_evaluation(report, clips, scores, candidates, chosen, config)
-    evidence = {"schema_version": 1, "created_at": now(), "stage": "development",
-                "selection": "explicit_candidate_parameter", "candidate": deepcopy(chosen),
-                "source_bundle_manifest_sha256": digest(bundle / "manifest.json"),
-                "source_report_sha256": digest(evaluation / "report.json"),
-                "source_clips_sha256": digest(evaluation / "clips.json"),
-                "source_score_cache_sha256": digest(evaluation / "scores.npz"),
-                "project_config_sha256": digest(project), "runtime": deepcopy(package["runtime"]),
-                "adoption": selected_report["adoption"], "adoption_criteria": selected_report["adoption_criteria"],
-                "source_models": deepcopy(report["models"]),
-                "Final_used_for_selection": False, "network_rerun": False}
-    with writer_lock(output):
-        write_json(output / "selection.json", evidence)
-        selected_bundle = copy_candidate_bundle(bundle, output / "bundle", package, chosen, evidence=evidence)
+    with _staged_bundle_output(output, occupied_error="Candidate selection output is immutable; choose a new directory") as staged:
+        selected_report, selected_clips, selected_scores = restrict_evaluation(report, clips, scores, candidates, chosen, config)
+        evidence = {"schema_version": 1, "created_at": now(), "stage": "development",
+                    "selection": "explicit_candidate_parameter", "candidate": deepcopy(chosen),
+                    **bindings, "runtime": deepcopy(package["runtime"]),
+                    "adoption": selected_report["adoption"], "adoption_criteria": selected_report["adoption_criteria"],
+                    "source_models": deepcopy(report["models"]),
+                    "Final_used_for_selection": False, "network_rerun": False}
+        selection_path = staged / "selection.json"
+        write_json(selection_path, evidence)
+        selection_sha256 = digest(selection_path)
+        selected_bundle_dir = staged / "bundle"
+        selected_bundle = copy_candidate_bundle(bundle, selected_bundle_dir, package, chosen, evidence=evidence)
         selected_bundle["stage"] = "development_candidate_selected"
-        write_json(output / "bundle" / "manifest.json", selected_bundle)
-        selected_report.update(created_at=now(), bundle_manifest_sha256=digest(output / "bundle" / "manifest.json"),
+        selected_manifest = selected_bundle_dir / "manifest.json"
+        write_json(selected_manifest, selected_bundle)
+        bundle_sha256 = digest(selected_manifest)
+        selected_report.update(created_at=now(), bundle_manifest_sha256=bundle_sha256,
                                source_report_sha256=evidence["source_report_sha256"],
-                               candidate_selection_sha256=digest(output / "selection.json"))
-        selected_dir = output / "evaluation"
+                               candidate_selection_sha256=selection_sha256)
+        selected_dir = staged / "evaluation"
         selected_dir.mkdir()
         np.savez_compressed(selected_dir / "scores.npz", scores=selected_scores, offsets=offsets,
                             model_ids=np.asarray([row["id"] for row in selected_report["candidate_definitions"]]))
@@ -171,10 +210,14 @@ def select_candidate(project, bundle, evaluation, output, candidate):
         write_json(selected_dir / "report.json", selected_report)
         completion = {"report_sha256": digest(selected_dir / "report.json"),
                       "clips_sha256": digest(selected_dir / "clips.json"),
-                      "bundle_sha256": digest(output / "bundle" / "manifest.json"), "completed_at": now()}
+                      "bundle_sha256": bundle_sha256, "completed_at": now()}
         write_json(selected_dir / "receipt.json", completion)
-        write_json(output / "receipt.json", {**completion, "selection_sha256": digest(output / "selection.json"),
+        write_json(staged / "receipt.json", {**completion, "selection_sha256": selection_sha256,
                                             "score_cache_sha256": selected_report["score_cache_sha256"]})
-    return {"bundle": str(output / "bundle"), "evaluation": str(selected_dir), "candidate": chosen["id"],
+        sources = _evaluation_source_paths(project, bundle, evaluation)
+        if (any(digest(path) != bindings[key] for key, path in sources.items())
+                or not _completion_matches(read_json(evaluation / "receipt.json"), bindings)):
+            raise ValueError("Development evidence changed during candidate selection")
+    return {"bundle": str(output / "bundle"), "evaluation": str(output / "evaluation"), "candidate": chosen["id"],
             "adoption": selected_report["adoption"], "runtime": package["runtime"],
             "smoke_test_only": report.get("smoke_test_only", False), "network_rerun": False}

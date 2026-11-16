@@ -5,6 +5,7 @@ ordered float64 ensemble arithmetic are identical to the sequential path.
 """
 from collections import deque
 from concurrent.futures import ProcessPoolExecutor
+from contextlib import contextmanager
 from copy import deepcopy
 import ctypes
 import hashlib
@@ -13,6 +14,7 @@ import multiprocessing
 import os
 from pathlib import Path
 import shutil
+from tempfile import SpooledTemporaryFile
 
 import numpy as np
 import soundfile as sf
@@ -74,7 +76,29 @@ def worker_plan(requested, sessions, *, logical_cpus=None, available_bytes=None)
             "scope": "CPU arithmetic unchanged; GPU equivalence is not assumed"}
 
 
-def score_session(detector, row, path, model_ids):
+@contextmanager
+def _score_audio(path, expected_sha256):
+    if expected_sha256 is None:
+        with sf.SoundFile(path) as audio:
+            yield audio
+        return
+
+    # Hash the bytes that libsndfile will read. An in-place edit with restored
+    # timestamps cannot change the snapshot once its hash has been checked.
+    sha256 = hashlib.sha256()
+    with SpooledTemporaryFile(max_size=8 * 1024 ** 2, prefix="koww-evaluation-") as snapshot:
+        with Path(path).open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 ** 2), b""):
+                sha256.update(chunk)
+                snapshot.write(chunk)
+        if sha256.hexdigest() != expected_sha256:
+            raise ValueError(f"Evaluation audio changed before CPU scoring: {path}")
+        snapshot.seek(0)
+        with sf.SoundFile(snapshot) as audio:
+            yield audio
+
+
+def score_session(detector, row, path, model_ids, *, expected_sha256=None):
     """Score exactly one reset session with the original 80 ms reference path."""
     row = {**row, "calls": deepcopy(row.get("calls", []))}
     runtime = detector.runtime
@@ -94,7 +118,7 @@ def score_session(detector, row, path, model_ids):
     max_scores = dict.fromkeys(model_ids, 0.0)
     frames = 0
     frame_scores = []
-    with sf.SoundFile(path) as audio:
+    with _score_audio(path, expected_sha256) as audio:
         if audio.samplerate != 16000 or audio.channels != 1 or audio.subtype != "PCM_16":
             raise ValueError("Scored WAV must already be mono16kHz PCM16; no playback-only gain")
         total_frames = audio.frames // 1280
@@ -155,17 +179,21 @@ def _initialize_worker(bundle, model_ids):
             raise ValueError("Parallel evaluation requires the reference CPU ONNX path with one thread per session")
 
 
-def _score_worker(item):
+def _score_cpu_item(detector, model_ids, item):
     index, row, path = item
-    return index, *score_session(_DETECTOR, row, path, _MODEL_IDS)
+    return index, *score_session(detector, row, path, model_ids, expected_sha256=row["sha256"])
+
+
+def _score_worker(item):
+    return _score_cpu_item(_DETECTOR, _MODEL_IDS, item)
 
 
 def score_sessions(bundle, model_ids, items, workers, detector_factory=WakeWordDetector):
     """Yield in input order with at most 2×workers submitted sessions."""
     if workers == 1:
         detector = detector_factory(bundle)
-        for index, row, path in items:
-            yield index, *score_session(detector, row, path, model_ids)
+        for item in items:
+            yield _score_cpu_item(detector, model_ids, item)
         return
     context = multiprocessing.get_context("spawn")
     pending = deque()

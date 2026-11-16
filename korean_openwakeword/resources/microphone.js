@@ -9,7 +9,7 @@
   const rows = new Map();
   let info = null;
   let run = null;
-  let generation = 0;
+  let closingSession = false;
   let refreshing = false;
   let probe = null;
   let initializing = false;
@@ -61,7 +61,7 @@
   }
 
   function resetDetection() {
-    if (!defaultRuntime || run || probe) return;
+    if (!defaultRuntime || run || probe || closingSession) return;
     ui["trial-mode"].value = "manual";
     setDefaultFields();
     syncControls(); resetMetrics();
@@ -95,13 +95,13 @@
   }
 
   function syncControls() {
-    ui.start.disabled = !info || !!run || !!probe || document.hidden;
+    const settingsLocked = !info || !!run || !!probe || closingSession;
+    ui.start.disabled = settingsLocked || document.hidden;
     ui.stop.disabled = !run && !probe;
     ui.microphone.disabled = !!run || !!probe;
     ui.connect.disabled = !!run || !!probe || refreshing || document.hidden || !window.isSecureContext || !navigator.mediaDevices?.getUserMedia;
     ui.refresh.disabled = !!run || refreshing || !!probe || !navigator.mediaDevices?.enumerateDevices;
     ui.retry.disabled = initializing;
-    const settingsLocked = !info || !!run || !!probe;
     ui["trial-mode"].disabled = settingsLocked || !recommendedRuntimes;
     for (const control of ["trial-threshold", "trial-consecutive"]) ui[control].disabled = settingsLocked || ui["trial-mode"].value === "recommended";
     ui["reset-detection"].disabled = settingsLocked;
@@ -125,7 +125,7 @@
   }
 
   function headers(extra = {}) { return { "X-Koww-Token": info.token, ...extra }; }
-  function isCurrent(target) { return run === target && !target.cancelled && target.generation === generation; }
+  function isCurrent(target) { return run === target; }
 
   function renderModels(models) {
     const bars = ui["model-bars"];
@@ -224,7 +224,6 @@
   }
 
   function closeResources(target) {
-    target.cancelled = true;
     if (target.watchdog) clearInterval(target.watchdog);
     target.queue.length = 0;
     target.frameController?.abort();
@@ -235,22 +234,38 @@
     if (target.context && target.context.state !== "closed") target.context.close().catch(() => {});
   }
 
-  function notifyStop(sessionId, keepalive = false) {
-    if (!sessionId || !info) return Promise.resolve();
-    return fetch(apiUrl("/api/stop"), { method: "POST", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify({ session_id: sessionId }), keepalive }).catch(() => {});
+  async function releaseServerSession(target, message, hadError) {
+    closingSession = true;
+    if (!hadError) setStatus("시험 연결 정리 중", "", "preparing");
+    try {
+      // A cancelled start can still allocate a session before its response arrives.
+      const sessionId = target.sessionId || (await target.startRequest)?.session_id;
+      if (sessionId) {
+        await request("/api/stop", { method: "POST", headers: headers({ "Content-Type": "application/json" }),
+          body: JSON.stringify({ session_id: sessionId }), keepalive: true }, 5000, new AbortController(),
+          "서버가 5초 안에 시험 종료에 응답하지 않았습니다.");
+      }
+      if (!hadError) setStatus("시험 중지", message);
+    } catch (error) {
+      const detail = `이전 시험 연결을 정리하지 못했습니다. ${error.message}`;
+      setStatus("시험 중지 · 확인 필요", hadError ? `${message} ${detail}` : detail, "error");
+    } finally {
+      closingSession = false;
+      syncControls();
+    }
   }
 
-  function stop(message = "마이크 사용을 중지했습니다. 다시 시작하면 새 시험이 시작됩니다.", error = false, keepalive = false) {
+  function stop(message = "마이크 사용을 중지했습니다. 다시 시작하면 새 시험이 시작됩니다.", error = false) {
     cancelProbe();
     const target = run;
     if (!target) { syncControls(); return; }
-    generation++;
     run = null;
     closeResources(target);
-    notifyStop(target.sessionId, keepalive);
     ui.level.value = 0;
     ui.levelText.textContent = "마이크 중지됨";
-    setStatus(error ? "시험 중지 · 확인 필요" : "시험 중지", message, error ? "error" : "idle");
+    const hasServerSession = Boolean(target.sessionId || target.startRequest);
+    if (error || !hasServerSession) setStatus(error ? "시험 중지 · 확인 필요" : "시험 중지", message, error ? "error" : "idle");
+    if (hasServerSession) void releaseServerSession(target, message, error);
     syncControls();
   }
 
@@ -324,11 +339,11 @@
   }
 
   async function start() {
-    if (!info || run || probe || document.hidden) return;
+    if (!info || run || probe || closingSession || document.hidden) return;
     let settings;
     try { settings = trialSettings(); }
     catch (error) { setStatus("감지 설정을 확인하세요", error.message, "error"); return; }
-    const target = { generation: ++generation, cancelled: false, queue: [], sequence: 0, draining: false, sessionId: null, settings };
+    const target = { queue: [], sequence: 0, draining: false, sessionId: null, startRequest: null, settings };
     run = target;
     showDeviceHint("");
     syncControls(); resetMetrics();
@@ -347,10 +362,12 @@
       if (context.sampleRate !== 16000) throw new Error("이 브라우저가 16 kHz 마이크 분석을 지원하지 않습니다. 최신 Chrome 또는 Edge에서 열어주세요.");
       await context.audioWorklet.addModule(config.worklet_url || "/microphone_worklet.js");
       if (!isCurrent(target)) return;
-      const session = await request("/api/start", { method: "POST", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify(target.settings) });
+      target.startRequest = request("/api/start", { method: "POST", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify(target.settings) });
+      const session = await target.startRequest;
+      target.startRequest = null;
+      if (!isCurrent(target)) return;
       if (!session.session_id) throw new Error("시험 연결 정보를 읽을 수 없습니다.");
       target.sessionId = session.session_id;
-      if (!isCurrent(target)) { notifyStop(target.sessionId, true); return; }
       const recommended = target.settings.mode === "recommended";
       const matches = recommended
         ? info.models.every(model => validRuntime(session.runtimes?.[model.id])
@@ -381,7 +398,10 @@
       }, 250);
       setStatus("모델 준비 중", `${info.warmup_s}초 뒤에 호출어를 말하세요.`, "preparing");
       refreshDevices();
-    } catch (error) { if (isCurrent(target)) stop(microphoneError(error), true); }
+    } catch (error) {
+      target.startRequest = null;
+      if (isCurrent(target)) stop(microphoneError(error), true);
+    }
   }
 
   ui.start.addEventListener("click", start);
@@ -393,17 +413,17 @@
   ui["trial-consecutive"].addEventListener("input", () => { if (info && !run && !probe) resetMetrics(); });
   ui["trial-mode"].addEventListener("change", () => { if (run || probe) return; syncControls(); if (info) resetMetrics(); });
   ui["reset-detection"].addEventListener("click", resetDetection);
-  window.addEventListener("pagehide", () => { if (run || probe) stop("페이지를 떠나 마이크 시험을 중지했습니다.", false, true); });
-  document.addEventListener("visibilitychange", () => { if (document.hidden && (run || probe)) stop("다른 창으로 이동하여 시험을 중지했습니다. 돌아온 뒤 다시 시작하세요.", false, true); syncControls(); });
+  window.addEventListener("pagehide", () => { if (run || probe) stop("페이지를 떠나 마이크 시험을 중지했습니다."); });
+  document.addEventListener("visibilitychange", () => { if (document.hidden && (run || probe)) stop("다른 창으로 이동하여 시험을 중지했습니다. 돌아온 뒤 다시 시작하세요."); syncControls(); });
   window.addEventListener("message", event => {
     if (!window.parent || window.parent === window || !window.location?.origin || event.origin !== window.location.origin
         || event.source !== window.parent || event.data?.type !== "koww:pause") return;
-    if (run || probe) stop("화면을 이동하여 마이크 시험을 중지했습니다.", false, true);
+    if (run || probe) stop("화면을 이동하여 마이크 시험을 중지했습니다.");
   });
   navigator.mediaDevices?.addEventListener("devicechange", () => { if (!probe) refreshDevices(); });
 
   async function initialize() {
-    if (initializing || run) return;
+    if (initializing || run || closingSession) return;
     window.KowwChapterReady?.loading();
     let initializationError = "";
     initializing = true;

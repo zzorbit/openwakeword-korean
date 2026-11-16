@@ -1,4 +1,5 @@
 """Studio data planning does not download, approve or fabricate corpus scale."""
+from contextlib import contextmanager
 import hashlib
 import io
 import json
@@ -129,6 +130,44 @@ def test_archive_extract_exact_subset_resume_and_tamper_detection(tmp_path):
     (output / "folder/a.wav").write_bytes(b"changed")
     with pytest.raises(ValueError, match="changed"):
         module.extract_archive(archive, output, members=["folder/a.wav"])
+
+
+@pytest.mark.parametrize("selection", ["same", "different", "zeroth"])
+def test_archive_checks_receipt_published_just_before_writer_lock(tmp_path, monkeypatch, selection):
+    archive = tmp_path / "source.zip"
+    _zip(archive, [("a.flac", b"first"), ("b.flac", b"second")])
+    output = tmp_path / "out"
+    receipt_path = output / "extraction_receipt.json"
+    original_lock = module.writer_lock
+    completed_receipt = None
+    publishing = False
+
+    @contextmanager
+    def publish_first(directory):
+        nonlocal completed_receipt, publishing
+        if not publishing:
+            publishing = True
+            first = module.extract_archive(archive, output, members=["a.flac"], max_bytes=100)
+            assert first["resumed"] is False
+            completed_receipt = receipt_path.read_bytes()
+        with original_lock(directory):
+            yield
+
+    monkeypatch.setattr(module, "writer_lock", publish_first)
+    if selection == "different":
+        with pytest.raises(ValueError, match="Archive extraction request changed"):
+            module.extract_archive(archive, output, members=["b.flac"], max_bytes=100)
+    else:
+        if selection == "zeroth":
+            result = module._extract_zeroth_archive(archive, output)
+        else:
+            result = module.extract_archive(archive, output, members=["a.flac"], max_bytes=100)
+        assert result["resumed"] is True
+        assert result["request"]["members"] == ["a.flac"]
+        assert result["request"]["max_bytes"] == 100
+    assert receipt_path.read_bytes() == completed_receipt
+    assert (output / "a.flac").read_bytes() == b"first"
+    assert not (output / "b.flac").exists()
 
 
 @pytest.mark.parametrize("algorithm", ["sha256", "md5"])
@@ -364,8 +403,15 @@ def test_extraction_progress_is_separate_from_download_and_preserves_exact_files
     _zip(archive, [("a.wav", b"original audio"), ("b.wav", b"other original")])
     observed = []
     result = module.extract_archive(archive, tmp_path / "out", progress=observed.append)
-    assert all(row["phase"] == "extract" for row in observed)
-    assert observed[-1]["done"] == observed[-1]["total"] == result["bytes"]
+    hashing = [row for row in observed if row["phase"] == "extract_hash"]
+    extraction = [row for row in observed if row["phase"] == "extract"]
+    assert observed == hashing + extraction
+    assert all(row["unit"] == "bytes" for row in observed)
+    assert hashing[0]["done"] == 0
+    assert hashing[-1]["done"] == hashing[-1]["total"] == archive.stat().st_size
+    assert extraction[0]["done"] == 0
+    assert extraction[-1]["done"] == extraction[-1]["total"] == result["bytes"]
+    assert result["request"]["archive"]["sha256"] == digest(archive)
     assert (tmp_path / "out/a.wav").read_bytes() == b"original audio"
     assert (tmp_path / "out/b.wav").read_bytes() == b"other original"
 

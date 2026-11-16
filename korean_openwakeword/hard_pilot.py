@@ -19,8 +19,8 @@ def _implementation_sha256():
 def generate_hard_pilot(project, phrases, samples_per_phrase, model, *, revision=None, pause_requested=None):
     from . import clone_reference, tts
     from .hard_tts import (MAX_ATTEMPTS, _RECOVERY_ATTEMPTS, _attempt_rounds, _candidate_path, _exhausted_details,
-                           _phrases, _short_clone_context, _store_candidate, _synthesise, _validate_short_clone_attempt,
-                           _verify_prepared_reference,
+                           _phrases, _short_clone_context, _store_candidate, _synthesise, _validate_saved_candidate,
+                           _validate_short_clone_attempt, _verify_prepared_reference,
                            check_generation_pause, hard_phrase_scope)
 
     check_generation_pause(pause_requested)
@@ -58,8 +58,7 @@ def generate_hard_pilot(project, phrases, samples_per_phrase, model, *, revision
         if contract_path.exists():
             from .call_generation_history import compatible_hard_contract
             saved = read_json(contract_path)
-            compatible = {key: value for key, value in expected.items() if key != "short_clone_policy"}
-            if saved != expected and not compatible_hard_contract(saved, compatible, pilot=True):
+            if not compatible_hard_contract(saved, expected, pilot=True):
                 raise ValueError("Hard pilot settings, phrase list or references changed")
             contract = saved
         elif rows:
@@ -96,6 +95,7 @@ def generate_hard_pilot(project, phrases, samples_per_phrase, model, *, revision
             if row["technical_pass"]:
                 if row["sha256"] in hashes:
                     raise ValueError("Hard pilot passed duplicate audio")
+                _validate_saved_candidate(path, row)
                 passed[slot] = row
             attempts[slot] += 1
             if path is not None:
@@ -137,6 +137,8 @@ def generate_hard_pilot(project, phrases, samples_per_phrase, model, *, revision
                        "path": path, "sha256": sha, "qc": qc,
                        "start_s": bounds[0] if bounds else None, "end_s": bounds[1] if bounds else None,
                        "technical_pass": qc["passed"]}
+            if path is not None:
+                row["candidate_pcm_qc"] = tts.CANDIDATE_PCM_QC
             append_row(journal, row)
             if timing is not None:
                 timing.committed(qc["passed"])

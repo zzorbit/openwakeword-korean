@@ -192,7 +192,7 @@ koww audit --project models/bora/project.json
 
 공개 자료는 위 비호출 예시와 같은 출처·승인 필드를 사용하고, **`text`에 실제 유사 표현**, **`speech: true`**, **`split: "train"`**을 추가합니다. 합성 자료는 `provenance: "qwen_tts"`, `human_reference_used: false`, 학습용 `voice_family_id`를 기록하고, 출처·생성 근거와 내용 검수 결과를 보존합니다. 합성 음색도 개발용·최종 평가용 계열과 분리합니다.
 
-공개 또는 합성 유사어의 대표 검수 목록을 `koww review --kind content`로 확인한 뒤, 반환된 승인 기록을 해당 원본의 `admission`에 연결합니다. 새 유사어 생성 방식은 대표 발음을 먼저 검수하고 전체 음원을 다시 STT하지 않습니다. `init`은 빈 목록만 만들며 유사어를 자동 수집·생성·승인하지 않습니다.
+공개 또는 합성 유사어의 대표 검수 목록을 `koww review --kind content`로 확인한 뒤, 반환된 승인 기록을 해당 원본의 `admission`에 연결합니다. 새 웹 프로젝트에서는 전체 생성 음원을 기술 검사하고, 생성 후 문구마다 대표 음원의 발음을 사람이 검수합니다. `init`은 빈 목록만 만들며 유사어를 자동 수집·생성·승인하지 않습니다.
 
 긴 원본은 `koww windows --pool hard_negative`로 고정 2초 목록을 준비하고, `manifests.hard_negative`를 그 목록으로 바꿉니다. 이어서 `koww features --role hard_negative`로 다른 비호출과 같은 계열의 증강을 적용합니다. 준비된 음성이 비어 있으면 학습을 시작할 수 없습니다.
 

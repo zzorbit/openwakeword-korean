@@ -18,11 +18,13 @@ function Test-PythonCommand {
 
 $kowwSupportedPython = 'import sys; raise SystemExit(not ((3, 10) <= sys.version_info[:2] < (3, 14) and sys.maxsize > 2**32))'
 $kowwReadyProbe = @'
+import json
 import sys
-from importlib.metadata import PackageNotFoundError, version
+from importlib.metadata import PackageNotFoundError, distribution, version
 from importlib.util import find_spec
 
-expected = sys.argv[1]
+expected, identity_arg = sys.argv[1:]
+identity = identity_arg.removeprefix('artifact=')
 try:
     installed = version('korean-openwakeword')
     ready = (expected == '*' or installed == expected)
@@ -30,7 +32,14 @@ try:
     modules = ('korean_openwakeword', 'openwakeword', 'numpy', 'scipy',
                'soundfile', 'onnxruntime', 'requests', 'tqdm', 'sklearn')
     ready = ready and all(find_spec(name) is not None for name in modules)
-except PackageNotFoundError:
+    if identity.startswith('wheel:'):
+        direct = json.loads(distribution('korean-openwakeword').read_text('direct_url.json') or '{}')
+        archive = direct.get('archive_info', {})
+        sha = archive.get('hashes', {}).get('sha256')
+        if sha is None and archive.get('hash', '').startswith('sha256='):
+            sha = archive['hash'][7:]
+        ready = ready and (sha or '').upper() == identity[6:]
+except (PackageNotFoundError, ValueError, TypeError, AttributeError):
     ready = False
 raise SystemExit(not ready)
 '@
@@ -51,6 +60,48 @@ function Find-BasePython {
         }
     }
     throw 'Install 64-bit Python 3.12 from https://www.python.org/downloads/windows/ and run Start-Web.cmd again.'
+}
+
+function Get-InstallFileHash {
+    param([string]$Path)
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    try {
+        $stream = [IO.File]::OpenRead($Path)
+        try {
+            return [BitConverter]::ToString($hasher.ComputeHash($stream)).Replace('-', '')
+        } finally {
+            $stream.Dispose()
+        }
+    } finally {
+        $hasher.Dispose()
+    }
+}
+
+function Get-InstallIdentity {
+    param([string]$Target)
+    if (-not $Target) { return '' }
+    if (Test-Path -LiteralPath $Target -PathType Leaf) {
+        return 'wheel:' + (Get-InstallFileHash $Target)
+    }
+    $files = @(
+        Get-ChildItem -LiteralPath $Target -File | Where-Object {
+            $_.Extension -eq '.py' -or $_.Name -in @('pyproject.toml', 'MANIFEST.in', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md')
+        }
+        Get-ChildItem -LiteralPath (Join-Path $Target 'korean_openwakeword') -File -Recurse | Where-Object {
+            $_.Extension -in @('.py', '.json', '.html', '.js', '.css', '.svg', '.txt', '.md', '.onnx', '.wav')
+        }
+    )
+    $entries = $files | Sort-Object FullName | ForEach-Object {
+        $relative = $_.FullName.Substring($Target.Length).TrimStart([char[]]@('\', '/')).Replace('\', '/')
+        (Get-InstallFileHash $_.FullName) + ' ' + $relative
+    }
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [Text.Encoding]::UTF8.GetBytes(($entries -join "`n"))
+        return 'source:' + [BitConverter]::ToString($hasher.ComputeHash($bytes)).Replace('-', '')
+    } finally {
+        $hasher.Dispose()
+    }
 }
 
 # In a source checkout install the local project. A portable copy can use a
@@ -85,7 +136,6 @@ if ($WheelPath) {
 $kowwVenv = Join-Path $kowwInstallRoot '.venv'
 $kowwPythonPath = Join-Path $kowwVenv 'Scripts\python.exe'
 $kowwVersionArgs = @('-I', '-c', $kowwSupportedPython)
-$kowwReadyArgs = @('-I', '-c', $kowwReadyProbe, $kowwExpectedVersion)
 New-Item -ItemType Directory -Path $kowwVenv -Force | Out-Null
 try {
     $kowwSetupLock = [IO.File]::Open((Join-Path $kowwVenv '.start-web.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
@@ -95,7 +145,13 @@ try {
 try {
     $kowwVenvReady = (Test-Path -LiteralPath $kowwPythonPath -PathType Leaf) -and
         (Test-PythonCommand $kowwPythonPath $kowwVersionArgs)
-    if (-not $kowwVenvReady -or -not (Test-PythonCommand $kowwPythonPath $kowwReadyArgs)) {
+    $kowwIdentity = Get-InstallIdentity $kowwInstallTarget
+    $kowwReadyArgs = @('-I', '-c', $kowwReadyProbe, $kowwExpectedVersion, "artifact=$kowwIdentity")
+    $kowwReady = $kowwVenvReady -and (Test-PythonCommand $kowwPythonPath $kowwReadyArgs)
+    $kowwIdentityPath = Join-Path $kowwVenv '.koww-install-identity'
+    $kowwMatches = -not $kowwIdentity -or ((Test-Path -LiteralPath $kowwIdentityPath -PathType Leaf) -and
+        [IO.File]::ReadAllText($kowwIdentityPath) -ceq $kowwIdentity)
+    if (-not $kowwReady -or -not $kowwMatches) {
         if (-not $kowwInstallTarget) {
             if ($kowwWheels.Count -gt 1) {
                 throw 'More than one release wheel was found. Use -WheelPath to select the wheel to install.'
@@ -115,13 +171,29 @@ try {
             & $kowwPythonPath -I -m ensurepip --upgrade
             if ($LASTEXITCODE -ne 0) { throw 'Could not install pip in .venv.' }
         }
+        $kowwHasSameVersion = Test-PythonCommand $kowwPythonPath @('-I', '-c',
+            "import sys; from importlib.metadata import version; raise SystemExit(version('korean-openwakeword') != sys.argv[1])",
+            $kowwExpectedVersion)
+        # Invalidate the old receipt before attempting any package changes.
+        if (Test-Path -LiteralPath $kowwIdentityPath -PathType Leaf) {
+            Remove-Item -LiteralPath $kowwIdentityPath
+        }
         Write-Host 'Installing the library and web dependencies...'
         & $kowwPythonPath -I -m pip install --disable-pip-version-check $kowwInstallTarget
         if ($LASTEXITCODE -ne 0) { throw 'Library installation failed. See the error above and run Start-Web.cmd again.' }
+        if ($kowwHasSameVersion) {
+            # pip can keep the installed package when only its contents changed.
+            & $kowwPythonPath -I -m pip install --disable-pip-version-check --force-reinstall --no-deps $kowwInstallTarget
+            if ($LASTEXITCODE -ne 0) { throw 'Library replacement failed. See the error above and run Start-Web.cmd again.' }
+        }
         & $kowwPythonPath -I -m pip install --disable-pip-version-check --no-deps 'openwakeword==0.6.0'
         if ($LASTEXITCODE -ne 0 -or -not (Test-PythonCommand $kowwPythonPath $kowwReadyArgs)) {
             throw 'The web dependencies are not ready. See the error above and run Start-Web.cmd again.'
         }
+        if ((Get-InstallIdentity $kowwInstallTarget) -cne $kowwIdentity) {
+            throw 'The library source changed during setup. Run Start-Web.cmd again after the update finishes.'
+        }
+        [IO.File]::WriteAllText($kowwIdentityPath, $kowwIdentity)
     }
 } finally {
     $kowwSetupLock.Dispose()
@@ -129,5 +201,7 @@ try {
 
 $kowwWebArgs = @('-I', '-m', 'korean_openwakeword', 'web', '--workspace', $kowwWorkspaceRoot, '--port', $Port)
 if ($NoBrowser) { $kowwWebArgs += '--no-browser' }
+Write-Host 'Close this window or press Ctrl+C to stop the web server.'
+# Run in the launcher's console so Windows delivers its close event to Python.
 & $kowwPythonPath @kowwWebArgs
 exit $LASTEXITCODE

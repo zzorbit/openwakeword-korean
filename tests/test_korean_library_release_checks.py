@@ -30,7 +30,7 @@ def source_tree(tmp_path):
         (root / directory).mkdir(parents=True)
     for name in packager.GUIDES:
         (root / "docs" / name).write_text("public guide\n", encoding="utf-8")
-    for name in ("Use-ProjectStorage.ps1", "Start-Web.ps1", "Start-Web.cmd", "Stop-Web.ps1", "Stop-Web.cmd",
+    for name in ("Use-ProjectStorage.ps1", "Start-Web.ps1", "Start-Web.cmd",
                  "package_library.py", "check_browser.py"):
         shutil.copyfile(ROOT / "scripts" / name, root / "scripts" / name)
     for source in (ROOT / "tests").glob("check_*.cjs"):
@@ -48,6 +48,7 @@ def source_tree(tmp_path):
 def test_source_release_retains_all_browser_checks_and_only_allowlisted_data(source_tree, tmp_path):
     packager, root = source_tree
     for relative in (".env", "cache/private.txt", "reports/private.json", "scripts/local_private.py",
+                     "scripts/Stop-Web.cmd", "scripts/Stop-Web.ps1",
                      "tests/local_private.py", "tests/check_private.cjs.tmp", "korean_openwakeword/__pycache__/private.pyc",
                      "korean_openwakeword/private.tmp", "korean_openwakeword/.writer.lock",
                      "korean_openwakeword/private.wav", "korean_openwakeword/resources/cache/private.wav",
@@ -67,7 +68,9 @@ def test_source_release_retains_all_browser_checks_and_only_allowlisted_data(sou
     assert (output / "tests/test_studio_future.py").is_file()
     assert (output / "tests/fixtures/frozen_contract.json").is_file()
     paths = {entry["path"] for entry in result["files"]}
-    assert {"scripts/Stop-Web.cmd", "scripts/Stop-Web.ps1"} <= paths
+    assert {path for path in paths if path.startswith("scripts/") and path.endswith(".cmd")} == {"scripts/Start-Web.cmd"}
+    assert "scripts/Start-Web.ps1" in paths
+    assert "scripts/Stop-Web.ps1" not in paths
     assert not any("private" in path or path.endswith(".writer.lock") for path in paths)
     assert not inventory.is_relative_to(output)
     assert json.loads(inventory.read_text(encoding="utf-8")) == result

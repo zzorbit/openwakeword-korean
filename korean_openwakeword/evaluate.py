@@ -5,6 +5,7 @@ Final has one frozen gate and never grants tuning authority.
 """
 from collections import defaultdict
 from pathlib import Path
+import hashlib
 import math
 import json
 import time
@@ -161,26 +162,66 @@ def candidate_adoptions(summaries, config):
     return {row["id"]: adoption(summaries, config, row["id"]) for row in summaries}
 
 
-def evaluation_binding(project, bundle, manifest, stage="development", candidate=None, smoke=False,
-                       *, backend="cpu", gpu_batch_size=128, boundary_margin=.001, cpu_prefix=None):
-    """Identity for resumable work; scoring still verifies all actual inputs.
+CALL_MATCHING_REVISION = "chronological_start_s_v1"
 
-    Reading this identity does not certify WAVs, model assets or a checkpoint.
-    The evaluate entry point performs those checks before reusing any score.
-    """
-    directory = Path(bundle).resolve()
-    package = read_json(directory / "manifest.json")
+
+def _calls_need_sort(row):
+    if not isinstance(row, dict) or row.get("kind") != "positive":
+        return False
+    calls = row.get("calls") or []
+    return any(first["start_s"] > second["start_s"] for first, second in zip(calls, calls[1:]))
+
+
+def _manifest_snapshot(path, *, retain_rows):
+    """Parse and hash the same bytes, without allocating another manifest copy."""
+    sha256 = hashlib.sha256()
+    rows, calls_need_sort = [], False
+    with Path(path).open("rb") as stream:
+        for index, raw_line in enumerate(stream):
+            sha256.update(raw_line)
+            try:
+                # Match text-mode JSONL support for LF, CRLF, CR and an initial BOM.
+                encoding = "utf-8-sig" if index == 0 else "utf-8"
+                for line in raw_line.decode(encoding).split("\r"):
+                    if not line.strip():
+                        continue
+                    row = json.loads(line)
+                    if retain_rows:
+                        rows.append(row)
+                    calls_need_sort = calls_need_sort or _calls_need_sort(row)
+            except (ValueError, KeyError, TypeError):
+                # A binding by itself has never certified manifest validity.
+                if retain_rows:
+                    raise
+    return rows, sha256.hexdigest(), calls_need_sort
+
+
+def _scoring_binding(package, candidate, stage, smoke, inputs, calls_need_sort,
+                     *, backend, gpu_batch_size, boundary_margin, cpu_prefix=None):
     model_ids = [row["id"] for row in bundle_candidates(package)]
     candidate = deployment_candidate(package)["id"] if candidate is None else candidate
-    payload = {"project_sha256": digest(project), "bundle_sha256": digest(directory / "manifest.json"),
-                     "manifest_sha256": digest(manifest), "stage": stage, "candidate": candidate,
+    payload = {**inputs, "stage": stage, "candidate": candidate,
                      "smoke": smoke, "model_ids": model_ids, "scoring_protocol": "reference_cpu_session_v1"}
+    if calls_need_sort:
+        payload["call_matching"] = CALL_MATCHING_REVISION
     if backend == "cuda":
         payload.update(scoring_protocol="cuda_batch_fp32_cpu_boundary_v1", gpu_batch_size=gpu_batch_size,
                        boundary_margin=boundary_margin, cpu_prefix=cpu_prefix)
     elif backend != "cpu":
         raise ValueError("Evaluation backend must be cpu or cuda")
     return identity(payload)
+
+
+def evaluation_binding(project, bundle, manifest, stage="development", candidate=None, smoke=False,
+                       *, backend="cpu", gpu_batch_size=128, boundary_margin=.001, cpu_prefix=None):
+    """Identity for resumable work; scoring still verifies all actual inputs."""
+    bundle_manifest = Path(bundle).resolve() / "manifest.json"
+    package = read_json(bundle_manifest)
+    _, manifest_sha256, calls_need_sort = _manifest_snapshot(manifest, retain_rows=False)
+    inputs = {"project_sha256": digest(project), "bundle_sha256": digest(bundle_manifest),
+              "manifest_sha256": manifest_sha256}
+    return _scoring_binding(package, candidate, stage, smoke, inputs, calls_need_sort, backend=backend,
+        gpu_batch_size=gpu_batch_size, boundary_margin=boundary_margin, cpu_prefix=cpu_prefix)
 
 
 def validate_cpu_prefix_import(project, bundle, manifest, output, stage, candidate, smoke, backend,
@@ -396,8 +437,11 @@ def _gpu_sessions_with_environment(environment, *args, **kwargs):
 def evaluate(project, bundle, output, stage="development", manifest=None, smoke=False, candidate=None, workers="auto", resume=False,
              *, backend="auto", gpu_batch_size=128, boundary_margin=.001, cpu_prefix_import=None,
              numerical_differences_approved=None):
+    project_sha256 = digest(project)
     root, config = load_project(project)
     directory = Path(bundle).resolve()
+    bundle_manifest = directory / "manifest.json"
+    bundle_sha256 = digest(bundle_manifest)
     package = verify_bundle(directory)
     candidates = bundle_candidates(package)
     deployed = deployment_candidate(package)
@@ -416,6 +460,9 @@ def evaluate(project, bundle, output, stage="development", manifest=None, smoke=
         raise ValueError("CUDA FP32 requires explicit approval of small numerical score differences")
     manifest = Path(manifest).resolve() if manifest else resolved(root, config["manifests"][stage])
     output = Path(output).resolve()
+    sources, manifest_sha256, calls_need_sort = _manifest_snapshot(manifest, retain_rows=True)
+    inputs = {"project_sha256": project_sha256, "bundle_sha256": bundle_sha256,
+              "manifest_sha256": manifest_sha256}
     resume_backend = "cuda" if cpu_prefix_import else None
     if resume and not cpu_prefix_import:
         checkpoint_path = output / "_evaluation_work/checkpoint.json"
@@ -423,7 +470,7 @@ def evaluate(project, bundle, output, stage="development", manifest=None, smoke=
             raise ValueError("No resumable evaluation checkpoint")
         saved_binding = read_json(checkpoint_path).get("binding")
         for saved_backend in ("cpu", "cuda"):
-            if saved_binding == evaluation_binding(project, directory, manifest, stage, candidate, smoke,
+            if saved_binding == _scoring_binding(package, candidate, stage, smoke, inputs, calls_need_sort,
                     backend=saved_backend, gpu_batch_size=gpu_batch_size, boundary_margin=boundary_margin):
                 resume_backend = saved_backend
                 break
@@ -449,11 +496,10 @@ def evaluate(project, bundle, output, stage="development", manifest=None, smoke=
         if candidate != deployed["id"]:
             raise ValueError("Final evaluates the frozen deployed candidate; no candidate selection")
         lock = require_final_lock(project)
-        if lock["bundle_manifest_sha256"] != digest(directory / "manifest.json") or lock["project_config_sha256"] != digest(project):
+        if lock["bundle_manifest_sha256"] != bundle_sha256 or lock["project_config_sha256"] != project_sha256:
             raise ValueError("Final model/runtime/project changed after freeze")
         if smoke:
             raise ValueError("Final cannot be a smoke run")
-    sources = read_rows(manifest)
     imported = validate_cpu_prefix_import(project, directory, manifest, output, stage, candidate, smoke,
         backend, gpu_batch_size, boundary_margin, cpu_prefix_import, sources=sources) if cpu_prefix_import else None
     # Reuse this operation's full hash/header checks from the split audit in
@@ -505,15 +551,10 @@ def evaluate(project, bundle, output, stage="development", manifest=None, smoke=
         paths.append(path)
         offsets.append(offsets[-1] + info.frames // 1280)
     verified_files.clear()
-    if output.exists() and any(output.iterdir()):
-        if not resume or (output / "receipt.json").exists():
-            raise ValueError("Evaluation outputs are immutable; choose a new directory (or resume an incomplete run explicitly)")
-    elif resume:
-        raise ValueError("No resumable evaluation checkpoint; choose a new output directory")
     runtime = package["runtime"]
     model_ids = [row["id"] for row in candidates]
     execution = worker_plan(workers, len(sources))
-    binding = evaluation_binding(project, directory, manifest, stage, candidate, smoke, backend=backend,
+    binding = _scoring_binding(package, candidate, stage, smoke, inputs, calls_need_sort, backend=backend,
         gpu_batch_size=gpu_batch_size, boundary_margin=boundary_margin,
         cpu_prefix=imported["prefix"] if imported else None)
     execution["backend"] = backend
@@ -527,6 +568,9 @@ def evaluate(project, bundle, output, stage="development", manifest=None, smoke=
         execution["scoring_protocol"] = "cuda_batch_fp32_cpu_boundary_v1"
     started = time.perf_counter()
     with writer_lock(output):
+        if ((output / "receipt.json").exists()
+                or (not resume and any(path.name != ".writer.lock" for path in output.iterdir()))):
+            raise ValueError("Evaluation outputs are immutable; choose a new directory (or resume an incomplete run explicitly)")
         journal = EvaluationJournal(output, binding, offsets, model_ids, resume=resume)
         try:
             execution["resumed_sessions"] = journal.resumed_sessions
@@ -560,8 +604,8 @@ def evaluate(project, bundle, output, stage="development", manifest=None, smoke=
         summaries = summarize(clips, config, candidates)
         report = {"schema_version": 1, "wakeword": config["wakeword"], "stage": stage, "created_at": now(),
             "smoke_test_only": smoke or any(m.get("smoke_test_only") for m in package["members"]),
-            "bundle_manifest_sha256": digest(directory / "manifest.json"), "manifest_sha256": digest(manifest),
-            "evaluation_manifest": {"path": str(manifest), "sha256": digest(manifest)},
+            "bundle_manifest_sha256": bundle_sha256, "manifest_sha256": manifest_sha256,
+            "evaluation_manifest": {"path": str(manifest), "sha256": manifest_sha256},
             "evaluation_binding": binding,
             "runtime": runtime, "sessions": len(clips), "models": summaries, "execution": execution,
             "candidate_definitions": candidates, "selected_candidate": candidate,
@@ -580,8 +624,11 @@ def evaluate(project, bundle, output, stage="development", manifest=None, smoke=
             report["real_population_verified"] = False
         report["score_cache_sha256"] = digest(output / "scores.npz")
         journal.publish_clips()
+        if (digest(project) != project_sha256 or digest(bundle_manifest) != bundle_sha256
+                or digest(manifest) != manifest_sha256):
+            raise ValueError("Evaluation project, bundle or manifest changed before publication")
         write_json(output / "report.json", report)
         write_json(output / "receipt.json", {"report_sha256": digest(output / "report.json"),
-            "clips_sha256": digest(output / "clips.json"), "bundle_sha256": digest(directory / "manifest.json"), "completed_at": now()})
+            "clips_sha256": digest(output / "clips.json"), "bundle_sha256": bundle_sha256, "completed_at": now()})
         journal.discard_completed_work()
     return report

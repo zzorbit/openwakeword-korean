@@ -13,7 +13,6 @@ import numpy as np
 import soundfile as sf
 
 from . import clone_reference, tts
-from .audio import pcm16
 from .common import append_row, bound_file, digest, identity, now, read_json, read_rows, write_json, writer_lock
 from .task_progress import emit as report_progress, generation_attempt
 from .data import validate_hard_negative
@@ -125,7 +124,12 @@ def _short_clone_context(root, output, contract, expected, rows, *, create=False
         if saved is None:
             write_json(path, receipt)
         elif saved != receipt:
-            raise ValueError("Hard synthesis update or original journal prefix changed")
+            from .call_generation_history import compatible_short_clone_hard_release
+
+            implementation, qc = saved.get("implementation_sha256"), saved.get("technical_qc_sha256")
+            if (not compatible_short_clone_hard_release(implementation, qc, pilot="implementation_sha256" in expected)
+                    or saved != {**receipt, "implementation_sha256": implementation, "technical_qc_sha256": qc}):
+                raise ValueError("Hard synthesis update or original journal prefix changed")
         binding = {"path": path.relative_to(root).as_posix(), "sha256": digest(path)}
     else:
         binding = None
@@ -227,7 +231,7 @@ def _exhausted_details(slots, rows, phrase_reference, recovery):
 def _validate_short_clone_attempt(row, *, historical, update):
     if historical:
         if any(key in row for key in ("short_clone_policy", "short_clone_update", "generation_token_limit",
-                                      "clone_reference_preparation")):
+                                      "clone_reference_preparation", "candidate_pcm_qc")):
             raise ValueError("Unexpected short-clone evidence in original Hard journal")
     else:
         limit = row.get("generation_token_limit")
@@ -235,6 +239,8 @@ def _validate_short_clone_attempt(row, *, historical, update):
                 or not isinstance(row.get("clone_reference_preparation"), dict)
                 or (limit is not None and (type(limit) is not int or limit < 1))):
             raise ValueError("Hard attempt does not bind its short-clone policy and update")
+        if "candidate_pcm_qc" in row and (row["candidate_pcm_qc"] != tts.CANDIDATE_PCM_QC or not row.get("path")):
+            raise ValueError("Hard attempt has invalid saved PCM quality evidence")
 
 
 def _verify_prepared_reference(root, row, reference, verified):
@@ -272,7 +278,7 @@ def _synthesise(model, phrase, prompt, settings, *, retry, expected_reuses):
 def _store_candidate(root, output, sample_id, converted, qc, hashes):
     if converted is None:
         return None, None, None
-    samples, bounds = converted
+    samples, bounds = tts.encode_candidate_pcm16(converted, qc)
     path = output / (sample_id + ".wav")
     if path.exists():
         # Only an attempt without a journal row may reach this path.
@@ -280,13 +286,28 @@ def _store_candidate(root, output, sample_id, converted, qc, hashes):
         orphan.parent.mkdir(exist_ok=True)
         if not orphan.exists():
             path.rename(orphan)
-    sf.write(path, pcm16(np.clip(samples, -1, 1)), 16000, subtype="PCM_16")
+    sf.write(path, samples, 16000, subtype="PCM_16")
     sha = digest(path)
     if sha in hashes:
         qc["passed"] = False
         qc["reasons"].append("exact_duplicate")
     hashes.add(sha)
     return path.relative_to(root).as_posix(), sha, bounds
+
+
+def _validate_saved_candidate(path, row):
+    """Keep original rows and require the stored samples to pass before resuming."""
+    with sf.SoundFile(path) as audio:
+        start, end = row.get("start_s"), row.get("end_s")
+        if (audio.samplerate != 16000 or audio.channels != 1 or audio.subtype != "PCM_16"
+                or type(start) not in (int, float) or type(end) not in (int, float)
+                or not 0 <= start < end <= audio.frames / audio.samplerate + 1e-6 or end - start > 1.840001):
+            raise ValueError("Hard candidate has invalid saved PCM or an incomplete phrase interval")
+        persisted_qc, converted = tts.technical_qc(audio.read(dtype="float64"), audio.samplerate)
+    if not persisted_qc["passed"]:
+        raise ValueError("Stored Hard candidate no longer passes technical QC")
+    if row.get("candidate_pcm_qc") == tts.CANDIDATE_PCM_QC and converted[1] != [start, end]:
+        raise ValueError("Hard candidate saved PCM phrase interval changed")
 
 
 def _validate_existing(root, output, rows, contract, config, phrases, references, count, pause_requested, update, boundary, recovery):
@@ -326,15 +347,9 @@ def _validate_existing(root, output, rows, contract, config, phrases, references
         if row.get("technical_pass") is not qc.get("passed"):
             raise ValueError("Hard technical acceptance fields disagree")
         if qc.get("passed") is True:
-            info = sf.info(path)
-            start, end = row.get("start_s"), row.get("end_s")
-            if (slot in passed or row["sha256"] in hashes or info.samplerate != 16000 or info.channels != 1 or
-                type(start) not in (int, float) or type(end) not in (int, float) or
-                not 0 <= start < end <= info.duration + 1e-6 or end - start > 1.840001):
-                raise ValueError("Hard candidate duplicates or incomplete phrase interval")
-            persisted_qc, _ = tts.technical_qc(sf.read(path, dtype="float64")[0], 16000)
-            if not persisted_qc["passed"]:
-                raise ValueError("Stored Hard candidate no longer passes technical QC")
+            if row["sha256"] in hashes:
+                raise ValueError("Hard attempt passed duplicate audio")
+            _validate_saved_candidate(path, row)
             passed[slot] = row
         if path is not None:
             hashes.add(row["sha256"])
@@ -355,6 +370,8 @@ def generate_hard(project, phrases, count=None, model=None, *, samples_per_phras
     may inject the qualified lazy Qwen runtime; approval checks precede any
     loading. ``candidates.jsonl`` is the authoritative per-attempt journal;
     generation never publishes training admission or listening decisions.
+    New attempts record quality validation of stored PCM. Earlier accepted
+    attempts keep their records and must still pass QC from the saved audio.
     """
     check_generation_pause(pause_requested)
     root, config = load_project(project)
@@ -410,8 +427,7 @@ def generate_hard(project, phrases, count=None, model=None, *, samples_per_phras
         if contract_path.exists():
             from .call_generation_history import compatible_hard_contract
             saved = read_json(contract_path)
-            compatible = {key: value for key, value in expected.items() if key != "short_clone_policy"}
-            if saved != expected and not compatible_hard_contract(saved, compatible):
+            if not compatible_hard_contract(saved, expected):
                 raise ValueError("Hard settings/reference/code/count changed; use a versioned output/project")
             contract = saved
         else:
@@ -473,6 +489,8 @@ def generate_hard(project, phrases, count=None, model=None, *, samples_per_phras
                     "tts_settings_id": identity(config["tts"]), "seed": seed,
                     "generation_seconds": time.perf_counter() - started, "created_at": now(),
                     "individual_human_listening": False, "content_review": "pending", "training_admitted": False}
+            if path is not None:
+                row["candidate_pcm_qc"] = tts.CANDIDATE_PCM_QC
             append_row(output / "candidates.jsonl", row)
             if timing is not None:
                 timing.committed(qc["passed"])

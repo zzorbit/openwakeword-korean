@@ -378,8 +378,17 @@ def _archive_sha256(archive, stream, observed_identity, progress):
     return hasher.hexdigest()
 
 
-def extract_archive(archive, output, *, members=None, max_bytes=40 * 1024**3, include_suffixes=None, progress=None):
+_DEFAULT_ARCHIVE_BUDGET = 40 * 1024**3
+
+
+def extract_archive(archive, output, *, members=None, max_bytes=_DEFAULT_ARCHIVE_BUDGET, include_suffixes=None, progress=None):
     """Safely resume exact selected files from the verified archive handle."""
+    return _extract_archive(archive, output, members=members, max_bytes=max_bytes,
+                            include_suffixes=include_suffixes, progress=progress)
+
+
+def _extract_archive(archive, output, *, members=None, max_bytes=_DEFAULT_ARCHIVE_BUDGET,
+                     include_suffixes=None, progress=None, preserve_zeroth_selection=False):
     archive, output = Path(archive).resolve(), Path(output).resolve()
     path_identity = _file_identity(archive)
     with archive.open("rb") as archive_stream:
@@ -390,15 +399,23 @@ def extract_archive(archive, output, *, members=None, max_bytes=40 * 1024**3, in
         observed = path_identity, opened_identity
         _require_unchanged_archive(archive, archive_stream, observed)
         checksum = _archive_sha256(archive, archive_stream, path_identity, progress)
-        _require_unchanged_archive(archive, archive_stream, observed)
-        return _extract_archive(archive, output, archive_stream, observed, checksum,
-                                members, max_bytes, include_suffixes, progress)
+        with writer_lock(output):
+            _require_unchanged_archive(archive, archive_stream, observed)
+            receipt_path = output / "extraction_receipt.json"
+            receipt = None
+            if receipt_path.is_file():
+                receipt = read_json(receipt_path)
+                if not isinstance(receipt, dict):
+                    raise ValueError("Invalid existing archive extraction receipt")
+                if preserve_zeroth_selection:
+                    members, max_bytes, include_suffixes = _saved_zeroth_selection(receipt)
+            return _extract_archive_locked(archive, output, archive_stream, observed, checksum,
+                                           members, max_bytes, include_suffixes, progress, receipt)
 
 
-def _extract_archive(archive, output, archive_stream, observed, checksum,
-                     members, max_bytes, include_suffixes, progress):
+def _extract_archive_locked(archive, output, archive_stream, observed, checksum,
+                            members, max_bytes, include_suffixes, progress, receipt):
     """Validate all archive members without following links or calling extractall."""
-    output.mkdir(parents=True, exist_ok=True)
     requested = set(members) if members is not None else None
     request = {"archive": {"path": str(archive), "sha256": checksum},
                "members": sorted(requested) if requested is not None else None, "max_bytes": max_bytes}
@@ -411,9 +428,7 @@ def _extract_archive(archive, output, archive_stream, observed, checksum,
         suffixes = tuple(sorted({value.lower() for value in include_suffixes}))
         # Default requests retain their historical byte-for-byte identity.
         request["selector"] = {"version": 1, "include_suffixes": list(suffixes)}
-    receipt_path = output / "extraction_receipt.json"
-    if receipt_path.is_file():
-        receipt = read_json(receipt_path)
+    if receipt is not None:
         if receipt.get("request") != request:
             raise ValueError("Archive extraction request changed; use another directory")
         files = receipt["files"]
@@ -428,93 +443,93 @@ def _extract_archive(archive, output, archive_stream, observed, checksum,
                 reported = stamp
         _require_unchanged_archive(archive, archive_stream, observed)
         return {**receipt, "resumed": True}
-    with writer_lock(output):
-        _require_unchanged_archive(archive, archive_stream, observed)
-        is_zip = zipfile.is_zipfile(archive_stream)
-        archive_stream.seek(0)
-        handle = zipfile.ZipFile(archive_stream) if is_zip else tarfile.open(fileobj=archive_stream, mode="r:*")
-        with handle:
-            inventory = handle.infolist() if is_zip else handle.getmembers()
-            selected, names, targets, required = [], set(), set(), 0
-            for member in inventory:
-                name = member.filename if is_zip else member.name
-                directory_member = member.is_dir() if is_zip else member.isdir()
-                if directory_member and name.rstrip("/") in ("", "."):
-                    continue  # A conventional tar root entry creates nothing.
-                # Validate every member, even one outside the selected subset.
-                target = _archive_target(output, name.rstrip("/"))
-                mode = member.external_attr >> 16 if is_zip else member.mode
-                if (is_zip and stat.S_IFMT(mode) not in (0, stat.S_IFREG, stat.S_IFDIR)) or (not is_zip and not (member.isfile() or member.isdir())):
-                    raise ValueError("Archive links and special files are not allowed")
-                if directory_member:
-                    continue
-                if name in names or target in targets:
-                    raise ValueError("Duplicate public archive member path")
-                names.add(name)
-                targets.add(target)
-                if requested is not None and name not in requested:
-                    continue
-                if suffixes is not None and not name.lower().endswith(suffixes):
-                    continue
-                size = member.file_size if is_zip else member.size
-                if not 0 <= size <= 512 * 1024**2:
-                    raise ValueError("Public archive member exceeds extraction safety limit")
-                required += size
-                selected.append((member, target, size))
-            if requested is not None and requested - names:
-                raise ValueError("Requested public archive members are missing")
-            if required > max_bytes or shutil.disk_usage(output).free < required:
-                raise ValueError("Insufficient disk space or extraction exceeds recipe budget")
-            records = []
-            completed_bytes, started, last_update = 0, time.monotonic(), 0.0
-            _emit(progress, "압축 해제: " + archive.name, 0, required, "bytes", phase="extract")
-            for member, target, size in selected:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                partial = target.with_name(target.name + ".part")
-                source = handle.open(member) if is_zip else handle.extractfile(member)
-                with source, partial.open("wb") as stream:
-                    remaining = size
-                    while remaining:
-                        block = source.read(min(1024**2, remaining))
-                        if not block:
-                            raise EOFError("Truncated public archive member")
-                        stream.write(block)
-                        remaining -= len(block)
-                    if source.read(1):
-                        raise ValueError("Archive member exceeds its declared size")
-                actual = digest(partial)
-                if target.exists() and digest(target) != actual:
-                    raise ValueError("Interrupted extraction contains a conflicting file")
-                os.replace(partial, target)
-                records.append({"path": target.relative_to(output).as_posix(), "sha256": actual, "bytes": size})
-                completed_bytes += size
-                elapsed = time.monotonic() - started
-                if elapsed - last_update >= .5 or completed_bytes == required:
-                    rate = completed_bytes / elapsed if elapsed > 0 else None
-                    _emit(progress, "압축 해제: " + archive.name, completed_bytes, required, "bytes", phase="extract",
-                          bytes_per_second=rate, eta_seconds=max(0, (required-completed_bytes)/rate) if rate else None)
-                    last_update = elapsed
-        _require_unchanged_archive(archive, archive_stream, observed)
-        receipt = {"request": request, "files": records, "bytes": required, "completed_at": now(), "content_approved": False}
-        write_json(receipt_path, receipt)
-        return {**receipt, "resumed": False}
+    is_zip = zipfile.is_zipfile(archive_stream)
+    archive_stream.seek(0)
+    handle = zipfile.ZipFile(archive_stream) if is_zip else tarfile.open(fileobj=archive_stream, mode="r:*")
+    with handle:
+        inventory = handle.infolist() if is_zip else handle.getmembers()
+        selected, names, targets, required = [], set(), set(), 0
+        for member in inventory:
+            name = member.filename if is_zip else member.name
+            directory_member = member.is_dir() if is_zip else member.isdir()
+            if directory_member and name.rstrip("/") in ("", "."):
+                continue  # A conventional tar root entry creates nothing.
+            # Validate every member, even one outside the selected subset.
+            target = _archive_target(output, name.rstrip("/"))
+            mode = member.external_attr >> 16 if is_zip else member.mode
+            if (is_zip and stat.S_IFMT(mode) not in (0, stat.S_IFREG, stat.S_IFDIR)) or (not is_zip and not (member.isfile() or member.isdir())):
+                raise ValueError("Archive links and special files are not allowed")
+            if directory_member:
+                continue
+            if name in names or target in targets:
+                raise ValueError("Duplicate public archive member path")
+            names.add(name)
+            targets.add(target)
+            if requested is not None and name not in requested:
+                continue
+            if suffixes is not None and not name.lower().endswith(suffixes):
+                continue
+            size = member.file_size if is_zip else member.size
+            if not 0 <= size <= 512 * 1024**2:
+                raise ValueError("Public archive member exceeds extraction safety limit")
+            required += size
+            selected.append((member, target, size))
+        if requested is not None and requested - names:
+            raise ValueError("Requested public archive members are missing")
+        if required > max_bytes or shutil.disk_usage(output).free < required:
+            raise ValueError("Insufficient disk space or extraction exceeds recipe budget")
+        records = []
+        completed_bytes, started, last_update = 0, time.monotonic(), 0.0
+        _emit(progress, "압축 해제: " + archive.name, 0, required, "bytes", phase="extract")
+        for member, target, size in selected:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            partial = target.with_name(target.name + ".part")
+            source = handle.open(member) if is_zip else handle.extractfile(member)
+            with source, partial.open("wb") as stream:
+                remaining = size
+                while remaining:
+                    block = source.read(min(1024**2, remaining))
+                    if not block:
+                        raise EOFError("Truncated public archive member")
+                    stream.write(block)
+                    remaining -= len(block)
+                if source.read(1):
+                    raise ValueError("Archive member exceeds its declared size")
+            actual = digest(partial)
+            if target.exists() and digest(target) != actual:
+                raise ValueError("Interrupted extraction contains a conflicting file")
+            os.replace(partial, target)
+            records.append({"path": target.relative_to(output).as_posix(), "sha256": actual, "bytes": size})
+            completed_bytes += size
+            elapsed = time.monotonic() - started
+            if elapsed - last_update >= .5 or completed_bytes == required:
+                rate = completed_bytes / elapsed if elapsed > 0 else None
+                _emit(progress, "압축 해제: " + archive.name, completed_bytes, required, "bytes", phase="extract",
+                      bytes_per_second=rate, eta_seconds=max(0, (required-completed_bytes)/rate) if rate else None)
+                last_update = elapsed
+    _require_unchanged_archive(archive, archive_stream, observed)
+    receipt = {"request": request, "files": records, "bytes": required, "completed_at": now(), "content_approved": False}
+    write_json(output / "extraction_receipt.json", receipt)
+    return {**receipt, "resumed": False}
+
+
+def _saved_zeroth_selection(receipt):
+    request = receipt.get("request", {})
+    if not isinstance(request, dict):
+        raise ValueError("Invalid existing Zeroth extraction request; original receipt preserved")
+    suffixes = None
+    if "selector" in request:
+        selector = request["selector"]
+        if not isinstance(selector, dict) or selector.get("version") != 1 or "include_suffixes" not in selector:
+            raise ValueError("Unsupported existing Zeroth archive selector; original receipt preserved")
+        suffixes = selector["include_suffixes"]
+    return request.get("members"), request.get("max_bytes", _DEFAULT_ARCHIVE_BUDGET), suffixes
 
 
 def _extract_zeroth_archive(archive, output, progress=None):
     """Skip nested archive copies in new runs; preserve existing receipt policy."""
-    receipt_path = Path(output) / "extraction_receipt.json"
-    options = {"include_suffixes": (".flac", ".txt")}
-    if receipt_path.is_file():
-        request = read_json(receipt_path).get("request", {})
-        if not isinstance(request, dict):
-            raise ValueError("Invalid existing Zeroth extraction request; original receipt preserved")
-        options = {"members": request.get("members"), "max_bytes": request.get("max_bytes", 40 * 1024**3)}
-        if "selector" in request:
-            selector = request["selector"]
-            if not isinstance(selector, dict) or selector.get("version") != 1 or "include_suffixes" not in selector:
-                raise ValueError("Unsupported existing Zeroth archive selector; original receipt preserved")
-            options["include_suffixes"] = selector["include_suffixes"]
-    return extract_archive(archive, output, **options, **({"progress": progress} if progress else {}))
+    return _extract_archive(archive, output, include_suffixes=(".flac", ".txt"), progress=progress,
+                            preserve_zeroth_selection=True)
 
 
 def _mit_download_plan(shared):
