@@ -158,11 +158,3 @@ def test_expanded_target_refuses_old_nominal_generic_scale():
             'korean_negative': {'unique_source_hours': 3000}}
     with pytest.raises(ValueError, match='3500h'):
         validate_training_scale(config, meta)
-
-
-def test_cli_exposes_hard_negative_windows_and_features():
-    from korean_openwakeword.cli import parser
-    args = parser().parse_args(['features', '--project', 'project.json', '--role', 'hard_negative'])
-    assert args.role == 'hard_negative'
-    args = parser().parse_args(['windows', '--project', 'project.json', '--pool', 'hard_negative', '--output', 'windows.jsonl'])
-    assert args.pool == 'hard_negative'

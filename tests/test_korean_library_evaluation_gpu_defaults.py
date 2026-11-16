@@ -12,7 +12,6 @@ import pytest
 import soundfile as sf
 
 from korean_openwakeword import evaluation_backend, evaluation_workers, evaluate, studio_steps
-from korean_openwakeword.cli import dispatch, parser
 from korean_openwakeword.common import digest, read_json, write_json
 from korean_openwakeword.evaluation_workers import EvaluationJournal
 from korean_openwakeword.project import create_project
@@ -305,14 +304,6 @@ def test_studio_reuses_only_the_selected_backend_and_preserves_other_evaluation_
         assert {path: digest(path) for path in preserved} == preserved
 
 
-def test_cli_defaults_to_auto_and_keeps_explicit_cpu_override():
-    arguments = ["evaluate", "--project", "project.json", "--bundle", "bundle", "--output", "scores"]
-    defaults = parser().parse_args(arguments)
-    assert defaults.backend == "auto" and defaults.accept_gpu_numerical_differences is None
-    assert defaults.gpu_batch_size == 128 and defaults.gpu_boundary_margin == .001
-    assert parser().parse_args(arguments + ["--backend", "cpu"]).backend == "cpu"
-
-
 @pytest.mark.parametrize("inputs,managed,installed,expected_setup", [
     ({"dependency_backend": "cu128"}, True, False, True),
     ({"dependency_backend": "cu128", "evaluation_backend": "cpu"}, True, False, True),
@@ -385,19 +376,18 @@ def test_studio_worker_reuses_the_saved_tools_backend_checkpoint(monkeypatch, tm
     assert digest(project) == prior_config
 
 
-def test_setup_gpu_cli_dispatches_only_to_the_selected_project_cache(monkeypatch, tmp_path):
+def test_studio_prepares_gpu_tools_only_in_the_selected_project_cache(monkeypatch, tmp_path):
     from korean_openwakeword import gpu_runtime_install
-    project = tmp_path / "selected word" / "project.json"
+    project = create_project(tmp_path / "selected word", "보라야", "selected_word")
+    monkeypatch.delenv("KOWW_GPU_RUNTIME_PATH", raising=False)
     calls = []
     def setup(root):
         calls.append(root)
         return {"state": "completed", "path": str(root / "cache/gpu_runtime")}
     monkeypatch.setattr(gpu_runtime_install, "setup_gpu_runtime", setup)
-    arguments = parser().parse_args(["setup-gpu", "--project", str(project)])
-    result = dispatch(arguments)
+    result = studio_steps._prepare_evaluation_runtime(project.parent)
     assert calls == [project.resolve().parent]
     assert result == {"state": "completed", "path": str(project.parent / "cache/gpu_runtime")}
-    assert not project.parent.exists()  # Dispatch does not create a second workspace.
 
 
 @pytest.mark.parametrize("error", [OSError("native DLL unavailable"), ValueError("receipt changed"),

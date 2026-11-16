@@ -375,7 +375,10 @@ def _execute(request_path):
                                        for p in result["result"].get("artifacts", [])]
     except Exception as error:
         traceback.print_exc()
-        result["error"] = {"message": str(error), "type": type(error).__name__,
+        message = str(error)
+        if message == "Formal Negative requires fixed 2s windows; run koww windows first":
+            message = "학습용 비호출 음원의 2초 구간 기록이 없습니다. 준비 자료에서 해당 음원을 확인하세요."
+        result["error"] = {"message": message, "type": type(error).__name__,
                            "stage": request["stage"], "resolution": "아래 실행 로그를 확인하세요. 완료한 파일은 보존됩니다."}
         if request["stage"] in ("data_connect", "hard_connect") and "before" in locals():
             try:

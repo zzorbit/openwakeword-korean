@@ -152,18 +152,18 @@ def test_provider_directory_symlink_escape_is_refused(tmp_path):
         build_provider_index(folder, dataset="mit_rir")
 
 
-def test_public_cli_writes_immutable_complete_provider_index(tmp_path):
+def test_preparation_writes_an_immutable_complete_provider_index(tmp_path):
     folder, metadata, ontology = _audioset(tmp_path)
-    from korean_openwakeword.cli import dispatch, parser
     from korean_openwakeword.common import read_rows
+    from korean_openwakeword.preparation import create_source_index
+
     output = tmp_path / "public_index.jsonl"
-    arguments = parser().parse_args(["index-data", "--dataset", "audioset", "--input", str(folder),
-                    "--metadata", str(metadata), "--ontology", str(ontology), "--output", str(output)])
-    result = dispatch(arguments)
+    options = dict(dataset="audioset", metadata=metadata, ontology=ontology, output=output)
+    result = create_source_index(folder, **options)
     assert result["source_count"] == 3
     assert len(read_rows(output)) == 3
     initial = digest(output)
-    assert dispatch(arguments)["source_index"]["sha256"] == initial
+    assert create_source_index(folder, **options)["source_index"]["sha256"] == initial
     assert digest(output) == initial
 
 

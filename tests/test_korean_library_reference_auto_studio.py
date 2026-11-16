@@ -6,7 +6,7 @@ import wave
 
 import pytest
 
-from korean_openwakeword import cli, reference_qc, studio, studio_steps as steps
+from korean_openwakeword import reference_qc, studio, studio_steps as steps
 from korean_openwakeword.common import digest, identity, read_json, write_immutable_rows, write_json
 from korean_openwakeword.project import create_project
 from test_korean_library_studio import create, http_server, manager  # noqa: F401
@@ -174,12 +174,10 @@ def test_optional_preview_rejects_changed_audio_and_invalid_index(manager, http_
     assert http_server("/reference-preview/audio/0" + query)[0] == 400
 
 
-@pytest.mark.parametrize("flag", ["--train-count", "--validation-count"])
-def test_reference_cli_rejects_explicit_zero_instead_of_omitting_selected_split(project, monkeypatch, flag):
-    monkeypatch.setattr(reference_qc, "admit_references", lambda *a, **kw: pytest.fail("Zero cannot silently reduce scope"))
-    args = cli.parser().parse_args(["check-references", "--project", str(project), flag, "0"])
-    with pytest.raises(ValueError, match="1 이상"):
-        cli.dispatch(args)
+@pytest.mark.parametrize("split", ["train", "validation"])
+def test_reference_check_rejects_zero_count_for_selected_bank(project, split):
+    with pytest.raises(ValueError, match="positive Train/common counts"):
+        reference_qc.admit_references(project, {split: 0})
 
 
 def test_reference_admission_audit_requires_exact_source_file_stage_and_evidence_pins(monkeypatch):

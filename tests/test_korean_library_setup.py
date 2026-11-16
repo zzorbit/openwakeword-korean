@@ -162,19 +162,13 @@ def test_check_command_and_legacy_doctor_share_environment_diagnostic(monkeypatc
     assert dispatch(parser().parse_args(["doctor"])) == report
 
 
-def test_cli_data_hours_and_snapshot_preserve_original(tmp_path, capsys):
-    from korean_openwakeword.cli import main
-    root = tmp_path / "word"
-    main(["init", "--wakeword", "보라야", "--id", "bora", "--output", str(root),
-          "--non-interactive", "--generic-hours", "2000", "--korean-hours", "250", "--noise-hours", "40"])
-    result = json.loads(capsys.readouterr().out)
-    assert result["workload"]["data_targets"]["korean_negative_hours"] == 250
-    original = digest(root / "project.json")
-    snapshot = root / "project_more_data.json"
-    main(["configure", "--project", str(root / "project.json"), "--output", str(snapshot),
-          "--non-interactive", "--korean-hours", "300"])
-    capsys.readouterr()
-    assert digest(root / "project.json") == original
+def test_data_hours_snapshot_preserves_original(tmp_path):
+    project = create_project(tmp_path / "word", "보라야", "bora",
+        generic_hours=2000, korean_hours=250, noise_hours=40)
+    assert workload_summary(load_project(project)[1])["data_targets"]["korean_negative_hours"] == 250
+    original = digest(project)
+    snapshot = save_configuration(project, project.parent / "project_more_data.json", korean_hours=300)
+    assert digest(project) == original
     assert load_project(snapshot)[1]["targets"]["korean_hours"] == 300
     assert load_project(snapshot)[1]["targets"]["noise_hours"] == 40
 
@@ -195,20 +189,17 @@ def test_configuration_snapshot_preserves_original_and_final_lock(tmp_path):
         save_configuration(project, project.parent / "project_after_final.json", updates=10000)
 
 
-def test_cli_selection_writes_actual_config_and_advanced_settings(tmp_path, capsys):
-    from korean_openwakeword.cli import main
-    root = tmp_path / "word"
-    main(["init", "--wakeword", "보라야", "--id", "bora", "--output", str(root),
-          "--non-interactive", "--originals", "20000", "--rounds", "3", "--updates", "20000"])
-    result = json.loads(capsys.readouterr().out)
-    assert result["workload"]["positive_feature_rows"] == 60000
-    main(["configure", "--project", str(root / "project.json"), "--output", str(root / "project_single.json"),
-          "--non-interactive", "--architecture", "cnn64", "--models", "1", "--learning-rate", "0.0002"])
-    capsys.readouterr()
-    main(["settings", "--project", str(root / "project_single.json"), "--advanced"])
-    result = json.loads(capsys.readouterr().out)
+def test_configuration_snapshot_stores_advanced_overrides(tmp_path):
+    project = create_project(tmp_path / "word", "보라야", "bora",
+        positive_originals=20000, augmentation_rounds=3, updates=20000)
+    config = load_project(project)[1]
+    assert workload_summary(config)["positive_feature_rows"] == 60000
+    snapshot = save_configuration(project, project.parent / "project_single.json",
+        training_overrides={"architecture": "cnn64", "seeds": config["training"]["seeds"][:1],
+                            "learning_rate": .0002})
+    result = load_project(snapshot)[1]
     assert result["training"]["architecture"] == "cnn64"
-    assert result["workload"]["total_optimizer_updates"] == 20000
+    assert workload_summary(result)["total_optimizer_updates"] == 20000
     assert result["training"]["learning_rate"] == .0002
 
 
