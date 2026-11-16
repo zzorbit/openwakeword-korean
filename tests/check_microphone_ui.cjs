@@ -515,7 +515,7 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
     await b.click("refresh");
     const select = b.elements.get("microphone");
     assert.equal(select.options[2].textContent, "두 번째 마이크");
-    assert.match(b.elements.get("deviceHint").textContent, /새로고침했습니다/);
+    assert.equal(b.elements.get("deviceHint").textContent, "");
     select.value = "mic1";
     b.state.deferredEnumeration = deferred();
     const refreshing = b.click("refresh");

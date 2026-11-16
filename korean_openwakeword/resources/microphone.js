@@ -238,7 +238,7 @@
       ui.microphone.value = stillListed ? selected : "";
       if (selected && !stillListed) showDeviceHint("선택한 마이크가 목록에 없어 시스템 기본 마이크로 바꿨습니다.");
       else if (expectedProbe) showDeviceHint("마이크를 확인했습니다. 시험을 시작하면 입력 레벨을 볼 수 있습니다.");
-      else if (requested) showDeviceHint(devices.length ? "마이크 목록을 새로고침했습니다." : "표시할 입력 장치가 없습니다. 연결을 눌러 마이크를 확인하세요.");
+      else if (requested) showDeviceHint(devices.length ? "" : "표시할 입력 장치가 없습니다. 연결을 눌러 마이크를 확인하세요.");
       if (activeDeviceId && run === activeRun && !devices.some(device => device.deviceId === activeDeviceId)) {
         stop("선택한 마이크 연결이 끊겨 시험을 중지했습니다.", true);
       }
