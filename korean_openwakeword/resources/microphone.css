@@ -53,9 +53,9 @@ button, select, input {
   font: 500 14px/20px system-ui, "Malgun Gothic", sans-serif;
 }
 button { cursor: pointer; border-color: transparent; white-space: nowrap; }
-button:hover:enabled, summary:hover { background: #363d47; }
+button:hover:enabled { background: #363d47; }
 button:disabled, select:disabled, input:disabled { cursor: default; opacity: .48; }
-:is(button, select, input, summary):focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+:is(button, select, input):focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 option { background: var(--control); color: var(--fg); }
 label { color: var(--muted); font-size: 13px; font-weight: 500; }
 
@@ -111,12 +111,6 @@ meter::-webkit-meter-optimum-value { border-radius: 4px; background: #8aa895; }
 .mic-model-row.detected .mic-event-count { color: var(--green); }
 .mic-model-row.detected .mic-score-fill { background: #8aa895; }
 
-.diagnostics { display: flex; align-items: start; justify-content: center; flex-wrap: wrap; gap: 3px 7px; }
-.diagnostics summary { width: max-content; margin-inline: auto; padding: 3px 6px; border-radius: 5px; font-size: 12px; line-height: 18px; color: var(--muted); cursor: pointer; }
-.diagnostics details[open] { flex-basis: 100%; }
-.diagnostic-content { padding: 8px; color: var(--muted); display: grid; gap: 6px; }
-#captureSettings { display: grid; grid-template-columns: minmax(80px, 130px) 1fr; gap: 4px 10px; margin: 0; font-size: 13px; }
-#captureSettings dd { margin: 0; overflow-wrap: anywhere; }
 footer { text-align: center; color: var(--muted); font-size: 11px; line-height: 1.45; }
 
 @media (max-width: 480px) {

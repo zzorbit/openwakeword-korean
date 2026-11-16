@@ -5,7 +5,7 @@
   const $ = id => document.getElementById(id);
   const config = JSON.parse($("koww-page-config")?.textContent || "{}");
   const apiUrl = path => (config.api_base || "") + path;
-  const ui = Object.fromEntries(["wakeword", "microphone", "connect", "refresh", "retry", "deviceHint", "detection-settings", "thresholdSetting", "consecutiveSetting", "trial-mode", "trial-threshold", "trial-consecutive", "reset-detection", "start", "stop", "statusHeading", "statusText", "statusDot", "level", "levelText", "elapsed", "frameCount", "lastEvent", "lastEventTime", "model-bars", "threshold", "captureSettings"].map(id => [id, $(id)]));
+  const ui = Object.fromEntries(["wakeword", "microphone", "connect", "refresh", "retry", "deviceHint", "detection-settings", "thresholdSetting", "consecutiveSetting", "trial-mode", "trial-threshold", "trial-consecutive", "reset-detection", "start", "stop", "statusHeading", "statusText", "statusDot", "level", "levelText", "elapsed", "frameCount", "lastEvent", "lastEventTime", "model-bars", "threshold"].map(id => [id, $(id)]));
   const rows = new Map();
   let info = null;
   let run = null;
@@ -163,26 +163,6 @@
     ui.lastEventTime.textContent = "";
     renderModels(info.models);
     syncDetectionDisplay();
-  }
-
-  function renderSettings(stream, context) {
-    const settings = stream.getAudioTracks()[0].getSettings();
-    const settingBoolean = value => typeof value === "boolean" ? value ? "켜짐" : "꺼짐" : "브라우저가 제공하지 않음";
-    const entries = [
-      ["마이크", stream.getAudioTracks()[0].label || "선택한 입력 장치"],
-      ["입력 샘플레이트", settings.sampleRate ? `${settings.sampleRate.toLocaleString()} Hz` : "브라우저가 제공하지 않음"],
-      ["분석 샘플레이트", `${context.sampleRate.toLocaleString()} Hz`],
-      ["입력 채널 수", settings.channelCount ?? "브라우저가 제공하지 않음"],
-      ["에코 제거", settingBoolean(settings.echoCancellation)],
-      ["소음 억제", settingBoolean(settings.noiseSuppression)],
-      ["자동 음량 조절", settingBoolean(settings.autoGainControl)]
-    ];
-    ui.captureSettings.replaceChildren();
-    for (const [name, value] of entries) {
-      const dt = document.createElement("dt"), dd = document.createElement("dd");
-      dt.textContent = name; dd.textContent = String(value);
-      ui.captureSettings.append(dt, dd);
-    }
   }
 
   async function refreshDevices({expectedProbe = null, requested = false} = {}) {
@@ -399,7 +379,6 @@
       target.watchdog = setInterval(() => {
         if (isCurrent(target) && performance.now() - target.lastFrameAt > 3000) stop("마이크 오디오가 3초 동안 들어오지 않아 시험을 중지했습니다. 장치 연결을 확인한 뒤 다시 시작하세요.", true);
       }, 250);
-      renderSettings(stream, context);
       setStatus("모델 준비 중", `${info.warmup_s}초 뒤에 호출어를 말하세요.`, "preparing");
       refreshDevices();
     } catch (error) { if (isCurrent(target)) stop(microphoneError(error), true); }
@@ -420,10 +399,6 @@
     if (!window.parent || window.parent === window || !window.location?.origin || event.origin !== window.location.origin
         || event.source !== window.parent || event.data?.type !== "koww:pause") return;
     if (run || probe) stop("화면을 이동하여 마이크 시험을 중지했습니다.", false, true);
-  });
-  window.addEventListener("keydown", event => {
-    if (event.key !== "Escape") return;
-    for (const detail of document.querySelectorAll?.("details[open]") || []) detail.open = false;
   });
   navigator.mediaDevices?.addEventListener("devicechange", () => { if (!probe) refreshDevices(); });
 

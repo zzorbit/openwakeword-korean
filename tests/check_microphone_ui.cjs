@@ -40,8 +40,7 @@ function browser(config = {}) {
     streams.push(stream); return stream;
   }
   const devices = [{ kind: "audioinput", deviceId: "mic1", label: "모의 마이크" }];
-  const captureDetails = {open: false};
-  const document = { hidden: false, querySelectorAll(selector) { assert.equal(selector, "details[open]"); return captureDetails.open ? [captureDetails] : []; }, title: "", getElementById(id) { if (!elements.has(id)) elements.set(id, new Element(id)); return elements.get(id); }, createElement: () => new Element(), addEventListener(name, handler) { listeners[name] = handler; } };
+  const document = { hidden: false, title: "", getElementById(id) { if (!elements.has(id)) elements.set(id, new Element(id)); return elements.get(id); }, createElement: () => new Element(), addEventListener(name, handler) { listeners[name] = handler; } };
   const pageConfig = config.pageConfig || {};
   document.getElementById("koww-page-config").textContent = JSON.stringify(pageConfig);
   const mediaDevices = { enumerateDevices: async () => {
@@ -108,7 +107,7 @@ function browser(config = {}) {
     ready:()=>readiness.push({status:'ready',startDisabled:elements.get('start').disabled,heading:elements.get('statusHeading').textContent,responses:elements.get('model-bars').children.length}),
     fail:message=>readiness.push({status:'error',message,retryHidden:elements.get('retry').hidden})};
   vm.runInContext(fs.readFileSync(path.join(resources, "microphone.js"), "utf8"), context);
-  return { state, elements, listeners, mediaListeners, contexts, workers, calls, streams, readiness, timers, intervals, devices, captureDetails, makeStream, info, parent: context.parent,
+  return { state, elements, listeners, mediaListeners, contexts, workers, calls, streams, readiness, timers, intervals, devices, makeStream, info, parent: context.parent,
     click(id) { return elements.get(id).handlers.click({ type: "click", target: elements.get(id) }); },
     frame() { const worker = workers.at(-1); const pcm = vm.runInContext("new ArrayBuffer(2560)", context); worker.port.onmessage?.({ data: { type: "frame", pcm } }); },
     tick(ms) { clock += ms; for (const timer of [...intervals.values()]) timer.callback(); },
@@ -195,6 +194,7 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
   await test("inline input metrics stay live across viewport changes without changing the trial", async () => {
     const b = browser({viewportHeight: 404}); await flush();
     assert.equal(b.elements.has("metrics-details"), false);
+    assert.equal(b.elements.has("captureSettings"), false);
     await b.click("start"); b.frame(); await flush();
     const calls = b.calls.length, models = b.elements.get("model-bars").children;
     for (const height of [444, 600, 404]) {
@@ -207,6 +207,10 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
     }
     assert.equal(b.calls.length, calls); assert.equal(b.streams[0].track.stopped, false);
     assert.equal(b.elements.get("model-bars").children, models); assert.equal(models.length, 4);
+    b.frame(); await flush();
+    assert.equal(b.calls.filter(call => call.url === "/api/frame").length, 2);
+    assert.equal(b.elements.get("frameCount").textContent, "2개 구간");
+    assert.equal(b.elements.get("elapsed").textContent, "0.2초");
     b.click("stop"); await flush();
     assert.equal(b.elements.get("level").value, 0);
     assert.equal(b.elements.get("levelText").textContent, "마이크 중지됨");
@@ -219,26 +223,12 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
     assert.equal(b.elements.has("microphone-settings"), false);
     assert.match(b.elements.get("deviceHint").textContent, /마이크 권한이 거부/);
   });
-  await test("the microphone view shows model bars and processing details without the retired table and guide", () => {
+  await test("the microphone view keeps the input monitor and model bars without diagnostics disclosures", () => {
     const markup = fs.readFileSync(path.join(resources, "microphone.html"), "utf8");
+    assert.match(markup, /<meter id="level"/);
     assert.match(markup, /id="model-bars"/);
-    assert.match(markup, /<summary>마이크 처리 설정<\/summary>/);
-    assert.match(markup, /id="captureSettings"/);
-    assert.doesNotMatch(markup, /상세 값 보기|감지 안내|id="(?:model-values|models|model-detail-toggle|trial-notes|detectionHint|recommendationHint)"/);
-  });
-  await test("closing retained processing details leaves active samples and model bars running", async () => {
-    const b = browser(); await flush(); await b.click("start"); b.frame(); await flush();
-    const calls = b.calls.length, bars = b.elements.get("model-bars").children;
-    const settings = b.elements.get("captureSettings").children.map(element => element.textContent);
-    assert.deepEqual(settings.slice(0, 2), ["마이크", "모의 마이크"]);
-    assert.ok(settings.includes("분석 샘플레이트"));
-    b.captureDetails.open = true;
-    b.listeners.keydown({key: "Escape"});
-    assert.equal(b.captureDetails.open, false);
-    assert.equal(b.calls.length, calls); assert.equal(b.streams[0].track.stopped, false);
-    assert.equal(b.elements.get("model-bars").children, bars); assert.equal(bars.length, 4);
-    b.frame(); await flush(); assert.equal(b.calls.filter(call => call.url === "/api/frame").length, 2);
-    b.click("stop"); await flush();
+    assert.match(markup, /마이크 음성은 저장하지 않습니다/);
+    assert.doesNotMatch(markup, /상세 값 보기|감지 안내|마이크 처리 설정|id="(?:model-values|models|model-detail-toggle|trial-notes|detectionHint|recommendationHint|captureSettings)"/);
   });
   await test("all four models are visible and a readable default retains its exact original threshold on start", async () => {
     const b = browser(); await flush();
