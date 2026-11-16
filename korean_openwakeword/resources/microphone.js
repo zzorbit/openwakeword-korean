@@ -5,7 +5,7 @@
   const $ = id => document.getElementById(id);
   const config = JSON.parse($("koww-page-config")?.textContent || "{}");
   const apiUrl = path => (config.api_base || "") + path;
-  const ui = Object.fromEntries(["wakeword", "microphone", "connect", "refresh", "retry", "deviceHint", "detection-settings", "thresholdSetting", "consecutiveSetting", "detectionHint", "trial-mode", "trial-threshold", "trial-consecutive", "reset-detection", "recommendationHint", "start", "stop", "connection", "statusHeading", "statusText", "statusDot", "level", "levelText", "elapsed", "frameCount", "lastEvent", "lastEventTime", "models", "threshold", "captureSettings"].map(id => [id, $(id)]));
+  const ui = Object.fromEntries(["wakeword", "microphone", "connect", "refresh", "retry", "deviceHint", "detection-settings", "thresholdSetting", "consecutiveSetting", "detectionHint", "trial-mode", "trial-threshold", "trial-consecutive", "reset-detection", "recommendationHint", "start", "stop", "statusHeading", "statusText", "statusDot", "level", "levelText", "elapsed", "frameCount", "lastEvent", "lastEventTime", "models", "threshold", "captureSettings"].map(id => [id, $(id)]));
   const detailToggle = $("model-detail-toggle"), modelValues = $("model-values");
   if (detailToggle && modelValues) detailToggle.onclick = () => {
     const expanded = modelValues.className === "table-wrap show-details";
@@ -23,25 +23,8 @@
   let defaultRuntime = null;
   let thresholdEdited = false;
   let recommendedRuntimes = null;
-  let compactMetrics = null;
-  let compactSettings = null;
-  function fitMetrics() {
-    const detail = $("metrics-details");
-    if (!detail || !Number.isFinite(window.innerHeight)) return;
-    const compact = window.innerHeight < 520;
-    if (compact !== compactMetrics) { detail.open = compactMetrics === null ? false : !compact; compactMetrics = compact; }
-    const settings = $("microphone-settings");
-    const collapsed = !(window.innerWidth > 760 && window.innerHeight > 560);
-    if (settings && collapsed !== compactSettings) { settings.open = !collapsed; compactSettings = collapsed; }
-  }
-  fitMetrics(); window.addEventListener("resize", fitMetrics);
-  function showDeviceHint(text, attention = false) {
-    ui.deviceHint.textContent = text;
-    if (attention) {
-      const notes = $("trial-notes"), settings = $("microphone-settings");
-      if (notes) notes.open = true;
-      if (settings) settings.open = true;
-    }
+  function showDeviceHint(text) {
+    if (ui.deviceHint.textContent !== text) ui.deviceHint.textContent = text;
   }
 
   function displayThreshold(value) {
@@ -134,10 +117,10 @@
   }
 
   function setStatus(heading, text, phase = "idle") {
-    ui.statusHeading.textContent = heading;
-    ui.statusText.textContent = text;
-    ui.statusDot.className = `status-dot ${phase}`;
-    if (phase === "error") { const detail = $("metrics-details"); if (detail) detail.open = true; }
+    if (ui.statusHeading.textContent !== heading) ui.statusHeading.textContent = heading;
+    if (ui.statusText.textContent !== text) ui.statusText.textContent = text;
+    const dotClass = `status-dot ${phase}`;
+    if (ui.statusDot.className !== dotClass) ui.statusDot.className = dotClass;
   }
 
   function syncControls() {
@@ -210,7 +193,7 @@
     ui.elapsed.textContent = "0.0초";
     ui.frameCount.textContent = "0개 구간";
     ui.lastEvent.textContent = "아직 없음";
-    ui.lastEventTime.textContent = "시작 후 호출어를 말하세요.";
+    ui.lastEventTime.textContent = "";
     renderModels(info.models);
     syncDetectionDisplay();
   }
@@ -235,47 +218,57 @@
     }
   }
 
-  async function refreshDevices(expectedProbe = null) {
+  async function refreshDevices({expectedProbe = null, requested = false} = {}) {
     if (refreshing || !navigator.mediaDevices?.enumerateDevices) return;
+    const activeRun = run;
+    const activeDeviceId = activeRun?.activeDeviceId;
     refreshing = true; syncControls();
-    const selected = ui.microphone.value;
+    if (requested) showDeviceHint("마이크 목록을 읽는 중입니다.");
     try {
       const devices = (await navigator.mediaDevices.enumerateDevices()).filter(device => device.kind === "audioinput");
       if (expectedProbe && probe !== expectedProbe) return;
+      const selected = ui.microphone.value;
       ui.microphone.replaceChildren(new Option("시스템 기본 마이크", ""));
       let number = 0;
       for (const device of devices) {
         if (!device.deviceId || device.deviceId === "default") continue;
         ui.microphone.append(new Option(device.label || `마이크 ${++number} (권한 허용 후 이름 표시)`, device.deviceId));
       }
-      if (Array.from(ui.microphone.options).some(option => option.value === selected)) ui.microphone.value = selected;
-      showDeviceHint(devices.some(device => device.label) ? "입력 장치를 선택한 뒤 시험을 시작하세요." : "마이크 연결을 누르고 사용을 허용하면 장치 이름을 확인할 수 있습니다.");
-      if (run?.activeDeviceId && !devices.some(device => device.deviceId === run.activeDeviceId)) {
+      const stillListed = Array.from(ui.microphone.options).some(option => option.value === selected);
+      ui.microphone.value = stillListed ? selected : "";
+      if (selected && !stillListed) showDeviceHint("선택한 마이크가 목록에 없어 시스템 기본 마이크로 바꿨습니다.");
+      else if (expectedProbe) showDeviceHint("마이크를 확인했습니다. 시험을 시작하면 입력 레벨을 볼 수 있습니다.");
+      else if (requested) showDeviceHint(devices.length ? "마이크 목록을 새로고침했습니다." : "표시할 입력 장치가 없습니다. 연결을 눌러 마이크를 확인하세요.");
+      if (activeDeviceId && run === activeRun && !devices.some(device => device.deviceId === activeDeviceId)) {
         stop("선택한 마이크 연결이 끊겨 시험을 중지했습니다.", true);
       }
-    } catch (error) { if (!expectedProbe || probe === expectedProbe) showDeviceHint(`마이크 목록을 읽지 못했습니다: ${error.message}`, true); }
-    finally { refreshing = false; syncControls(); }
+    } catch (error) {
+      if (!expectedProbe || probe === expectedProbe) showDeviceHint(`마이크 목록을 읽지 못했습니다: ${error.message}`);
+    } finally {
+      refreshing = false; syncControls();
+    }
   }
 
   function cancelProbe() {
     const target = probe;
     probe = null;
     for (const track of target?.stream?.getTracks() || []) track.stop();
-    if (target) showDeviceHint("마이크 연결을 취소했습니다. 다시 연결하려면 마이크 연결을 누르세요.", true);
+    if (target) showDeviceHint("마이크 연결을 취소했습니다. 다시 연결하려면 연결을 누르세요.");
   }
 
   async function connectMicrophone() {
     if (probe || run || refreshing || document.hidden || !window.isSecureContext || !navigator.mediaDevices?.getUserMedia) return;
     const target = {};
     probe = target;
-    showDeviceHint("브라우저의 마이크 사용 요청에서 허용을 선택하세요. 중지를 누르면 연결을 취소합니다.", true);
+    showDeviceHint("브라우저에서 마이크 사용을 허용하세요. 중지를 누르면 연결을 취소합니다.");
     syncControls();
     try {
-      target.stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      const deviceId = ui.microphone.value;
+      target.stream = await navigator.mediaDevices.getUserMedia({ audio: deviceId ? { deviceId: { exact: deviceId } } : true, video: false });
       if (probe !== target) return;
-      await refreshDevices(target);
+      await refreshDevices({expectedProbe: target});
     } catch (error) {
-      if (probe === target) showDeviceHint(microphoneError(error), true);
+      if (probe === target) showDeviceHint(microphoneError(error));
     } finally {
       for (const track of target.stream?.getTracks() || []) track.stop();
       if (probe === target) probe = null;
@@ -303,15 +296,13 @@
   function stop(message = "마이크 사용을 중지했습니다. 다시 시작하면 새 시험이 시작됩니다.", error = false, keepalive = false) {
     cancelProbe();
     const target = run;
+    if (!target) { syncControls(); return; }
     generation++;
     run = null;
-    if (target) {
-      closeResources(target);
-      notifyStop(target.sessionId, keepalive);
-    }
+    closeResources(target);
+    notifyStop(target.sessionId, keepalive);
     ui.level.value = 0;
     ui.levelText.textContent = "마이크 중지됨";
-    ui.connection.textContent = "연결 종료";
     setStatus(error ? "시험 중지 · 확인 필요" : "시험 중지", message, error ? "error" : "idle");
     syncControls();
   }
@@ -399,8 +390,8 @@
     catch (error) { setStatus("감지 설정을 확인하세요", error.message, "error"); return; }
     const target = { generation: ++generation, cancelled: false, queue: [], sequence: 0, draining: false, sessionId: null, settings };
     run = target;
+    showDeviceHint("");
     syncControls(); resetMetrics();
-    ui.connection.textContent = "마이크 연결 중";
     setStatus("마이크 준비 중", "마이크 사용 권한이 나오면 허용하세요.", "preparing");
     try {
       const deviceId = ui.microphone.value;
@@ -449,7 +440,6 @@
         if (isCurrent(target) && performance.now() - target.lastFrameAt > 3000) stop("마이크 오디오가 3초 동안 들어오지 않아 시험을 중지했습니다. 장치 연결을 확인한 뒤 다시 시작하세요.", true);
       }, 250);
       renderSettings(stream, context);
-      ui.connection.textContent = "이 컴퓨터에서 분석 중";
       setStatus("모델 준비 중", `${info.warmup_s}초 뒤에 호출어를 말하세요.`, "preparing");
       refreshDevices();
     } catch (error) { if (isCurrent(target)) stop(microphoneError(error), true); }
@@ -458,7 +448,7 @@
   ui.start.addEventListener("click", start);
   ui.stop.addEventListener("click", () => stop());
   ui.connect.addEventListener("click", connectMicrophone);
-  ui.refresh.addEventListener("click", () => refreshDevices());
+  ui.refresh.addEventListener("click", () => refreshDevices({requested: true}));
   ui.retry.addEventListener("click", initialize);
   ui["trial-threshold"].addEventListener("input", () => { if (!info || run || probe) return; thresholdEdited = true; resetMetrics(); });
   ui["trial-consecutive"].addEventListener("input", () => { if (info && !run && !probe) resetMetrics(); });
@@ -473,9 +463,7 @@
   });
   window.addEventListener("keydown", event => {
     if (event.key !== "Escape") return;
-    for (const detail of document.querySelectorAll?.("details[open]") || []) {
-      if (detail.id !== "microphone-settings" || compactSettings) detail.open = false;
-    }
+    for (const detail of document.querySelectorAll?.("details[open]") || []) detail.open = false;
     if (modelValues?.className === "table-wrap show-details") detailToggle?.onclick?.();
   });
   navigator.mediaDevices?.addEventListener("devicechange", () => { if (!probe) refreshDevices(); });
@@ -486,7 +474,6 @@
     let initializationError = "";
     initializing = true;
     ui.retry.hidden = true;
-    ui.connection.textContent = "모델 연결 중";
     setStatus("모델 연결 중", "이 컴퓨터의 시험 모델을 준비하고 있습니다. 처음에는 잠시 걸릴 수 있습니다.", "preparing");
     syncControls();
     try {
@@ -513,13 +500,11 @@
       setDefaultFields();
       renderModels(info.models);
       syncDetectionDisplay();
-      ui.connection.textContent = "모델 준비됨";
-      setStatus("시작할 준비가 됐습니다", "시험 시작을 누르면 마이크를 연결합니다.");
+      setStatus("시험 준비 완료", "시험 시작을 누르면 마이크 입력을 분석합니다.");
     } catch (error) {
       initializationError = error.message || "모델 정보를 읽지 못했습니다.";
       info = null;
       ui.retry.hidden = false;
-      ui.connection.textContent = "모델 연결 실패";
       setStatus("모델 연결을 확인하세요", `${error.message || "모델 정보를 읽지 못했습니다."} 모델 연결 다시 시도를 눌러주세요.`, "error");
     } finally {
       initializing = false;

@@ -32,7 +32,7 @@ function browser(config = {}) {
     get options() { return this.children; }
   }
   class Option extends Element { constructor(text, value) { super(); this.textContent = text; this.value = value; } }
-  const state = { deferredPermission: null, deferredStart: null, deferredInfo: null, startRuntime: null, failInfo: false, permissionError: null, enumerationError: null, hideDeviceNames: false, enumerations: [], failFrame: false, holdFrame: false, audioRate: 16000, permissionCalls: 0, constraints: null, ...config };
+  const state = { deferredPermission: null, deferredStart: null, deferredInfo: null, startRuntime: null, failInfo: false, permissionError: null, enumerationError: null, deferredEnumeration: null, hideDeviceNames: false, enumerations: [], failFrame: false, holdFrame: false, audioRate: 16000, permissionCalls: 0, constraints: null, ...config };
   function makeStream() {
     const track = { label: "모의 마이크", stopped: false, onended: null, onmute: null, stop() { this.stopped = true; }, getSettings() { return { deviceId: "mic1", sampleRate: 48000, channelCount: 2, echoCancellation: false, noiseSuppression: false, autoGainControl: false }; } };
     const tracks = [track];
@@ -45,6 +45,7 @@ function browser(config = {}) {
   document.getElementById("koww-page-config").textContent = JSON.stringify(pageConfig);
   const mediaDevices = { enumerateDevices: async () => {
     if (state.enumerationError) throw state.enumerationError;
+    if (state.deferredEnumeration) await state.deferredEnumeration.promise;
     const active = streams.some(stream => !stream.track.stopped);
     state.enumerations.push({ active });
     return devices.map(device => ({ ...device, label: state.hideDeviceNames && !active ? "" : device.label }));
@@ -103,7 +104,7 @@ function browser(config = {}) {
   context.isSecureContext = true;
   context.addEventListener = (name, handler) => { listeners[name] = handler; };
   context.KowwChapterReady={loading:()=>readiness.push({status:'loading'}),
-    ready:()=>readiness.push({status:'ready',startDisabled:elements.get('start').disabled,connection:elements.get('connection').textContent,models:elements.get('models').children.length}),
+    ready:()=>readiness.push({status:'ready',startDisabled:elements.get('start').disabled,heading:elements.get('statusHeading').textContent,models:elements.get('models').children.length}),
     fail:message=>readiness.push({status:'error',message,retryHidden:elements.get('retry').hidden})};
   vm.runInContext(fs.readFileSync(path.join(resources, "microphone.js"), "utf8"), context);
   return { state, elements, listeners, mediaListeners, contexts, workers, calls, streams, readiness, timers, intervals, devices, makeStream, info, parent: context.parent,
@@ -146,6 +147,7 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
   await test("initial page load never requests microphone permission", async () => {
     const b = browser(); await flush();
     assert.equal(b.state.permissionCalls, 0); assert.equal(b.elements.get("start").disabled, false);
+    assert.equal(b.elements.get("deviceHint").textContent, "");
     assert.equal(b.elements.get("wakeword").textContent, "‘보라야’");
   });
   await test("chapter readiness waits for initial model info and rendered controls without opening capture", async () => {
@@ -154,7 +156,7 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
     const pending=deferred(),b=browser({deferredInfo:pending});await flush();
     assert.deepEqual(b.readiness,[{status:'loading'}]);assert.equal(b.state.permissionCalls,0);
     pending.resolve(b.response(b.info));await flush();
-    assert.deepEqual(b.readiness.at(-1),{status:'ready',startDisabled:false,connection:'모델 준비됨',models:4});
+    assert.deepEqual(b.readiness.at(-1),{status:'ready',startDisabled:false,heading:'시험 준비 완료',models:4});
     assert.deepEqual(b.calls.map(call=>call.url),['/api/info']);
     assert.equal(b.contexts.length,0);assert.equal(b.workers.length,0);assert.equal(b.streams.length,0);
   });
@@ -190,24 +192,31 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
     assert.equal(b.calls.filter(call => call.url === "/api/stop").length, 1);
     assert.match(b.elements.get("statusText").textContent, /화면을 이동/);
   });
-  await test("compact viewport metrics can be expanded without changing an active microphone trial", async () => {
+  await test("inline input metrics stay live across viewport changes without changing the trial", async () => {
     const b = browser({viewportHeight: 404}); await flush();
-    assert.equal(b.elements.get("metrics-details").open, false);
+    assert.equal(b.elements.has("metrics-details"), false);
     await b.click("start"); b.frame(); await flush();
     const calls = b.calls.length, models = b.elements.get("models").children;
-    b.elements.get("metrics-details").open = true; b.resize(444);
-    assert.equal(b.elements.get("metrics-details").open, true);
-    b.resize(600); assert.equal(b.elements.get("metrics-details").open, true);
-    b.resize(404); assert.equal(b.elements.get("metrics-details").open, false);
+    for (const height of [444, 600, 404]) {
+      b.resize(height);
+      assert.equal(b.elements.get("level").value, .16);
+      assert.equal(b.elements.get("levelText").textContent, "입력 RMS 0.0200");
+      assert.equal(b.elements.get("elapsed").textContent, "0.1초");
+      assert.equal(b.elements.get("frameCount").textContent, "1개 구간");
+      assert.equal(b.elements.get("lastEventTime").textContent, "");
+    }
     assert.equal(b.calls.length, calls); assert.equal(b.streams[0].track.stopped, false);
     assert.equal(b.elements.get("models").children, models); assert.equal(models.length, 4);
     b.click("stop"); await flush();
+    assert.equal(b.elements.get("level").value, 0);
+    assert.equal(b.elements.get("levelText").textContent, "마이크 중지됨");
   });
-  await test("device permission errors open the compact connection guide", async () => {
+  await test("device permission errors render inline without opening another control", async () => {
     const error = new Error("permission denied"); error.name = "NotAllowedError";
     const b = browser({viewportHeight: 404, permissionError: error}); await flush();
     await b.click("connect");
-    assert.equal(b.elements.get("trial-notes").open, true);
+    assert.equal(b.elements.has("trial-notes"), false);
+    assert.equal(b.elements.has("microphone-settings"), false);
     assert.match(b.elements.get("deviceHint").textContent, /마이크 권한이 거부/);
   });
   await test("compact response details expand without restarting or changing an active microphone trial", async () => {
@@ -451,6 +460,7 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
     assert.equal(b.state.permissionCalls, 1); assert.equal(b.state.constraints.audio, true);
     assert.equal(b.state.enumerations.at(-1).active, true);
     assert.equal(b.elements.get("microphone").options[1].textContent, "모의 마이크");
+    assert.match(b.elements.get("deviceHint").textContent, /마이크를 확인했습니다/);
     assert.equal(b.streams.every(stream => stream.track.stopped), true);
     assert.equal(extra.stopped, true);
     assert.equal(b.calls.some(call => call.url === "/api/start"), false);
@@ -458,13 +468,13 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
   });
   await test("device discovery remains available after a model connection failure and retry recovers without reloading", async () => {
     const b = browser({ failInfo: true }); await flush();
-    assert.equal(b.elements.get("connection").textContent, "모델 연결 실패");
+    assert.equal(b.elements.get("statusHeading").textContent, "모델 연결을 확인하세요");
     assert.match(b.elements.get("statusText").textContent, /모의 모델 연결 오류/);
     assert.equal(b.elements.get("retry").hidden, false); assert.equal(b.elements.get("start").disabled, true);
     assert.equal(b.elements.get("connect").disabled, false);
     await b.click("connect"); await flush();
     assert.equal(b.streams[0].track.stopped, true);
-    assert.equal(b.elements.get("connection").textContent, "모델 연결 실패");
+    assert.equal(b.elements.get("statusHeading").textContent, "모델 연결을 확인하세요");
     b.state.failInfo = false; await b.click("retry"); await flush();
     assert.equal(b.elements.get("retry").hidden, true); assert.equal(b.elements.get("start").disabled, false);
     assert.equal(b.calls.filter(call => call.url === "/api/info").length, 2);
@@ -476,7 +486,7 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
     await b.click("retry"); assert.equal(b.calls.filter(call => call.url === "/api/info").length, 1);
     timeout.callback(); await flush();
     assert.match(b.elements.get("statusText").textContent, /30초/);
-    assert.equal(b.elements.get("connection").textContent, "모델 연결 실패");
+    assert.equal(b.elements.get("statusHeading").textContent, "모델 연결을 확인하세요");
     assert.equal(b.elements.get("retry").disabled, false); assert.equal(b.state.permissionCalls, 0);
     b.state.deferredInfo = null; await b.click("retry"); await flush();
     pending.resolve(b.response(b.info)); await flush();
@@ -486,7 +496,7 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
     const error = new Error("permission denied"); error.name = "NotAllowedError";
     const b = browser({ permissionError: error }); await flush(); await b.click("connect");
     assert.match(b.elements.get("deviceHint").textContent, /마이크 권한이 거부/);
-    assert.equal(b.elements.get("connection").textContent, "모델 준비됨");
+    assert.equal(b.elements.get("statusHeading").textContent, "시험 준비 완료");
     assert.equal(b.elements.get("start").disabled, false); assert.equal(b.streams.length, 0);
   });
   await test("a failed device enumeration releases the permission probe and permits another connection", async () => {
@@ -499,13 +509,35 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
     assert.equal(b.elements.get("microphone").options[1].textContent, "모의 마이크");
     assert.equal(b.streams.every(stream => stream.track.stopped), true);
   });
-  await test("click and devicechange event objects do not suppress ordinary device refresh", async () => {
+  await test("refresh enumerates without permission and preserves the latest selected device", async () => {
     const b = browser(); await flush();
     b.devices.push({ kind: "audioinput", deviceId: "mic2", label: "두 번째 마이크" });
     await b.click("refresh");
-    assert.equal(b.elements.get("microphone").options[2].textContent, "두 번째 마이크");
+    const select = b.elements.get("microphone");
+    assert.equal(select.options[2].textContent, "두 번째 마이크");
+    assert.match(b.elements.get("deviceHint").textContent, /새로고침했습니다/);
+    select.value = "mic1";
+    b.state.deferredEnumeration = deferred();
+    const refreshing = b.click("refresh");
+    assert.equal(b.elements.get("refresh").disabled, true);
+    select.value = "mic2";
+    b.state.deferredEnumeration.resolve(); await refreshing;
+    b.state.deferredEnumeration = null;
+    assert.equal(select.value, "mic2");
+    assert.equal(b.state.permissionCalls, 0);
     b.devices.pop(); b.mediaListeners.devicechange({ type: "devicechange" }); await flush();
-    assert.equal(b.elements.get("microphone").options.length, 2);
+    assert.equal(select.options.length, 2);
+    assert.equal(select.value, "");
+    assert.match(b.elements.get("deviceHint").textContent, /시스템 기본 마이크로 바꿨습니다/);
+  });
+  await test("connect probes the selected input without starting a recording session", async () => {
+    const b = browser(); await flush();
+    b.elements.get("microphone").value = "mic1";
+    await b.click("connect");
+    assert.equal(b.state.constraints.audio.deviceId.exact, "mic1");
+    assert.equal(b.calls.some(call => call.url === "/api/start"), false);
+    assert.equal(b.streams[0].track.stopped, true);
+    assert.equal(b.elements.get("microphone").value, "mic1");
   });
   await test("cancelling a permission probe disposes a late stream without changing the cancellation hint", async () => {
     const b = browser(); await flush(); b.state.deferredPermission = deferred();
@@ -515,6 +547,7 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
     b.click("stop"); const stream = b.makeStream(); b.state.deferredPermission.resolve(stream);
     await connecting; await flush();
     assert.equal(stream.track.stopped, true); assert.match(b.elements.get("deviceHint").textContent, /취소/);
+    assert.equal(b.elements.get("statusHeading").textContent, "시험 준비 완료");
     assert.equal(b.calls.some(call => call.url === "/api/start"), false);
   });
   await test("leaving the page cancels device discovery and releases a delayed microphone", async () => {
