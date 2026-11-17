@@ -269,6 +269,8 @@ def _execution_contract(*, legacy_reference_review=False):
     for name in _COMPUTE_DISPATCH_COMPATIBLE_DIGESTS:
         bindings[name] = _compute_dispatch_compatible_digest(name, bindings[name])
     bindings["calibration.py"] = _CALIBRATION_REPORT_COMPATIBLE_DIGESTS.get(bindings["calibration.py"], bindings["calibration.py"])
+    material_policy = bindings["material_policy.py"]
+    bindings["material_policy.py"] = _MATERIAL_ARCHIVE_PATH_COMPATIBLE_DIGESTS.get(material_policy, material_policy)
     if legacy_reference_review:
         # Only project the previous contract for this audited, opt-in change.
         if (bindings.get("pilot.py"), bindings.get("reference_voice_review.py")) != _REFERENCE_REVIEW_COMPATIBLE_FILES:
@@ -416,6 +418,15 @@ _CALIBRATION_REPORT_COMPATIBLE_DIGESTS = {
         "247affb60a241181eab12f8c2932f40444437409550c8e4dc2ae56297f48f2b1",
     "dd152678cf6315a50f7a9696b382d81dd33ae595b28e17e17e2722df00a3a084":
         "56dd92a3ecae2347cad0135d49377e80b7533584a9d9a9d59c4c1c5b0ec4fdd2",
+}
+
+# These exact versions recognize equivalent Windows names for the same pinned
+# archive. They preserve the catalog, receipt fields and every completed stage.
+_MATERIAL_ARCHIVE_PATH_COMPATIBLE_DIGESTS = {
+    "fdb455fc54a6eea22804f184fffd6e732de52d57e5c7351fdfc4e1b55bb8f4c5":
+        "b69d1a06bfe0ebcd9bf6c73392cd78a8b6dc4caa6fd10afe91bc90b960d2bbac",
+    "560b8938de7899d3a6e2cff1323f411e7252b48324bd9e9450e634f44ea1bae3":
+        "fa4bf0d2a4c58f34d2e64e6d20e77dd9a8af7f1388577298cf8049e23ad39362",
 }
 
 

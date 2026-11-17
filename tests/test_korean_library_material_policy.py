@@ -1,6 +1,7 @@
 """Fixed-source admission needs pinned preparation evidence, never a label."""
 import copy
 import json
+import os
 from pathlib import Path
 import shutil
 
@@ -292,6 +293,55 @@ def test_shared_download_receipt_refresh_preserves_existing_evidence(fixed_zerot
     write_json(receipt_path, receipt)
     assert validate_library_policy_evidence(project.parent, _artifact(evidence, preparation), "noise")["scope"] == "train"
     assert fixed_queue_evidence(project, prepared, queue) == evidence
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows extended-length archive spelling")
+def test_fixed_zeroth_accepts_both_windows_spellings_without_editing_receipts(fixed_zeroth, monkeypatch):
+    from korean_openwakeword import studio_data
+
+    project, prepared, queue, preparation = fixed_zeroth
+    workspace = Path(prepared["workspace"])
+    receipt_path = next((workspace / "shared/downloads").glob("*.receipt.json"))
+    extraction_path = workspace / "shared/zeroth/extraction_receipt.json"
+    receipt = read_json(receipt_path)
+    archive = Path(receipt["path"]).resolve()
+    archive.write_bytes(b"Pinned fixture archive")
+    sha256, size = digest(archive), archive.stat().st_size
+    assets = copy.deepcopy(studio_data._official_assets())
+    next(item for item in assets if item["id"] == "zeroth").update(sha256=sha256, size_bytes=size)
+    monkeypatch.setattr(studio_data, "_official_assets", lambda: assets)
+
+    alias = Path("\\\\?\\" + str(archive))
+    assert alias.samefile(archive)
+    resolve = type(archive).resolve
+
+    def preserve_archive_spelling(path, *args, **kwargs):
+        # Windows can keep the namespace prefix on one of the two resolutions.
+        return path if path in (archive, alias) else resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(type(archive), "resolve", preserve_archive_spelling)
+    receipt.update(path=str(alias), sha256=sha256, bytes=size)
+    write_json(receipt_path, receipt)
+    extraction = read_json(extraction_path)
+    extraction["request"]["archive"].update(path=str(archive), sha256=sha256)
+    write_json(extraction_path, extraction)
+    original_receipts = {path: path.read_bytes() for path in (receipt_path, extraction_path)}
+
+    evidence = fixed_queue_evidence(project, prepared, queue)
+    validated = validate_library_policy_evidence(project.parent, _artifact(evidence, preparation), "noise")
+    download_binding = next(row for row in validated["lineage_bindings"]
+                            if row.get("validation") == "pinned_download_receipt_fields")
+    assert download_binding["fields"]["path"] == str(alias)
+    assert all(path.read_bytes() == original for path, original in original_receipts.items())
+
+    other = archive.with_name("another.tar.gz")
+    other.write_bytes(archive.read_bytes())
+    write_json(receipt_path, {**receipt, "path": str(other)})
+    with pytest.raises(ValueError, match="download receipt differs from the pinned asset"):
+        fixed_queue_evidence(project, prepared, queue)
+    write_json(receipt_path, {**receipt, "sha256": "0" * 64})
+    with pytest.raises(ValueError, match="archive SHA256 pin changed"):
+        fixed_queue_evidence(project, prepared, queue)
 
 
 @pytest.mark.parametrize("field", ["sha256", "bytes", "source_url"])

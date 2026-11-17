@@ -9,6 +9,7 @@ import os
 import re
 
 from .common import bound_file, digest, identity, iter_rows, read_json, resolved, write_json
+from .downloads import _verification_path_key
 from .project import load_project, require_standard_common_download
 
 POLICY_ID = "library_fixed_sources_v1"
@@ -92,6 +93,20 @@ def _metadata_file(path, lineage):
     return read_json(path)
 
 
+def _same_archive_path(recorded, expected):
+    if not isinstance(recorded, str) or not recorded:
+        return False
+    actual, expected = Path(recorded).resolve(), expected.resolve()
+    if actual == expected:
+        return True
+    # Windows may keep the extended-length prefix on only one spelling.
+    # Require both the same resolved name and the same physical file.
+    if os.name != "nt":
+        return False
+    names = [os.path.normcase(_verification_path_key(path)) for path in (actual, expected)]
+    return names[0] == names[1] and actual.samefile(expected)
+
+
 def _asset_receipt(asset, downloads, lineage, archive=None):
     archive = Path(archive) if archive else downloads / asset["filename"]
     choices = [archive.with_name(archive.name + ".receipt.json"),
@@ -99,7 +114,7 @@ def _asset_receipt(asset, downloads, lineage, archive=None):
     path = next((p for p in choices if p.is_file()), None)
     _require(path is not None, "pinned download receipt is missing: " + asset["id"])
     record = read_json(path)
-    _require(Path(record.get("path", "")).resolve() == archive.resolve()
+    _require(_same_archive_path(record.get("path"), archive)
              and record.get("bytes") == asset["size_bytes"]
              and record.get("source_url") == asset["source_url"] and _hash(record.get("sha256")),
              "download receipt differs from the pinned asset")
