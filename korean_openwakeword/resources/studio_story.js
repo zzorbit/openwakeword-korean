@@ -387,17 +387,13 @@
     const evaluationPlanDetail = node("p");
     evaluationPlan.append(evaluationPlanTitle, evaluationPlanDetail);
     evaluationPlan.hidden = true;
-    const downloadCompute = node("div", undefined, "story-compute-summary"); downloadCompute.hidden = true;
-    const downloadComputeLabel = node("span");
-    const changeDownloadCompute = button("연산 장치 변경", "story-secondary", () => navigate(screens.indexOf("tools")));
-    downloadCompute.append(downloadComputeLabel, changeDownloadCompute);
     const listenActions = node("div", undefined, "story-listen-actions");
     const hardButton = button("유사어 전체 듣기", "story-secondary", openHardListening);
     const positiveButton = button("호출어 전체 듣기", "story-secondary", openPositiveListening);
     listenActions.append(hardButton, positiveButton);
     // A completed stage hides live progress, but its compatibility update must
     // remain reachable through the existing explicit migration control.
-    live.append(migrationNote, downloadCompute, voiceCounts, liveSummary, downloadActivity, downloads, review, input, results, historic, evaluationPlan, listenActions);
+    live.append(migrationNote, voiceCounts, liveSummary, downloadActivity, downloads, review, input, results, historic, evaluationPlan, listenActions);
     // Core forms and event bindings retain their IDs when moved into chapters.
     // Inactive controls stay connected so their drafts survive navigation.
     content.append(entry, savedEntry, toolPicker, scale, savedScale, materials, live, voiceListening);
@@ -2618,12 +2614,6 @@
         : current === "materials" ? materials : current === "voice-listening" ? voiceListening : live;
       for (const unit of [entry, savedEntry, toolPicker, scale, savedScale, materials, live, voiceListening]) unit.hidden = unit !== wanted;
       if (showToolPicker) updateComputePicker(tools, pickerBackend, Boolean(state.busy || project && !toolChoiceEditable));
-      const downloadDevice = toolBackends[project?.dependency_backend]?.[0];
-      downloadCompute.hidden = !preparingTools || !(downloadDevice || toolChoiceEditable);
-      const downloadLabel = downloadDevice ? `학습 연산 장치 · ${downloadDevice}` : "학습 연산 장치를 선택하세요.";
-      if (!downloadCompute.hidden && downloadComputeLabel.textContent !== downloadLabel) downloadComputeLabel.textContent = downloadLabel;
-      changeDownloadCompute.hidden = !toolChoiceEditable;
-      changeDownloadCompute.disabled = Boolean(state.busy || transitioning);
       if (project && savedWord.value !== (project.wakeword || "")) savedWord.value = project.wakeword || "";
       if (project) for (const card of savedPresets.children) {
         const radio = card.querySelector("input"); radio.checked = radio.value === project.preset;

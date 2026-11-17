@@ -459,7 +459,7 @@ async function main() {
     assert.equal(p.calls.includes("start"), false, "model creation does not start downloads");
     assert.equal(p.timers.at(-1).delay, 800); await p.settle(); await creation;
   });
-  await test("saved setup confirms only the final CPU/GPU choice each time and installs only when started", async () => {
+  await test("downloads omit the device summary and saved CPU/GPU choices stay editable through the tools chapter", async () => {
     const project = { id: "reselect-tools", status: "ready", stage_id: "frontend", preset: "check", dependency_backend: "cu128",
       dependency_backend_editable: true, navigation_checkpoint: { policy: "explicit_story_v1", step: "downloads", state: "awaiting_start" } };
     const sent = [], p = page(project, { dependencySetup: toolSetup, input: (_state, choice, id) => {
@@ -474,20 +474,37 @@ async function main() {
       assert.deepEqual(payload, { expected_dependency_backend: "cu128" });
     } });
     p.state.recipes = [{ id: "check" }];
-    const change = p.shell.querySelectorAll("button").find(button => button.textContent === "연산 장치 변경");
+    const picker = p.get("story-tool-picker"), live = p.shell.querySelector(".story-live");
     const cpu = p.get("story-tool-cpu"), gpu = p.get("story-tool-cu128");
     async function choose(radio) { cpu.checked = radio === cpu; gpu.checked = radio === gpu; await radio.fire("change"); }
-    assert.match(textOf(change.parentElement), /NVIDIA GPU/);
-    await change.fire("click"); await p.settle();
-    assert.equal(p.get("story-tool-picker").disabled, false);
+    async function assertDownloads(backend) {
+      p.ui.render(); await p.settle();
+      assert.equal(p.shell.dataset.step, "downloads");
+      assert.equal(project.dependency_backend, backend);
+      assert.equal(picker.hidden, true);
+      assert.equal(live.querySelector(".story-compute-summary"), null);
+      assert.doesNotMatch(textOf(live), /학습 연산 장치|연산 장치 변경/);
+    }
+    async function returnToTools(selected) {
+      for (const step of ["materials", "scale", "tools"]) {
+        assert.equal(p.back.disabled, false);
+        await p.back.fire("click"); await p.settle();
+        assert.equal(p.shell.dataset.step, step);
+      }
+      assert.equal(picker.hidden, false);
+      assert.equal(picker.disabled, false);
+      assert.equal(selected.checked, true);
+    }
+    await assertDownloads("cu128");
+    await returnToTools(gpu);
     for (const radio of [cpu, gpu, cpu]) { await choose(radio); p.ui.render(); assert.equal(radio.checked, true); }
     assert.deepEqual(sent, [], "changing radio choices does not write every intermediate choice");
     await advanceSetup(p, "scale", "materials", "downloads");
-    assert.match(textOf(change.parentElement), /CPU/);
-    await change.fire("click"); await p.settle();
+    await assertDownloads("cpu");
+    await returnToTools(cpu);
     for (const radio of [gpu, cpu, gpu]) { await choose(radio); p.ui.render(); assert.equal(radio.checked, true); }
     await p.ticks.find(tick => tick.dataset.step === "downloads").fire("click"); await p.settle();
-    assert.match(textOf(change.parentElement), /NVIDIA GPU/);
+    await assertDownloads("cu128");
     assert.deepEqual(sent, [{ dependency_backend: "cpu", defer_dependency_install: true },
       { dependency_backend: "cu128", defer_dependency_install: true }]);
     assert.equal(p.calls.some(call => ["start", "resume"].includes(call)), false);
