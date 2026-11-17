@@ -1159,7 +1159,9 @@ async function main() {
       project.download_checkpoint.state = "running";
       torch.state = "installing";
       p.ui.render();
-      assert.equal(capacity.textContent, sizeKnown ? "— / 2 GiB" : "전체 용량 확인 전");
+      assert.ok(capacity.textContent.includes(sizeKnown ? "— / 2 GiB" : "전체 용량 확인 전"));
+      assert.match(capacity.textContent, /설치 중/);
+      assert.equal(p.get("story-download-activity").hidden, true);
       assert.equal(bar.hidden, false);
       assert.equal(bar.getAttribute("value"), null);
       assert.equal(row.querySelector(".story-history-percent").textContent, "");
@@ -1171,8 +1173,52 @@ async function main() {
       assert.equal(bar.value, 1);
       assert.equal(row.querySelector(".story-history-percent").textContent, "50%");
       audio.state = "complete"; p.ui.render();
-      assert.equal(bar.value, 2);
-      assert.equal(row.querySelector(".story-history-percent").textContent, "100%");
+      assert.equal(bar.getAttribute("value"), null);
+      assert.equal(row.querySelector(".story-history-percent").textContent, "");
+      assert.equal(row.querySelector(".story-progress-indicator").dataset.status, "active");
+      assert.match(textOf(row), /연산 도구 확인 중/);
+    }
+  });
+  await test("GPU verification stays active in the compute-tools row after both training packages have installed", () => {
+    for (const runtime of ["onnxruntime-gpu", "evaluation-runtime", "nvidia-cublas"]) {
+      const project = checkpointProject("running", "running");
+      project.dependency_backend = "cu128";
+      project.dependency_download_bytes = 2 * 1024 ** 3;
+      project.download_setup_items = [
+        { id: "torch", label: "torch==2.8.0+cu128", state: "complete" },
+        { id: "torchaudio", label: "torchaudio==2.8.0+cu128", state: "complete" },
+        { id: runtime, label: runtime, state: "installing" },
+      ];
+      project.download_files = [{ id: "asset", label: "자료", state: "waiting", done: 0, total: 100, unit: "bytes" }];
+      project.progress = { phase: "environment_install", label: "학습 라이브러리 설치·확인", phase_elapsed_seconds: 74.8 };
+      const p = page(project), caption = p.get("story-download-activity");
+      const row = historyRowByLabel(p.shell, "연산 도구 · PyTorch · TorchAudio");
+      const bar = row.querySelector("progress"), status = row.querySelector(".story-history-note-detail");
+      const percent = row.querySelector(".story-history-percent"), indicator = row.querySelector(".story-progress-indicator");
+      assert.equal(caption.hidden, true);
+      assert.match(status.textContent, /GPU 평가 도구 확인 중 · 1분 14초 경과/);
+      assert.equal(indicator.dataset.status, "active");
+      assert.equal(bar.hidden, false);
+      assert.equal(bar.getAttribute("value"), null);
+      assert.equal(percent.textContent, "");
+
+      project.download_setup_items.at(-1).state = "complete";
+      project.progress = { phase: "environment_tts_import", label: "Qwen 음성 생성 라이브러리 확인", phase_elapsed_seconds: 5 };
+      p.ui.render();
+      assert.equal(caption.hidden, true);
+      assert.match(status.textContent, /Qwen 음성 생성 라이브러리 확인/);
+      assert.equal(indicator.dataset.status, "active");
+      assert.equal(percent.textContent, "");
+
+      project.stages[0].status = "completed";
+      project.stage_id = "data_download";
+      project.progress = { phase: "download_many" };
+      p.ui.render();
+      assert.equal(historyRowByLabel(p.shell, "연산 도구 · PyTorch · TorchAudio"), row);
+      assert.equal(caption.hidden, true);
+      assert.equal(status.textContent, "2 GiB / 2 GiB");
+      assert.equal(indicator.dataset.status, "complete");
+      assert.equal(percent.textContent, "100%");
     }
   });
   await test("a shared package failure preserves verified compute installs without a running spinner", async () => {
@@ -1197,9 +1243,11 @@ async function main() {
       assert.equal(history.hidden, false);
       const row = historyRowByLabel(history, "연산 도구 · PyTorch · TorchAudio");
       assert.match(textOf(row), /1 \/ 2개/);
-      assert.equal(row.dataset.failed, "false");
+      assert.match(textOf(row), /실패/);
+      assert.equal(row.dataset.failed, "true");
       assert.equal(history.querySelectorAll(".story-history-row").length, 1);
       assert.equal(hasActiveDownloadSpinner(history), false);
+      assert.equal(p.get("story-download-activity").hidden, true);
       assert.equal(requests, 1);
     }
   });
@@ -1475,8 +1523,10 @@ async function main() {
     assert.equal(history.hidden, false);
     assert.equal(historyRowByLabel(history, "자료 a").querySelector(".story-history-percent").textContent, "0%");
     assert.equal(input.hidden, true);
-    assert.equal(activity.hidden, false);
-    assert.match(textOf(activity), /실행환경/);
+    assert.equal(activity.hidden, true);
+    const fallback = historyRowByLabel(history, "연산 도구");
+    assert.match(textOf(fallback), /연산 도구 확인 중/);
+    assert.equal(hasActiveDownloadSpinner(fallback), true);
 
     project.status = "waiting_input";
     project.input = { kind: "dependency_setup", recommended_backend: "cu128" };
@@ -1533,8 +1583,10 @@ async function main() {
     assert.equal(p.next.textContent, "다음");
     assert.equal(input.hidden, true);
     assert.equal(history.hidden, false);
-    assert.equal(activity.querySelector("i").dataset.status, "active");
-    assert.match(textOf(activity), /GPU 평가 실행환경 설치·확인 · 1분 14초 경과/);
+    assert.equal(activity.hidden, true);
+    const setup = historyRowByLabel(history, "연산 도구");
+    assert.equal(hasActiveDownloadSpinner(setup), true);
+    assert.match(textOf(setup), /GPU 평가 도구 확인 중 · 1분 14초 경과/);
 
     project.stages[0].status = "completed";
     project.stage_id = "data_download";

@@ -2036,24 +2036,32 @@
         const name = label.split(/==|>=/, 1)[0];
         if (names.has(name) && !packages.has(name)) packages.set(name, { label, state: "waiting" });
       }
-      if (!packages.size) return null;
-
       const prepared = done(project.stages?.find(stage => stage.id === "frontend")?.status);
       const pending = [...packages.values()].filter(item =>
         !prepared && item.state !== "complete" && !setupPackageCompleted(item.label, legacy));
       const installing = pending.some(item => item.state === "installing" || legacy?.active.includes(item.label));
-      const failed = pending.some(item => item.state === "failed") || installing && frontendSetupFailed(project);
+      const failed = !prepared && (frontendSetupFailed(project) || pending.some(item => item.state === "failed"));
+      if (!packages.size && !active && !failed) return null;
+
+      const progress = project.progress || {};
+      const frontend = stageId(project) === "frontend";
       const countInstalled = packages.size - pending.length;
-      const working = active && installing && !failed;
+      const working = active && !prepared && !failed;
+      const gpuCheck = progress.phase === "evaluation_environment" || progress.phase === "environment_install"
+        && setup.some(item => item.state === "installing" && /^(?:onnxruntime-gpu$|evaluation-runtime$|nvidia-)/.test(item.id));
+      const activity = gpuCheck ? "GPU 평가 도구 확인 중" : installing ? "설치 중"
+        : (typeof progress.label === "string" && progress.label.trim()) || "연산 도구 확인 중";
       const label = ["연산 도구", ...[...packages.keys()].map(id => names.get(id))].join(" · ");
       const bytes = project.dependency_download_bytes;
-      const receivedBytes = !pending.length ? bytes : downloadCheckpoint(project)?.state === "awaiting_start" ? 0 : null;
+      const receivedBytes = packages.size && !pending.length ? bytes : downloadCheckpoint(project)?.state === "awaiting_start" ? 0 : null;
       const capacity = Number.isFinite(bytes) && bytes > 0
-        ? progressAmount(receivedBytes, bytes, "bytes") : "전체 용량 확인 전";
-      const status = failed ? "설치 실패" : installing && project.status === "paused" ? "일시정지" : "";
-      const detail = status ? status + " · " + capacity : capacity;
-      return { key: "compute-tools", label, detail, done: countInstalled, total: packages.size, unit: "items",
-        active: working, completed: !pending.length, failed, indeterminate: working && countInstalled === 0 };
+        ? progressAmount(receivedBytes, bytes, "bytes") : packages.size ? "전체 용량 확인 전" : "";
+      const status = failed ? "설치 실패" : frontend && project.status === "paused" && (installing || progress.phase) ? "일시정지"
+        : working ? activity + phaseElapsed(progress) : "";
+      const detail = [status, capacity].filter(Boolean).join(" · ");
+      const completed = !failed && (prepared || !frontend && !pending.length);
+      return { key: "compute-tools", label, detail, done: packages.size ? countInstalled : null, total: packages.size, unit: "items",
+        active: working, completed, failed, indeterminate: working && (!countInstalled || !pending.length) };
     }
     function renderStoryDownloads(project, files, verification, quality, active, legacy) {
       const stage = stageId(project);
@@ -2641,7 +2649,7 @@
         const hasDownloadRows = current === "downloads";
         const chapterComplete = completedStep(project, current);
         const chapterActive = !chapterComplete && chapterWorkActive(project, historical);
-        renderDownloadActivity(project, (current === "tools" || hasDownloadRows) && chapterActive && !project.error,
+        renderDownloadActivity(project, (current === "tools" || hasDownloadRows && !preparingTools) && chapterActive && !project.error,
           current === "tools" && chapterComplete);
         liveSummary.hidden = historical || frameStep || repairProgressVisible(project) && !project.error
           || preparingResults && !project.error
