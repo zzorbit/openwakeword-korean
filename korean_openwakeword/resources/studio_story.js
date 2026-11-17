@@ -1928,18 +1928,22 @@
       if (title.textContent !== label) title.textContent = label;
       amount.textContent = row.preparing ? "" : totalKnown ? `${doneKnown ? row.unit === "bytes" ? quantity(row.done, row.unit) : count(row.done) : "—"} / ${quantity(row.total, row.unit)}` : doneKnown ? quantity(row.done, row.unit) : "수량 기록 없음";
       const byBytes = Number.isFinite(row.bytes) && Number.isFinite(row.totalBytes) && row.totalBytes > 0;
-      const fraction = row.verification ? Number.isFinite(row.verificationPercent) ? row.verificationPercent / 100 : null
+      const transferComplete = row.preparing && row.completed;
+      const fraction = transferComplete ? 1 : row.verification ? Number.isFinite(row.verificationPercent) ? row.verificationPercent / 100 : null
         : byBytes ? row.bytes / row.totalBytes : totalKnown && doneKnown ? row.done / row.total : null;
       const percentage = Math.min(100, fraction * 100);
-      percent.textContent = fraction === null || row.indeterminate || row.preparing && !row.active ? ""
+      percent.textContent = fraction === null || row.indeterminate || row.preparing ? ""
         : `${percentage.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}%`;
       bar.hidden = fraction === null && !row.verification;
       bar.dataset.active = String(Boolean(row.active));
+      bar.dataset.preparing = String(Boolean(row.preparing));
       if (fraction !== null || row.verification) {
-        bar.max = row.verification ? 100 : byBytes ? row.totalBytes : row.total;
-        if (fraction === null || row.indeterminate) bar.removeAttribute("value");
+        bar.max = transferComplete || row.verification ? 100 : byBytes ? row.totalBytes : row.total;
+        if (transferComplete) bar.value = bar.max;
+        else if (fraction === null || row.indeterminate) bar.removeAttribute("value");
         else bar.value = Math.min(bar.max, row.verification ? row.verificationPercent : byBytes ? row.bytes : row.done);
-        bar.setAttribute("aria-label", label + (row.preparing ? " 자료 준비 진행률" : row.verification ? " 현재 파일 무결성 검사 진행률" : " 진행률") + (row.active ? " · 진행 중" : ""));
+        const progressLabel = row.preparing ? " 다운로드 진행률" : row.verification ? " 현재 파일 무결성 검사 진행률" : " 진행률";
+        bar.setAttribute("aria-label", label + progressLabel + (row.active && !row.preparing ? " · 진행 중" : ""));
       }
     }
     const downloadGroupOrder = ["generic_negative", "zeroth", "audioset", "musan", "seoul", "fsd50k", "common_rir", "official_music", "mit_rir"];
@@ -2170,13 +2174,10 @@
         const preparing = row.key !== "compute-tools" && (Boolean(work) || inspectionActive
           || waitingForPreparation && row.completed && !sourcePrepared && inspection?.state !== "complete");
         const preparationActive = active && preparing && Boolean(work || inspectionActive);
-        const gauge = preparing
-          ? { ...row, preparing: true, verification: true,
-            verificationPercent: preparationActive ? work?.percent ?? (inspectionActive ? preparationPercent(inspection) : null) : 0 }
-          : row.verifying || row.state === "verifying"
-            ? { ...row, verification: true, verificationPercent: row.hashPercent } : row;
         const rowActive = (row.active || preparationActive) && !row.failed;
-        updateHistoryRow(view, { ...gauge, active: rowActive });
+        const verifying = row.verifying || row.state === "verifying";
+        updateHistoryRow(view, { ...row, preparing, active: rowActive,
+          verification: verifying, verificationPercent: row.hashPercent });
         view.item.dataset.failed = String(Boolean(row.failed));
         if (view.titleIndicator.parentElement !== view.title) view.title.append(view.titleIndicator);
         updateProgressIndicator(view.titleIndicator, progressStatus(rowActive, row.completed && !preparing));
@@ -2186,18 +2187,20 @@
               ? Number.isFinite(row.bytes) && row.bytes > 0 ? `${quantity(row.bytes, "bytes")} / —` : "전체 용량 확인 전"
               : "";
         const checkPercent = Number.isFinite(row.hashPercent) ? ` · ${row.hashPercent}%` : "";
-        const reuseNote = row.verifying || row.state === "verifying" ? "파일 무결성 확인 중" + checkPercent
+        const reuseNote = verifying ? "파일 무결성 확인 중" + checkPercent
           : row.state === "reused" || (row.reused > 0 && row.reused === row.total) ? "기존 자료 재사용"
           : row.reused > 0 ? `기존 자료 ${count(row.reused)}개 재사용` : row.cacheCandidate ? "기존 파일 확인 대기" : "";
-        const preparationNote = work ? preparationActive ? work.label
+        const workPercent = Number.isFinite(work?.percent) ? ` · ${work.percent}%` : "";
+        const preparationNote = work ? preparationActive ? work.label + workPercent
           : project.status === "paused" ? "자료 준비 일시정지" : "자료 준비 미완료" : preparing && !inspection ? "자료 준비 대기" : "";
         const detail = row.detail || [sizeNote, preparationNote || reuseNote].filter(Boolean).join(" · ");
         view.noteDetail.textContent = detail && inspection ? detail + " · " : detail;
         view.inspectionStatus.hidden = !inspection;
         updateProgressIndicator(view.inspectionIndicator, progressStatus(inspectionActive && !preparationActive, inspection?.state === "complete"));
+        const inspectionPercent = inspectionActive ? preparationPercent(inspection) : null;
         view.inspectionLabel.textContent = {
           waiting: "품질 검사 대기",
-          checking: inspectionActive ? "품질 검사 중" : "품질 검사 미완료",
+          checking: inspectionActive ? ["품질 검사 중", inspectionPercent === null ? "" : `${inspectionPercent}%`].filter(Boolean).join(" · ") : "품질 검사 미완료",
           complete: "품질 검사 완료",
         }[inspection?.state] || "";
         view.note.hidden = !detail && !inspection;

@@ -117,7 +117,7 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-live progress::-webkit-progress-bar{background:#303743}
 .story-live progress::-webkit-progress-value{background:var(--story-progress-fill,#97aac5)}
 .story-live progress::-moz-progress-bar{background:var(--story-progress-fill,#97aac5)}
-.story-live progress[data-active="true"]{--story-progress-fill:#70c981}
+.story-live progress:is([data-active="true"],[data-preparing="true"]){--story-progress-fill:#70c981}
 .story-live progress[data-active="true"]:indeterminate{background:repeating-linear-gradient(115deg,var(--story-progress-fill) 0 4px,#426b50 4px 8px)}
 .story-live progress[data-active="true"]:indeterminate::-webkit-progress-bar{background:transparent}
 .story-live progress[data-active="true"]:indeterminate::-webkit-progress-value{background:transparent}
