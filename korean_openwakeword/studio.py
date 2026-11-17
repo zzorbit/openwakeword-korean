@@ -35,7 +35,7 @@ from .hard_pilot import HARD_SAMPLE_REVIEW_POLICY
 from .pilot import COMBINED_PILOT_POLICY, POSTGEN_PILOT_POLICY, PREPOST_PILOT_POLICY, TRAIN_PILOT_POLICY
 from .project import create_project, load_project
 from .studio_jobs import process_identity, request_stage_pause, worker_lock_paths as _lock_paths
-from .studio_progress import estimate_progress_eta, read_optional_progress
+from .studio_progress import estimate_progress_eta, prepared_download_groups, read_optional_progress
 from .web_page import render_page_config
 
 
@@ -5139,6 +5139,11 @@ class StudioManager:
             view["download_files"] = completed_downloads.get("files") or self._live_download_files(
                 state, download_record, running=job.get("stage") == "data_download" and view.get("process_alive", False))
         download_files = view.get("download_files", completed_downloads.get("files", ()))
+        if stage["id"] == "data_download" and download_files:
+            view["download_prepared_groups"] = prepared_download_groups(
+                Path(view["directory"]), state["wakeword"], download_files, view["evaluation_policy"], view["progress"],
+                read_metadata=lambda path: self._history_read(state, path),
+            )
         if any(row.get("id") == "base:generic" for row in download_files):
             quality = self._download_quality(state, view["progress"], self._history_result(state, "data_download"))
             if quality is not None:

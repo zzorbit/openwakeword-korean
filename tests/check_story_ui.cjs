@@ -1788,6 +1788,48 @@ async function main() {
       assert.equal(hasActiveDownloadSpinner(row), false);
     }
   });
+  await test("recorded preparation completes each download row during the running stage", () => {
+    const project = checkpointProject("running", "running");
+    project.stage_id = "data_download";
+    project.download_files = [
+      { id: "base:zeroth", group: "zeroth", label: "Zeroth", filename: "zeroth.tar.gz" },
+      { id: "common:musan", group: "musan", label: "MUSAN" },
+      { id: "common:seoul", group: "seoul", label: "Seoul" },
+    ].map(file => ({ ...file, state: "complete", done: 500, total: 500, unit: "bytes" }));
+    project.progress = { stage: "data_download", phase: "extract_verify", label: "기존 압축 해제 자료 검증: zeroth.tar.gz", done: 9, total: 10 };
+
+    const p = page(project);
+    const zeroth = historyRowByLabel(p.shell, "Zeroth"), musan = historyRowByLabel(p.shell, "MUSAN"), seoul = historyRowByLabel(p.shell, "Seoul");
+    const status = row => row.querySelector(".story-progress-indicator").dataset.status;
+    const percent = row => row.querySelector(".story-history-percent").textContent;
+    assert.equal(status(zeroth), "active");
+    assert.match(textOf(musan), /자료 준비 대기/);
+    assert.match(textOf(seoul), /자료 준비 대기/);
+
+    // Only the API evidence changes. The last progress still names the completed row.
+    project.download_prepared_groups = ["zeroth"];
+    p.ui.render();
+    assert.equal(historyRowByLabel(p.shell, "Zeroth"), zeroth);
+    assert.equal(status(zeroth), "complete");
+    assert.equal(percent(zeroth), "100%");
+    assert.equal(zeroth.querySelector("progress").dataset.active, "false");
+    assert.doesNotMatch(textOf(zeroth), /검증 중|자료 준비 대기/);
+    assert.match(textOf(musan), /자료 준비 대기/);
+
+    project.progress = { stage: "data_download", phase: "material_preparation", label: "공통 평가 원본 추출 · musan", done: 2, total: 10 };
+    p.ui.render();
+    assert.equal(status(zeroth), "complete");
+    assert.equal(status(musan), "active");
+    assert.equal(percent(musan), "20%");
+    assert.match(textOf(seoul), /자료 준비 대기/);
+    assert.notEqual(status(seoul), "complete");
+    assert.equal(hasActiveDownloadSpinner(seoul), false);
+    assert.equal(p.next.disabled, true, "individual preparation does not release the running chapter");
+
+    const reloaded = page(structuredClone(project));
+    assert.equal(status(historyRowByLabel(reloaded.shell, "Zeroth")), "complete");
+    assert.equal(status(historyRowByLabel(reloaded.shell, "MUSAN")), "active");
+  });
   await test("one phrase next carries successful input through the exact completed boundary and destination readiness",async()=>{
     for(const fast of [false,true]){
       const project=navigationProject("phrases");Object.assign(project,{status:"waiting_input",stage_id:"hard_phrases",input:{kind:"hard_phrases",suggestions:[]}});

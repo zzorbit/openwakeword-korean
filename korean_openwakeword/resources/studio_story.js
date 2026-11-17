@@ -2117,6 +2117,7 @@
       // reuse, unpacks archives and prepares their sources before publishing.
       const waitingForPreparation = !saved && ["frontend", "data", "data_download"].includes(stage)
         && !done(project.stages?.find(item => item.id === "data_download")?.status);
+      const preparedGroups = new Set(project.download_prepared_groups || []);
       const progress = project.progress || {};
       const preparation = saved || progress.stage && progress.stage !== stage ? null : downloadPreparationWork(progress, files);
       const groups = new Map();
@@ -2161,11 +2162,13 @@
           view.note.append(view.noteDetail, view.inspectionStatus);
           view.item.append(view.note);
         }
-        const inspection = (row.group || row.key) === "generic_negative" && row.completed ? quality : null;
+        const group = row.group || row.key;
+        const sourcePrepared = preparedGroups.has(group);
+        const inspection = group === "generic_negative" && row.completed ? quality : null;
         const inspectionActive = activeDownload && inspection?.state === "checking";
-        const work = (row.group || row.key) === preparation?.group ? preparation : null;
+        const work = !sourcePrepared && group === preparation?.group ? preparation : null;
         const preparing = row.key !== "compute-tools" && (Boolean(work) || inspectionActive
-          || waitingForPreparation && row.completed && inspection?.state !== "complete");
+          || waitingForPreparation && row.completed && !sourcePrepared && inspection?.state !== "complete");
         const preparationActive = active && preparing && Boolean(work || inspectionActive);
         const gauge = preparing
           ? { ...row, preparing: true, verification: true,
@@ -2369,6 +2372,7 @@
       const downloadState = current === "downloads"
         ? [project.status, stageId(project), project.stages, project.error, project.download_setup_items, progress?.setup_items,
           downloadCheckpoint(project)?.state, project.dependency_download_bytes, project.dependency_packages, legacy,
+          project.download_prepared_groups,
           progress?.phase, progress?.label, progress?.done, progress?.total, progress?.unit, progress?.verification_reused,
           stageId(project) === "frontend" ? phaseElapsed(progress) : ""]
         : null;
