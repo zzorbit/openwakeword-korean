@@ -1926,12 +1926,12 @@
       const totalKnown = Number.isFinite(row.total) && row.total > 0, doneKnown = Number.isFinite(row.done) && row.done >= 0;
       const label = row.label || "자료";
       if (title.textContent !== label) title.textContent = label;
-      amount.textContent = totalKnown ? `${doneKnown ? row.unit === "bytes" ? quantity(row.done, row.unit) : count(row.done) : "—"} / ${quantity(row.total, row.unit)}` : doneKnown ? quantity(row.done, row.unit) : "수량 기록 없음";
+      amount.textContent = row.preparing ? "" : totalKnown ? `${doneKnown ? row.unit === "bytes" ? quantity(row.done, row.unit) : count(row.done) : "—"} / ${quantity(row.total, row.unit)}` : doneKnown ? quantity(row.done, row.unit) : "수량 기록 없음";
       const byBytes = Number.isFinite(row.bytes) && Number.isFinite(row.totalBytes) && row.totalBytes > 0;
       const fraction = row.verification ? Number.isFinite(row.verificationPercent) ? row.verificationPercent / 100 : null
         : byBytes ? row.bytes / row.totalBytes : totalKnown && doneKnown ? row.done / row.total : null;
       const percentage = Math.min(100, fraction * 100);
-      percent.textContent = fraction === null || row.indeterminate ? ""
+      percent.textContent = fraction === null || row.indeterminate || row.preparing && !row.active ? ""
         : `${percentage.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}%`;
       bar.hidden = fraction === null && !row.verification;
       bar.dataset.active = String(Boolean(row.active));
@@ -1939,11 +1939,61 @@
         bar.max = row.verification ? 100 : byBytes ? row.totalBytes : row.total;
         if (fraction === null || row.indeterminate) bar.removeAttribute("value");
         else bar.value = Math.min(bar.max, row.verification ? row.verificationPercent : byBytes ? row.bytes : row.done);
-        bar.setAttribute("aria-label", (row.label || "자료") + (row.verification ? " 현재 파일 무결성 검사 진행률" : " 진행률") + (row.active ? " · 진행 중" : ""));
+        bar.setAttribute("aria-label", label + (row.preparing ? " 자료 준비 진행률" : row.verification ? " 현재 파일 무결성 검사 진행률" : " 진행률") + (row.active ? " · 진행 중" : ""));
       }
     }
     const downloadGroupOrder = ["generic_negative", "zeroth", "audioset", "musan", "seoul", "fsd50k", "common_rir", "official_music", "mit_rir"];
     const downloadFileComplete = file => ["complete", "reused"].includes(file.state);
+    const archivePreparationLabels = {
+      extract_hash: "압축파일 검증 중",
+      extract_verify: "압축 해제 자료 검증 중",
+      extract: "압축 해제 중",
+    };
+    const evaluationPreparationGroups = {
+      "한국어 자연발화 대화": "seoul", "한국어 인터뷰": "seoul", "한국어 낭독": "zeroth",
+      "영어 등 다른 언어의 말소리": "musan", "음악·보컬": "musan",
+      "환경·생활음": "fsd50k", "전자음·알람·경보": "fsd50k",
+    };
+    function preparationPercent({ done, total }) {
+      return Number.isFinite(done) && Number.isFinite(total) && done >= 0 && total > 0 && done < total
+        ? Math.floor(done / total * 100) : null;
+    }
+    function downloadPreparationWork(progress, files) {
+      const label = typeof progress.label === "string" ? progress.label : "";
+      const groupOf = file => file.group || file.id;
+      const resolveGroup = predicate => {
+        const matches = new Set(files.filter(predicate).map(groupOf));
+        return matches.size === 1 ? matches.values().next().value : null;
+      };
+      if (Object.hasOwn(archivePreparationLabels, progress.phase)) {
+        const filename = label.match(/: (.+)$/)?.[1];
+        const group = filename && resolveGroup(file => (file.filename || file.label) === filename);
+        const reused = progress.verification_reused === true;
+        return group ? { group, label: reused ? "압축 해제 준비 중" : archivePreparationLabels[progress.phase],
+          percent: reused ? null : preparationPercent(progress) } : null;
+      }
+      if (progress.phase === "convert") {
+        const source = label.match(/^자료 변환·분리: (.+)$/)?.[1];
+        const group = source === "fma" && files.some(file => groupOf(file) === "official_music") ? "official_music" : source;
+        return group ? { group, label: "자료 변환·분리 중", percent: null } : null;
+      }
+      const extraction = label.match(/^공통 평가 원본 추출 · (.+)$/)?.[1];
+      if (extraction) {
+        const group = resolveGroup(file => file.id === `common:${extraction}`);
+        return group ? { group, label: "평가용 원본 추출 중", percent: preparationPercent(progress) } : null;
+      }
+      const evaluation = label.match(/^공통 평가 원본 준비 · (.+)$/)?.[1];
+      if (evaluation && Object.hasOwn(evaluationPreparationGroups, evaluation)) {
+        return { group: evaluationPreparationGroups[evaluation], label: "평가용 원본 준비 중", percent: preparationPercent(progress) };
+      }
+      if (label === "공통 평가 한국어 낭독 원본 준비")
+        return { group: "zeroth", label: "평가용 원본 준비 중", percent: null };
+      if (label === "공통 잔향 원본 archive 준비·무결성 확인")
+        return { group: "common_rir", label: "평가용 잔향 자료 검증 중", percent: null };
+      if (label.startsWith("일반 비호출 특징") && progress.phase !== "quality")
+        return { group: "generic_negative", label: "특징 파일 무결성 확인 중", percent: preparationPercent(progress) };
+      return null;
+    }
     let downloadRowViews = new Map();
     const downloadList = node("div", undefined, "story-history-rows");
     let verificationProject = null, verificationTask = null;
@@ -2010,18 +2060,15 @@
       return legacy?.completed.includes(spec) || Boolean(version && legacy?.installed.includes(`${name}-${version}`));
     }
     function renderDownloadActivity(project, active, toolsComplete) {
-      const progress = project.progress || {}, stage = stageId(project);
-      const transferring = stage === "data_download" && progress.phase === "download_many";
-      downloadActivity.hidden = transferring || (!active && !toolsComplete);
+      const progress = project.progress || {};
+      downloadActivity.hidden = !active && !toolsComplete;
       if (downloadActivity.hidden) return;
-      const defaults = { frontend: "학습·평가 실행환경을 확인하고 있습니다...", data_download: "자료 파일을 준비하고 있습니다...",
-        data_review: "학습·평가 자료를 검사하고 있습니다...", data_connect: "검증한 자료를 연결하고 평가용 배경 음원을 준비하고 있습니다..." };
       const label = typeof progress.label === "string" && progress.label.trim() && !/단계/.test(progress.unit || "")
-        ? progress.label.trim().slice(0, 240) : defaults[stage] || "자료 준비 상태를 확인하고 있습니다...";
+        ? progress.label.trim().slice(0, 240) : "학습·평가 실행환경을 확인하고 있습니다...";
       const numeric = Number.isFinite(progress.done) && progress.done >= 0 && Number.isFinite(progress.total) && progress.total > 0
         && !/단계|bytes|바이트/.test(progress.unit || "");
       const text = toolsComplete ? "학습 도구 준비를 마쳤습니다." : label + (numeric ? ` · ${progressAmount(progress.done, progress.total, progress.unit || "개")}` : "")
-        + (stage === "frontend" ? phaseElapsed(progress) : "");
+        + phaseElapsed(progress);
       downloadActivityLabel.textContent = text + " "; downloadActivity.title = text;
       updateProgressIndicator(downloadActivityIndicator, toolsComplete ? "complete" : "active");
     }
@@ -2063,9 +2110,15 @@
       return { key: "compute-tools", label, detail, done: packages.size ? countInstalled : null, total: packages.size, unit: "items",
         active: working, completed, failed, indeterminate: working && (!countInstalled || !pending.length) };
     }
-    function renderStoryDownloads(project, files, verification, quality, active, legacy) {
+    function renderStoryDownloads(project, files, verification, quality, active, legacy, saved) {
       const stage = stageId(project);
       const activeDownload = active && stage === "data_download";
+      // File counts describe transfers. The preparation stage also verifies
+      // reuse, unpacks archives and prepares their sources before publishing.
+      const waitingForPreparation = !saved && ["frontend", "data", "data_download"].includes(stage)
+        && !done(project.stages?.find(item => item.id === "data_download")?.status);
+      const progress = project.progress || {};
+      const preparation = saved || progress.stage && progress.stage !== stage ? null : downloadPreparationWork(progress, files);
       const groups = new Map();
       const fileActive = file => activeDownload && ["downloading", "verifying", "retrying"].includes(file.state);
       const sum = (files, key) => files.every(file => Number.isFinite(file[key])) ? files.reduce((value, file) => value + file[key], 0) : null;
@@ -2109,14 +2162,21 @@
           view.item.append(view.note);
         }
         const inspection = (row.group || row.key) === "generic_negative" && row.completed ? quality : null;
-        const gauge = row.verifying || row.state === "verifying"
-          ? { ...row, verification: true, verificationPercent: row.hashPercent } : row;
         const inspectionActive = activeDownload && inspection?.state === "checking";
-        const rowActive = row.active && !row.failed;
+        const work = (row.group || row.key) === preparation?.group ? preparation : null;
+        const preparing = row.key !== "compute-tools" && (Boolean(work) || inspectionActive
+          || waitingForPreparation && row.completed && inspection?.state !== "complete");
+        const preparationActive = active && preparing && Boolean(work || inspectionActive);
+        const gauge = preparing
+          ? { ...row, preparing: true, verification: true,
+            verificationPercent: preparationActive ? work?.percent ?? (inspectionActive ? preparationPercent(inspection) : null) : 0 }
+          : row.verifying || row.state === "verifying"
+            ? { ...row, verification: true, verificationPercent: row.hashPercent } : row;
+        const rowActive = (row.active || preparationActive) && !row.failed;
         updateHistoryRow(view, { ...gauge, active: rowActive });
         view.item.dataset.failed = String(Boolean(row.failed));
         if (view.titleIndicator.parentElement !== view.title) view.title.append(view.titleIndicator);
-        updateProgressIndicator(view.titleIndicator, progressStatus(rowActive, row.completed));
+        updateProgressIndicator(view.titleIndicator, progressStatus(rowActive, row.completed && !preparing));
         const sizeNote = row.failed ? "다운로드 실패"
           : Number.isFinite(row.totalBytes) ? progressAmount(row.bytes, row.totalBytes, "bytes")
             : row.unit === "files" && Object.hasOwn(row, "totalBytes")
@@ -2126,10 +2186,12 @@
         const reuseNote = row.verifying || row.state === "verifying" ? "파일 무결성 확인 중" + checkPercent
           : row.state === "reused" || (row.reused > 0 && row.reused === row.total) ? "기존 자료 재사용"
           : row.reused > 0 ? `기존 자료 ${count(row.reused)}개 재사용` : row.cacheCandidate ? "기존 파일 확인 대기" : "";
-        const detail = row.detail || [sizeNote, reuseNote].filter(Boolean).join(" · ");
+        const preparationNote = work ? preparationActive ? work.label
+          : project.status === "paused" ? "자료 준비 일시정지" : "자료 준비 미완료" : preparing && !inspection ? "자료 준비 대기" : "";
+        const detail = row.detail || [sizeNote, preparationNote || reuseNote].filter(Boolean).join(" · ");
         view.noteDetail.textContent = detail && inspection ? detail + " · " : detail;
         view.inspectionStatus.hidden = !inspection;
-        updateProgressIndicator(view.inspectionIndicator, progressStatus(inspectionActive, inspection?.state === "complete"));
+        updateProgressIndicator(view.inspectionIndicator, progressStatus(inspectionActive && !preparationActive, inspection?.state === "complete"));
         view.inspectionLabel.textContent = {
           waiting: "품질 검사 대기",
           checking: inspectionActive ? "품질 검사 중" : "품질 검사 미완료",
@@ -2307,7 +2369,7 @@
       const downloadState = current === "downloads"
         ? [project.status, stageId(project), project.stages, project.error, project.download_setup_items, progress?.setup_items,
           downloadCheckpoint(project)?.state, project.dependency_download_bytes, project.dependency_packages, legacy,
-          progress?.phase, progress?.label, progress?.done, progress?.total, progress?.unit,
+          progress?.phase, progress?.label, progress?.done, progress?.total, progress?.unit, progress?.verification_reused,
           stageId(project) === "frontend" ? phaseElapsed(progress) : ""]
         : null;
       const fingerprint = JSON.stringify([project?.id, current, valid, view, downloadFiles, verification && [...verification], quality, downloadActive, downloadState, project?.migration, historyPage, innerWidth, innerHeight]);
@@ -2316,7 +2378,7 @@
       const unknown = () => historyContent.replaceChildren(node("p", "저장된 세부 내역이 없습니다.", "story-history-note"));
       if (current === "downloads") {
         stopHistoryPlayback(true);
-        renderStoryDownloads(project, downloadFiles || [], verification, quality, downloadActive, legacy);
+        renderStoryDownloads(project, downloadFiles || [], verification, quality, downloadActive, legacy, valid);
         return;
       }
       if (!valid) { stopHistoryPlayback(true); unknown(); return; }
@@ -2649,7 +2711,7 @@
         const hasDownloadRows = current === "downloads";
         const chapterComplete = completedStep(project, current);
         const chapterActive = !chapterComplete && chapterWorkActive(project, historical);
-        renderDownloadActivity(project, (current === "tools" || hasDownloadRows && !preparingTools) && chapterActive && !project.error,
+        renderDownloadActivity(project, current === "tools" && chapterActive && !project.error,
           current === "tools" && chapterComplete);
         liveSummary.hidden = historical || frameStep || repairProgressVisible(project) && !project.error
           || preparingResults && !project.error

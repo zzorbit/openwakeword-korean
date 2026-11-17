@@ -1097,8 +1097,8 @@ async function main() {
       const rows = [...list.children];
       rows.forEach(row => { row.getBoundingClientRect = () => ({ height: rowHeights[list.dataset.density] }); });
       project.progress.files[0].done = 18; p.ui.render();
-      const captionHeight = p.get("story-download-activity").hidden ? 0 : 22;
-      assert.equal(list.style["--download-list-height"], `${available - captionHeight}px`, "only a visible work caption reserves space outside the download rows");
+      assert.equal(p.get("story-download-activity").hidden, true);
+      assert.equal(list.style["--download-list-height"], `${available}px`, "the download list reserves no space for a work caption");
       assert.equal(list.dataset.density, expectedDensity);
       assert.equal(list.dataset.overflow, String(overflow), "unavoidable overflow is reported without concealing any asset");
       assert.equal(rows.filter(row => /^자료 \d+$/.test(historyRowLabel(row))).length, 9);
@@ -1251,27 +1251,38 @@ async function main() {
       assert.equal(requests, 1);
     }
   });
-  await test("download stays at 100% while quality inspection reports its own state", () => {
+  await test("the generic row reports quality inspection and completes only with recorded confirmation", () => {
     const project = checkpointProject("running", "running");
     project.stage_id = "data_download";
     project.download_files = [{ id: "a", group: "generic_negative", label: "일반 비호출 자료", state: "complete", done: 100, total: 100, unit: "bytes" }];
     const p = page(project);
     const row = historyRowByLabel(p.shell.querySelector(".story-history"), "일반 비호출 자료");
     const percent = row.querySelector(".story-history-percent"), quality = row.querySelector(".story-quality-label");
-    assert.equal(percent.textContent, "100%");
+    const gauge = row.querySelector("progress"), status = row.querySelector(".story-progress-indicator");
+    assert.equal(percent.textContent, "");
+    assert.notEqual(status.dataset.status, "complete");
     assert.equal(quality.textContent, "품질 검사 대기");
     assert.equal(hasActiveDownloadSpinner(row), false);
     project.download_quality = { state: "checking", done: 7, total: 10 };
     p.ui.render();
-    assert.equal(percent.textContent, "100%");
+    assert.equal(percent.textContent, "70%");
     assert.equal(quality.textContent, "품질 검사 중");
     assert.equal(hasActiveDownloadSpinner(row), true);
+    assert.equal(status.dataset.status, "active");
+    assert.equal(gauge.dataset.active, "true");
+    assert.equal(row.querySelector(".story-quality-indicator").dataset.status, "");
     project.status = "error"; project.error = "자료 검사 실패";
     p.ui.render();
-    assert.equal(percent.textContent, "100%");
+    assert.equal(percent.textContent, "");
     assert.equal(quality.textContent, "품질 검사 미완료");
+    assert.notEqual(status.dataset.status, "complete");
     assert.equal(hasActiveDownloadSpinner(row), false);
     assert.equal(p.get("story-download-activity").hidden, true);
+    project.status = "running"; delete project.error;
+    project.download_quality = { state: "complete", done: 10, total: 10 };
+    p.ui.render();
+    assert.equal(status.dataset.status, "complete");
+    assert.equal(percent.textContent, "100%");
   });
   await test("download checkpoint holds a completed data phase until next explicitly releases it and follows a busy response once", async () => {
     const project = checkpointProject("awaiting_next", "paused"); project.stage_id = "references";
@@ -1625,8 +1636,11 @@ async function main() {
     assert.equal(rows[1].querySelector("progress").hidden,false);assert.equal(rows[1].querySelector("progress").getAttribute("value"),null);
     assert.equal(rows[1].querySelector(".story-history-percent").textContent,"");
     assert.match(rows[0].querySelector("progress").getAttribute("aria-label"),/무결성 검사/);
-    project.download_files[0].state="reused";p.ui.render();assert.match(textOf(rows[0]),/1 \/ 1개/);
-    assert.equal(rows[0].querySelector(".story-progress-indicator").dataset.status,"complete");
+    project.download_files[0].state="reused";p.ui.render();
+    assert.match(textOf(rows[0]),/자료 준비 대기/);
+    assert.equal(rows[0].querySelector(".story-history-percent").textContent,"");
+    assert.notEqual(rows[0].querySelector(".story-progress-indicator").dataset.status,"complete");
+    assert.equal(hasActiveDownloadSpinner(rows[0]),false);
   });
   await test("parallel downloads retain each active file hash gauge until verification or the attempt changes", () => {
     const project = checkpointProject("running", "running");
@@ -1683,25 +1697,96 @@ async function main() {
     assert.equal(row.querySelector(".story-history-percent").textContent, "30%");
     project.progress = { phase: "extract", label: "다운로드한 자료 압축 해제" };
     p.ui.render();
-    assert.equal(caption.hidden, false);
-    assert.match(textOf(caption), /다운로드한 자료 압축 해제/);
+    assert.equal(caption.hidden, true);
   });
-  await test("download rows retain one stable current-work caption through extraction and connection",()=>{
-    const css = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources/studio_story.css"), "utf8");
-    assert.match(css, /#story-download-activity\{text-align:center\}/);
-    const project=checkpointProject("running","running");project.stage_id="data_download";
-    project.download_files=[{id:"a",label:"파일",state:"waiting",unit:"bytes",done:0,total:100}];
-    const p=page(project),caption=p.get("story-download-activity");
-    assert.equal(caption.hidden,false);assert.match(textOf(caption),/자료 파일/);assert.equal(caption.querySelector("i").dataset.status,"active");
-    project.progress={stage:"data_download",phase:"extract",label:"기존 추출 파일 검증",done:123,total:22835,unit:"files"};p.ui.render();
-    assert.match(textOf(caption),/기존 추출 파일 검증.*123 \/ 22,835개/);assert.equal(caption.style.whiteSpace,"nowrap");
-    project.stage_id="data_connect";project.progress={done:3,total:20,unit:"완료 단계"};p.ui.render();
-    assert.match(textOf(caption),/자료를 연결/);assert.doesNotMatch(textOf(caption),/3 \/ 20/);
-    project.progress={label:"공통 평가 원본 준비",done:12115.651,total:14400,unit:"seconds"};p.ui.render();
-    assert.match(textOf(caption),/3시간 21분 55초 \/ 4시간/);
-    project.progress={label:"자료 변환·분리",done:1,total:3,unit:"datasets"};p.ui.render();
-    assert.match(textOf(caption),/1 \/ 3개 자료/);
-    project.status="failed";project.error="자료 검증 실패";p.ui.render();assert.equal(caption.hidden,true);
+  await test("cached archive preparation and split archive progress belong to their respective download rows", () => {
+    const project = checkpointProject("running", "running");
+    project.stage_id = "data_download";
+    const file = (id, group, filename, groupLabel, state = "complete") => ({
+      id, group, filename, label: filename, group_label: groupLabel, state, done: 100, total: 100, unit: "bytes",
+    });
+    const zeroth = "한국어 낭독 · Zeroth", fsd = "평가용 환경음·전자음 · FSD50K", musan = "평가용 말소리·음악 · MUSAN";
+    project.download_files = [
+      file("base:zeroth", "zeroth", "zeroth_korean.tar.gz", zeroth, "reused"),
+      file("common:fsd_eval", "fsd50k", "FSD50K.eval_audio.z01", fsd),
+      file("common:fsd_eval_zip", "fsd50k", "FSD50K.eval_audio.zip", fsd),
+      file("common:musan", "musan", "musan.tar.gz", musan),
+    ];
+    const setProgress = (phase, label, done, total, unit = "bytes", extra = {}) => {
+      project.progress = { stage: "data_download", phase, label, done, total, unit, ...extra };
+    };
+    const percentage = row => row.querySelector(".story-history-percent").textContent;
+    const bar = row => row.querySelector("progress");
+    const indicator = row => row.querySelector(".story-progress-indicator").dataset.status;
+    const detail = row => row.querySelector(".story-history-note-detail").textContent;
+    const assertPending = row => {
+      assert.match(detail(row), /자료 준비 대기/);
+      assert.equal(percentage(row), "");
+      assert.doesNotMatch(textOf(row), /\d+ \/ \d+개/);
+      assert.notEqual(indicator(row), "complete");
+      assert.equal(hasActiveDownloadSpinner(row), false);
+    };
+    const assertActive = (row, expected, percent = "") => {
+      assert.match(detail(row), expected);
+      assert.equal(indicator(row), "active");
+      assert.equal(bar(row).dataset.active, "true");
+      assert.equal(bar(row).hidden, false);
+      assert.equal(percentage(row), percent);
+      if (!percent) assert.equal(bar(row).getAttribute("value"), null);
+    };
+
+    setProgress("extract_hash", "검증한 압축파일 재사용: zeroth_korean.tar.gz", 100, 100, "bytes", { verification_reused: true });
+    const p = page(project), caption = p.get("story-download-activity");
+    const z = historyRowByLabel(p.shell, zeroth), f = historyRowByLabel(p.shell, fsd), m = historyRowByLabel(p.shell, musan);
+    assert.equal(caption.hidden, true);
+    assertActive(z, /압축 해제 준비 중/);
+    assertPending(f); assertPending(m);
+
+    setProgress("extract_hash", "압축파일 검증: zeroth_korean.tar.gz", 40, 100);
+    p.ui.render();
+    assertActive(z, /압축파일 검증 중/, "40%");
+    setProgress("extract_verify", "기존 압축 해제 자료 검증: zeroth_korean.tar.gz", 15, 20, "개 파일");
+    p.ui.render();
+    assertActive(z, /압축 해제 자료 검증 중/, "75%");
+    setProgress("extract", "압축 해제: zeroth_korean.tar.gz", 52, 100);
+    p.ui.render();
+    assert.equal(historyRowByLabel(p.shell, zeroth), z);
+    assertActive(z, /압축 해제 중/, "52%");
+    const reloaded = page(structuredClone(project));
+    assert.equal(reloaded.get("story-download-activity").hidden, true);
+    assertActive(historyRowByLabel(reloaded.shell, zeroth), /압축 해제 중/, "52%");
+
+    setProgress("extract", "압축 해제: zeroth_korean.tar.gz", 100, 100);
+    p.ui.render();
+    assertActive(z, /압축 해제 중/);
+    project.status = "paused"; p.ui.render();
+    assert.match(detail(z), /자료 준비 일시정지/);
+    assert.notEqual(indicator(z), "complete");
+    assert.equal(hasActiveDownloadSpinner(z), false);
+    project.status = "running";
+
+    setProgress("convert", "자료 변환·분리: zeroth", 1, 4, "datasets");
+    p.ui.render();
+    assertActive(z, /자료 변환·분리 중/);
+    setProgress("material_preparation", "공통 평가 원본 추출 · fsd_eval", 7, 10, "sources");
+    p.ui.render();
+    assertActive(f, /평가용 원본 추출 중/, "70%");
+    assertPending(z); assertPending(m);
+    setProgress("extract", "압축 해제: unknown.tar.gz", 10, 20);
+    p.ui.render();
+    [z, f, m].forEach(assertPending);
+    assert.equal(caption.hidden, true);
+
+    project.stages.find(stage => stage.id === "data_download").status = "completed";
+    project.stage_id = "data_connect";
+    setProgress("material_admission", "검증 자료 연결", 3, 20, "완료 단계");
+    p.ui.render();
+    assert.equal(caption.hidden, true);
+    for (const row of [z, f, m]) {
+      assert.equal(indicator(row), "complete");
+      assert.equal(percentage(row), "100%");
+      assert.equal(hasActiveDownloadSpinner(row), false);
+    }
   });
   await test("one phrase next carries successful input through the exact completed boundary and destination readiness",async()=>{
     for(const fast of [false,true]){
