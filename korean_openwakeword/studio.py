@@ -271,6 +271,8 @@ def _execution_contract(*, legacy_reference_review=False):
     bindings["calibration.py"] = _CALIBRATION_REPORT_COMPATIBLE_DIGESTS.get(bindings["calibration.py"], bindings["calibration.py"])
     material_policy = bindings["material_policy.py"]
     bindings["material_policy.py"] = _MATERIAL_ARCHIVE_PATH_COMPATIBLE_DIGESTS.get(material_policy, material_policy)
+    evaluation_backend = bindings["evaluation_backend.py"]
+    bindings["evaluation_backend.py"] = _EVALUATION_STARTUP_COMPATIBLE_DIGESTS.get(evaluation_backend, evaluation_backend)
     if legacy_reference_review:
         # Only project the previous contract for this audited, opt-in change.
         if (bindings.get("pilot.py"), bindings.get("reference_voice_review.py")) != _REFERENCE_REVIEW_COMPATIBLE_FILES:
@@ -427,6 +429,14 @@ _MATERIAL_ARCHIVE_PATH_COMPATIBLE_DIGESTS = {
         "b69d1a06bfe0ebcd9bf6c73392cd78a8b6dc4caa6fd10afe91bc90b960d2bbac",
     "560b8938de7899d3a6e2cff1323f411e7252b48324bd9e9450e634f44ea1bae3":
         "fa4bf0d2a4c58f34d2e64e6d20e77dd9a8af7f1388577298cf8049e23ad39362",
+}
+
+# The startup probe budget and diagnostics preserve the score and resume contracts.
+_EVALUATION_STARTUP_COMPATIBLE_DIGESTS = {
+    "a121275b2689bb8c2dda10a2f2d2c39ba76030546fcff8949942b4d15d83b7de":
+        "f71f1b1dee256b3e34f4cc38c7483e192a8afef042a97cada39c11ed96e752f7",
+    "f517ff0fed0db00dedd992cfae4c7f7001bec1040b990ca99f2a6ba101deda54":
+        "b2fa63f8b53e4c06612a4602987dd63e9608e0003c4c8b0c70d45ddde5e84abf",
 }
 
 
@@ -4874,6 +4884,10 @@ class StudioManager:
             view["progress"] = owned_progress
             view["progress_note"] = ""
             view["next_action"] = "선택한 GPU 평가 환경을 준비합니다."
+        elif phase == "validation" and owned_progress.get("phase") == "evaluation_gpu_probe":
+            view["progress"] = owned_progress
+            view["progress_note"] = ""
+            view["next_action"] = "GPU에서 평가 모델을 시험 실행하고 있습니다."
         elif phase == "validation":
             view["next_action"] = "평가 음원의 무결성과 형식을 확인하고 있습니다."
         elif phase == "finalizing":

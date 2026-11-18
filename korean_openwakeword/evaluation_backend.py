@@ -13,8 +13,19 @@ import sys
 
 from .common import read_json
 from .frontend import PINNED_ASSETS
+from .task_progress import emit as report_task_progress
 
 NUMERICAL_POLICY = "cuda_fp32_whole_session_cpu_boundary_v1"
+# A cold run loads the CUDA runtime, the CPU reference and five GPU sessions.
+# Allow the same startup budget as the managed runtime's installation probe.
+_CUDA_PROBE_TIMEOUT_SECONDS = 120
+_CUDA_PROBE_PHASE_PREFIX = "CUDA probe phase: "
+_CUDA_PROBE_PHASES = {
+    "imports": "평가 모듈 불러오기",
+    "sessions": "CUDA 런타임과 모델 세션 준비",
+    "inference": "GPU 시험 추론",
+    "exit": "시험 프로세스 종료",
+}
 
 
 def _runtime_environment(project_root):
@@ -54,7 +65,7 @@ def _loaded_runtime_conflict(environment):
     return None
 
 
-def probe_cuda_backend(bundle, *, environment=None, timeout=30):
+def probe_cuda_backend(bundle, *, environment=None, timeout=_CUDA_PROBE_TIMEOUT_SECONDS):
     """Return capability evidence from an isolated, bounded CUDA test process."""
     child_environment = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONDONTWRITEBYTECODE="1")
     child_environment.update(environment or {})
@@ -70,9 +81,15 @@ def probe_cuda_backend(bundle, *, environment=None, timeout=30):
             text=True, encoding="utf-8", errors="replace", timeout=timeout,
             cwd=Path(__file__).resolve().parent.parent,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as error:
+        output = error.stdout or ""
+        if isinstance(output, bytes):
+            output = output.decode("utf-8", errors="replace")
+        phase = next((line[len(_CUDA_PROBE_PHASE_PREFIX):] for line in reversed(output.splitlines())
+                      if line.startswith(_CUDA_PROBE_PHASE_PREFIX)), None)
         return {"available": False, "reason_code": "cuda_probe_timeout",
-                "reason": "GPU 실행 확인이 제한 시간 안에 끝나지 않았습니다."}
+                "reason": f"GPU 실행 확인이 {timeout:g}초 안에 끝나지 않았습니다.",
+                "detail": f"마지막 확인 단계는 ‘{_CUDA_PROBE_PHASES.get(phase, '시험 프로세스 시작')}’입니다."}
     except OSError as error:
         return {"available": False, "reason_code": "cuda_probe_start_failed", "reason": str(error)}
     lines = completed.stdout.splitlines()
@@ -132,6 +149,7 @@ def resolve_evaluation_backend(requested="auto", *, stage="development", bundle=
     conflict = _loaded_runtime_conflict(environment)
     if conflict:
         raise RuntimeError(conflict + " CPU로 자동 전환하지 않습니다.")
+    report_task_progress("evaluation_gpu_probe", "GPU 실행 확인", eta_eligible=False)
     probe = probe_cuda_backend(bundle, environment=environment)
     if not probe["available"]:
         detail = probe.get("reason", "GPU 실행 확인에 실패했습니다.")
@@ -139,6 +157,7 @@ def resolve_evaluation_backend(requested="auto", *, stage="development", bundle=
             detail += " " + str(probe["detail"])[:2000]
         raise RuntimeError("GPU 평가를 시작하지 못했습니다: " + detail
                            + " CPU로 자동 전환하지 않습니다. 문제를 해결한 뒤 다시 진행하세요.")
+    report_task_progress("evaluation_input_validation", "평가 음원 검증 중", eta_eligible=False)
     return {**result, "backend": "cuda", "runtime_environment": environment,
             "reason_code": "resume_cuda" if resume_backend else "cuda_available",
             "reason": "GPU 배치 평가를 사용하고 임계값 근처의 음원은 CPU로 다시 확인합니다.",
@@ -147,15 +166,19 @@ def resolve_evaluation_backend(requested="auto", *, stage="development", bundle=
 
 def _probe_main(bundle):
     try:
+        print(_CUDA_PROBE_PHASE_PREFIX + "imports", flush=True)
         import numpy as np
         from .gpu_evaluation import _GpuBatchScorer
         from .runtime import bundle_candidates
         manifest = read_json(Path(bundle) / "manifest.json")
         stats = {}
+        print(_CUDA_PROBE_PHASE_PREFIX + "sessions", flush=True)
         scorer = _GpuBatchScorer(bundle, [row["id"] for row in bundle_candidates(manifest)], stats)
+        print(_CUDA_PROBE_PHASE_PREFIX + "inference", flush=True)
         scores = scorer.score_batch([np.zeros(1280 * 3, dtype=np.int16), np.zeros(1280 * 2, dtype=np.int16)])
         if [value.shape for value in scores] != [(3, 4), (2, 4)] or any(not np.isfinite(value).all() for value in scores):
             raise ValueError("CUDA session execution returned invalid scores")
+        print(_CUDA_PROBE_PHASE_PREFIX + "exit", flush=True)
         print(json.dumps({"available": True, "reason_code": "cuda_sessions_verified", "reason": "CUDA FP32 세션 실행 확인 완료",
             "onnxruntime_version": stats["onnxruntime_version"], "onnxruntime_module": stats["onnxruntime_module"],
             "providers": stats["providers"], "precision": stats["precision"], "mel_derivation": stats["mel_derivation"]},

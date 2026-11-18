@@ -136,6 +136,21 @@ def test_scoped_download_caption_retains_file_rows_and_the_current_hash_event(tm
     assert view["eta_seconds"] is None
 
 
+def test_evaluation_gpu_probe_shows_startup_before_audio_validation(tmp_path, monkeypatch):
+    manager, state, record, path = _owned(tmp_path, monkeypatch, stage="evaluation")
+    record.update(phase="evaluation_gpu_probe", label="GPU 실행 확인", done=None, total=None, unit=None)
+    studio.write_json(path, record)
+    view = manager.describe(state)
+    assert view["progress"]["phase"] == "evaluation_gpu_probe"
+    assert view["progress"]["total"] is None and view["eta_seconds"] is None
+    assert view["next_action"] == "GPU에서 평가 모델을 시험 실행하고 있습니다."
+
+    record.update(phase="evaluation_input_validation", label="평가 음원 검증 중")
+    studio.write_json(path, record)
+    view = manager.describe(state)
+    assert view["progress"]["phase"] == "validation"
+
+
 @pytest.mark.parametrize("committed", [0, 48000])
 def test_long_audio_activity_works_before_first_or_resumed_completion_without_inflating_counts(tmp_path, monkeypatch, committed):
     manager, state, record, path = _owned(tmp_path, monkeypatch, stage="evaluation",

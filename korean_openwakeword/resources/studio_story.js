@@ -1797,7 +1797,8 @@
         if (current === "evaluation" && ["development", "evaluation"].includes(stage) && !completed) {
           const progressLabel = /단계/.test(progress?.unit || "") ? "" : progress?.label;
           const statusText = { validation: "검증 중", scoring: "평가 중", finalizing: "정리 중", runtime_recommendation: "비교 중",
-            preparation_validation: "검증 중", preparation_generation: "생성 중", preparation_finalizing: "등록·검증 중" }[progress?.phase] || "준비 중";
+            evaluation_gpu_probe: "확인 중", preparation_validation: "검증 중", preparation_generation: "생성 중",
+            preparation_finalizing: "등록·검증 중" }[progress?.phase] || "준비 중";
           return [preparationRow(project, evaluationPhaseLabel || progressLabel || (stage === "development" ? "평가 자료 준비" : "성능 평가 준비"), active, statusText)];
         }
         if (current === "training" && stage === "package" && !completed)

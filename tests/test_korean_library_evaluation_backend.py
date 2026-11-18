@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from korean_openwakeword.frontend import PINNED_ASSETS
+from korean_openwakeword.task_progress import task_progress
 
 
 @pytest.fixture
@@ -37,9 +38,13 @@ def test_new_auto_run_prefers_a_real_verified_cuda_backend(backend, monkeypatch,
         probes.append((directory, environment))
         return {"available": True, "providers": ["CUDAExecutionProvider", "CPUExecutionProvider"]}
     monkeypatch.setattr(backend, "probe_cuda_backend", probe)
-    result = backend.resolve_evaluation_backend(bundle=bundle)
+    progress = []
+    with task_progress(progress.append):
+        result = backend.resolve_evaluation_backend(bundle=bundle)
     assert result["requested_backend"] == "auto" and result["backend"] == "cuda"
     assert result["numerical_policy"] == backend.NUMERICAL_POLICY and len(probes) == 1
+    assert [event["phase"] for event in progress] == ["evaluation_gpu_probe", "evaluation_input_validation"]
+    assert all(event["done"] is None and event["eta_eligible"] is False for event in progress)
 
 
 @pytest.mark.parametrize("requested", ["auto", "cuda"])
@@ -172,7 +177,7 @@ def test_probe_uses_an_isolated_runtime_and_really_executes_a_worker(monkeypatch
         assert command == [sys.executable, "-B", "-m", "korean_openwakeword.evaluation_backend", "--probe-cuda", str(bundle)]
         assert options["env"]["PYTHONPATH"].split(os.pathsep)[0] == target
         assert options["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
-        assert options["timeout"] == 30 and options["capture_output"]
+        assert options["timeout"] == 120 and options["capture_output"]
         return SimpleNamespace(returncode=0, stdout='unrelated initialization line\n{"available": true}\n', stderr="")
     monkeypatch.setattr(module.subprocess, "run", run)
     assert module.probe_cuda_backend(bundle, environment={"KOWW_GPU_RUNTIME_PATH": target})["available"]
@@ -192,6 +197,20 @@ def test_probe_failures_are_reported_without_claiming_cpu_selection(monkeypatch,
     result = module.probe_cuda_backend(bundle)
     assert result["available"] is False and result["reason_code"].startswith("cuda_probe_")
     assert "CPU를 선택" not in result.get("reason", "")
+
+
+def test_probe_timeout_reports_last_flushed_child_phase(monkeypatch, bundle):
+    module = importlib.import_module("korean_openwakeword.evaluation_backend")
+
+    def run(command, **options):
+        assert options["timeout"] == 10
+        raise subprocess.TimeoutExpired(command, options["timeout"],
+            output=b"CUDA probe phase: imports\r\nCUDA probe phase: sessions\r\n")
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+    result = module.probe_cuda_backend(bundle, timeout=10)
+    assert result["reason_code"] == "cuda_probe_timeout" and "10초" in result["reason"]
+    assert "CUDA 런타임과 모델 세션 준비" in result["detail"]
 
 
 def test_probe_failure_details_are_preserved_in_the_stopping_error(backend, monkeypatch, bundle):
