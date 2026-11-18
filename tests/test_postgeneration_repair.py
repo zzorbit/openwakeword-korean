@@ -173,6 +173,16 @@ def test_ending_repair_requires_individual_confirmation_and_keeps_approved_repla
     assert [len(read_rows(path)) for path in admitted] == [5, 7]
     assert sum(row["individual_human_listening"] for path in admitted for row in read_rows(path)) == 6
 
+    answers[final_queue[1]["sample_id"]] = {"decision": "discard", "listened": True}
+    report = apply_review(project, generated["queue"], answers, "positive", standard_call_retry=True)["report"]
+    standard = repair.prepare_postgeneration_repair(project, generated, report)
+    assert standard["target"] == 3 and standard["pending_review_count"] == 1 and standard["carried_review_count"] == 3
+    retried = repair.generate_postgeneration_repair(project, settings, standard)
+    retried_queue = read_rows(retried["queue"])
+    assert len(retried_queue) == len(queue) and retried_queue[1:] == queue[1:]
+    assert "ending_check_required" not in retried_queue[0] and model.calls == 7
+    assert repair.generate_postgeneration_repair(project, settings, retry) == generated
+
 
 def test_exhausted_qc_keeps_old_corpus_and_reuses_existing_bounded_failures(tmp_path, monkeypatch):
     project, _, _, _, _, original, settings, report, model, _ = fixture(tmp_path, monkeypatch)

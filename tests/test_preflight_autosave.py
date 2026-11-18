@@ -142,8 +142,8 @@ def test_post_review_and_old_api_stay_strict(manager):
             "decisions": {rows[0]["sample_id"]: {"decision": "keep", "listened": False}}})
 
 
-def test_truncated_reason_is_hash_bound_and_persisted_in_finalized_draft(manager, monkeypatch):
-    project_id, descriptor, rows = preflight_queue(manager)
+def test_legacy_truncated_reason_finalizes_as_standard_retry(manager, monkeypatch):
+    project_id, descriptor, rows = preflight_queue(manager, require_ending=True)
     row = rows[0]
     reason = {"decision": "discard", "rejection_reason": review.TRUNCATED_ENDING_REASON}
     with pytest.raises(ValueError, match="실제로 재생한"):
@@ -152,10 +152,18 @@ def test_truncated_reason_is_hash_bound_and_persisted_in_finalized_draft(manager
     assert manager.preflight_draft(project_id, descriptor["id"])["draft_decisions"][row["sample_id"]]["rejection_reason"] == review.TRUNCATED_ENDING_REASON
     monkeypatch.setattr(manager, "start", lambda *_args: None)
     result = finalize(manager, project_id, descriptor, 1)
-    root = Path(manager._load(project_id)["project"]).parent
+    state = manager._load(project_id)
+    root = Path(state["project"]).parent
     report = read_json(bound_file(root, result["report"]))
     assert report["queued_audio_sha256"][row["sample_id"]] == row["sha256"]
-    assert report["decisions"][row["sample_id"]]["rejection_reason"] == review.TRUNCATED_ENDING_REASON
+    assert "rejection_reason" not in report["decisions"][row["sample_id"]]
+    assert report["retry_policy"] == review.STANDARD_CALL_RETRY_POLICY
+    family = row["voice_family_id"]
+    ending_repairs = {family}
+    _, pending, _, _ = pilot._preflight_state(root, read_json(state["project"]),
+        {"train": [row["preflight_reference"]], "validation": []}, state["inputs"]["call_pilot_reviews"],
+        ending_repairs=ending_repairs)
+    assert pending == {family} and not ending_repairs
 
 
 def test_preflight_replacement_requires_full_listening_and_explicit_confirmation(manager):

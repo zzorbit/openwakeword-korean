@@ -186,7 +186,7 @@ class CloneRuntime:
         self.disabled = True
         self.report["actual_backend"] = "eager"
 
-    def generate_short_clone(self, *, expected_reuses=None, retry=False, **kwargs):
+    def generate_short_clone(self, *, expected_reuses=None, retry=False, termination=None, **kwargs):
         """Apply the shared short-utterance budget without changing device selection."""
         from .tts import _short_clone_token_limit
         self._load()
@@ -196,7 +196,7 @@ class CloneRuntime:
         limit = self._short_clone_limits[key]
         if limit is not None:
             kwargs["max_new_tokens"] = limit
-        wavs, rate = self.generate_voice_clone(expected_reuses=expected_reuses, **kwargs)
+        wavs, rate = self.generate_voice_clone(expected_reuses=expected_reuses, termination=termination, **kwargs)
         return wavs, rate, limit
 
     def generate_ending_repair_clone(self, *, attempt, **kwargs):
@@ -214,26 +214,36 @@ class CloneRuntime:
             wavs, rate = self._eager(kwargs)
         return wavs, rate, evidence
 
-    def generate_voice_clone(self, *, expected_reuses=None, **kwargs):
+    def generate_voice_clone(self, *, expected_reuses=None, termination=None, **kwargs):
         self._load()
         import torch
+        from .tts import _capture_qwen_termination
+
+        def observed(call, *args, **options):
+            if termination is None:
+                return call(*args, **options)
+            with _capture_qwen_termination(self.model, kwargs.get("max_new_tokens")) as evidence:
+                result = call(*args, **options)
+            termination.update(evidence)
+            return result
+
         if expected_reuses is None:
             expected_reuses = self.expected_reuses
         if self.disabled:
             emit("tts_generation", "호출어 음성 생성", eta_eligible=True)
-            return self._eager(kwargs)
+            return observed(self._eager, kwargs)
         prompt = kwargs["voice_clone_prompt"]
         key = (id(prompt), identity({k: v for k, v in kwargs.items() if k != "voice_clone_prompt"}))
         if key in self.eager_prompts:
             emit("tts_generation", "호출어 음성 생성", eta_eligible=True)
-            return self._eager(kwargs)
+            return observed(self._eager, kwargs)
         if key in self.checked:
             emit("tts_generation", "호출어 음성 생성", eta_eligible=True)
             cpu_before = torch.get_rng_state()
             cuda_before = torch.cuda.get_rng_state(self.cuda_device)
             try:
                 with torch.inference_mode():
-                    return self.model.generate_voice_clone(**kwargs)
+                    return observed(self.model.generate_voice_clone, **kwargs)
             except (ValueError, torch.cuda.OutOfMemoryError) as error:
                 local_capacity = _graph_capacity_exceeded(error)
                 if not local_capacity and not isinstance(error, torch.cuda.OutOfMemoryError):
@@ -251,10 +261,10 @@ class CloneRuntime:
                 self.report.setdefault("replay_fallbacks", []).append(
                     {"at": now(), "reason": str(error), "scope": "prompt" if local_capacity else "runtime"})
                 self._save()
-            return self._eager(kwargs)
+            return observed(self._eager, kwargs)
         if expected_reuses == 1:
             emit("tts_generation", "호출어 음성 생성", eta_eligible=True)
-            return self._eager(kwargs)
+            return observed(self._eager, kwargs)
         # Compare each actual reference's first requested utterance at exactly
         # the caller's seed. All qualification repeats are ephemeral; only one
         # result and the RNG progression of one eager call are retained.
@@ -265,7 +275,7 @@ class CloneRuntime:
         with torch.random.fork_rng(devices=[device]):
             torch.cuda.synchronize(device)
             started = time.perf_counter()
-            expected, rate = self._eager(kwargs)
+            expected, rate = observed(self._eager, kwargs)
             torch.cuda.synchronize(device)
             eager_seconds = time.perf_counter() - started
             cpu_after, cuda_after = torch.get_rng_state(), torch.cuda.get_rng_state(device)

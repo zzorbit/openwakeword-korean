@@ -23,14 +23,14 @@
     ["materials", "준비 자료", "학습과 평가에 사용할 자료의 종류와 용량을 확인하세요."],
     ["downloads", "자료 다운로드", "학습과 평가에 필요한 자료를 내려받고 검사합니다."],
     ["voices", "기준 목소리 생성", "호출어 음성을 만드는 데 쓸 기준 목소리를 생성합니다."],
-    ["voice-listening", "기준 목소리 검수", "목소리가 요청한 성별과 연령대에 맞고 서로 구분되는지 들어보세요."],
+    ["voice-listening", "기준 목소리 검수", "예문이 대본대로 끝까지 한 번 들리고, 목소리가 요청한 성별과 연령대에 맞는지 확인하세요."],
     ["call-pilot-generation", "호출어 샘플 생성", "기준 목소리마다 호출어 샘플을 하나씩 만듭니다."],
-    ["call-pilot-review", "호출어 발음 사전 검수", "호출어 샘플을 연속으로 듣고, 문제가 있는 음원만 부적합으로 표시하세요.\n재생된 음원은 자동으로 적합 판정하며, 부적합한 음원만 모아 다시 생성합니다."],
+    ["call-pilot-review", "호출어 발음 사전 검수", "호출어가 끝까지 정확히 한 번 들리는지 확인하세요.\n재생한 음원은 자동으로 적합 판정합니다. 문제가 있으면 부적합으로 표시하세요."],
     ["positive-generation", "호출어 음성 생성", "학습용과 평가용 기준 목소리로 전체 호출어 음성을 생성합니다."],
-    ["pronunciation", "호출어 발음 검수", "호출어가 정상적으로 생성되었는지 검수합니다.\n'제외'를 선택하지 않을 경우 '정상'으로 자동 지정됩니다."],
+    ["pronunciation", "호출어 발음 검수", "호출어가 끝까지 정확히 한 번 들리는지 확인하세요.\n끝까지 들은 음원은 자동으로 적합 판정합니다. 문제가 있으면 부적합으로 표시하세요."],
     ["phrases", "유사어 입력", "호출어와 유사한 문구를 입력하세요."],
     ["hard-generation", "유사어 음성 생성", "입력한 유사어의 전체 음성을 학습용 기준 목소리로 생성합니다."],
-    ["hard-review", "유사어 발음 검수", "대표 음원을 연속으로 듣고, 문제가 있는 음원만 부적합으로 표시하세요.\n끝까지 들은 음원은 적합 판정하며, 다음을 누르면 저장하고 적합한 유사어를 학습에 사용합니다."],
+    ["hard-review", "유사어 발음 검수", "지정한 유사어가 끝까지 한 번 들리는지 확인하세요. 실제 호출어처럼 들리거나 발음에 문제가 있으면 부적합으로 표시하세요.\n다음을 누르면 저장하고 적합한 유사어를 학습에 사용합니다."],
     ["features", "증강·특징 추출", "음원에 소음과 울림을 더하고 학습에 쓸 특징을 추출합니다."],
     ["training", "모델 학습", "호출어를 감지하도록 모델을 학습합니다."],
     ["evaluation", "성능 평가", "여러 소음과 울림 조건에서 모델을 평가합니다."],
@@ -2629,7 +2629,7 @@
       }
       if (twoPhasePositiveReview(project)) {
         if (current === "positive-generation") subtitle.textContent = "사전 검수에서 승인한 기준 목소리로 전체 호출어 음성을 생성합니다.";
-        if (current === "pronunciation" && !historical) subtitle.textContent = "대표 음원을 연속으로 듣고, 문제가 있는 음원만 부적합으로 표시하세요.\n끝까지 들은 음원은 적합 판정하며, 다음을 누르면 저장하고 승인을 확인합니다.";
+        if (current === "pronunciation" && !historical) subtitle.textContent = "대표 음원에서 호출어가 끝까지 정확히 한 번 들리는지 확인하세요.\n끝까지 들은 음원은 적합으로 자동 판정합니다. 문제가 있으면 부적합으로 표시하세요.";
         if (current === "pronunciation" && repair) {
           const retained = Number.isSafeInteger(repair.retained_count) && repair.retained_count >= 0 ? repair.retained_count : 0;
           const count = Number.isSafeInteger(repair.recheck_count) && repair.recheck_count > 0 ? repair.recheck_count : null;

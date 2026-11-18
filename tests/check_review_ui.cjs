@@ -83,7 +83,7 @@ const reviewNotices=view=>view.parentMessages.filter(row=>row.message.type==='ko
   assert.match(voices.nodes.get("expected").textContent, /^샘플 문장: 오늘은/);
   assert.match(voices.nodes.get("criteria").innerHTML, /목소리가 자연스럽/);
   assert.equal(voices.nodes.get("state").textContent, "제외");
-  assert.equal(voices.nodes.get("ending-discard").hidden, true);
+  assert.equal(voices.nodes.has("ending-discard"), false);
   assert.match(voices.nodes.get('review-progress').textContent,/판정한 음원 1 \/ 2개 · 미판정 1개 · 다시 확인 0개/);
   assert.equal(voices.nodes.get('listening-list').children[0].children[1].textContent,'제외');
   assert.equal(voices.nodes.get('listening-list').children[0].attributes['data-number'],'1');
@@ -331,8 +331,7 @@ const reviewNotices=view=>view.parentMessages.filter(row=>row.message.type==='ko
   Object.assign(endingPreState.items[0],{text:'보라야',ending_check_required:true,ending_check_index:1,ending_check_total:2});
   const endingPre=await screen(endingPreState,'?project=bora&queue=pilot',{},preConfig,{...shared,respond:draftServer(endingPreState,endingPreActions)});
   preMessage(endingPre,'koww:preflight-status');
-  assert.equal(endingPre.nodes.get('ending-discard').hidden,false);
-  assert.equal(endingPre.nodes.get('ending-discard').disabled,true);
+  assert.equal(endingPre.nodes.has('ending-discard'),false);
   assert.equal(endingPre.nodes.get('ending-confirm').textContent,'끝 음절 ‘야’ 확인');
   assert.equal(endingPre.nodes.get('ending-confirm').disabled,true);
   assert.match(endingPre.pickers[0].items[0].label,/음원 1 \/ 2/);
@@ -346,11 +345,12 @@ const reviewNotices=view=>view.parentMessages.filter(row=>row.message.type==='ko
   assert.equal(endingPre.pickers[0].items[0].badge,'적합');
   assert.equal(endingPre.pickers[0].selected,1,'confirming the held take resumes continuous playback');
   await endingPre.pickers[0].options.onSelect(0);await endingPre.flush();
-  endingPre.nodes.get('ending-discard').onclick({detail:1});await endingPre.flush();
-  assert.equal(endingPreActions.at(-1).rejection_reason,'truncated_ending');
-  assert.equal(endingPre.pickers[0].items[0].badge,'끝 음절 잘림');
+  endingPre.nodes.get('discard').onclick({detail:1});await endingPre.flush();
+  assert.equal(endingPreActions.at(-1).decision,'discard');
+  assert.equal(endingPreActions.at(-1).rejection_reason,undefined);
+  assert.equal(endingPre.pickers[0].items[0].badge,'부적합');
   finishPreflight(endingPre,1500);await endingPre.flush();
-  assert.equal(endingPreState.draft_decisions.one.rejection_reason,'truncated_ending','replay does not erase the reason');
+  assert.equal(endingPreState.draft_decisions.one.decision,'discard','replay does not erase the rejection');
   const preState=preflightQueue(),preActions=[],continuousPre=await screen(preState,'?project=bora&queue=pilot',heard,preConfig,{...shared,respond:draftServer(preState,preActions)});
   preMessage(continuousPre,'koww:preflight-status');
   assert.equal(continuousPre.nodes.get('keep').hidden,true);assert.equal(continuousPre.nodes.get('discard').textContent,'부적합');assert.equal(continuousPre.nodes.get('save').hidden,true);
@@ -512,7 +512,7 @@ const reviewNotices=view=>view.parentMessages.filter(row=>row.message.type==='ko
   assert.equal(postState(endingPost).ready,true);
   preMessage(endingPost,'koww:preflight-finalize');await endingPost.flush();
   assert.deepEqual(JSON.parse(postPosts(endingPost)[0].options.body).decisions,{
-    one:{decision:'keep',listened:true,ending_confirmed:true},two:{decision:'discard',listened:true,rejection_reason:'truncated_ending'},
+    one:{decision:'keep',listened:true,ending_confirmed:true},two:{decision:'discard',listened:true},
   });
   const completePost=async(view)=>{await view.nodes.get('start').onclick();finishPreflight(view,1400);await view.flush();finishPreflight(view,1600);await view.flush();};
   const postData=postQueue(),post=await screen(postData,'?project=bora&queue=positive',{},postConfig,{...shared,

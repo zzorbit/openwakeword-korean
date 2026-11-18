@@ -393,6 +393,12 @@ _COMPUTE_DISPATCH_COMPATIBLE_DIGESTS = {
             "4b80f8a5561ba98454b8e6fd8b0449301b6bf3852d6eb78b8f3af043b52bb488",
         "8f933c4d639c91a4035bd24fff79ff1b29a9cdc1faa2ed827e1147497e872950":
             "35e797140ce4bc13235a0d9e259b129d63b7bbd66aac23fe2b1f8f624d9808bf",
+        # New budgets and checks are recorded per attempt. Existing journals
+        # keep their immutable settings and do not reprocess accepted audio.
+        "cea15c46271a977b6fa54faa0edb9c6e486cba2e9a022f2296489f285b025b36":
+            "35e797140ce4bc13235a0d9e259b129d63b7bbd66aac23fe2b1f8f624d9808bf",
+        "cc2afcf3e99ec921a69a0d24479bf6ee3aba6c4b94913ae364dcb744fa846e9e":
+            "4b80f8a5561ba98454b8e6fd8b0449301b6bf3852d6eb78b8f3af043b52bb488",
     },
     "hard_pilot.py": {
         "4ffa5d27c2ce746846c15e6eeb96767d786b3d533ba892a458c1269b45f25d77":
@@ -405,6 +411,10 @@ _COMPUTE_DISPATCH_COMPATIBLE_DIGESTS = {
             "43deed598cefa6503d105761ccb9fd7c9c2a5cb56ee700bfea402688c838bcc3",
         "a68cfa27a8c5fd55d707c8bf2b718177c81f3b5010624c7af3e7bc8bb8d0d1ef":
             "fa9ef4a2393fcf61f7df80097cceb656339e45588a66e4843c978212e948a061",
+        "9c1c79731982dbefaf6981dbb6ba9a0cf6a9b9042dfb889629df18fc14a5b031":
+            "bd75d7e028246ac3da21722510b5250691461f968a14776d8511720439109350",
+        "0f97690140dafdec9286cda15d7c77724e4960f296628deca7e37894b980111e":
+            "bbe435b58a3e21e4f6d5e24d3c6f809c7d0c3d5df02610b4343e35021cc39c37",
     },
     "pool_review.py": {
         "e1bf5eaff41b907a8d2b3aa0c6bccf55cd03a8be54005fd6db21e1d5eda12a22":
@@ -902,6 +912,38 @@ _AUDITED_ENDING_REPAIR_UPDATES = {
         "634b7dbe9860a5d437df0edb3f817597e6ab4499a4e7db0b2e601c9a7dba3040",
     ),
 }
+_SYNTHESIS_QUALITY_UPDATE_FILES = ("pilot.py", "postgeneration_repair.py", "reference_attempt.py", "review.py",
+                                   "tts_runtime.py")
+_SYNTHESIS_QUALITY_UPDATE_EVIDENCE = "d9b109787444f082220d964e097517484f7cb1adea825a4e15d604581e914761"
+# Exact archive and checkout variants preserve completed stages and verify
+# the existing journals before applying the new rules to future attempts.
+_AUDITED_SYNTHESIS_QUALITY_UPDATES = {
+    "db7d2ded47badd9f205e00807cfef9d580c302b615111fa4dc50c02529dff969": (
+        "2a4902cb809741733f293611805911783d5f4203bf1b5ae04bb8e9439c8c6dfd",
+        "7a04d315b8e71f55a4b406640c8e0a8d3ccada6c98e2d80ec1d78a5fd462f532",
+        "0c56641815115d80d05318831d29163d3abee9d8b479d690868e9173354995d2",
+    ),
+    "896ae8521789c8fc1b4557866610e48b8590849b89e28dba6ad893baf84b3a89": (
+        "84772686839fe0fc6560e2ec97a74bed6a98d715f076a0a0818604b9d91c3b02",
+        "6566f2fb916b3804f85eabc070959f078b8f89ec29a859a05246f067090e30fb",
+        "34a56629ffc9e4848828a006973e4728590c94751b5928f22138708b2b0d9567",
+    ),
+    "b7a0a4edd404148982f042eb56147ed7585ddd694b5baec2d0b225422dc1f695": (
+        "08218668f0934896c38a3f24c44146a294e896c4ebddbb5df19a1e963325ee19",
+        "2a6e60e76bef456ee7a8710d0cec2f47b519b801ea5f72719a1c1ce7ab83d854",
+        "8b8bfdf7c11186114d06414f929d3f3795a0f013adcc9c4cae6195fd2be171cb",
+    ),
+    "40cb1a8286cb3df6ef87cbd784ff2b8cf21b4bcd61368dca49406c11899a84cb": (
+        "3967fb71da59d3790cfc920713b9f3583e3e7a2c62cae297927787d136f9159d",
+        "16bd6ff1b84fdb0090de4c43d7bb6ca3fd39d23ff2aeaab199c24b1f9532d0dd",
+        "4d0865d6a9314eff1a8e55a1c91e1a3a3be4034a04ed674abcb62ffc568e3f71",
+    ),
+    "b177bceeda1098bcdace0c9dcf9cab3c499c1445c0818a6cb92410dc20728d2b": (
+        "634b7dbe9860a5d437df0edb3f817597e6ab4499a4e7db0b2e601c9a7dba3040",
+        "4001b1f190fd86d2cc7d79832ae5376e4c3327c895df86cf4090035d1f2375c8",
+        "cafe0373b50ec788c143ddfe2835334a08a63aa32b07324356c2847c2294f961",
+    ),
+}
 _ACQUISITION_UPDATE_FILES = {
     "downloads.py", "download_control.py", "material_downloads.py", "studio_data.py",
     "evaluation_materials.py", "evaluation_rir.py", "studio_evaluation_data.py", "official_music.py", "studio_steps.py",
@@ -1093,9 +1135,17 @@ def _audited_reference_update(previous, current):
 def _audited_acquisition_update(previous, current):
     """Return the audit for an exact stage update that preserves stored work."""
     source = previous.get("computation_sha256")
+    synthesis_quality = _AUDITED_SYNTHESIS_QUALITY_UPDATES.get(source)
     ending_repair = _AUDITED_ENDING_REPAIR_UPDATES.get(source)
     device_scoring = _AUDITED_DEVICE_SCORING_UPDATES.get(source)
-    if ending_repair or device_scoring:
+    if synthesis_quality:
+        old_stages, new_computation, new_stages = synthesis_quality
+        allowed_files = _SYNTHESIS_QUALITY_UPDATE_FILES
+        audit = dict(source_stages_sha256=old_stages, target_computation_sha256=new_computation,
+                     target_stages_sha256=new_stages, changed_files=allowed_files,
+                     evidence_sha256=_SYNTHESIS_QUALITY_UPDATE_EVIDENCE)
+        kind = "audited_synthesis_quality_update"
+    elif ending_repair or device_scoring:
         old_stages, new_computation, new_stages = ending_repair or device_scoring
         allowed_files = _ENDING_REPAIR_UPDATE_FILES if ending_repair else _DEVICE_SCORING_UPDATE_FILES
         evidence = _ENDING_REPAIR_UPDATE_EVIDENCE if ending_repair else _DEVICE_SCORING_UPDATE_EVIDENCE
@@ -1789,6 +1839,8 @@ class StudioManager:
                            if audited_update and audited_update.get("kind") == "audited_device_scoring_update" else
                            "기존 음원과 판정을 보존하면서, 새 호출어에 잘림 검사와 부적합 음원의 끝 음절 재검수를 적용합니다."
                            if audited_update and audited_update.get("kind") == "audited_call_ending_repair_update" else
+                           "기존 음원과 검수 기록을 보존하고 새 합성부터 품질 확인과 재시도 규칙을 적용할 수 있습니다."
+                           if audited_update and audited_update.get("kind") == "audited_synthesis_quality_update" else
                            "GPU 평가에 실패하면 CPU로 전환하지 않고 멈춥니다. 기존 CPU 점수는 보존하고 별도의 GPU 평가로 진행합니다."
                            if audited_update and audited_update.get("changed_files") == ["evaluation_backend.py", "gpu_runtime_install.py", "studio_steps.py"] else
                            "다운로드 순서·진행 표시 변경의 자료 동일성을 확인한 업데이트입니다. 기존 설정과 완료 결과를 검증한 뒤 적용할 수 있습니다."
@@ -3215,7 +3267,7 @@ class StudioManager:
                     result.update(evaluation_only=True, intended_use="held_out_development_noise", pools=[])
             else:
                 result = apply_review(state["project"], review["queue"], decisions, review["kind"],
-                                      **({"playback_policy": playback_policy} if playback_policy else {}))
+                                      playback_policy=playback_policy, standard_call_retry=bool(call_phase))
             if call_phase == "pre":
                 state["inputs"].setdefault("call_pilot_reviews", []).append({
                     "queue": {"path": review["queue"], "sha256": review["queue_sha256"]},

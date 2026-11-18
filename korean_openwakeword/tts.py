@@ -159,8 +159,8 @@ def _load_model(model_path, config, project_root):
         raise ValueError("선택한 GPU의 메모리가 부족해 음성 모델을 불러오지 못했습니다.")
 
 
-def _short_clone_token_limit(model, configured_max_new_tokens, *, text=None, retry=False, ending_attempt=None):
-    """Bound short Qwen clones using the verified codec frame size."""
+def _qwen_audio_token_limit(model, configured_max_new_tokens, seconds, *, legacy_padding=False):
+    """Convert an audio budget for the supported Qwen codec to generation tokens."""
     if type(model).__module__ != "qwen_tts.inference.qwen3_tts_model":
         return None
     try:
@@ -182,25 +182,41 @@ def _short_clone_token_limit(model, configured_max_new_tokens, *, text=None, ret
     samples_per_frame = tokenizer.get_decode_upsample_rate()
     if (sample_rate, samples_per_frame) != (_QWEN_CODEC_RATE, _QWEN_CODEC_FRAME_SAMPLES):
         return None
-    # Allow for natural cadence and padding around the speech window. A retry
-    # adds room for a later natural stop without reverting to the raw budget.
+    frame_budget = seconds * sample_rate / samples_per_frame
+    frames = round(frame_budget) if legacy_padding else math.floor(frame_budget)
+    # The initial generation token does not produce a decoded frame.
+    return min(configured_max_new_tokens, frames + 1 + int(legacy_padding))
+
+
+def _short_clone_token_limit(model, configured_max_new_tokens, *, text=None, retry=False, ending_attempt=None):
     characters = sum(char.isalnum() for char in text) if isinstance(text, str) else 0
-    maximum_frames = _MAX_CALL_DURATION_S * sample_rate // samples_per_frame
-    extra_frames = 18 + min(ending_attempt, 3) * 8 if ending_attempt is not None else (12 if retry else 0)
-    frames = min(maximum_frames, 40 + 2 * characters + extra_frames)
-    return min(configured_max_new_tokens, frames + 2)
+    if ending_attempt is not None:
+        # Resume already-issued ending repair plans with their original budget.
+        frames = 40 + 2 * characters + 18 + min(ending_attempt, 3) * 8
+        seconds = min(_MAX_CALL_DURATION_S, frames * _QWEN_CODEC_FRAME_SAMPLES / _QWEN_CODEC_RATE)
+        return _qwen_audio_token_limit(model, configured_max_new_tokens, seconds, legacy_padding=True)
+    previous_frames = 41 + 2 * characters + (12 if retry else 0)
+    seconds = min(_MAX_CALL_DURATION_S, math.ceil(previous_frames * _QWEN_CODEC_FRAME_SAMPLES / _QWEN_CODEC_RATE))
+    return _qwen_audio_token_limit(model, configured_max_new_tokens, seconds)
 
 
-def generate_short_clone(model, *, expected_reuses=None, retry=False, **kwargs):
+def generate_short_clone(model, *, expected_reuses=None, retry=False, termination=None, **kwargs):
     """Use the same codec budget whether a clone runs through the runtime or directly."""
     generate = getattr(model, "generate_short_clone", None)
     if generate is not None:
+        if termination is not None:
+            kwargs["termination"] = termination
         return generate(expected_reuses=expected_reuses, retry=retry, **kwargs)
     configured = kwargs.get("max_new_tokens")
     limit = _short_clone_token_limit(model, configured, text=kwargs.get("text"), retry=retry)
     if limit is not None:
         kwargs["max_new_tokens"] = limit
-    wavs, rate = model.generate_voice_clone(**kwargs)
+    if termination is None:
+        wavs, rate = model.generate_voice_clone(**kwargs)
+    else:
+        with _capture_qwen_termination(model, limit) as evidence:
+            wavs, rate = model.generate_voice_clone(**kwargs)
+        termination.update(evidence)
     return wavs, rate, limit
 
 
@@ -211,6 +227,48 @@ def short_clone_hit_limit(waveform, rate, token_limit):
     # Clone reference slicing can round the output boundary by one sample.
     return (type(token_limit) is int and rate == _QWEN_CODEC_RATE
             and np.size(waveform) >= (token_limit - 1) * _QWEN_CODEC_FRAME_SAMPLES - 1)
+
+
+def check_short_clone_audio(waveform, rate, token_limit, termination):
+    """Reject incomplete inference and excessive inside pauses, preserving quiet syllables."""
+    stop = termination.get("termination", "unobserved")
+    failure = None
+    if stop == "token_limit" or stop == "unobserved" and short_clone_hit_limit(waveform, rate, token_limit):
+        failure = "generation_length_limit"
+    elif stop == "without_eos":
+        failure = "generation_stopped_without_eos"
+    trim = None
+    if token_limit is not None and failure is None:
+        samples = np.asarray(waveform)
+        if samples.ndim == 1 and len(samples) and np.isfinite(samples).all():
+            loud = np.flatnonzero(np.abs(samples) >= 0.0005)
+            if len(loud):
+                margin = round(0.16 * rate)
+                start = max(0, int(loud[0]) - margin)
+                end = min(len(samples), int(loud[-1]) + 1 + margin)
+                start = start if start >= 0.25 * rate else 0
+                end = end if len(samples) - end >= 0.25 * rate else len(samples)
+                if start or end < len(samples):
+                    trim = {"leading_samples": start, "trailing_samples": len(samples) - end, "sample_rate": rate}
+                    waveform = samples[start:end]
+    qc, converted = technical_qc(waveform, rate)
+    if converted is None:
+        return waveform, qc, converted
+    if trim is not None:
+        qc["edge_silence_removed"] = trim
+    if token_limit is not None:
+        qc["generation_termination"] = stop
+    if qc["passed"] and token_limit is not None and failure is None:
+        mono = converted[0]
+        intervals = mask_intervals(active_speech_mask(mono, 0, len(mono) / 16000))
+        if any(right[0] - left[1] >= 0.5 for left, right in zip(intervals, intervals[1:])):
+            failure = "long_pause_inside_utterance"
+        elif stop != "eos" and _ending_signal(waveform, rate)["active_at_end"] and _ending_signal(mono, 16000)["active_at_end"]:
+            failure = "waveform_cuts_active_ending"
+    if failure:
+        qc["passed"] = False
+        qc["reasons"].append(failure)
+    return waveform, qc, converted
 
 
 def requires_ending_check(scope, family):
@@ -225,7 +283,7 @@ def requires_ending_check(scope, family):
 def _capture_qwen_termination(model, limit):
     """Observe the outer talker's sampled sequence before Qwen discards EOS."""
     evidence = dict(termination="unobserved", generated_tokens=None, token_limit=limit)
-    if limit is None:
+    if limit is None or not callable(getattr(model.model.talker, "generate", None)):
         yield evidence
         return
     talker = model.model.talker
@@ -233,21 +291,24 @@ def _capture_qwen_termination(model, limit):
     original = vars(talker).get("generate")
 
     def checked_generate(*args, **kwargs):
+        nonlocal observed
         result = generate(*args, **kwargs)
-        sequence = result.sequences
-        if sequence.ndim == 2 and sequence.shape[0] == 1 and sequence.shape[1] > 0:
-            # Qwen passes only inputs_embeds. Transformers starts with an empty
-            # token sequence for this input, so this length counts new tokens.
-            count = int(sequence.shape[1])
-            observed_limit = kwargs["max_new_tokens"]
-            ending = "eos" if sequence[0, -1].item() == kwargs["eos_token_id"] else (
-                "token_limit" if count >= observed_limit else "without_eos")
-            evidence.update(termination=ending, generated_tokens=count, token_limit=observed_limit)
+        observed = (getattr(result, "sequences", None), kwargs.get("max_new_tokens"), kwargs.get("eos_token_id"))
         return result
 
+    observed = None
     talker.generate = checked_generate
     try:
         yield evidence
+        if observed is not None:
+            sequence, observed_limit, eos_token = observed
+            if (sequence is not None and sequence.ndim == 2 and sequence.shape[0] == 1
+                    and sequence.shape[1] and type(observed_limit) is int and type(eos_token) is int):
+                # Qwen passes inputs_embeds; sequence contains only new tokens.
+                count = int(sequence.shape[1])
+                ending = "eos" if sequence[0, -1].item() == eos_token else (
+                    "token_limit" if count >= observed_limit else "without_eos")
+                evidence.update(termination=ending, generated_tokens=count, token_limit=observed_limit)
     finally:
         if original is None:
             del talker.generate
@@ -853,7 +914,7 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
                 _seed(seed)
                 started = time.perf_counter()
                 token_limit = None
-                termination = None
+                termination = {}
                 if method == "clone":
                     prompt_key = (family, reference["sha256"])
                     if prompt_key not in prompts:
@@ -869,7 +930,7 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
                             token_limit = termination["token_limit"]
                         else:
                             wavs, rate, token_limit = generate_short_clone(model, retry=attempt > 0,
-                                expected_reuses=remaining[reference_index], **generation)
+                                expected_reuses=remaining[reference_index], termination=termination, **generation)
                     axes = {k: reference.get(k, "reference_style") for k in ("style", "speed", "intonation", "vocal_effort", "call_length")}
                 else:
                     style, instruction = STYLE_OPTIONS[slot % len(STYLE_OPTIONS)]
@@ -880,15 +941,19 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
                             **config["tts"]["generation"])
                     axes = {"style": style, "speed": speed, "intonation": "natural variation", "vocal_effort": style, "call_length": speed}
                 waveform = wavs[0] if wavs is not None and len(wavs) else []
-                qc, converted = technical_qc(waveform, rate)
-                if converted is not None:
-                    stop = termination["termination"] if termination else "unobserved"
-                    if stop == "token_limit" or stop == "unobserved" and short_clone_hit_limit(waveform, rate, token_limit):
-                        qc["passed"] = False
-                        qc["reasons"].append("generation_length_limit")
-                    elif stop == "without_eos":
-                        qc["passed"] = False
-                        qc["reasons"].append("generation_stopped_without_eos")
+                if check_ending:
+                    # Keep the existing waveform rules for already-frozen plans.
+                    qc, converted = technical_qc(waveform, rate)
+                    stop = termination["termination"]
+                    if converted is not None:
+                        if stop == "token_limit" or stop == "unobserved" and short_clone_hit_limit(waveform, rate, token_limit):
+                            qc["passed"] = False
+                            qc["reasons"].append("generation_length_limit")
+                        elif stop == "without_eos":
+                            qc["passed"] = False
+                            qc["reasons"].append("generation_stopped_without_eos")
+                else:
+                    waveform, qc, converted = check_short_clone_audio(waveform, rate, token_limit, termination)
                 if converted is None and method != "clone":
                     raise ValueError("Nonfinite/empty TTS output; cannot persist or silently accept")
                 path, sha, bounds = None, None, None
@@ -897,13 +962,13 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
                     ending = {"policy": REPAIR_ENDING_POLICY, "expected_last_syllable": config["wakeword"][-1],
                               **termination, "requires_listening": True, "synthesized": None, "stored_pcm": None}
                 elif token_limit is not None:
-                    ending = {"policy": CALL_BOUNDARY_POLICY, "synthesized": None, "stored_pcm": None}
+                    ending = {"policy": CALL_BOUNDARY_POLICY, **termination, "synthesized": None, "stored_pcm": None}
                 if converted is not None:
                     samples, bounds = encode_candidate_pcm16(converted, qc)
                     if ending:
                         ending["synthesized"] = _ending_signal(waveform, int(rate))
                         ending["stored_pcm"] = _ending_signal(samples, 16000, pcm=True)
-                        if _waveform_cuts_ending(ending):
+                        if _waveform_cuts_ending(ending) and "waveform_cuts_active_ending" not in qc["reasons"]:
                             qc["passed"] = False
                             qc["reasons"].append("waveform_cuts_active_ending")
                     path = output / (sample_id + ".wav")

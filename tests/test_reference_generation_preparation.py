@@ -1,5 +1,6 @@
 """New reference generation publishes clean review inputs, never rewrites old voices."""
 from copy import deepcopy
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -9,6 +10,7 @@ import soundfile as sf
 from korean_openwakeword import clone_reference as preparation, reference_candidates as candidates, tts
 from korean_openwakeword.common import append_row, digest, identity, read_json, read_rows, write_json
 from korean_openwakeword.project import create_project, load_project
+from korean_openwakeword.reference_attempt import _reference_generation_seconds, prepare_reference_attempt
 from korean_openwakeword.reference_voice_review import generate_replacements
 from test_korean_library_reference_candidates import pool  # noqa: F401
 
@@ -327,3 +329,53 @@ def test_reference_replacement_evidence_identifies_the_new_wave_and_seed(tmp_pat
     before = state(root)
     assert generate_replacements(project, output, "job", [original], set(), load_model=lambda *_: model) == rows
     assert state(root) == before and len(seeds) == 3
+
+
+def test_reference_budget_counts_hangul_and_rounds_to_whole_seconds():
+    assert _reference_generation_seconds("오늘은 창밖으로 따뜻한 햇살이 들어옵니다.") == 12
+    assert _reference_generation_seconds("가" * 17) == 12
+    assert _reference_generation_seconds("가" * 16) == 11
+    assert _reference_generation_seconds("가" * 2) == 8
+    assert _reference_generation_seconds("가" * 100) == 30
+
+
+@pytest.mark.parametrize("termination, count, seconds, message", [
+    ("token_limit", 150, 2, "정상 종료"),
+    ("without_eos", 24, 2, "정상 종료"),
+    ("eos", 6, .4, "너무 짧습니다"),
+])
+def test_bounded_reference_attempt_rejects_and_keeps_the_observed_raw_stop(
+        tmp_path, monkeypatch, termination, count, seconds, message):
+    generation = {"seed": 17, "text": "오늘은 창밖으로 따뜻한 햇살이 들어옵니다.", "instruction": "Read once."}
+    model_call = []
+
+    class Model:
+        def generate_voice_design(self, **options):
+            model_call.append(options)
+            return [wave(seconds)], 24000
+
+    def pick_limit(model, configured, target_seconds):
+        assert configured == 256 and target_seconds == 12
+        return 150
+
+    @contextmanager
+    def capture_stop(model, limit):
+        yield {"termination": termination, "generated_tokens": count, "token_limit": limit}
+
+    monkeypatch.setattr(tts, "_qwen_audio_token_limit", pick_limit)
+    monkeypatch.setattr(tts, "_capture_qwen_termination", capture_stop)
+    monkeypatch.setattr(tts, "_seed", lambda seed: None)
+    raw = tmp_path / "raw.wav"
+    prepared = tmp_path / "prepared.wav"
+    settings = {"max_new_tokens": 256}
+    with pytest.raises(preparation.GeneratedReferenceQualityError, match=message):
+        prepare_reference_attempt(tmp_path, raw, prepared, generation, settings, Model)
+    assert len(model_call) == 1 and model_call[0]["max_new_tokens"] == 150
+    assert settings == {"max_new_tokens": 256}
+    assert (tmp_path / "raw.wav.raw.json").is_file()
+    assert read_json(tmp_path / "raw.wav.stop.json")["source_sha256"] == digest(raw)
+    before = state(tmp_path)
+    with pytest.raises(preparation.GeneratedReferenceQualityError, match=message):
+        prepare_reference_attempt(tmp_path, raw, prepared, generation, settings,
+                                  lambda: pytest.fail("The existing attempt must replay without re-synthesis"))
+    assert state(tmp_path) == before

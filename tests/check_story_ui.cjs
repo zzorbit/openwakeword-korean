@@ -2502,7 +2502,7 @@ async function main() {
     const project=preflightProject(),p=page(project),frame=p.get('review-frame'),posted=[];
     frame.contentWindow={postMessage:data=>posted.push(data)};p.ui.render();assert.equal(p.shell.dataset.step,'call-pilot-review');assert.equal(p.next.disabled,true);
     await frame.fire('load');frame.fakeLoadedUrl=frame.getAttribute('src');const request=posted.at(-1).request;
-    assert.match(p.get('story-subtitle').textContent,/호출어 샘플을 연속으로 듣고, 문제가 있는 음원만 부적합으로 표시하세요\.\n재생된 음원은 자동으로 적합 판정하며, 부적합한 음원만 모아 다시 생성합니다\./);
+    assert.match(p.get('story-subtitle').textContent,/호출어가 끝까지 정확히 한 번 들리는지 확인하세요\.\n재생한 음원은 자동으로 적합 판정합니다\. 문제가 있으면 부적합으로 표시하세요\./);
     const message={origin:'http://studio.local',source:frame.contentWindow,data:{type:'koww:preflight-state',project:project.id,queue_sha256:project.review.queue_sha256,request,ready:true,pending:false,error:false}};
     for(const invalid of [{...message,origin:'https://other.invalid'},{...message,source:{}},{...message,data:{...message.data,project:'other'}},
       {...message,data:{...message.data,queue_sha256:'old'}},{...message,data:{...message.data,request:request-1}},{...message,data:{...message.data,pending:'false'}}])await p.windowEvent('message',invalid);

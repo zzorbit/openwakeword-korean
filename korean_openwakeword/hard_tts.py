@@ -262,16 +262,14 @@ def _candidate_path(root, output, row, sample_id):
 
 
 def _synthesise(model, phrase, prompt, settings, *, retry, expected_reuses):
+    termination = {}
     wavs, rate, token_limit = tts.generate_short_clone(model, text=phrase, language="Korean",
-        voice_clone_prompt=prompt, retry=retry, expected_reuses=expected_reuses, **settings)
+        voice_clone_prompt=prompt, retry=retry, expected_reuses=expected_reuses, termination=termination, **settings)
     if ((wavs is not None and len(wavs) > 1) or type(rate) not in (int, float) or not np.isfinite(rate) or
             not 8000 <= rate <= 192000 or int(rate) != rate):
         raise ValueError("Qwen must return exactly one waveform and a valid sample rate")
     waveform = wavs[0] if wavs is not None and len(wavs) else []
-    qc, converted = tts.technical_qc(waveform, int(rate))
-    if converted is not None and tts.short_clone_hit_limit(waveform, rate, token_limit):
-        qc["passed"] = False
-        qc["reasons"].append("generation_length_limit")
+    _, qc, converted = tts.check_short_clone_audio(waveform, int(rate), token_limit, termination)
     return qc, converted, token_limit
 
 

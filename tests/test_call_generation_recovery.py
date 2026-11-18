@@ -32,14 +32,14 @@ def test_short_clone_caps_overlong_attempts_without_admitting_cut_off_audio(monk
 
     wrapper.generate_voice_clone = generate
     (wave,), rate, limit = tts.generate_short_clone(wrapper, text="춘식아", max_new_tokens=256)
-    assert options[-1]["max_new_tokens"] == limit < 102
+    assert options[-1]["max_new_tokens"] == limit == 51
     assert tts.technical_qc(wave, rate)[0]["passed"]
     assert tts.short_clone_hit_limit(wave, rate, limit)
     assert tts.short_clone_hit_limit(wave[:-1], rate, limit)
     assert not tts.short_clone_hit_limit(wave[:-1920], rate, limit)
     assert tts._short_clone_token_limit(wrapper, 256, text="조금 더 긴 유사어 문구") > limit
-    assert limit < tts._short_clone_token_limit(wrapper, 256, text="춘식아", retry=True) < 102
-    assert tts._short_clone_token_limit(wrapper, 256, text="가" * 50, retry=True) == 102
+    assert tts._short_clone_token_limit(wrapper, 256, text="춘식아", retry=True) == 63
+    assert tts._short_clone_token_limit(wrapper, 256, text="가" * 50, retry=True) == 101
     wider = tts._short_clone_token_limit(wrapper, 256, text="춘식아", ending_attempt=0)
     assert wider > tts._short_clone_token_limit(wrapper, 256, text="춘식아", retry=True)
     assert tts._short_clone_token_limit(wrapper, 256, text="춘식아", ending_attempt=6) <= 102
@@ -51,6 +51,28 @@ def test_short_clone_caps_overlong_attempts_without_admitting_cut_off_audio(monk
     generation.forced_eos_token_id = None
     tokenizer.model = object()
     assert tts._short_clone_token_limit(wrapper, 256) is None
+
+
+def test_short_audio_rejects_long_inner_pause_and_keeps_quiet_ending():
+    rate = 24000
+    voice = .15 * np.sin(np.arange(rate // 4) / 11)
+    quiet_ending = .001 * np.sin(np.arange(rate // 6) / 14)
+    silence = np.zeros(rate // 2)
+    waveform = np.concatenate((silence, voice, quiet_ending, silence))
+    shortened, qc, converted = tts.check_short_clone_audio(waveform, rate, 51, {"termination": "eos"})
+    assert qc["passed"] and converted is not None
+    trim = qc["edge_silence_removed"]
+    assert 0.25 * rate <= trim["leading_samples"] < len(silence)
+    assert 0.25 * rate <= trim["trailing_samples"] < len(silence)
+    start = len(silence) - trim["leading_samples"]
+    assert np.array_equal(shortened[start:start + len(voice) + len(quiet_ending)],
+                          np.concatenate((voice, quiet_ending)))
+    _, paused, _ = tts.check_short_clone_audio(np.concatenate((voice, np.zeros(14400), voice)),
+                                               rate, 51, {"termination": "eos"})
+    assert paused["reasons"] == ["long_pause_inside_utterance"]
+    untrimmed, capped, _ = tts.check_short_clone_audio(waveform, rate, 51, {"termination": "token_limit"})
+    assert untrimmed is waveform
+    assert capped["reasons"] == ["generation_length_limit"]
 
 
 @pytest.mark.parametrize("termination,tokens", [("eos", [1, 9]), ("token_limit", [1, 1, 1]), ("without_eos", [1, 1])])

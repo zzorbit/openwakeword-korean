@@ -209,7 +209,8 @@ def _preflight_banks(root, settings):
 
 
 def _preflight_state(root, config, banks, prior_rounds, *, ending_repairs=None):
-    from .review import PLAY_STARTED_POLICY, TRUNCATED_ENDING_REASON, validate_review_annotations, validate_started_decision
+    from .review import (PLAY_STARTED_POLICY, STANDARD_CALL_RETRY_POLICY, TRUNCATED_ENDING_REASON,
+                         validate_review_annotations, validate_started_decision)
     references = {row["voice_family_id"]: row for bank in banks.values() for row in bank}
     pending = set(references)
     approved, heard_hashes, reference_hashes = {}, set(), {row["sha256"] for row in references.values()}
@@ -271,8 +272,11 @@ def _preflight_state(root, config, banks, prior_rounds, *, ending_repairs=None):
                 pending.remove(family)
                 if ending_repairs is not None:
                     ending_repairs.discard(family)
-            elif ending_repairs is not None and (ending_check_required or answer.get("rejection_reason") == TRUNCATED_ENDING_REASON):
-                ending_repairs.add(family)
+            elif ending_repairs is not None:
+                if report.get("retry_policy") == STANDARD_CALL_RETRY_POLICY:
+                    ending_repairs.discard(family)
+                elif ending_check_required or answer.get("rejection_reason") == TRUNCATED_ENDING_REASON:
+                    ending_repairs.add(family)
     return approved, pending, heard_hashes, reference_hashes
 
 

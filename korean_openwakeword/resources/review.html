@@ -37,9 +37,9 @@ html.compact-call-review,html.compact-call-review body{height:auto;overflow:visi
 html.compact-call-review.preflight-picker-open main{height:100dvh;min-height:0;justify-content:center}
 /* Match the chapter navigation buttons while keeping the saved judgment visible. */
 .compact-call-review .review-decisions{flex-wrap:wrap}
-.compact-call-review .review-decisions :is(#discard,#ending-discard,#ending-confirm){border:0;background:var(--control);color:#e9edf2;box-shadow:none}
-.compact-call-review .review-decisions :is(#discard,#ending-discard,#ending-confirm)[aria-pressed="true"]{background:#485462}
-.compact-call-review .review-decisions :is(#discard,#ending-discard,#ending-confirm):hover:not(:disabled){background:#363d47}
+.compact-call-review .review-decisions :is(#discard,#ending-confirm){border:0;background:var(--control);color:#e9edf2;box-shadow:none}
+.compact-call-review .review-decisions :is(#discard,#ending-confirm)[aria-pressed="true"]{background:#485462}
+.compact-call-review .review-decisions :is(#discard,#ending-confirm):hover:not(:disabled){background:#363d47}
 /* Expanding only the picker must not switch the embedded player's spacing
    at the iframe-height breakpoints and recenter its controls by a few pixels. */
 html.listening-embedded.compact-call-review main{gap:10px}
@@ -56,7 +56,7 @@ html.listening-embedded.compact-call-review :is(.review-footer,.review-save){gap
   </div>
   <h2 id="title" class="listen-position"></h2>
 </div><audio id="audio" class="listen-audio" controls preload="none"></audio><div class="buttons listen-controls" id="review-controls"><button id="prev" type="button" disabled>이전</button><button id="start" type="button" aria-pressed="false" disabled>재생</button><button id="next" type="button" disabled>다음</button><button id="pause" type="button" hidden>일시정지</button><input id="review-volume" type="range" min="0" max="100" step="1" value="100" aria-label="음량" hidden></div>
-<select id="items" class="listen-select" aria-label="확인할 음원" disabled hidden></select><p id="state" class="listen-status" role="status"></p><div class="buttons review-decisions listen-decisions" role="group" aria-label="음원 판정"><button id="keep" aria-pressed="false">정상</button><button id="discard" aria-pressed="false">제외</button><button id="ending-discard" type="button" aria-pressed="false" hidden>끝 음절 잘림</button><button id="ending-confirm" type="button" aria-pressed="false" hidden>끝 음절 확인</button><button id="review" aria-pressed="false">다시 확인</button></div>
+<select id="items" class="listen-select" aria-label="확인할 음원" disabled hidden></select><p id="state" class="listen-status" role="status"></p><div class="buttons review-decisions listen-decisions" role="group" aria-label="음원 판정"><button id="keep" aria-pressed="false">정상</button><button id="discard" aria-pressed="false">제외</button><button id="ending-confirm" type="button" aria-pressed="false" hidden>끝 음절 확인</button><button id="review" aria-pressed="false">다시 확인</button></div>
 </section></div></div><footer class="review-footer"><label id="policy" hidden><input id="policy-approved" type="checkbox"> <span id="policy-text"></span></label><div class="review-save"><p id="saved" role="status"></p><button id="preflight-retry" type="button" hidden>저장 상태 다시 확인</button><button id="review-pending" type="button" hidden>첫 미판정 음원으로 이동</button><button id="save">검수 결과 저장</button></div></footer></main>
 <!--KOWW_PAGE_CONFIG-->
 <script src="/listening_player.js"></script>
@@ -99,8 +99,7 @@ function hardBridgePhase(){return hardCompactReview?{phase:'hard'}:{};}
 function matchingBridgePhase(phase){return hardCompactReview?phase==='hard':phase!=='hard';}
 function endingCheckRequired(row){return Boolean(callReviewPhase&&row?.ending_check_required===true);}
 function reviewAnnotations(answer){
-  return {...(answer?.decision==='discard'&&answer.rejection_reason===truncatedEnding?{rejection_reason:truncatedEnding}:{}),
-    ...(answer?.decision==='keep'&&answer.ending_confirmed===true?{ending_confirmed:true}:{})};
+  return answer?.decision==='keep'&&answer.ending_confirmed===true?{ending_confirmed:true}:{};
 }
 function preparePostReview(payload){
   if(callReviewPhase!=='post')return;
@@ -131,7 +130,6 @@ function restorePostDecisions(saved){
   const pending=new Map(data.items.map(row=>[row.id,row])),restored={...postRetainedDecisions};
   for(const [id,answer] of Object.entries(saved||{}))if(pending.has(id)&&answer&&typeof answer==='object'&&!Array.isArray(answer)&&['keep','discard'].includes(answer.decision)&&typeof answer.listened==='boolean'){
     const restoredAnswer={decision:answer.decision,listened:answer.listened};
-    if(callReviewPhase==='post'&&answer.decision==='discard'&&answer.rejection_reason===truncatedEnding)restoredAnswer.rejection_reason=truncatedEnding;
     if(endingCheckRequired(pending.get(id))&&answer.decision==='keep'&&answer.listened&&answer.ending_confirmed===true)restoredAnswer.ending_confirmed=true;
     restored[id]=restoredAnswer;
   }
@@ -190,14 +188,14 @@ Promise.resolve().then(()=>fetch(localUrl(config.queue_url||'/queue'))).then(asy
   if(referenceReview){
     $("review-heading").textContent='합성 목소리 확인';
     $("purpose").textContent=`이 목소리로 ‘${d.wakeword}’를 생성합니다. 아래 문장은 목소리를 재현하기 위한 샘플이며, 호출어 학습 음원으로 쓰지 않습니다.`;
-    $("criteria").innerHTML='<li><b>정상:</b> 샘플 문장이 명확하고 목소리가 자연스럽습니다.</li><li><b>제외 / 다시 확인:</b> 말이 심하게 뭉개지거나, 문장에 없는 말이 나오거나, 소리가 깨집니다.</li>';
+    $("criteria").innerHTML='<li><b>정상:</b> 샘플 문장이 대본대로 끝까지 한 번 들리고 목소리가 자연스럽습니다.</li><li><b>제외 / 다시 확인:</b> 말이 잘리거나 반복되거나 소리가 깨집니다.</li>';
     $("review-instruction").textContent='끝까지 들으면 정상으로 표시됩니다. 목소리나 문장이 부자연스러우면 제외·다시 확인을 선택하고, 모두 확인한 뒤 결과를 저장하세요.';
   }else if(d.policy_review){
     $("policy").hidden=false;$("policy-text").textContent=d.policy_text;$("criteria").innerHTML='<li><b>정상:</b> 각 음원 아래 안내에 맞고 소리가 정상입니다.</li><li><b>제외 / 다시 확인:</b> 안내와 다르거나 소리가 깨지거나 판단이 어렵습니다.</li>';
     $("review-instruction").textContent='끝까지 들으면 정상으로 표시됩니다. 안내와 다르거나 소리가 깨지면 제외·다시 확인을 선택하고, 모두 확인한 뒤 결과를 저장하세요.';
   }
   if(pronunciationReview){
-    $("criteria").innerHTML='<li><b>정상:</b> 기대 문장이 명확하고, 다른 말·문제 소리가 없습니다.</li><li><b>제외:</b> 발음이 틀리거나 다른 말이 들리거나 소리가 깨집니다.</li>';
+    $("criteria").innerHTML='<li><b>정상:</b> 지정된 말이 끝까지 정확히 한 번 들립니다.</li><li><b>제외:</b> 말이 잘리거나 반복되거나 다른 말처럼 들립니다.</li>';
     $("review-instruction").textContent='끝까지 들으면 정상으로 표시됩니다. 문제가 있으면 제외를 선택하고, 모두 확인한 뒤 결과를 저장하세요.';
   }
   if(callReviewPhase==='pre'){
@@ -209,22 +207,21 @@ Promise.resolve().then(()=>fetch(localUrl(config.queue_url||'/queue'))).then(asy
       validatePreflightPayload(d);preflightRevision=d.draft_revision;decisions={...d.draft_decisions};
       if(preflightPendingRequest?.queue_sha256===d.queue_sha256&&matchingBridgePhase(preflightPendingRequest.phase))preflightParentRequest=preflightPendingRequest.request;
       $("keep").hidden=true;$("discard").textContent='부적합';$("save").hidden=true;
-      $("review-instruction").textContent='호출어 샘플을 연속으로 듣고, 문제가 있는 음원만 부적합으로 표시하세요.';
+      $("review-instruction").textContent='호출어가 끝까지 한 번 들리는지 확인하고, 문제가 있으면 부적합으로 표시하세요.';
     }
   }else if(callReviewPhase==='post'){
     $("review-heading").textContent='호출어 발음 검수';
-    $("review-instruction").textContent='연속으로 듣고, 문제가 있는 음원만 부적합으로 표시하세요. 끝까지 재생한 음원은 적합으로 판정하며 부적합한 음원이 있으면 승인이 보류됩니다.';
+    $("review-instruction").textContent='호출어가 끝까지 한 번 들리는지 확인하고, 문제가 있으면 부적합으로 표시하세요.';
     $("keep").hidden=true;$("discard").textContent='부적합';$("save").hidden=postReviewBridge();
     if(preflightPendingRequest?.queue_sha256===d.queue_sha256&&matchingBridgePhase(preflightPendingRequest.phase))preflightParentRequest=preflightPendingRequest.request;
   }else if(hardCompactReview){
     $("review-heading").textContent='유사어 발음 검수';
-    $("review-instruction").textContent='연속으로 듣고, 문제가 있는 음원만 부적합으로 표시하세요. 다음을 누르면 판정을 저장하고 적합한 유사어를 학습에 사용합니다.';
+    $("review-instruction").textContent='지정한 유사어가 끝까지 한 번 들리는지 확인하세요. 실제 호출어로 들리거나 발음에 문제가 있으면 부적합으로 표시하세요.';
     $("keep").hidden=true;$("discard").textContent='부적합';$("policy").hidden=true;
     $("save").hidden=hardReviewBridge();$("save").textContent='다음';
     if(preflightPendingRequest?.queue_sha256===d.queue_sha256&&matchingBridgePhase(preflightPendingRequest.phase))preflightParentRequest=preflightPendingRequest.request;
   }
   if(callReviewPhase||hardCompactReview)document.documentElement.classList.add('compact-call-review');
-  $("ending-discard").hidden=!callReviewPhase;
   preparePostReview(d);
   const groupCounts=new Map([['학습용',0],['공통 평가용',0]]);
   d.items.forEach((r,i)=>{
@@ -485,7 +482,7 @@ function decisionBadge(row){
   const answer=decisions[row.id];
   if(preflightAutosave&&preflightIntents.has(row.id))return preflightBlocked?'저장 확인 필요':'저장 중';
   if(pronunciationReview&&answer?.decision==='review')return '판정 보류';
-  if(judged(row))return answer.rejection_reason===truncatedEnding?'끝 음절 잘림':decisionLabel(answer.decision);
+  if(judged(row))return decisionLabel(answer.decision);
   if(pendingEndingCheck(row,answer)&&answer.listened===true)return '끝 음절 확인 대기';
   return answer?.listened===true?'청취':'미청취';
 }
@@ -557,7 +554,6 @@ function showRemainingReview(count){
 function renderDecision(){
   const row=data.items[index],decision=decisions[row.id]?.decision;
   const answer=preflightIntents.get(row.id)||decisions[row.id];
-  const truncated=answer?.rejection_reason===truncatedEnding;
   const checked=answer?.ending_confirmed===true;
   const canConfirm=preflightAutosave?preflightFact(row,'playback_completed'):answer?.listened===true;
   const guarded=preflightFinalizing||preflightFinalized||preflightBlocked;
@@ -577,9 +573,7 @@ function renderDecision(){
     if((postReviewBridge()||hardReviewBridge())){$("preflight-retry").textContent='다시 시도';$("preflight-retry").hidden=!postReviewError;$("preflight-retry").disabled=guarded;}
   }
   if(callReviewPhase){
-    $("discard").setAttribute('aria-pressed',String(answer?.decision==='discard'&&!truncated));
-    $("ending-discard").setAttribute('aria-pressed',String(truncated));
-    $("ending-discard").disabled=guarded||preflightAutosave&&!preflightFact(row,'playback_started');
+    $("discard").setAttribute('aria-pressed',String(answer?.decision==='discard'));
     $("ending-confirm").hidden=!endingCheckRequired(row)||answer?.decision==='discard';
     $("ending-confirm").disabled=guarded||!canConfirm;
     $("ending-confirm").setAttribute('aria-pressed',String(checked));
@@ -600,18 +594,16 @@ function show(){
   $("instruction").textContent=r.instruction||'';audio.src=r.audio;$("items").value=index;reviewPicker?.setSelected(index);
   $("prev").disabled=index===0;$("next").disabled=index===data.items.length-1;listPage=Math.floor(index/pageSize);renderDecision();
 }
-function choose(decision,event,rejectionReason){if(!data?.items[index]||(pronunciationReview&&decision==='review')||rejectionReason&&!callReviewPhase)return;
-  const annotations=rejectionReason?{rejection_reason:rejectionReason}:{};
+function choose(decision,event){if(!data?.items[index]||(pronunciationReview&&decision==='review'))return;
   if(preflightAutosave){
     const target=preflightChoiceTarget;preflightChoiceTarget=null;
     if(preflightBlocked||preflightFinalizing||preflightFinalized||decision!=='discard'||event?.detail>1)return;
     const row=data.items[index];
     if(target&&(target.id!==row.id||target.sha256!==row.audio_sha256))return;
-    if(rejectionReason&&!preflightFact(row,'playback_started'))return;
     const answer=preflightIntents.get(row.id)||decisions[row.id];
-    if(answer?.decision==='discard'&&answer.rejection_reason===rejectionReason)
+    if(answer?.decision==='discard')
       queuePreflight(row,preflightFact(row,'playback_started')?'keep':'clear');
-    else{queuePreflight(row,'discard',annotations);return continueAfterEndingCheck();}
+    else{queuePreflight(row,'discard');return continueAfterEndingCheck();}
     return;
   }
   if(completedReview()){
@@ -621,15 +613,15 @@ function choose(decision,event,rejectionReason){if(!data?.items[index]||(pronunc
     if(target&&(target.id!==row.id||target.audio!==row.audio||target.version!==playbackVersion))return;
     clearPostReviewError();
     const answer=decisions[row.id];
-    if(answer?.decision==='discard'&&answer.rejection_reason===rejectionReason){
+    if(answer?.decision==='discard'){
       if(answer.listened===true)decisions[row.id]={decision:'keep',listened:true};
       else delete decisions[row.id];
-    }else decisions[row.id]={decision:'discard',listened:answer?.listened===true,...annotations};
+    }else decisions[row.id]={decision:'discard',listened:answer?.listened===true};
     remember();renderDecision();
     if(decisions[row.id]?.decision==='discard')return continueAfterEndingCheck();
     return;
   }
-  const id=data.items[index].id;decisions[id]={decision,listened:decisions[id]?.listened||false,...annotations};remember();renderDecision();
+  const id=data.items[index].id;decisions[id]={decision,listened:decisions[id]?.listened||false};remember();renderDecision();
   if(decision==='discard')return continueAfterEndingCheck();}
 function confirmEnding(){
   const row=data?.items[index],answer=row&&(preflightIntents.get(row.id)||decisions[row.id]);
@@ -733,14 +725,11 @@ audio.onended=event=>{
     :'전체 청취 완료 · 검수 결과 저장을 눌러주세요.';
 };
 $("start").onclick=()=>{if(preflightAutosave&&(preflightBlocked||preflightFinalizing||preflightFinalized||document.hidden))return;if(continuous||!audio.paused){stop();return;}setContinuous(true);return play();};$("pause").onclick=()=>stop();for(const d of ['keep','discard','review'])$(d).onclick=event=>choose(d,event);
-$("ending-discard").onclick=event=>choose('discard',event,truncatedEnding);
 $("ending-confirm").onclick=confirmEnding;
 function capturePreflightChoice(){if(!(preflightAutosave||completedReview())||!data?.items[index])return;const row=data.items[index];preflightChoiceTarget={id:row.id,sha256:row.audio_sha256,audio:row.audio,version:playbackVersion};}
-for(const id of ['discard','ending-discard']){
-  $(id).onpointerdown=capturePreflightChoice;
-  $(id).onpointercancel=()=>{preflightChoiceTarget=null;};
-}
-for(const id of ['discard','ending-discard','ending-confirm'])$(id).onkeydown=event=>{if(!['Enter',' '].includes(event.key))return;if(event.repeat){event.preventDefault();return;}if(id!=='ending-confirm')capturePreflightChoice();};
+$("discard").onpointerdown=capturePreflightChoice;
+$("discard").onpointercancel=()=>{preflightChoiceTarget=null;};
+for(const id of ['discard','ending-confirm'])$(id).onkeydown=event=>{if(!['Enter',' '].includes(event.key))return;if(event.repeat){event.preventDefault();return;}if(id==='discard')capturePreflightChoice();};
 function moveTo(value){if(!data||!Number.isInteger(value)||value<0||value>=data.items.length||completedReview()&&(preflightFinalizing||preflightFinalized))return;if(completedReview())clearPostReviewError();const resume=continuous;index=value;show();if(resume){setContinuous(true);return play();}}
 $("prev").onclick=()=>moveTo(index-1);$("next").onclick=()=>moveTo(index+1);$("items").onchange=()=>moveTo(Number($("items").value));
 $("list-prev").onclick=()=>{listPage--;renderList();};$("list-next").onclick=()=>{listPage++;renderList();};

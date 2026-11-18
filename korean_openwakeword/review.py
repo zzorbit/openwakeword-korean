@@ -11,6 +11,7 @@ from .web_page import render_page_config
 
 PLAY_STARTED_POLICY = "play_started_default_keep_v1"
 TRUNCATED_ENDING_REASON = "truncated_ending"
+STANDARD_CALL_RETRY_POLICY = "standard_call_retry_v1"
 
 
 def validate_review_annotations(answer, *, allow_rejection_reason=False, ending_check_required=False,
@@ -42,7 +43,7 @@ def validate_started_decision(answer, *, ending_check_required=False, allow_unco
         raise ValueError("실제로 재생한 음원에만 끝 음절 잘림 사유를 기록할 수 있습니다.")
 
 
-def apply_review(project, queue, decisions, kind, *, playback_policy=None):
+def apply_review(project, queue, decisions, kind, *, playback_policy=None, standard_call_retry=False):
     from .pilot import PREPOST_PILOT_POLICY
 
     root, config = load_project(project)
@@ -82,9 +83,15 @@ def apply_review(project, queue, decisions, kind, *, playback_policy=None):
             raise ValueError("Unheard audio cannot be silently marked listened/kept")
         if digest(resolved(root, by_id[key]["path"])) != by_id[key]["sha256"]:
             raise ValueError("Review audio changed")
+    if prepost and standard_call_retry:
+        # Accept an answer from an older open UI, but new reviews have one retry path.
+        decisions = {sample: {key: value for key, value in answer.items() if key != "rejection_reason"}
+                     for sample, answer in decisions.items()}
     report = {"kind": kind + "_listening_review", "queue_sha256": digest(queue), "wakeword": config["wakeword"],
         "queued_audio_sha256": {r["sample_id"]: r["sha256"] for r in rows},
         "decisions": decisions, "saved_at": now(), "source_scope": "Human dispositions entered through the local review screen"}
+    if prepost and standard_call_retry:
+        report["retry_policy"] = STANDARD_CALL_RETRY_POLICY
     if started_policy:
         report.update(autosave_policy=PLAY_STARTED_POLICY,
                       playback_started_count=sum(answer["playback_started"] for answer in decisions.values()),

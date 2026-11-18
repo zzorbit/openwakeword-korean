@@ -12,7 +12,7 @@ from .common import (bound_file, digest, identity, read_json, read_rows, resolve
 from .pilot import PREPOST_PILOT_POLICY, REVIEW_GROUPS, _admitted_references, _binding, _passing_slots, _preflight_state
 from .project import load_project
 from .reference_qc import _human_answers
-from .review import TRUNCATED_ENDING_REASON, validate_review_annotations
+from .review import STANDARD_CALL_RETRY_POLICY, TRUNCATED_ENDING_REASON, validate_review_annotations
 from .storage import project_storage
 from .tts import REPAIR_ENDING_POLICY
 
@@ -47,7 +47,8 @@ def _read_plan(root, config, request, reference_review=None):
 
 
 def _request(binding, plan):
-    removed = sum(len(item.get("rejected_ending_ids", ())) or 1 for item in plan["families"])
+    removed = sum(len(item.get("rejected_ending_ids", ())) or item.get("replaced_review_count", 1)
+                  for item in plan["families"])
     pending = sum(item["count"] if item.get("ending_repair") else 1 for item in plan["families"])
     return {"policy": POLICY, "plan": binding, "round": plan["round"],
             "target": sum(item["count"] for item in plan["families"]),
@@ -166,6 +167,8 @@ def _ancestor_hashes(root, generated):
 
 def _rejected_families(queue, sources, accepted, report):
     rejected = {}
+    standard_retry = report.get("retry_policy") == STANDARD_CALL_RETRY_POLICY
+    review_counts = Counter((row["split"], row["voice_family_id"]) for row in queue)
     for row in queue:
         if report["decisions"][row["sample_id"]]["decision"] == "discard":
             rejected.setdefault((row["split"], row["voice_family_id"]), []).append(row)
@@ -174,7 +177,10 @@ def _rejected_families(queue, sources, accepted, report):
     for (split, family), rows in rejected.items():
         item = {"split": split, "voice_family_id": family, "reference_sha256": accepted[family]["sha256"],
                 "reference": accepted[family], "count": counts[split, family]}
-        if rows[0].get("ending_check_required") is True:
+        if standard_retry:
+            if review_counts[split, family] > 1:
+                item["replaced_review_count"] = review_counts[split, family]
+        elif rows[0].get("ending_check_required") is True:
             item.update(rejected_ending_ids=[row["sample_id"] for row in rows], count=len(rows), ending_repair=REPAIR_ENDING_POLICY)
         elif report["decisions"][rows[0]["sample_id"]].get("rejection_reason") == TRUNCATED_ENDING_REASON:
             item["ending_repair"] = REPAIR_ENDING_POLICY
@@ -285,6 +291,7 @@ def _compose(parent_queue, parent_sources, replacements, report, families):
             composed.append(row)
         sources[split] = composed
     queue, carried, pending = [], {}, []
+    reviewed_replacements = set()
     for row in parent_queue:
         key = (row["split"], row["voice_family_id"])
         plan = plans.get(key)
@@ -292,6 +299,9 @@ def _compose(parent_queue, parent_sources, replacements, report, families):
             if key in selective:
                 candidates = [replacing[row["sample_id"]]]
             else:
+                if key in reviewed_replacements:
+                    continue
+                reviewed_replacements.add(key)
                 candidates = replacements[key] if plan.get("ending_repair") else replacements[key][:1]
             for candidate in candidates:
                 replacement = {**candidate, "review_group": row["review_group"],
