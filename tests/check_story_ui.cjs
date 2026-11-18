@@ -2012,6 +2012,7 @@ async function main() {
     const p = page(project), details = p.shell.querySelector(".story-evaluation-plan");
     await visit(p, "evaluation");
     assert.equal(details.hidden, false);
+    assert.equal(assertCompletedEvaluation(p, 48137).value, 48137);
     const visiblePlan = textOf(details);
     assert.match(visiblePlan, /호출 감지 시험 48,000회/);
     assert.match(visiblePlan, /원본 2,000개 × 16조건 = 32,000회\n대표 원본 500개 × 16조건 × \(일반 잔향·강한 잔향\) = 16,000회/);
@@ -3376,6 +3377,19 @@ async function main() {
       assert.equal(p.shell.querySelector(".story-loader").hidden, true); assert.equal(p.calls.includes("start"), false);
     }
   });
+  function assertCompletedEvaluation(p, sessions) {
+    const counts = p.shell.querySelector(".story-voice-counts");
+    const row = counts.children[0], bar = row.querySelector("progress");
+    assert.equal(counts.hidden, false);
+    assert.equal(bar.hidden, false);
+    assert.equal(bar.value, sessions ?? 1);
+    assert.equal(bar.max, sessions ?? 1);
+    assert.equal(bar.dataset.active, "false");
+    assert.equal(row.querySelector(".story-progress-indicator").dataset.status, "complete");
+    const count = sessions?.toLocaleString("ko-KR");
+    assert.equal(row.children[1].textContent, sessions ? `${count} / ${count}개` : "완료");
+    return bar;
+  }
   await test("evaluation holds across report preparation, polling and reload, then Next reveals the published report", async () => {
     const project = navigationProject("evaluation");
     const checkpoint = project.navigation_checkpoint;
@@ -3399,6 +3413,7 @@ async function main() {
     assert.equal(p.next.disabled, true);
     assert.equal(p.get("results-section").hidden, true);
     assert.equal(p.shell.querySelector(".story-voice-counts").querySelector("strong").dataset.label, "학습 결과 정리");
+    const bar = p.shell.querySelector(".story-voice-counts").querySelector("progress");
     Object.assign(project, { status: "completed", process_alive: false, stage_id: "completed", results });
     checkpoint.state = "awaiting_next";
     project.stages.find(stage => stage.id === "results").status = "completed";
@@ -3407,11 +3422,18 @@ async function main() {
     assert.equal(p.next.disabled, false);
     assert.equal(p.operation.hidden, true);
     assert.equal(p.chapterRequests.length, 0);
+    assert.equal(assertCompletedEvaluation(p), bar, "completion keeps the same progress element even without saved counts");
+    project.completed_stage_views = { evaluation: { completed: true, rows: [
+      { label: "성능 평가 음원", done: 48137, total: 49000, unit: "개" },
+    ] } };
+    p.ui.render();
+    assert.equal(assertCompletedEvaluation(p, 48137), bar);
     const refreshed = page(project);
     assert.equal(await refreshed.ui.prepareInitialView(), true);
     assert.equal(refreshed.shell.dataset.step, "evaluation");
     assert.equal(refreshed.get("results-section").hidden, true);
     assert.equal(refreshed.next.disabled, false);
+    assertCompletedEvaluation(refreshed, 48137);
     delete project.results;
     p.ui.render();
     assert.equal(p.next.disabled, true, "an absent report cannot be opened");

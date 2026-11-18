@@ -1711,8 +1711,13 @@
     function workRows(project, historical, active, completed) {
       if (connectingHard(project)) return [{ label: "유사어 학습 자료 연결", statusText: "확인 중", indeterminate: true, active: true }];
       const stage = stageId(project);
-      if (current === "evaluation" && reportAwaitingNext(project)) {
-        return [{ label: "학습 결과 정리", statusText: "완료", completed: true }];
+      if (current === "evaluation" && (completed || done(project.status))) {
+        const saved = project.completed_stage_views?.evaluation;
+        const row = saved?.completed ? saved.rows?.[0] : null;
+        if (Number.isSafeInteger(row?.done) && row.done > 0) {
+          return [{ ...row, total: row.done, completed: true }];
+        }
+        return [{ label: "성능 평가", done: 1, total: 1, statusText: "완료", completed: true }];
       }
       if (current === "evaluation" && stage === "results" && !historical && !completed) {
         return [preparationRow(project, "학습 결과 정리", active, "정리 중")];
@@ -1783,13 +1788,13 @@
       const progress = project.progress;
       const generation = generationSteps.has(current) || Boolean(sampleLabel);
       const detail = generation && active && !completed && stageScreen(project, stage) === current ? generationActivity(progress) : "";
-      const done = progress?.done ?? progress?.completed ?? progress?.current;
+      const processed = progress?.done ?? progress?.completed ?? progress?.current;
       if (evaluationRetryMessage(project))
         return [{ ...preparationRow(project, "성능 평가 준비", false), statusText: "재개 대기" }];
       const evaluationPhaseLabel = current === "evaluation"
         ? { validation: "평가 음원 검증", finalizing: "평가 결과 정리", preparation_validation: "평가 자료 원본 검증",
           preparation_generation: "평가 자료 생성", preparation_finalizing: "평가 자료 등록·검증" }[progress?.phase] : "";
-      if (!Number.isFinite(done) || done < 0 || !Number.isFinite(progress.total)
+      if (!Number.isFinite(processed) || processed < 0 || !Number.isFinite(progress.total)
         || progress.total <= 0 || /단계/.test(progress.unit || "")) {
         if (current === "features" && stage === "features" && !completed) {
           return [preparationRow(project, "자료 확인 및 특징 추출 준비", active, "확인 중")];
@@ -1808,7 +1813,7 @@
         return [];
       }
       const progressLabel = current === "features" ? featureLabels[progress.label] || progress.label : evaluationPhaseLabel || progress.label;
-      return [{ ...progress, done, label: sampleLabel || (generationSteps.has(current) ? label : progressLabel || label), detail,
+      return [{ ...progress, done: processed, label: sampleLabel || (generationSteps.has(current) ? label : progressLabel || label), detail,
         active: active && !completed, completed }];
     }
     const progressStatus = (active, completed) => completed ? "complete" : active ? "active" : "";
