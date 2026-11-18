@@ -15,7 +15,8 @@ from .common import read_json
 from .frontend import PINNED_ASSETS
 from .task_progress import emit as report_task_progress
 
-NUMERICAL_POLICY = "cuda_fp32_whole_session_cpu_boundary_v1"
+NUMERICAL_POLICY = "cuda_fp32_device_v1"
+CUDA_SCORING_PROTOCOL = "cuda_batch_fp32_device_v1"
 # A cold run loads the CUDA runtime, the CPU reference and five GPU sessions.
 # Allow the same startup budget as the managed runtime's installation probe.
 _CUDA_PROBE_TIMEOUT_SECONDS = 120
@@ -160,7 +161,7 @@ def resolve_evaluation_backend(requested="auto", *, stage="development", bundle=
     report_task_progress("evaluation_input_validation", "평가 음원 검증 중", eta_eligible=False)
     return {**result, "backend": "cuda", "runtime_environment": environment,
             "reason_code": "resume_cuda" if resume_backend else "cuda_available",
-            "reason": "GPU 배치 평가를 사용하고 임계값 근처의 음원은 CPU로 다시 확인합니다.",
+            "reason": "선택한 GPU로 전체 음원을 채점합니다.",
             "numerical_policy": NUMERICAL_POLICY, "probe": probe}
 
 
@@ -175,8 +176,8 @@ def _probe_main(bundle):
         print(_CUDA_PROBE_PHASE_PREFIX + "sessions", flush=True)
         scorer = _GpuBatchScorer(bundle, [row["id"] for row in bundle_candidates(manifest)], stats)
         print(_CUDA_PROBE_PHASE_PREFIX + "inference", flush=True)
-        scores = scorer.score_batch([np.zeros(1280 * 3, dtype=np.int16), np.zeros(1280 * 2, dtype=np.int16)])
-        if [value.shape for value in scores] != [(3, 4), (2, 4)] or any(not np.isfinite(value).all() for value in scores):
+        scores = scorer.score_batch([np.zeros(1280 * 7, dtype=np.int16), np.zeros(1280 * 6, dtype=np.int16)])
+        if [value.shape for value in scores] != [(7, 4), (6, 4)] or any(not np.isfinite(value).all() for value in scores):
             raise ValueError("CUDA session execution returned invalid scores")
         print(_CUDA_PROBE_PHASE_PREFIX + "exit", flush=True)
         print(json.dumps({"available": True, "reason_code": "cuda_sessions_verified", "reason": "CUDA FP32 세션 실행 확인 완료",

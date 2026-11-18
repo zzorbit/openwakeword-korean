@@ -57,6 +57,13 @@ def test_old_cpu_lines_and_latest_valid_count_are_supported(tmp_path):
     assert result["progress"]["backend"] == "cpu" and result["progress"]["workers"] == 8
 
 
+def test_cuda_progress_uses_the_selected_device_log_without_recheck_count(tmp_path):
+    manager, state, _ = _fixture(tmp_path, b"Evaluate development: 128/1000 (CUDA batch=128)\n")
+    progress = manager.describe(state)["progress"]
+    assert progress["done"] == 128 and progress["backend"] == "cuda"
+    assert "cpu_rechecked_sessions" not in progress
+
+
 @pytest.mark.parametrize("content", [b"", b"Checking model and audio hashes...\n", b"Traceback: input validation failed\n"])
 def test_preflight_has_a_validation_label_without_inventing_zero_percent(tmp_path, content):
     manager, state, _ = _fixture(tmp_path, content)

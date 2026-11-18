@@ -116,7 +116,7 @@ def preset_settings(name="check"):
     return {"preset": name, **deepcopy(_PRESETS[name]),
             **{key: policy[key] for key in ("validation_references", "validation_originals", "noise_sections")},
             "evaluation_policy": policy, "batch": dict(BATCH),
-            "evaluation_backend": "auto", "gpu_batch_size": 128, "gpu_boundary_margin": .001,
+            "evaluation_backend": "auto", "gpu_batch_size": 128,
             "gpu_numerical_differences_approved": True,
             "material_acquisition_policy": "automatic_v3",
             "material_review_policy": "library_fixed_sources_v1",
@@ -210,11 +210,8 @@ def _validate_settings(settings):
         if backend == "cuda" and settings.get("gpu_numerical_differences_approved") is not True:
             raise ValueError("CUDA evaluation requires explicit numerical-difference approval")
         batch = settings.get("gpu_batch_size", 128)
-        margin = settings.get("gpu_boundary_margin", .001)
         if type(batch) is not int or not 1 <= batch <= 128:
             raise ValueError("GPU batch size must be an integer from 1 to 128")
-        if isinstance(margin, bool) or not isinstance(margin, (int, float)) or not math.isfinite(margin) or not 0 < margin < 1:
-            raise ValueError("GPU boundary margin must be positive and finite below one")
     for key in ("originals", "updates", "train_references", "validation_references",
                 "validation_originals", "noise_sections"):
         if type(settings.get(key)) is not int or settings[key] < 1:
@@ -1307,13 +1304,9 @@ def run_stage(project, workspace, settings, stage_id, context=None, *, pause_req
         scoring_smoke = settings["functional_check_only"] and not settings.get("evaluation_policy")
         backend = settings.get("evaluation_backend", "cpu")
         gpu_batch_size = settings.get("gpu_batch_size", 128)
-        boundary_margin = settings.get("gpu_boundary_margin", .001)
-        import_path = settings.get("gpu_cpu_prefix_import")
-        cpu_prefix = read_json(import_path)["prefix"] if import_path else None
         selected_backend = "cuda" if backend == "auto" else backend
         expected = evaluation_binding(project, bundle, manifest, smoke=scoring_smoke, backend=selected_backend,
-            gpu_batch_size=gpu_batch_size, boundary_margin=boundary_margin,
-            cpu_prefix=cpu_prefix if selected_backend == "cuda" else None)
+            gpu_batch_size=gpu_batch_size)
         directory, existing = _next_directory(root / "reports/studio_evaluation", "receipt.json",
             lambda p: (read_json(p / "report.json").get("manifest_sha256") == digest(manifest)
                        and read_json(p / "report.json").get("bundle_manifest_sha256") == digest(Path(bundle) / "manifest.json")
@@ -1341,8 +1334,7 @@ def run_stage(project, workspace, settings, stage_id, context=None, *, pause_req
                         break
             report = evaluate(project, bundle, directory, manifest=manifest,
                               smoke=scoring_smoke, workers="auto", resume=resume, backend=backend,
-                              gpu_batch_size=gpu_batch_size, boundary_margin=boundary_margin,
-                              cpu_prefix_import=import_path,
+                              gpu_batch_size=gpu_batch_size,
                               numerical_differences_approved=settings.get("gpu_numerical_differences_approved"))
         assessment = None
         artifacts = [directory / "receipt.json", directory / "report.json", directory / "clips.json"]

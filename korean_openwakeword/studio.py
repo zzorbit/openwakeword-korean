@@ -853,6 +853,27 @@ _AUDITED_ACQUISITION_UPDATES = {
     # Exact GPU-required evaluation / Windows publication repair.
     "190472c48c47978effa8a0360fd56287ca72c8c250e321619bbe00984f518ccb": {'source_stages_sha256': '24b984a10bd10d23663ef9e463286730fbd51ea0f658235b363e0a09b2cdf966', 'target_computation_sha256': '93eb771702f0dce745787f0e1493d0150118ea652896d22521c649f08e03f0a1', 'target_stages_sha256': '8f4ca49e07e13b564543574f39649dd0ea725267152bb5fd017bcc35dffa82d3', 'changed_files': ('evaluation_backend.py', 'gpu_runtime_install.py', 'studio_steps.py'), 'evidence_sha256': '9010a49f2879a605120a816d6e6847ec97428da7439856ad3f2fe8278b10afd4'},
 }
+_DEVICE_SCORING_UPDATE_FILES = ("evaluate.py", "evaluation_backend.py", "gpu_evaluation.py", "studio_steps.py")
+_DEVICE_SCORING_UPDATE_EVIDENCE = "a785daaa8a9bddd63d4085a4008abf5404580d80c75b3b020a1cff24e8c0a889"
+# Exact archive, installed and checkout transitions. Earlier artifacts stay bound to their original
+# producer and the evaluator accepts only checkpoints from the selected device.
+_AUDITED_DEVICE_SCORING_UPDATES = {
+    "44f052c866346c8b7bf64d46ceecb0e7c48a388839113517afcffbf8bfa14c94": (
+        "19357b8698c6e2c88ad0edd1263b583388ca912f7cd578dc0df6cc76f87963c6",
+        "b0f78379936e78ef37ee0423a823890a4d7920e2315adddd3fd19f608927765d",
+        "424f2d50c7a4934f1f4ba9fa658ad3e10280c8add9d210759e39a98228e42ea8",
+    ),
+    "3a183cff9f4e4ca9d803f12252328c484b3b321bc6b630ce3ed7c3bba26767ad": (
+        "c8bf31ed4a262beb73215905bfc103dcdc23669fd33112647380b49466a7f105",
+        "d0a57b31dc4f382f2311b8f7b4245254313ae78b22397fbce52507ac4e1a1996",
+        "d33648c7a5c26cf266b45d36d21e3c32c71fdcbde204d8f53b7ec832686d2fcf",
+    ),
+    "f25a46ac9977e15a0a4baa6c01aad750c98c3c1c12c7f8434f5ca56c6120a0d0": (
+        "3c3de079ba18c586073ef8d01c375632e82cfd6cb4bcff32bb12d7f2068bc19b",
+        "d793146f66220c271b0acce7ec0f5ef90cbbc924620d81f7261b1b50b934898e",
+        "080558a7338d546ab06619e2709482a886cdf7f68be522bfbe1aab545d22569f",
+    ),
+}
 _ACQUISITION_UPDATE_FILES = {
     "downloads.py", "download_control.py", "material_downloads.py", "studio_data.py",
     "evaluation_materials.py", "evaluation_rir.py", "studio_evaluation_data.py", "official_music.py", "studio_steps.py",
@@ -1042,8 +1063,18 @@ def _audited_reference_update(previous, current):
 
 
 def _audited_acquisition_update(previous, current):
-    """Return a release-bound audit for an exact acquisition/admission diff."""
-    audit = _AUDITED_ACQUISITION_UPDATES.get(previous.get("computation_sha256"))
+    """Return the audit for an exact stage update that preserves stored work."""
+    source = previous.get("computation_sha256")
+    device_scoring = _AUDITED_DEVICE_SCORING_UPDATES.get(source)
+    if device_scoring:
+        old_stages, new_computation, new_stages = device_scoring
+        audit = dict(source_stages_sha256=old_stages, target_computation_sha256=new_computation,
+                     target_stages_sha256=new_stages, changed_files=_DEVICE_SCORING_UPDATE_FILES,
+                     evidence_sha256=_DEVICE_SCORING_UPDATE_EVIDENCE)
+        allowed_files = _DEVICE_SCORING_UPDATE_FILES
+    else:
+        audit = _AUDITED_ACQUISITION_UPDATES.get(source)
+        allowed_files = _ACQUISITION_UPDATE_FILES
     if not isinstance(audit, dict):
         return None
     hash_keys = ("source_stages_sha256", "target_computation_sha256", "target_stages_sha256", "evidence_sha256")
@@ -1061,9 +1092,10 @@ def _audited_acquisition_update(previous, current):
     changed = sorted(name for name in old_files.keys() | new_files.keys() if old_files.get(name) != new_files.get(name))
     approved = audit.get("changed_files")
     if (not isinstance(approved, (list, tuple)) or not approved or changed != sorted(approved)
-            or not set(changed).issubset(_ACQUISITION_UPDATE_FILES)):
+            or not set(changed).issubset(allowed_files)):
         return None  # Catalogs, pins, and every unlisted module must be intact.
-    return {"kind": "audited_acquisition_update", "source_computation_sha256": previous["computation_sha256"],
+    kind = "audited_device_scoring_update" if device_scoring else "audited_acquisition_update"
+    return {"kind": kind, "source_computation_sha256": previous["computation_sha256"],
             "target_computation_sha256": current["computation_sha256"], "changed_files": changed,
             "source_stages_sha256": audit["source_stages_sha256"], "target_stages_sha256": audit["target_stages_sha256"],
             "evidence_sha256": audit["evidence_sha256"]}
@@ -1092,6 +1124,8 @@ _REFACTOR_TARGET_CONTRACTS = {
         "c801be32d8fa7aeade0ac5df063f63aff5a5b72b98eb5ce3d915906a1d85e30c",
     "f25a46ac9977e15a0a4baa6c01aad750c98c3c1c12c7f8434f5ca56c6120a0d0":
         "3c3de079ba18c586073ef8d01c375632e82cfd6cb4bcff32bb12d7f2068bc19b",
+    # Carry the same audited refactoring scopes to the device-specific release.
+    **{target: stages for _, target, stages in _AUDITED_DEVICE_SCORING_UPDATES.values()},
 }
 
 
@@ -1193,7 +1227,7 @@ def _job_log_tail(job, limit=24000):
 def _evaluation_log_progress(job):
     """Session counts only; polling never opens score caches or evaluation WAVs."""
     pattern = (r"(?m)^Evaluate (?:development|final): (\d+)/(\d+) "
-               r"\((?:CPU workers=(\d+)|CUDA batch=(\d+), CPU rechecked=(\d+))\)\r?$")
+               r"\((?:CPU workers=(\d+)|CUDA batch=(\d+)(?:, CPU rechecked=(\d+))?)\)\r?$")
     for match in reversed(list(re.finditer(pattern, _job_log_tail(job)))):
         done, total = int(match[1]), int(match[2])
         if not 0 <= done <= total or total == 0:
@@ -1205,7 +1239,9 @@ def _evaluation_log_progress(job):
                   "source": "current_task_log", "task_id": job["task_id"],
                   "backend": "cuda" if cuda else "cpu"}
         if cuda:
-            result.update(batch_size=int(match[4]), cpu_rechecked_sessions=int(match[5]))
+            result["batch_size"] = int(match[4])
+            if match[5] is not None:
+                result["cpu_rechecked_sessions"] = int(match[5])
         else:
             result["workers"] = int(match[3])
         return result
@@ -1718,6 +1754,8 @@ class StudioManager:
                            if audited_update and audited_update.get("changed_files") == ["material_policy.py"] else
                            "GPU 평가 도구 설치를 복구합니다. 검증을 통과한 설치 파일과 기존 학습 기록을 재사용합니다."
                            if audited_update and audited_update.get("changed_files") == ["gpu_runtime_install.py"] else
+                           "기존 평가 결과를 보존합니다. 새 GPU 채점은 모든 음원을 GPU에서 계산하며, 이전 방식으로 중단된 GPU 채점은 새 평가로 시작합니다."
+                           if audited_update and audited_update.get("kind") == "audited_device_scoring_update" else
                            "GPU 평가에 실패하면 CPU로 전환하지 않고 멈춥니다. 기존 CPU 점수는 보존하고 별도의 GPU 평가로 진행합니다."
                            if audited_update and audited_update.get("changed_files") == ["evaluation_backend.py", "gpu_runtime_install.py", "studio_steps.py"] else
                            "다운로드 순서·진행 표시 변경의 자료 동일성을 확인한 업데이트입니다. 기존 설정과 완료 결과를 검증한 뒤 적용할 수 있습니다."

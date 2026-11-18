@@ -15,6 +15,7 @@ import soundfile as sf
 from .common import bound_file, digest, identity, now, read_json, read_rows, resolved, write_json, writer_lock, require_final_lock
 from .data import CATEGORIES, audit_project, source_key
 from .events import positive_statistics, poisson_rate_interval
+from .evaluation_backend import CUDA_SCORING_PROTOCOL
 from .project import load_project
 from .runtime import WakeWordDetector, verify_bundle, bundle_candidates, deployment_candidate
 from .storage import project_storage
@@ -197,7 +198,7 @@ def _manifest_snapshot(path, *, retain_rows):
 
 
 def _scoring_binding(package, candidate, stage, smoke, inputs, calls_need_sort,
-                     *, backend, gpu_batch_size, boundary_margin, cpu_prefix=None):
+                     *, backend, gpu_batch_size, boundary_margin=.001, cpu_prefix=None):
     model_ids = [row["id"] for row in bundle_candidates(package)]
     candidate = deployment_candidate(package)["id"] if candidate is None else candidate
     payload = {**inputs, "stage": stage, "candidate": candidate,
@@ -205,8 +206,11 @@ def _scoring_binding(package, candidate, stage, smoke, inputs, calls_need_sort,
     if calls_need_sort:
         payload["call_matching"] = CALL_MATCHING_REVISION
     if backend == "cuda":
-        payload.update(scoring_protocol="cuda_batch_fp32_cpu_boundary_v1", gpu_batch_size=gpu_batch_size,
-                       boundary_margin=boundary_margin, cpu_prefix=cpu_prefix)
+        payload.update(scoring_protocol=CUDA_SCORING_PROTOCOL, gpu_batch_size=gpu_batch_size)
+        if cpu_prefix is not None:
+            # Reconstruct the historical import identity for evidence verification.
+            payload.update(scoring_protocol="cuda_batch_fp32_cpu_boundary_v1",
+                           boundary_margin=boundary_margin, cpu_prefix=cpu_prefix)
     elif backend != "cpu":
         raise ValueError("Evaluation backend must be cpu or cuda")
     return identity(payload)
@@ -226,14 +230,7 @@ def evaluation_binding(project, bundle, manifest, stage="development", candidate
 
 def validate_cpu_prefix_import(project, bundle, manifest, output, stage, candidate, smoke, backend,
                                gpu_batch_size, boundary_margin, import_path, *, sources=None):
-    """Verify an explicit, immutable CPU prefix imported into a CUDA run.
-
-    This verifies prior score lineage, not every still-unscored WAV. A caller
-    may defer file checks only after this succeeds and must verify each remaining
-    session's actual hashed PCM, format and bounds before scoring/publishing it.
-    Initial target cache whole-file hashes are historical evidence: CUDA progress
-    changes their tails, so only the imported CPU prefix remains invariant.
-    """
+    """Verify provenance for a historical CUDA run containing a CPU prefix."""
     import hashlib
     import io
     import math
@@ -435,7 +432,7 @@ def _gpu_sessions_with_environment(environment, *args, **kwargs):
 
 @project_storage
 def evaluate(project, bundle, output, stage="development", manifest=None, smoke=False, candidate=None, workers="auto", resume=False,
-             *, backend="auto", gpu_batch_size=128, boundary_margin=.001, cpu_prefix_import=None,
+             *, backend="auto", gpu_batch_size=128, cpu_prefix_import=None,
              numerical_differences_approved=None):
     project_sha256 = digest(project)
     root, config = load_project(project)
@@ -454,6 +451,8 @@ def evaluate(project, bundle, output, stage="development", manifest=None, smoke=
         raise ValueError("Unknown evaluation stage")
     if backend not in ("auto", "cpu", "cuda"):
         raise ValueError("Evaluation backend must be auto, cpu or cuda")
+    if cpu_prefix_import is not None:
+        raise ValueError("Select a device and start a new evaluation for device-specific scores")
     if backend == "cuda" and stage != "development":
         raise ValueError("CUDA evaluation is qualified for Development only; independent Final remains on its frozen reference protocol")
     if backend == "cuda" and numerical_differences_approved is False:
@@ -463,15 +462,15 @@ def evaluate(project, bundle, output, stage="development", manifest=None, smoke=
     sources, manifest_sha256, calls_need_sort = _manifest_snapshot(manifest, retain_rows=True)
     inputs = {"project_sha256": project_sha256, "bundle_sha256": bundle_sha256,
               "manifest_sha256": manifest_sha256}
-    resume_backend = "cuda" if cpu_prefix_import else None
-    if resume and not cpu_prefix_import:
+    resume_backend = None
+    if resume:
         checkpoint_path = output / "_evaluation_work/checkpoint.json"
         if not checkpoint_path.is_file():
             raise ValueError("No resumable evaluation checkpoint")
         saved_binding = read_json(checkpoint_path).get("binding")
         for saved_backend in ("cpu", "cuda"):
             if saved_binding == _scoring_binding(package, candidate, stage, smoke, inputs, calls_need_sort,
-                    backend=saved_backend, gpu_batch_size=gpu_batch_size, boundary_margin=boundary_margin):
+                    backend=saved_backend, gpu_batch_size=gpu_batch_size):
                 resume_backend = saved_backend
                 break
         if resume_backend is None:
@@ -488,10 +487,6 @@ def evaluate(project, bundle, output, stage="development", manifest=None, smoke=
             raise ValueError("CUDA FP32 requires explicit approval of small numerical score differences")
         if type(gpu_batch_size) is not int or not 1 <= gpu_batch_size <= 128:
             raise ValueError("GPU batch size must be an integer from 1 to 128")
-        if isinstance(boundary_margin, bool) or not isinstance(boundary_margin, (int, float)) or not math.isfinite(boundary_margin) or not 0 < boundary_margin < 1:
-            raise ValueError("GPU boundary margin must be positive and finite below one")
-    if cpu_prefix_import and (backend != "cuda" or not resume):
-        raise ValueError("CPU prefix import requires explicit CUDA checkpoint resume")
     if stage == "final":
         if candidate != deployed["id"]:
             raise ValueError("Final evaluates the frozen deployed candidate; no candidate selection")
@@ -500,12 +495,10 @@ def evaluate(project, bundle, output, stage="development", manifest=None, smoke=
             raise ValueError("Final model/runtime/project changed after freeze")
         if smoke:
             raise ValueError("Final cannot be a smoke run")
-    imported = validate_cpu_prefix_import(project, directory, manifest, output, stage, candidate, smoke,
-        backend, gpu_batch_size, boundary_margin, cpu_prefix_import, sources=sources) if cpu_prefix_import else None
     # Reuse this operation's full hash/header checks from the split audit in
     # the format/offset pass below. No evidence is reused across evaluations.
     verified_files = VerifiedAudioFiles()
-    audit = audit_project(project, check_files=not bool(imported), include_final_files=stage == "final", extra_rows=sources,
+    audit = audit_project(project, include_final_files=stage == "final", extra_rows=sources,
                           verified_files=verified_files)
     if not audit["passed"]:
         raise ValueError("Source/family split audit failed: " + str(audit["errors"][:3]))
@@ -539,13 +532,7 @@ def evaluate(project, bundle, output, stage="development", manifest=None, smoke=
             if key in negative_sources or row["sha256"] in negative_hashes:
                 raise ValueError("Repeated Negative originals cannot inflate independent evaluation hours")
             negative_sources.add(key); negative_hashes.add(row["sha256"])
-        if imported:
-            # The immutable CPU prefix was checked before it was scored. Remaining
-            # WAVs are hashed at their actual point of GPU consumption below.
-            path = resolved(root, row["path"])
-            info = sf.info(path)
-        else:
-            path, info = verified_files.inspect(root, row)
+        path, info = verified_files.inspect(root, row)
         if info.samplerate != 16000 or info.channels != 1 or info.subtype != "PCM_16":
             raise ValueError("Scored WAV must already be mono16kHz PCM16; no playback-only gain")
         paths.append(path)
@@ -553,19 +540,15 @@ def evaluate(project, bundle, output, stage="development", manifest=None, smoke=
     verified_files.clear()
     runtime = package["runtime"]
     model_ids = [row["id"] for row in candidates]
-    execution = worker_plan(workers, len(sources))
+    execution = worker_plan(workers, len(sources)) if backend == "cpu" else {}
     binding = _scoring_binding(package, candidate, stage, smoke, inputs, calls_need_sort, backend=backend,
-        gpu_batch_size=gpu_batch_size, boundary_margin=boundary_margin,
-        cpu_prefix=imported["prefix"] if imported else None)
+        gpu_batch_size=gpu_batch_size)
     execution["backend"] = backend
     execution["backend_selection"] = selection
     if backend == "cuda":
         execution["gpu"] = {}
-        execution["input_validation"] = ("Prior CPU prefix verified by immutable import proof; current metadata audit and header plan; remaining WAVs fully hashed and checked before consumption"
-                                         if imported else "Full input audit plus exact-use WAV checks")
-        execution["cpu_prefix_import"] = {"path": str(Path(cpu_prefix_import).resolve()), "sha256": digest(cpu_prefix_import),
-            "prefix": imported["prefix"]} if imported else None
-        execution["scoring_protocol"] = "cuda_batch_fp32_cpu_boundary_v1"
+        execution["input_validation"] = "Full input audit plus exact-use WAV checks"
+        execution["scoring_protocol"] = CUDA_SCORING_PROTOCOL
     started = time.perf_counter()
     with writer_lock(output):
         if ((output / "receipt.json").exists()
@@ -576,23 +559,20 @@ def evaluate(project, bundle, output, stage="development", manifest=None, smoke=
             execution["resumed_sessions"] = journal.resumed_sessions
             # Enter scoring before computing a potentially long first batch.
             # Only the journal's durable prefix is counted, including zero.
-            label = (f"CUDA batch={gpu_batch_size}, CPU rechecked=0" if backend == "cuda"
+            label = (f"CUDA batch={gpu_batch_size}" if backend == "cuda"
                      else f"CPU workers={execution['workers']}")
             print(f"Evaluate {stage}: {journal.resumed_sessions}/{len(sources)} ({label})", flush=True)
             items = ((index, sources[index], paths[index]) for index in range(journal.resumed_sessions, len(sources)))
             if backend == "cuda":
                 items = _verified_gpu_items(root, sources, paths, offsets, journal.resumed_sessions)
                 scored = _gpu_sessions_with_environment(selection["runtime_environment"], directory, model_ids, items, batch_size=gpu_batch_size,
-                    boundary_margin=boundary_margin,
-                    qualification={"user_approved_numerical_differences": True,
-                                   "cpu_prefix_import_sha256": digest(cpu_prefix_import) if imported else None},
+                    qualification={"user_approved_numerical_differences": True},
                     stats=execution["gpu"])
             else:
                 scored = score_sessions(directory, model_ids, items, execution["workers"], detector_factory=WakeWordDetector)
             for index, clip, scores in scored:
                 journal.add(index, clip, scores)
                 if index < 9 or (index + 1) % 100 == 0 or index + 1 == len(sources):
-                    label = f"CUDA batch={gpu_batch_size}, CPU rechecked={execution['gpu'].get('cpu_rechecked_sessions', 0)}" if backend == "cuda" else f"CPU workers={execution['workers']}"
                     print(f"Evaluate {stage}: {index + 1}/{len(sources)} ({label})", flush=True)
             journal.publish_scores()
             clips = journal.clips

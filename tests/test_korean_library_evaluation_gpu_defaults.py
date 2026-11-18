@@ -35,7 +35,7 @@ def _reference_gpu_seam(calls):
                 consumed.append(item[0])
                 yield item
         calls.append({"environment": environment, "indices": consumed,
-                      "batch_size": kwargs["batch_size"], "margin": kwargs["boundary_margin"],
+                      "batch_size": kwargs["batch_size"],
                       "qualification": kwargs["qualification"]})
         kwargs["stats"]["fixture_reference_scores"] = True
         yield from evaluation_workers.score_sessions(bundle, model_ids, recorded(), 1)
@@ -71,9 +71,8 @@ def test_default_auto_routes_to_selected_gpu_and_publishes_identical_reference_a
     assert report["runtime"] == baseline["runtime"]
     assert report["models"] == baseline["models"]
     assert gpu_calls == [{"environment": {"fixture": "isolated"}, "indices": [0, 1],
-                          "batch_size": 128, "margin": .001,
-                          "qualification": {"user_approved_numerical_differences": True,
-                                            "cpu_prefix_import_sha256": None}}]
+                          "batch_size": 128,
+                          "qualification": {"user_approved_numerical_differences": True}}]
     _assert_score_bits_equal(root / "reports/cpu", root / "reports/auto")
     assert read_json(root / "reports/auto/receipt.json")["report_sha256"]
     assert not (root / "reports/auto/_evaluation_work").exists()
@@ -128,7 +127,7 @@ def test_scoring_start_is_reported_before_first_long_batch_yields(monkeypatch, t
     def slow_first_batch(environment, directory, model_ids, items, **kwargs):
         # This executes inside the scorer, before its first completion yield.
         before.append(capsys.readouterr().out)
-        assert f"Evaluate development: {expected_start}/2 (CUDA batch=128, CPU rechecked=0)" in before[-1]
+        assert f"Evaluate development: {expected_start}/2 (CUDA batch=128)" in before[-1]
         for value in _reference_gpu_seam([])(environment, directory, model_ids, items, **kwargs):
             yielded.append(value[0])
             yield value
@@ -207,7 +206,7 @@ def test_new_presets_select_gpu_auto_with_explicit_numerical_policy(name):
     settings = studio_steps.preset_settings(name)
     assert settings["evaluation_backend"] == "auto"
     assert settings["gpu_numerical_differences_approved"] is True
-    assert settings["gpu_batch_size"] == 128 and settings["gpu_boundary_margin"] == .001
+    assert settings["gpu_batch_size"] == 128 and "gpu_boundary_margin" not in settings
 
 
 @pytest.mark.parametrize("legacy", [False, True])
@@ -218,7 +217,7 @@ def test_studio_new_settings_use_auto_but_saved_settings_without_backend_remain_
     # pre-recommendation workflow while testing GPU/CPU defaults independently.
     settings.pop("runtime_recommendation_policy")
     if legacy:
-        for name in ("evaluation_backend", "gpu_batch_size", "gpu_boundary_margin", "gpu_numerical_differences_approved"):
+        for name in ("evaluation_backend", "gpu_batch_size", "gpu_numerical_differences_approved"):
             settings.pop(name)
     before = deepcopy(settings)
     project = create_project(tmp_path / "word", "보라야", "defaults",
