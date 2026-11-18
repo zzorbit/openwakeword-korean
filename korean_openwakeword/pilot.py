@@ -90,15 +90,21 @@ def _binding(root, path):
     return {"path": str(path.relative_to(root)), "sha256": digest(path)}
 
 
-def combined_review_queue(root, binding, train_count, validation_count):
+def combined_review_queue(root, binding, train_count, validation_count, *, ending_repair=False):
     """Load the bound queue only if both intended voice banks are represented."""
     queue = bound_file(root, binding)
     rows = read_rows(queue)
     expected = {("train", REVIEW_GROUPS["train"]): train_count,
                 ("validation", REVIEW_GROUPS["validation"]): validation_count}
-    groups = Counter((row.get("split"), row.get("review_group")) for row in rows)
+    voices = {}
+    for row in rows:
+        key = (row.get("split"), row.get("review_group"), row["voice_family_id"])
+        voices.setdefault(key, []).append(row)
+    groups = Counter((split, group) for split, group, _ in voices)
     if (groups != expected or len({row["sample_id"] for row in rows}) != len(rows)
-            or len({row["voice_family_id"] for row in rows}) != len(rows)
+            or len({row["voice_family_id"] for row in rows}) != len(voices)
+            or any(len(items) > 1 and not (ending_repair and all(row.get("ending_check_required") is True for row in items))
+                   for items in voices.values())
             or any(row.get("qc", {}).get("passed") is not True for row in rows)):
         raise ValueError("호출어 발음 검수 목록에 학습용·공통 평가용 기준 목소리가 모두 포함되어야 합니다.")
     return queue
@@ -202,8 +208,8 @@ def _preflight_banks(root, settings):
     return banks
 
 
-def _preflight_state(root, config, banks, prior_rounds):
-    from .review import PLAY_STARTED_POLICY, validate_started_decision
+def _preflight_state(root, config, banks, prior_rounds, *, ending_repairs=None):
+    from .review import PLAY_STARTED_POLICY, TRUNCATED_ENDING_REASON, validate_review_annotations, validate_started_decision
     references = {row["voice_family_id"]: row for bank in banks.values() for row in bank}
     pending = set(references)
     approved, heard_hashes, reference_hashes = {}, set(), {row["sha256"] for row in references.values()}
@@ -225,13 +231,16 @@ def _preflight_state(root, config, banks, prior_rounds):
                 or len(audio) != len(queue) or set(decisions) != set(audio)):
             raise ValueError("사전 검수 음원과 저장된 판정이 일치하지 않습니다.")
         if playback_policy == PLAY_STARTED_POLICY:
-            for answer in decisions.values():
-                validate_started_decision(answer)
+            for row in queue:
+                validate_started_decision(decisions[row["sample_id"]], ending_check_required=row.get("ending_check_required") is True)
             if (report.get("playback_started_count") != sum(answer["playback_started"] for answer in decisions.values())
                     or report.get("playback_completed_count") != sum(answer["playback_completed"] for answer in decisions.values())):
                 raise ValueError("사전 검수의 재생 시작·완료 집계가 실제 판정과 다릅니다.")
         for row in queue:
             answer = decisions[row["sample_id"]]
+            ending_check_required = row.get("ending_check_required") is True
+            if playback_policy is None:
+                validate_review_annotations(answer, allow_rejection_reason=True, ending_check_required=ending_check_required)
             family = row["voice_family_id"]
             original = references[family]
             reference = row["preflight_reference"]
@@ -260,6 +269,10 @@ def _preflight_state(root, config, banks, prior_rounds):
             if answer["decision"] == "keep":
                 approved[family] = reference
                 pending.remove(family)
+                if ending_repairs is not None:
+                    ending_repairs.discard(family)
+            elif ending_repairs is not None and (ending_check_required or answer.get("rejection_reason") == TRUNCATED_ENDING_REASON):
+                ending_repairs.add(family)
     return approved, pending, heard_hashes, reference_hashes
 
 
@@ -344,12 +357,16 @@ def _preflight_scope_samples(project, root, config, split, scope, model, *, ceil
     return rows, passing, failures
 
 
-def _generate_preflight_banks(project, root, config, banks, pending, reviewed_hashes, round_key, model, retry_rounds):
-    from .tts import CLONE_ATTEMPTS, call_generation_location
+def _generate_preflight_banks(project, root, config, banks, pending, reviewed_hashes, round_key, model, retry_rounds, ending_repairs=()):
+    from .tts import CLONE_ATTEMPTS, REPAIR_ENDING_POLICY, call_generation_location
 
     def make_scope(references, excluded):
-        return {"kind": "preflight", "revision": round_key, "references": references,
-                "excluded_sha256": sorted(excluded)}
+        scope = {"kind": "preflight", "revision": round_key, "references": references,
+                 "excluded_sha256": sorted(excluded)}
+        targeted = sorted(row["voice_family_id"] for row in references if row["voice_family_id"] in ending_repairs)
+        if targeted:
+            scope.update(ending_repair=REPAIR_ENDING_POLICY, ending_repair_families=targeted)
+        return scope
 
     def has_scope(split, scope):
         directory, _ = call_generation_location(root, split, scope)
@@ -453,7 +470,8 @@ def prepare_prepost_pilot(project, settings, *, prior_rounds=(), quality_retry_r
     directory = root / "data/call_pronunciation"
     with writer_lock(directory):
         banks = _preflight_banks(root, settings)
-        _, pending, heard_hashes, reference_hashes = _preflight_state(root, config, banks, prior_rounds)
+        ending_repairs = set()
+        _, pending, heard_hashes, reference_hashes = _preflight_state(root, config, banks, prior_rounds, ending_repairs=ending_repairs)
         if not pending:
             raise ValueError("모든 기준 목소리의 사전 검수가 이미 완료되었습니다.")
         round_index = len(prior_rounds)
@@ -477,7 +495,7 @@ def prepare_prepost_pilot(project, settings, *, prior_rounds=(), quality_retry_r
         model = CloneRuntime(config["tts"]["clone_model"], config["tts"], root, "auto",
                              config["training"]["cpu_threads"], expected_reuses=1)
         work, attempts, exhausted = _generate_preflight_banks(
-            project, root, config, banks, pending, heard_hashes, round_key, model, quality_retry_rounds)
+            project, root, config, banks, pending, heard_hashes, round_key, model, quality_retry_rounds, ending_repairs)
         selected, split_counts = [], {}
         for split, bank in work.items():
             passing = bank["passing"]
@@ -612,6 +630,8 @@ def stage_positives_for_review(project, settings, *, prior_rounds=None):
 
 def _postgeneration_admission(root, config, generated):
     """Bind actual listened dispositions to this completed corpus."""
+    from .review import validate_review_annotations
+
     approval = read_json(root / "approval.json")
     queue = bound_file(root, generated["queue_binding"])
     queue_rows = read_rows(queue)
@@ -636,11 +656,15 @@ def _postgeneration_admission(root, config, generated):
             or any(answer.get("decision") != "keep" or answer.get("listened") is not True for answer in decisions.values())):
         raise ValueError("Saved pronunciation review does not approve this generated call corpus")
     if prepost:
+        for row in queue_rows:
+            validate_review_annotations(decisions[row["sample_id"]], allow_rejection_reason=True,
+                                        ending_check_required=row.get("ending_check_required") is True)
+        voices = {(row["split"], row["voice_family_id"]) for row in queue_rows}
         banks = _preflight_banks(root, {
-            f"{split}_references": sum(row["split"] == split for row in queue_rows) for split in REVIEW_GROUPS
+            f"{split}_references": sum(voice_split == split for voice_split, _ in voices) for split in REVIEW_GROUPS
         })
         accepted, pending, preflight_hashes, _ = _preflight_state(root, config, banks, generated["preflight_reviews"])
-        if (pending or len(accepted) != len(queue_rows)
+        if (pending or len(accepted) != len(voices)
                 or {row["voice_family_id"] for row in queue_rows} != set(accepted)
                 or preflight_hashes & set(reviewed.values())
                 or any(row.get("pronunciation_policy") != PREPOST_PILOT_POLICY
@@ -673,6 +697,8 @@ def admit_postgeneration_positives(project, generated):
             source = bound_file(root, generated["preview_sources"][split])
             for row in iter_rows(source):
                 bound_file(root, row)
+                if row.get("ending_check_required") is True and reviewed.get(row["sample_id"]) != row["sha256"]:
+                    raise ValueError("A call ending repair still needs individual listening approval")
                 if reviewed.get(row["sample_id"]) == row["sha256"]:
                     unmatched.discard(row["sample_id"])
         if unmatched:

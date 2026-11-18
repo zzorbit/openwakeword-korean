@@ -199,6 +199,21 @@ class CloneRuntime:
         wavs, rate = self.generate_voice_clone(expected_reuses=expected_reuses, **kwargs)
         return wavs, rate, limit
 
+    def generate_ending_repair_clone(self, *, attempt, **kwargs):
+        """Capture EOS for exactly the waveform returned to the repair journal."""
+        from .tts import _capture_qwen_termination, _short_clone_token_limit
+        self._load()
+        limit = _short_clone_token_limit(self.model, kwargs.get("max_new_tokens"), text=kwargs.get("text"),
+                                         ending_attempt=attempt)
+        if limit is not None:
+            kwargs["max_new_tokens"] = limit
+        emit("tts_generation", "끝 음절 재생성 중", eta_eligible=True)
+        # This small, exceptional workload skips graph replay qualification so
+        # every observed termination belongs to the returned synthesis.
+        with _capture_qwen_termination(self.model, limit) as evidence:
+            wavs, rate = self._eager(kwargs)
+        return wavs, rate, evidence
+
     def generate_voice_clone(self, *, expected_reuses=None, **kwargs):
         self._load()
         import torch

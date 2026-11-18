@@ -1031,7 +1031,7 @@ def run_stage(project, workspace, settings, stage_id, context=None, *, pause_req
                     return incomplete
             repair_review = postgeneration_repair_review(project, generated, reference_review=reference_review)
         queue = combined_review_queue(root, generated["queue_binding"],
-                                      settings["train_references"], settings["validation_references"])
+                                      settings["train_references"], settings["validation_references"], ending_repair=repair_review is not None)
         descriptor = _review_descriptor(root, queue, "positive", "positive")
         if repair_review is not None:
             descriptor["postgeneration_repair"] = generated["postgeneration_repair"]

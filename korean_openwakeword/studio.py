@@ -6,6 +6,7 @@ Human answers remain real, hash-bound review evidence, never a job status flag.
 """
 from datetime import datetime
 from array import array
+from collections import Counter
 from contextlib import contextmanager
 from copy import deepcopy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -385,6 +386,12 @@ _COMPUTE_DISPATCH_COMPATIBLE_DIGESTS = {
         "144aafb8abad5758d81db9e5f34c1f7fb0eebd2f28f85e741583b3a275832ac9":
             "4b80f8a5561ba98454b8e6fd8b0449301b6bf3852d6eb78b8f3af043b52bb488",
         "cc650deb82913457cc38924e2058171a2146578b4325e590a635bd9839c1c182":
+            "35e797140ce4bc13235a0d9e259b129d63b7bbd66aac23fe2b1f8f624d9808bf",
+        # Boundary checks are recorded on new attempts. The explicit ending
+        # repair scope has its own journal; old accepted audio keeps its binding.
+        "bbd7587a87384d38b85043e35d792712b4f428d05907aed288157608453dacb7":
+            "4b80f8a5561ba98454b8e6fd8b0449301b6bf3852d6eb78b8f3af043b52bb488",
+        "8f933c4d639c91a4035bd24fff79ff1b29a9cdc1faa2ed827e1147497e872950":
             "35e797140ce4bc13235a0d9e259b129d63b7bbd66aac23fe2b1f8f624d9808bf",
     },
     "hard_pilot.py": {
@@ -876,6 +883,25 @@ _AUDITED_DEVICE_SCORING_UPDATES = {
         "080558a7338d546ab06619e2709482a886cdf7f68be522bfbe1aab545d22569f",
     ),
 }
+_ENDING_REPAIR_UPDATE_FILES = ("pilot.py", "postgeneration_repair.py", "review.py", "studio_steps.py", "tts_runtime.py")
+_ENDING_REPAIR_UPDATE_EVIDENCE = "d8af805e43d77bebe78b5613f3b05a19668c587432d06125df0a9eb8b5080188"
+_AUDITED_ENDING_REPAIR_UPDATES = {
+    "b0f78379936e78ef37ee0423a823890a4d7920e2315adddd3fd19f608927765d": (
+        "424f2d50c7a4934f1f4ba9fa658ad3e10280c8add9d210759e39a98228e42ea8",
+        "b7a0a4edd404148982f042eb56147ed7585ddd694b5baec2d0b225422dc1f695",
+        "08218668f0934896c38a3f24c44146a294e896c4ebddbb5df19a1e963325ee19",
+    ),
+    "d0a57b31dc4f382f2311b8f7b4245254313ae78b22397fbce52507ac4e1a1996": (
+        "d33648c7a5c26cf266b45d36d21e3c32c71fdcbde204d8f53b7ec832686d2fcf",
+        "40cb1a8286cb3df6ef87cbd784ff2b8cf21b4bcd61368dca49406c11899a84cb",
+        "3967fb71da59d3790cfc920713b9f3583e3e7a2c62cae297927787d136f9159d",
+    ),
+    "d793146f66220c271b0acce7ec0f5ef90cbbc924620d81f7261b1b50b934898e": (
+        "080558a7338d546ab06619e2709482a886cdf7f68be522bfbe1aab545d22569f",
+        "b177bceeda1098bcdace0c9dcf9cab3c499c1445c0818a6cb92410dc20728d2b",
+        "634b7dbe9860a5d437df0edb3f817597e6ab4499a4e7db0b2e601c9a7dba3040",
+    ),
+}
 _ACQUISITION_UPDATE_FILES = {
     "downloads.py", "download_control.py", "material_downloads.py", "studio_data.py",
     "evaluation_materials.py", "evaluation_rir.py", "studio_evaluation_data.py", "official_music.py", "studio_steps.py",
@@ -1067,16 +1093,19 @@ def _audited_reference_update(previous, current):
 def _audited_acquisition_update(previous, current):
     """Return the audit for an exact stage update that preserves stored work."""
     source = previous.get("computation_sha256")
+    ending_repair = _AUDITED_ENDING_REPAIR_UPDATES.get(source)
     device_scoring = _AUDITED_DEVICE_SCORING_UPDATES.get(source)
-    if device_scoring:
-        old_stages, new_computation, new_stages = device_scoring
+    if ending_repair or device_scoring:
+        old_stages, new_computation, new_stages = ending_repair or device_scoring
+        allowed_files = _ENDING_REPAIR_UPDATE_FILES if ending_repair else _DEVICE_SCORING_UPDATE_FILES
+        evidence = _ENDING_REPAIR_UPDATE_EVIDENCE if ending_repair else _DEVICE_SCORING_UPDATE_EVIDENCE
         audit = dict(source_stages_sha256=old_stages, target_computation_sha256=new_computation,
-                     target_stages_sha256=new_stages, changed_files=_DEVICE_SCORING_UPDATE_FILES,
-                     evidence_sha256=_DEVICE_SCORING_UPDATE_EVIDENCE)
-        allowed_files = _DEVICE_SCORING_UPDATE_FILES
+                     target_stages_sha256=new_stages, changed_files=allowed_files, evidence_sha256=evidence)
+        kind = "audited_call_ending_repair_update" if ending_repair else "audited_device_scoring_update"
     else:
         audit = _AUDITED_ACQUISITION_UPDATES.get(source)
         allowed_files = _ACQUISITION_UPDATE_FILES
+        kind = "audited_acquisition_update"
     if not isinstance(audit, dict):
         return None
     hash_keys = ("source_stages_sha256", "target_computation_sha256", "target_stages_sha256", "evidence_sha256")
@@ -1096,7 +1125,6 @@ def _audited_acquisition_update(previous, current):
     if (not isinstance(approved, (list, tuple)) or not approved or changed != sorted(approved)
             or not set(changed).issubset(allowed_files)):
         return None  # Catalogs, pins, and every unlisted module must be intact.
-    kind = "audited_device_scoring_update" if device_scoring else "audited_acquisition_update"
     return {"kind": kind, "source_computation_sha256": previous["computation_sha256"],
             "target_computation_sha256": current["computation_sha256"], "changed_files": changed,
             "source_stages_sha256": audit["source_stages_sha256"], "target_stages_sha256": audit["target_stages_sha256"],
@@ -1128,6 +1156,7 @@ _REFACTOR_TARGET_CONTRACTS = {
         "3c3de079ba18c586073ef8d01c375632e82cfd6cb4bcff32bb12d7f2068bc19b",
     # Carry the same audited refactoring scopes to the device-specific release.
     **{target: stages for _, target, stages in _AUDITED_DEVICE_SCORING_UPDATES.values()},
+    **{target: stages for _, target, stages in _AUDITED_ENDING_REPAIR_UPDATES.values()},
 }
 
 
@@ -1758,6 +1787,8 @@ class StudioManager:
                            if audited_update and audited_update.get("changed_files") == ["gpu_runtime_install.py"] else
                            "기존 평가 결과를 보존합니다. 새 GPU 채점은 모든 음원을 GPU에서 계산하며, 이전 방식으로 중단된 GPU 채점은 새 평가로 시작합니다."
                            if audited_update and audited_update.get("kind") == "audited_device_scoring_update" else
+                           "기존 음원과 판정을 보존하면서, 새 호출어에 잘림 검사와 부적합 음원의 끝 음절 재검수를 적용합니다."
+                           if audited_update and audited_update.get("kind") == "audited_call_ending_repair_update" else
                            "GPU 평가에 실패하면 CPU로 전환하지 않고 멈춥니다. 기존 CPU 점수는 보존하고 별도의 GPU 평가로 진행합니다."
                            if audited_update and audited_update.get("changed_files") == ["evaluation_backend.py", "gpu_runtime_install.py", "studio_steps.py"] else
                            "다운로드 순서·진행 표시 변경의 자료 동일성을 확인한 업데이트입니다. 기존 설정과 완료 결과를 검증한 뒤 적용할 수 있습니다."
@@ -2955,11 +2986,19 @@ class StudioManager:
             labels.append(self._preflight_voice_label(row, metadata, number=numbers[position] if numbers is not None else None))
         return labels
 
+    @staticmethod
+    def _postgeneration_review_limit(state):
+        if not state.get("inputs", {}).get("postgeneration_repair_rounds"):
+            return 0
+        settings = state["settings"]
+        return settings["originals"] + settings["validation_originals"]
+
     def _effective_positive_generated(self, state, *, presentation=False):
         generated = self._history_result(state, "positives")
         rounds = state.get("inputs", {}).get("postgeneration_repair_rounds", [])
         if generated is not None and rounds:
             if presentation:
+                max_bytes = 2 * 1024**2 + self._postgeneration_review_limit(state) * (4096 + 100 * len(rounds))
                 # Status/history/preview only read the small already-bound
                 # completion evidence. Explicit saves and worker admission use
                 # the full resolver below, including every generation journal.
@@ -2968,7 +3007,7 @@ class StudioManager:
                 current = output.get("effective_generated")
                 if current is None:
                     plan = self._history_read(state, rounds[-1]["request"]["plan"]["path"],
-                        sha256=rounds[-1]["request"]["plan"]["sha256"])
+                        sha256=rounds[-1]["request"]["plan"]["sha256"], max_bytes=max_bytes)
                     binding = plan["parent_generated"]
                     current = self._history_read(state, binding["path"], sha256=binding["sha256"])
                 metadata = current.get("postgeneration_repair")
@@ -2976,7 +3015,7 @@ class StudioManager:
                     if metadata.get("plan") not in [entry["request"]["plan"] for entry in rounds]:
                         raise ValueError("표시할 호출어 복구 내역의 순서가 다릅니다.")
                     binding = metadata["evidence"]
-                    evidence = self._history_read(state, binding["path"], sha256=binding["sha256"])
+                    evidence = self._history_read(state, binding["path"], sha256=binding["sha256"], max_bytes=max_bytes)
                     if evidence.get("plan") != metadata["plan"] or current != {**evidence.get("generated", {}), "postgeneration_repair": metadata}:
                         raise ValueError("표시할 호출어 복구 완료 근거가 다릅니다.")
                 elif current != generated:
@@ -3007,7 +3046,7 @@ class StudioManager:
                 or generated.get("queue_binding", {}).get("sha256") != descriptor["queue_sha256"]):
             raise ValueError("다시 생성한 호출어 검수 목록의 연결이 다릅니다.")
         binding = metadata["evidence"]
-        evidence = self._history_read(state, binding["path"], sha256=binding["sha256"])
+        evidence = self._history_read(state, binding["path"], sha256=binding["sha256"], max_bytes=2 * 1024**2 + len(rows) * 512)
         carried, pending = evidence.get("carried_decisions"), evidence.get("pending_ids")
         by_id = {row["sample_id"]: row["sha256"] for row in rows}
         if (not isinstance(carried, dict) or not isinstance(pending, list) or not pending
@@ -3018,7 +3057,8 @@ class StudioManager:
                        or answer.get("listened") is not True for answer in carried.values())):
             raise ValueError("다시 생성한 호출어의 검수 판정 연결이 다릅니다.")
         return {"retained_decisions": {sample: {"decision": answer["decision"], "listened": answer["listened"],
-                "audio_sha256": by_id[sample]} for sample, answer in carried.items()}, "focus_sample_ids": pending}
+                "audio_sha256": by_id[sample], **({"ending_confirmed": True} if answer.get("ending_confirmed") is True else {})}
+                for sample, answer in carried.items()}, "focus_sample_ids": pending}
 
     def _start_postgeneration_repair(self, state, rows, report_binding):
         from .postgeneration_repair import prepare_postgeneration_repair
@@ -3029,9 +3069,10 @@ class StudioManager:
             reference_review=state.get("inputs", {}).get("reference_voice_review"))
         root = Path(state["project"]).parent
         report = read_json(bound_file(root, report_binding))
-        bad = [row for row in rows if report["decisions"][row["sample_id"]]["decision"] == "discard"]
+        bad = {(row["split"], row["voice_family_id"]): row for row in rows
+               if report["decisions"][row["sample_id"]]["decision"] == "discard"}
         record = {"request": request, "source_queue_sha256": report["queue_sha256"],
-                  "family_labels": [item["label"] for item in self._call_voice_labels(state, bad)]}
+                  "family_labels": [item["label"] for item in self._call_voice_labels(state, list(bad.values()))]}
         rounds = state["inputs"].setdefault("postgeneration_repair_rounds", [])
         if not rounds or rounds[-1]["request"]["plan"] != request["plan"]:
             rounds.append(record)
@@ -3155,7 +3196,9 @@ class StudioManager:
             if call_phase == "post":
                 carried = self._postgeneration_repair_review(state, review).get("carried_decisions", {})
                 if any(decisions.get(sample, {}).get("decision") != answer.get("decision")
-                       or decisions.get(sample, {}).get("listened") is not True for sample, answer in carried.items()):
+                       or decisions.get(sample, {}).get("listened") is not True
+                       or decisions.get(sample, {}).get("ending_confirmed") != answer.get("ending_confirmed")
+                       for sample, answer in carried.items()):
                     raise ValueError("기존 적합 판정은 보존됩니다. 새로 만든 호출어만 다시 검수하세요.")
             if review.get("pool_manifest"):
                 if payload.get("policy_approved") is not True:
@@ -4525,7 +4568,8 @@ class StudioManager:
         binding = state.get("inputs", {}).get("review_answers", {}).get(queue_id)
         if not binding:
             raise ValueError("저장된 발음 확인 기록이 없습니다.")
-        answer = self._history_read(state, binding["path"], sha256=binding["sha256"])
+        limit = self._postgeneration_review_limit(state) if queue_id == "positive" else 0
+        answer = self._history_read(state, binding["path"], sha256=binding["sha256"], max_bytes=2 * 1024**2 + limit * 512)
         if answer.get("wakeword") != state["wakeword"]:
             raise ValueError("저장된 발음 확인의 호출어가 다릅니다.")
         policy = answer.get("synthetic_review_policy")
@@ -4552,9 +4596,9 @@ class StudioManager:
                      "sha256": answer.get("queue_sha256")}
         if not queue.get("path") or queue.get("sha256") != answer.get("queue_sha256"):
             raise ValueError("저장된 발음 확인 목록이 다릅니다.")
-        rows = self._history_read(state, queue["path"], sha256=queue["sha256"], rows=True)
+        rows = self._history_read(state, queue["path"], sha256=queue["sha256"], rows=True, max_bytes=2 * 1024**2 + limit * 4096)
         decisions = answer.get("decisions", {})
-        if (not rows or len(rows) > 1000 or len({row["sample_id"] for row in rows}) != len(rows)
+        if (not rows or len(rows) > (limit or 1000) or len({row["sample_id"] for row in rows}) != len(rows)
                 or set(decisions) != {row["sample_id"] for row in rows}
                 or any(answer.get("queued_audio_sha256", {}).get(row["sample_id"]) != row.get("sha256") for row in rows)):
             raise ValueError("저장된 발음 확인과 음원 목록이 일치하지 않습니다.")
@@ -4579,8 +4623,9 @@ class StudioManager:
             if policy not in (None, PLAY_STARTED_POLICY):
                 raise ValueError("지원하지 않는 저장된 사전 검수 판정 방식입니다.")
             if policy == PLAY_STARTED_POLICY:
-                for decision in answer["decisions"].values():
-                    validate_started_decision(decision)
+                for candidate in candidates:
+                    validate_started_decision(answer["decisions"][candidate["sample_id"]],
+                                              ending_check_required=candidate.get("ending_check_required") is True)
                 if (answer.get("kind") != "pilot_listening_review"
                         or answer.get("source_scope") != "Human dispositions entered through the local review screen"
                         or answer.get("playback_started_count") != sum(decision["playback_started"] for decision in answer["decisions"].values())
@@ -5592,8 +5637,15 @@ def make_studio_server(manager, port=8793):
                                               "audio": f"/review/audio/{i}" + base} for i, r in enumerate(rows)]}
                         if call_phase:
                             payload.update(review_phase=call_phase, require_listened_discard=True)
-                            for item, label in zip(payload["items"], manager._call_voice_labels(state, rows)):
+                            ending_totals = Counter(row["voice_family_id"] for row in rows if row.get("ending_check_required") is True)
+                            ending_seen = Counter()
+                            for item, label, row in zip(payload["items"], manager._call_voice_labels(state, rows), rows):
                                 item.update(label)
+                                if row.get("ending_check_required") is True:
+                                    family = row["voice_family_id"]
+                                    ending_seen[family] += 1
+                                    item.update(ending_check_required=True, ending_check_index=ending_seen[family],
+                                                ending_check_total=ending_totals[family])
                         if call_phase == "post" and state.get("inputs", {}).get("postgeneration_repair_rounds"):
                             payload.update(manager._postgeneration_review_display(state, review, rows))
                             for item, row in zip(payload["items"], rows):
@@ -5759,6 +5811,12 @@ def make_studio_server(manager, port=8793):
                         return self.respond(service.stop(payload.get("session_id")))
                     raise ValueError("Unsupported microphone action")
                 self.guard(mutate=True)
+                if path == "/review/save":
+                    query = parse_qs(urlsplit(self.path).query)
+                    project_id, queue_id = query["project"][0], query["queue"][0]
+                    limit = manager._postgeneration_review_limit(manager._load(project_id)) if queue_id == "positive" else 0
+                    payload = self.body(max_bytes=1_000_000 + limit * 512)
+                    return self.respond(manager.save_review(project_id, queue_id, payload))
                 payload = self.body()
                 if path.startswith("/analysis/"):
                     parts = path.split("/")
@@ -5774,9 +5832,6 @@ def make_studio_server(manager, port=8793):
                     return self.respond(manager.create(payload))
                 if path == "/api/model-location":
                     return self.respond(manager.model_location(payload))
-                if path == "/review/save":
-                    query = parse_qs(urlsplit(self.path).query)
-                    return self.respond(manager.save_review(query["project"][0], query["queue"][0], payload))
                 if path == "/reference-preview/save":
                     query = parse_qs(urlsplit(self.path).query)
                     return self.respond(manager.reference_preview_queue(query["project"][0], payload,

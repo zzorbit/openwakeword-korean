@@ -12,7 +12,7 @@ from korean_openwakeword.common import bound_file, digest, read_json, read_rows,
 from test_korean_library_studio import create, manager, reference_queue  # noqa: F401
 
 
-def preflight_queue(manager, *, phase="pre"):
+def preflight_queue(manager, *, phase="pre", require_ending=False):
     project = create(manager)
     project_id = project["id"]
     audio, queue = reference_queue(manager, project_id, kind="pilot" if phase == "pre" else "positive")
@@ -28,6 +28,7 @@ def preflight_queue(manager, *, phase="pre"):
                    split="train", review_group="학습용", voice_number=1,
                    voice_reference_sha256=reference["sha256"], preflight_reference=reference)
         if phase == "pre": row["preflight_round"] = 0
+        if require_ending: row["ending_check_required"] = True
     queue.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
     descriptor = {"id": "pilot" if phase == "pre" else "positive", "kind": "pilot" if phase == "pre" else "positive",
                   "queue": str(queue), "queue_sha256": digest(queue)}
@@ -139,6 +140,56 @@ def test_post_review_and_old_api_stay_strict(manager):
     with pytest.raises(ValueError):
         manager.save_review(project_id, descriptor["id"], {"queue_sha256": descriptor["queue_sha256"],
             "decisions": {rows[0]["sample_id"]: {"decision": "keep", "listened": False}}})
+
+
+def test_truncated_reason_is_hash_bound_and_persisted_in_finalized_draft(manager, monkeypatch):
+    project_id, descriptor, rows = preflight_queue(manager)
+    row = rows[0]
+    reason = {"decision": "discard", "rejection_reason": review.TRUNCATED_ENDING_REASON}
+    with pytest.raises(ValueError, match="실제로 재생한"):
+        autosave(manager, project_id, descriptor, row, started=False, **reason)
+    autosave(manager, project_id, descriptor, row, **reason)
+    assert manager.preflight_draft(project_id, descriptor["id"])["draft_decisions"][row["sample_id"]]["rejection_reason"] == review.TRUNCATED_ENDING_REASON
+    monkeypatch.setattr(manager, "start", lambda *_args: None)
+    result = finalize(manager, project_id, descriptor, 1)
+    root = Path(manager._load(project_id)["project"]).parent
+    report = read_json(bound_file(root, result["report"]))
+    assert report["queued_audio_sha256"][row["sample_id"]] == row["sha256"]
+    assert report["decisions"][row["sample_id"]]["rejection_reason"] == review.TRUNCATED_ENDING_REASON
+
+
+def test_preflight_replacement_requires_full_listening_and_explicit_confirmation(manager):
+    project_id, descriptor, rows = preflight_queue(manager, require_ending=True)
+    row = rows[0]
+    autosave(manager, project_id, descriptor, row)
+    with pytest.raises(ValueError, match="끝 음절을 확인"):
+        autosave(manager, project_id, descriptor, row, revision=1, ending_confirmed=True)
+    result = autosave(manager, project_id, descriptor, row, revision=1, completed=True)
+    assert result["complete"] is False
+    with pytest.raises(ValueError, match="끝 음절을 확인"):
+        finalize(manager, project_id, descriptor, 2)
+    result = autosave(manager, project_id, descriptor, row, revision=2, completed=True, ending_confirmed=True)
+    assert result["complete"] is True
+    report_result = finalize(manager, project_id, descriptor, 3)
+    root = Path(manager._load(project_id)["project"]).parent
+    report = read_json(bound_file(root, report_result["report"]))
+    assert report["decisions"][row["sample_id"]]["ending_confirmed"] is True
+
+
+def test_post_replacement_validation_preserves_explicit_reason_and_confirmation(manager):
+    project_id, descriptor, rows = preflight_queue(manager, phase="post", require_ending=True)
+    project = manager._load(project_id)["project"]
+    sample = rows[0]["sample_id"]
+    for answer in ({"decision": "keep", "listened": True},
+                   {"decision": "discard", "listened": True, "ending_confirmed": True},
+                   {"decision": "keep", "listened": True, "rejection_reason": review.TRUNCATED_ENDING_REASON}):
+        with pytest.raises(ValueError, match="끝 음절"):
+            review.apply_review(project, descriptor["queue"], {sample: answer}, "positive")
+    for answer in ({"decision": "discard", "listened": True, "rejection_reason": review.TRUNCATED_ENDING_REASON},
+                   {"decision": "keep", "listened": True, "ending_confirmed": True}):
+        result = review.apply_review(project, descriptor["queue"], {sample: answer}, "positive")
+        report = read_json(bound_file(Path(project).parent, result["report"]))
+        assert report["decisions"][sample] == answer
 
 
 def test_concurrent_same_revision_has_one_writer_and_one_stale_rejection(manager):

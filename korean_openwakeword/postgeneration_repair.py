@@ -1,8 +1,7 @@
 """Selective, hash-bound repair of rejected post-generation voice families.
 
-Original corpora and human reports remain immutable inputs. A repair reuses
-the existing clone generator and retry limits, then publishes a new effective
-corpus only after every replacement passes the unchanged technical checks.
+Original corpora and human reports remain immutable inputs. Ending repairs
+screen every new waveform and queue each replacement for explicit listening.
 """
 from collections import Counter
 from copy import deepcopy
@@ -13,7 +12,9 @@ from .common import (bound_file, digest, identity, read_json, read_rows, resolve
 from .pilot import PREPOST_PILOT_POLICY, REVIEW_GROUPS, _admitted_references, _binding, _passing_slots, _preflight_state
 from .project import load_project
 from .reference_qc import _human_answers
+from .review import TRUNCATED_ENDING_REASON, validate_review_annotations
 from .storage import project_storage
+from .tts import REPAIR_ENDING_POLICY
 
 POLICY = "selective_postgeneration_repair_v1"
 
@@ -46,10 +47,12 @@ def _read_plan(root, config, request, reference_review=None):
 
 
 def _request(binding, plan):
+    removed = sum(len(item.get("rejected_ending_ids", ())) or 1 for item in plan["families"])
+    pending = sum(item["count"] if item.get("ending_repair") else 1 for item in plan["families"])
     return {"policy": POLICY, "plan": binding, "round": plan["round"],
             "target": sum(item["count"] for item in plan["families"]),
-            "pending_review_count": len(plan["families"]),
-            "carried_review_count": plan["review_count"] - len(plan["families"]),
+            "pending_review_count": pending,
+            "carried_review_count": plan["review_count"] - removed,
             "affected_families": [{key: item[key] for key in ("split", "voice_family_id", "reference_sha256", "count")}
                                   for item in plan["families"]]}
 
@@ -74,11 +77,12 @@ def _generated(root, config, generated, *, verify_audio=True, reference_review=N
     if resolved(root, generated["queue"]) != queue_path:
         raise ValueError("Generated queue path differs from its binding")
     queue = read_rows(queue_path)
-    counts = Counter(row.get("split") for row in queue)
+    reviewed_families = list(dict.fromkeys((row.get("split"), row.get("voice_family_id")) for row in queue))
+    counts = Counter(split for split, _ in reviewed_families)
     banks = _reference_banks(root, counts, reference_review)
     accepted, pending, heard, reference_hashes = _preflight_state(root, config, banks, generated["preflight_reviews"])
     ordered = [(split, reference["voice_family_id"]) for split, bank in banks.items() for reference in bank]
-    if (pending or not queue or [(row.get("split"), row.get("voice_family_id")) for row in queue] != ordered
+    if (pending or not queue or reviewed_families != ordered
             or set(accepted) != {family for _, family in ordered}):
         raise ValueError("Post-generation representatives differ from approved reference families")
     sources, ids, hashes = {}, set(), set()
@@ -105,13 +109,24 @@ def _generated(root, config, generated, *, verify_audio=True, reference_review=N
     if hashes & heard:
         raise ValueError("Preflight samples cannot be reused as production calls")
     by_id = {row["sample_id"]: row for rows in sources.values() for row in rows}
-    queue_ids = set()
+    queue_ids, review_groups = set(), {}
     for row in queue:
         source = by_id.get(row.get("sample_id"))
         if (row.get("sample_id") in queue_ids or source is None or any(row.get(key) != value for key, value in source.items())
                 or row.get("pronunciation_policy") != PREPOST_PILOT_POLICY or row.get("review_group") != REVIEW_GROUPS[row["split"]]):
             raise ValueError("A post-generation representative is not an exact member of its source corpus")
         queue_ids.add(row["sample_id"])
+        review_groups.setdefault((row["split"], row["voice_family_id"]), []).append(row)
+    source_groups = {}
+    for row in by_id.values():
+        source_groups.setdefault((row["split"], row["voice_family_id"]), []).append(row["sample_id"])
+    for family, rows in review_groups.items():
+        required = [row.get("ending_check_required") is True for row in rows]
+        if any(required):
+            if not all(required) or [row["sample_id"] for row in rows] != source_groups[family]:
+                raise ValueError("Ending verification must include every source of the affected voice")
+        elif len(rows) != 1 or any(by_id[sample].get("ending_check_required") is True for sample in source_groups[family]):
+            raise ValueError("Only ending verification can add recordings to a voice's review")
     return queue, sources, accepted, set(heard) | set(reference_hashes)
 
 
@@ -126,6 +141,9 @@ def _report(root, config, generated, queue, binding):
             or any(not isinstance(answer, dict) or answer.get("decision") not in ("keep", "discard")
                    or answer.get("listened") is not True for answer in decisions.values())):
         raise ValueError("Repair requires the actual complete, hash-bound post-generation review")
+    for row in queue:
+        validate_review_annotations(decisions[row["sample_id"]], allow_rejection_reason=True,
+                                    ending_check_required=row.get("ending_check_required") is True)
     return report
 
 
@@ -147,12 +165,20 @@ def _ancestor_hashes(root, generated):
 
 
 def _rejected_families(queue, sources, accepted, report):
-    result = []
+    rejected = {}
     for row in queue:
         if report["decisions"][row["sample_id"]]["decision"] == "discard":
-            family, split = row["voice_family_id"], row["split"]
-            result.append({"split": split, "voice_family_id": family, "reference_sha256": accepted[family]["sha256"],
-                           "reference": accepted[family], "count": sum(source["voice_family_id"] == family for source in sources[split])})
+            rejected.setdefault((row["split"], row["voice_family_id"]), []).append(row)
+    counts = Counter((split, source["voice_family_id"]) for split, rows in sources.items() for source in rows)
+    result = []
+    for (split, family), rows in rejected.items():
+        item = {"split": split, "voice_family_id": family, "reference_sha256": accepted[family]["sha256"],
+                "reference": accepted[family], "count": counts[split, family]}
+        if rows[0].get("ending_check_required") is True:
+            item.update(rejected_ending_ids=[row["sample_id"] for row in rows], count=len(rows), ending_repair=REPAIR_ENDING_POLICY)
+        elif report["decisions"][rows[0]["sample_id"]].get("rejection_reason") == TRUNCATED_ENDING_REASON:
+            item["ending_repair"] = REPAIR_ENDING_POLICY
+        result.append(item)
     return result
 
 
@@ -205,6 +231,8 @@ def _replacements(project, root, config, request, plan, *, generate=False):
         split, family, target = item["split"], item["voice_family_id"], item["count"]
         scope = {"kind": "postgeneration_repair", "revision": request["plan"]["sha256"],
                  "references": [item["reference"]], "excluded_sha256": sorted(excluded)}
+        if item.get("ending_repair"):
+            scope["ending_repair"] = item["ending_repair"]
         output, _ = call_generation_location(root, split, scope)
         rows, passing = _passing_slots(root, config, split, [item["reference"]], output, scope)
         if generate:
@@ -240,23 +268,37 @@ def _replacements(project, root, config, request, plan, *, generate=False):
     return replacements, scopes, summaries
 
 
-def _compose(parent_queue, parent_sources, replacements, report):
+def _compose(parent_queue, parent_sources, replacements, report, families):
+    plans = {(item["split"], item["voice_family_id"]): item for item in families}
+    selective = {key: set(item["rejected_ending_ids"]) for key, item in plans.items() if "rejected_ending_ids" in item}
+    replacing = {}
     sources = {}
     for split, rows in parent_sources.items():
         positions = Counter(); composed = []
         for row in rows:
             key = (split, row["voice_family_id"])
-            if key in replacements:
-                row = replacements[key][positions[key]]; positions[key] += 1
+            if key in replacements and (key not in selective or row["sample_id"] in selective[key]):
+                replacement = replacements[key][positions[key]]
+                replacing[row["sample_id"]] = replacement
+                row = replacement
+                positions[key] += 1
             composed.append(row)
         sources[split] = composed
     queue, carried, pending = [], {}, []
     for row in parent_queue:
         key = (row["split"], row["voice_family_id"])
-        if key in replacements:
-            replacement = {**replacements[key][0], "review_group": row["review_group"],
-                           "pronunciation_policy": PREPOST_PILOT_POLICY, "voice_number": row["voice_number"]}
-            queue.append(replacement); pending.append(replacement["sample_id"])
+        plan = plans.get(key)
+        if plan and (key not in selective or row["sample_id"] in replacing):
+            if key in selective:
+                candidates = [replacing[row["sample_id"]]]
+            else:
+                candidates = replacements[key] if plan.get("ending_repair") else replacements[key][:1]
+            for candidate in candidates:
+                replacement = {**candidate, "review_group": row["review_group"],
+                               "pronunciation_policy": PREPOST_PILOT_POLICY, "voice_number": row["voice_number"]}
+                if plan.get("ending_repair"):
+                    replacement["ending_check_required"] = True
+                queue.append(replacement); pending.append(replacement["sample_id"])
         else:
             queue.append(row); carried[row["sample_id"]] = deepcopy(report["decisions"][row["sample_id"]])
     all_rows = [row for rows in sources.values() for row in rows]
@@ -273,7 +315,7 @@ def _completed(root, config, request, plan):
     evidence = read_json(bound_file(root, metadata["evidence"]))
     parent, parent_queue, parent_sources, report = _plan_inputs(root, config, plan, verify_audio=False)
     replacements, scopes, _ = _replacements(root / "project.json", root, config, request, plan)
-    queue, sources, carried, pending = _compose(parent_queue, parent_sources, replacements, report)
+    queue, sources, carried, pending = _compose(parent_queue, parent_sources, replacements, report, plan["families"])
     if (evidence.get("policy") != POLICY or evidence.get("plan") != request["plan"]
             or evidence.get("parent_generated") != plan["parent_generated"] or evidence.get("parent_report") != plan["parent_report"]
             or evidence.get("scopes") != scopes or evidence.get("carried_decisions") != carried or evidence.get("pending_ids") != pending
@@ -301,7 +343,7 @@ def generate_postgeneration_repair(project, settings, request, *, reference_revi
         if replacements is None:
             return {"full_target_reached": False, "target": request["target"], "technical_pass": postgeneration_repair_progress(project, request)["done"],
                     "outputs": outputs, "repair_request": request, "exhausted_slots": [slot for output in outputs for slot in output.get("exhausted_slots", [])]}
-        new_queue, new_sources, carried, pending = _compose(queue, sources, replacements, report)
+        new_queue, new_sources, carried, pending = _compose(queue, sources, replacements, report, plan["families"])
         bindings = {}
         for split, rows in new_sources.items():
             path = directory / f"effective_{split}.jsonl"; write_immutable_rows(path, rows); bindings[split] = _binding(root, path)

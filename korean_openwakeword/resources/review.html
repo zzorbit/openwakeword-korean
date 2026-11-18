@@ -36,9 +36,10 @@ html.compact-call-review,html.compact-call-review body{height:auto;overflow:visi
 .compact-call-review .review-workspace{overflow:visible}
 html.compact-call-review.preflight-picker-open main{height:100dvh;min-height:0;justify-content:center}
 /* Match the chapter navigation buttons while keeping the saved judgment visible. */
-.compact-call-review .review-decisions #discard{border:0;background:var(--control);color:#e9edf2;box-shadow:none}
-.compact-call-review .review-decisions #discard[aria-pressed="true"]{background:#485462}
-.compact-call-review .review-decisions #discard:hover:not(:disabled){background:#363d47}
+.compact-call-review .review-decisions{flex-wrap:wrap}
+.compact-call-review .review-decisions :is(#discard,#ending-discard,#ending-confirm){border:0;background:var(--control);color:#e9edf2;box-shadow:none}
+.compact-call-review .review-decisions :is(#discard,#ending-discard,#ending-confirm)[aria-pressed="true"]{background:#485462}
+.compact-call-review .review-decisions :is(#discard,#ending-discard,#ending-confirm):hover:not(:disabled){background:#363d47}
 /* Expanding only the picker must not switch the embedded player's spacing
    at the iframe-height breakpoints and recenter its controls by a few pixels. */
 html.listening-embedded.compact-call-review main{gap:10px}
@@ -55,7 +56,7 @@ html.listening-embedded.compact-call-review :is(.review-footer,.review-save){gap
   </div>
   <h2 id="title" class="listen-position"></h2>
 </div><audio id="audio" class="listen-audio" controls preload="none"></audio><div class="buttons listen-controls" id="review-controls"><button id="prev" type="button" disabled>이전</button><button id="start" type="button" aria-pressed="false" disabled>재생</button><button id="next" type="button" disabled>다음</button><button id="pause" type="button" hidden>일시정지</button><input id="review-volume" type="range" min="0" max="100" step="1" value="100" aria-label="음량" hidden></div>
-<select id="items" class="listen-select" aria-label="확인할 음원" disabled hidden></select><p id="state" class="listen-status" role="status"></p><div class="buttons review-decisions listen-decisions" role="group" aria-label="음원 판정"><button id="keep" aria-pressed="false">정상</button><button id="discard" aria-pressed="false">제외</button><button id="review" aria-pressed="false">다시 확인</button></div>
+<select id="items" class="listen-select" aria-label="확인할 음원" disabled hidden></select><p id="state" class="listen-status" role="status"></p><div class="buttons review-decisions listen-decisions" role="group" aria-label="음원 판정"><button id="keep" aria-pressed="false">정상</button><button id="discard" aria-pressed="false">제외</button><button id="ending-discard" type="button" aria-pressed="false" hidden>끝 음절 잘림</button><button id="ending-confirm" type="button" aria-pressed="false" hidden>끝 음절 확인</button><button id="review" aria-pressed="false">다시 확인</button></div>
 </section></div></div><footer class="review-footer"><label id="policy" hidden><input id="policy-approved" type="checkbox"> <span id="policy-text"></span></label><div class="review-save"><p id="saved" role="status"></p><button id="preflight-retry" type="button" hidden>저장 상태 다시 확인</button><button id="review-pending" type="button" hidden>첫 미판정 음원으로 이동</button><button id="save">검수 결과 저장</button></div></footer></main>
 <!--KOWW_PAGE_CONFIG-->
 <script src="/listening_player.js"></script>
@@ -64,6 +65,7 @@ html.listening-embedded.compact-call-review :is(.review-footer,.review-save){gap
 let data,index=0,continuous=false,decisions={},referenceReview=false,pilotReview=false,pronunciationReview=false,callReviewPhase="",hardCompactReview=false,playbackVersion=0,playbackAllowed=true,started=false,listPage=0;const $=x=>document.getElementById(x),audio=$("audio"),pageSize=5;
 const config=JSON.parse($("koww-page-config")?.textContent||"{}");
 const labels={keep:'정상',discard:'제외',review:'다시 확인'};
+const truncatedEnding='truncated_ending';
 const queueKind=new URLSearchParams(location.search).get('queue');
 let reviewPicker,groupSummary='';
 const project=new URLSearchParams(location.search).get('project'),preflightPolicy='play_started_default_keep_v1';
@@ -75,6 +77,7 @@ let preflightBadgeCache=[];
 let preflightPlaybackError='';
 let postReviewNotice='',postReviewError=false;
 let postAllItems=null,postRetainedDecisions={},postRepairReview=false;
+let endingAutoAdvance=false;
 let preflightPickerOpen=false,preflightPickerClosing=null,preflightPickerRequest=null,preflightBaseHeight=null,preflightReportedHeight=null;
 const preflightIntents=new Map(),preflightStarted=new Set(),preflightCompleted=new Set();
 const reviewNotices=new Set();
@@ -94,6 +97,11 @@ function completedReview(){return callReviewPhase==='post'||hardCompactReview;}
 function callReviewBridge(){return preflightAutosave||postReviewBridge()||hardReviewBridge();}
 function hardBridgePhase(){return hardCompactReview?{phase:'hard'}:{};}
 function matchingBridgePhase(phase){return hardCompactReview?phase==='hard':phase!=='hard';}
+function endingCheckRequired(row){return Boolean(callReviewPhase&&row?.ending_check_required===true);}
+function reviewAnnotations(answer){
+  return {...(answer?.decision==='discard'&&answer.rejection_reason===truncatedEnding?{rejection_reason:truncatedEnding}:{}),
+    ...(answer?.decision==='keep'&&answer.ending_confirmed===true?{ending_confirmed:true}:{})};
+}
 function preparePostReview(payload){
   if(callReviewPhase!=='post')return;
   postAllItems=payload.items.slice();
@@ -108,9 +116,10 @@ function preparePostReview(payload){
   }
   const retained={};
   for(const [id,answer] of Object.entries(payload.retained_decisions)){
-    if(!rows.has(id)||!answer||typeof answer!=='object'||Array.isArray(answer)||answer.decision!=='keep'||answer.listened!==true||answer.audio_sha256!==rows.get(id).audio_sha256)
+    if(!rows.has(id)||!answer||typeof answer!=='object'||Array.isArray(answer)||answer.decision!=='keep'||answer.listened!==true||answer.audio_sha256!==rows.get(id).audio_sha256||
+      (endingCheckRequired(rows.get(id))?answer.ending_confirmed!==true:Object.hasOwn(answer,'ending_confirmed')))
       throw Error('보존할 검수 결과가 현재 음원과 일치하지 않습니다.');
-    retained[id]=Object.freeze({decision:'keep',listened:true});
+    retained[id]=Object.freeze({decision:'keep',listened:true,...reviewAnnotations(answer)});
   }
   const focus=new Set(payload.focus_sample_ids);
   if(!focus.size||focus.size!==payload.focus_sample_ids.length||[...focus].some(id=>typeof id!=='string'||!rows.has(id)||Object.hasOwn(retained,id))||
@@ -119,8 +128,13 @@ function preparePostReview(payload){
   payload.items=postAllItems.filter(row=>focus.has(row.id));
 }
 function restorePostDecisions(saved){
-  const pending=new Set(data.items.map(row=>row.id)),restored={...postRetainedDecisions};
-  for(const [id,answer] of Object.entries(saved||{}))if(pending.has(id)&&answer&&typeof answer==='object'&&!Array.isArray(answer)&&['keep','discard'].includes(answer.decision)&&typeof answer.listened==='boolean')restored[id]={decision:answer.decision,listened:answer.listened};
+  const pending=new Map(data.items.map(row=>[row.id,row])),restored={...postRetainedDecisions};
+  for(const [id,answer] of Object.entries(saved||{}))if(pending.has(id)&&answer&&typeof answer==='object'&&!Array.isArray(answer)&&['keep','discard'].includes(answer.decision)&&typeof answer.listened==='boolean'){
+    const restoredAnswer={decision:answer.decision,listened:answer.listened};
+    if(callReviewPhase==='post'&&answer.decision==='discard'&&answer.rejection_reason===truncatedEnding)restoredAnswer.rejection_reason=truncatedEnding;
+    if(endingCheckRequired(pending.get(id))&&answer.decision==='keep'&&answer.listened&&answer.ending_confirmed===true)restoredAnswer.ending_confirmed=true;
+    restored[id]=restoredAnswer;
+  }
   return restored;
 }
 function postDecisionSnapshot(){
@@ -136,7 +150,7 @@ function localUrl(value){
   return url.pathname+url.search;
 }
 function setContinuous(value){continuous=value;$("start").textContent=value?'일시정지':'재생';$("start").setAttribute('aria-pressed',String(value));}
-function stop(release=false){preflightPlayback=null;preflightPlayRequest=null;setContinuous(false);started=false;playbackVersion++;audio.pause();if(release){reviewPicker?.close();playbackAllowed=false;audio.removeAttribute('src');audio.load();}}
+function stop(release=false){preflightPlayback=null;preflightPlayRequest=null;endingAutoAdvance=false;setContinuous(false);started=false;playbackVersion++;audio.pause();if(release){reviewPicker?.close();playbackAllowed=false;audio.removeAttribute('src');audio.load();}}
 window.addEventListener('message',event=>{
   if(event.origin!==location.origin||event.source!==window.parent)return;
   if(event.data?.type==='koww:pause'){stop(true);return;}
@@ -210,10 +224,16 @@ Promise.resolve().then(()=>fetch(localUrl(config.queue_url||'/queue'))).then(asy
     if(preflightPendingRequest?.queue_sha256===d.queue_sha256&&matchingBridgePhase(preflightPendingRequest.phase))preflightParentRequest=preflightPendingRequest.request;
   }
   if(callReviewPhase||hardCompactReview)document.documentElement.classList.add('compact-call-review');
+  $("ending-discard").hidden=!callReviewPhase;
   preparePostReview(d);
   const groupCounts=new Map([['학습용',0],['공통 평가용',0]]);
   d.items.forEach((r,i)=>{
-    if(callReviewPhase&&typeof r.label==='string'&&r.label.trim())r.voice={label:r.label,fullLabel:r.label};
+    if(callReviewPhase&&typeof r.label==='string'&&r.label.trim()){
+      const take=endingCheckRequired(r)&&Number.isSafeInteger(r.ending_check_index)&&Number.isSafeInteger(r.ending_check_total)&&
+        r.ending_check_total>1&&r.ending_check_index>0&&r.ending_check_index<=r.ending_check_total;
+      const label=take?`${r.label} · 음원 ${r.ending_check_index} / ${r.ending_check_total}`:r.label;
+      r.voice={label,fullLabel:label};
+    }
     if(!r.voice&&pilotReview&&!referenceReview&&groupCounts.has(r.group)){
       const position=groupCounts.get(r.group)+1;
       const number=Number.isSafeInteger(r.voice_number)&&r.voice_number>0?r.voice_number:position;
@@ -234,19 +254,23 @@ Promise.resolve().then(()=>fetch(localUrl(config.queue_url||'/queue'))).then(asy
 function validatePreflightPayload(payload){
   if(payload.autosave_policy!==preflightPolicy||payload.queue_sha256!==data.queue_sha256||!Number.isSafeInteger(payload.draft_revision)||payload.draft_revision<0||
     !payload.draft_decisions||typeof payload.draft_decisions!=='object'||Array.isArray(payload.draft_decisions))throw Error('사전 검수 저장 정보를 확인할 수 없습니다.');
-  const ids=new Set(data.items.map(row=>row.id));
-  if(ids.size!==data.items.length||data.items.some(row=>typeof row.audio_sha256!=='string'||!row.audio_sha256))throw Error('사전 검수 음원의 연결을 확인할 수 없습니다.');
-  for(const [id,answer] of Object.entries(payload.draft_decisions))if(!ids.has(id)||!answer||!['keep','discard'].includes(answer.decision)||
+  const rows=new Map(data.items.map(row=>[row.id,row]));
+  if(rows.size!==data.items.length||data.items.some(row=>typeof row.audio_sha256!=='string'||!row.audio_sha256))throw Error('사전 검수 음원의 연결을 확인할 수 없습니다.');
+  for(const [id,answer] of Object.entries(payload.draft_decisions))if(!rows.has(id)||!answer||!['keep','discard'].includes(answer.decision)||
     typeof answer.playback_started!=='boolean'||typeof answer.playback_completed!=='boolean'||answer.playback_completed&&!answer.playback_started||
-    answer.decision==='keep'&&!answer.playback_started)throw Error('사전 검수 판정 정보가 올바르지 않습니다.');
+    answer.decision==='keep'&&!answer.playback_started||
+    Object.hasOwn(answer,'rejection_reason')&&(answer.decision!=='discard'||answer.rejection_reason!==truncatedEnding||!answer.playback_started)||
+    Object.hasOwn(answer,'ending_confirmed')&&(!endingCheckRequired(rows.get(id))||answer.decision!=='keep'||answer.ending_confirmed!==true||!answer.playback_completed||answer.listened!==true))
+    throw Error('사전 검수 판정 정보가 올바르지 않습니다.');
 }
 function preflightFact(row,name){return (name==='playback_started'?preflightStarted:preflightCompleted).has(row.id)||decisions[row.id]?.[name]===true;}
 function samePreflightAnswer(answer,intent){return intent.decision==='clear'?!answer:Boolean(answer&&answer.decision===intent.decision&&
+  answer.rejection_reason===intent.rejection_reason&&answer.ending_confirmed===intent.ending_confirmed&&
   (!intent.playback_started||answer.playback_started)&&(!intent.playback_completed||answer.playback_completed));}
-function queuePreflight(row,decision){
+function queuePreflight(row,decision,annotations={}){
   if(!preflightAutosave||preflightFinalized||preflightFinalizing)return;
   const intent={sample_id:row.id,audio_sha256:row.audio_sha256,decision,
-    playback_started:preflightFact(row,'playback_started'),playback_completed:preflightFact(row,'playback_completed')};
+    playback_started:preflightFact(row,'playback_started'),playback_completed:preflightFact(row,'playback_completed'),...annotations};
   if(decision==='keep'&&!intent.playback_started)return;
   const previous=preflightIntents.get(row.id);
   if(previous&&JSON.stringify(previous)===JSON.stringify(intent)||!previous&&samePreflightAnswer(decisions[row.id],intent))return;
@@ -435,10 +459,23 @@ async function finalizePostReview(){
 window.addEventListener('resize',reportPreflightHeight);
 if(typeof ResizeObserver==='function')new ResizeObserver(reportPreflightHeight).observe(document.querySelector('main'));
 function key(){return `koww:${callReviewPhase?callReviewPhase+':':''}${data.queue_sha256}`;}
-function remember(){if(!preflightAutosave){const saved=postRepairReview?Object.fromEntries(data.items.filter(row=>decisions[row.id]).map(row=>[row.id,decisions[row.id]])):decisions;localStorage.setItem(key(),JSON.stringify(saved));}}
+function remember(){
+  if(preflightAutosave)return;
+  const saved=postRepairReview?Object.fromEntries(data.items.filter(row=>decisions[row.id]).map(row=>[row.id,decisions[row.id]])):decisions;
+  try{localStorage.setItem(key(),JSON.stringify(saved));}
+  catch{$("saved").textContent='브라우저에 임시 저장할 수 없습니다. 검수를 마치고 저장해 주세요.';}
+}
 function decisionLabel(decision){return preflightAutosave||completedReview()?{keep:'적합',discard:'부적합'}[decision]:callReviewPhase==='pre'&&decision==='discard'?'다시 생성':labels[decision];}
+function pendingEndingCheck(row,answer){return endingCheckRequired(row)&&answer?.decision==='keep'&&answer.ending_confirmed!==true;}
+function waitForEndingCheck(){endingAutoAdvance=continuous;setContinuous(false);}
+function continueAfterEndingCheck(){
+  const advance=endingAutoAdvance;
+  endingAutoAdvance=false;
+  if(advance&&index+1<data.items.length&&!document.hidden){setContinuous(true);return moveTo(index+1);}
+}
 function judged(row){
   const answer=decisions[row.id];
+  if(pendingEndingCheck(row,answer))return false;
   if(preflightAutosave)return Boolean(answer&&(answer.decision==='discard'||answer.decision==='keep'&&answer.playback_started===true));
   return answer&&Object.hasOwn(labels,answer.decision)
     &&(!pronunciationReview||answer.decision!=='review')
@@ -448,7 +485,8 @@ function decisionBadge(row){
   const answer=decisions[row.id];
   if(preflightAutosave&&preflightIntents.has(row.id))return preflightBlocked?'저장 확인 필요':'저장 중';
   if(pronunciationReview&&answer?.decision==='review')return '판정 보류';
-  if(judged(row))return decisionLabel(answer.decision);
+  if(judged(row))return answer.rejection_reason===truncatedEnding?'끝 음절 잘림':decisionLabel(answer.decision);
+  if(pendingEndingCheck(row,answer)&&answer.listened===true)return '끝 음절 확인 대기';
   return answer?.listened===true?'청취':'미청취';
 }
 function setupListening(){
@@ -518,12 +556,16 @@ function showRemainingReview(count){
 }
 function renderDecision(){
   const row=data.items[index],decision=decisions[row.id]?.decision;
+  const answer=preflightIntents.get(row.id)||decisions[row.id];
+  const truncated=answer?.rejection_reason===truncatedEnding;
+  const checked=answer?.ending_confirmed===true;
+  const canConfirm=preflightAutosave?preflightFact(row,'playback_completed'):answer?.listened===true;
+  const guarded=preflightFinalizing||preflightFinalized||preflightBlocked;
   $("state").textContent=callReviewPhase==='pre'?preflightPlaybackError:pronunciationReview&&decision==='review'
     ?'보류된 음원입니다. 정상 또는 제외를 선택해 주세요.':decisionLabel(decision)||'아직 듣지 않음';
   for(const value of ['keep','discard','review'])$(value).setAttribute('aria-pressed',String(decision===value));
   if(preflightAutosave){
-    const pending=preflightIntents.get(row.id),guarded=preflightFinalizing||preflightFinalized||preflightBlocked;
-    for(const value of ['keep','discard'])$(value).setAttribute('aria-pressed',String((pending?.decision||decision)===value));
+    for(const value of ['keep','discard'])$(value).setAttribute('aria-pressed',String(answer?.decision===value));
     $("keep").disabled=guarded||!preflightFact(row,'playback_started');$("discard").disabled=guarded;
     $("start").disabled=guarded;
     $("preflight-retry").hidden=!preflightBlocked;$("preflight-retry").disabled=Boolean(preflightWriter)||preflightFinalizing;
@@ -533,6 +575,18 @@ function renderDecision(){
     const guarded=preflightFinalizing||preflightFinalized;
     $("discard").disabled=guarded;$("start").disabled=guarded;$("save").disabled=guarded;
     if((postReviewBridge()||hardReviewBridge())){$("preflight-retry").textContent='다시 시도';$("preflight-retry").hidden=!postReviewError;$("preflight-retry").disabled=guarded;}
+  }
+  if(callReviewPhase){
+    $("discard").setAttribute('aria-pressed',String(answer?.decision==='discard'&&!truncated));
+    $("ending-discard").setAttribute('aria-pressed',String(truncated));
+    $("ending-discard").disabled=guarded||preflightAutosave&&!preflightFact(row,'playback_started');
+    $("ending-confirm").hidden=!endingCheckRequired(row)||answer?.decision==='discard';
+    $("ending-confirm").disabled=guarded||!canConfirm;
+    $("ending-confirm").setAttribute('aria-pressed',String(checked));
+    if(endingCheckRequired(row)){
+      const ending=Array.from(row.text.trim()).at(-1);
+      $("ending-confirm").textContent=ending?`끝 음절 ‘${ending}’ 확인`:'끝 음절 확인';
+    }
   }
   if(reviewPicker){if(preflightAutosave)data.items.forEach((item,i)=>{const badge=decisionBadge(item);if(preflightBadgeCache[i]!==badge){preflightBadgeCache[i]=badge;reviewPicker.setBadge(i,badge);}});else reviewPicker.setBadge(index,decisionBadge(row));}else renderList();
   renderProgress();
@@ -546,14 +600,19 @@ function show(){
   $("instruction").textContent=r.instruction||'';audio.src=r.audio;$("items").value=index;reviewPicker?.setSelected(index);
   $("prev").disabled=index===0;$("next").disabled=index===data.items.length-1;listPage=Math.floor(index/pageSize);renderDecision();
 }
-function choose(decision,event){if(!data?.items[index]||(pronunciationReview&&decision==='review'))return;
+function choose(decision,event,rejectionReason){if(!data?.items[index]||(pronunciationReview&&decision==='review')||rejectionReason&&!callReviewPhase)return;
+  const annotations=rejectionReason?{rejection_reason:rejectionReason}:{};
   if(preflightAutosave){
     const target=preflightChoiceTarget;preflightChoiceTarget=null;
     if(preflightBlocked||preflightFinalizing||preflightFinalized||decision!=='discard'||event?.detail>1)return;
     const row=data.items[index];
     if(target&&(target.id!==row.id||target.sha256!==row.audio_sha256))return;
+    if(rejectionReason&&!preflightFact(row,'playback_started'))return;
     const answer=preflightIntents.get(row.id)||decisions[row.id];
-    queuePreflight(row,answer?.decision==='discard'?(preflightFact(row,'playback_started')?'keep':'clear'):'discard');return;
+    if(answer?.decision==='discard'&&answer.rejection_reason===rejectionReason)
+      queuePreflight(row,preflightFact(row,'playback_started')?'keep':'clear');
+    else{queuePreflight(row,'discard',annotations);return continueAfterEndingCheck();}
+    return;
   }
   if(completedReview()){
     const target=preflightChoiceTarget;preflightChoiceTarget=null;
@@ -562,13 +621,27 @@ function choose(decision,event){if(!data?.items[index]||(pronunciationReview&&de
     if(target&&(target.id!==row.id||target.audio!==row.audio||target.version!==playbackVersion))return;
     clearPostReviewError();
     const answer=decisions[row.id];
-    if(answer?.decision==='discard'){
+    if(answer?.decision==='discard'&&answer.rejection_reason===rejectionReason){
       if(answer.listened===true)decisions[row.id]={decision:'keep',listened:true};
       else delete decisions[row.id];
-    }else decisions[row.id]={decision:'discard',listened:answer?.listened===true};
-    remember();renderDecision();return;
+    }else decisions[row.id]={decision:'discard',listened:answer?.listened===true,...annotations};
+    remember();renderDecision();
+    if(decisions[row.id]?.decision==='discard')return continueAfterEndingCheck();
+    return;
   }
-  const id=data.items[index].id;decisions[id]={decision,listened:decisions[id]?.listened||false};remember();renderDecision();}
+  const id=data.items[index].id;decisions[id]={decision,listened:decisions[id]?.listened||false,...annotations};remember();renderDecision();
+  if(decision==='discard')return continueAfterEndingCheck();}
+function confirmEnding(){
+  const row=data?.items[index],answer=row&&(preflightIntents.get(row.id)||decisions[row.id]);
+  if(!endingCheckRequired(row)||answer?.decision!=='keep'||$("ending-confirm").disabled)return;
+  const annotations=answer.ending_confirmed===true?{}:{ending_confirmed:true};
+  if(preflightAutosave)queuePreflight(row,'keep',annotations);
+  else{
+    clearPostReviewError();
+    decisions[row.id]={decision:'keep',listened:true,...annotations};remember();renderDecision();
+  }
+  if(annotations.ending_confirmed)return continueAfterEndingCheck();
+}
 async function play(){
   if(!data?.items[index]||document.hidden)return;
   if(completedReview()&&(preflightFinalizing||preflightFinalized))return;
@@ -603,7 +676,8 @@ audio.onplaying=event=>{
     Number.isFinite(event?.timeStamp)&&Number.isFinite(request.startedAt)&&event.timeStamp<request.startedAt)return;
   preflightPlayback={id:row.id,sha256:row.audio_sha256,version:playbackVersion,startedAt:request.startedAt};
   preflightStarted.add(row.id);
-  queuePreflight(row,(preflightIntents.get(row.id)||decisions[row.id])?.decision==='discard'?'discard':'keep');
+  const answer=preflightIntents.get(row.id)||decisions[row.id];
+  queuePreflight(row,answer?.decision==='discard'?'discard':'keep',reviewAnnotations(answer));
   renderDecision();
 };
 audio.onpause=()=>{if(!audio.ended&&audio.paused){setContinuous(false);started=false;}};
@@ -626,8 +700,9 @@ audio.onended=event=>{
     preflightPlayback=null;
     if(preflightStarted.has(row.id)&&fullyPlayed()&&Number.isFinite(audio.currentTime)&&audio.currentTime>=audio.duration-Math.min(.02,audio.duration*.02)){
       preflightCompleted.add(row.id);
-      const answer=preflightIntents.get(row.id)||decisions[row.id];if(answer)queuePreflight(row,answer.decision);
+      const answer=preflightIntents.get(row.id)||decisions[row.id];if(answer)queuePreflight(row,answer.decision,reviewAnnotations(answer));
     }
+    if(pendingEndingCheck(row,preflightIntents.get(row.id)||decisions[row.id])){waitForEndingCheck();renderDecision();return;}
     if(continuous&&!preflightBlocked&&!preflightFinalizing&&!preflightFinalized&&index+1<data.items.length){index++;show();setContinuous(true);play();}
     else setContinuous(false);
     return;
@@ -636,8 +711,9 @@ audio.onended=event=>{
   const listened=!pronunciationReview||answer?.listened===true||fullyPlayed();
   if(listened){
     const decision=answer?.decision||'keep';
-    decisions[row.id]={decision,listened:true};
+    decisions[row.id]={decision,listened:true,...reviewAnnotations(answer)};
     remember();renderDecision();
+    if(pendingEndingCheck(row,decisions[row.id])){waitForEndingCheck();return;}
     if(callReviewPhase!=='pre'&&!completedReview()&&(!pronunciationReview||decision!=='review'))$("state").textContent='청취 완료 · '+decisionLabel(decision);
   }else if(!judged(row)){
     setContinuous(false);
@@ -657,10 +733,14 @@ audio.onended=event=>{
     :'전체 청취 완료 · 검수 결과 저장을 눌러주세요.';
 };
 $("start").onclick=()=>{if(preflightAutosave&&(preflightBlocked||preflightFinalizing||preflightFinalized||document.hidden))return;if(continuous||!audio.paused){stop();return;}setContinuous(true);return play();};$("pause").onclick=()=>stop();for(const d of ['keep','discard','review'])$(d).onclick=event=>choose(d,event);
+$("ending-discard").onclick=event=>choose('discard',event,truncatedEnding);
+$("ending-confirm").onclick=confirmEnding;
 function capturePreflightChoice(){if(!(preflightAutosave||completedReview())||!data?.items[index])return;const row=data.items[index];preflightChoiceTarget={id:row.id,sha256:row.audio_sha256,audio:row.audio,version:playbackVersion};}
-$("discard").onpointerdown=capturePreflightChoice;
-$("discard").onpointercancel=()=>{preflightChoiceTarget=null;};
-for(const d of ['keep','discard'])$(d).onkeydown=event=>{if(!(preflightAutosave||completedReview())||!['Enter',' '].includes(event.key))return;if(event.repeat){event.preventDefault();return;}if(d==='discard')capturePreflightChoice();};
+for(const id of ['discard','ending-discard']){
+  $(id).onpointerdown=capturePreflightChoice;
+  $(id).onpointercancel=()=>{preflightChoiceTarget=null;};
+}
+for(const id of ['discard','ending-discard','ending-confirm'])$(id).onkeydown=event=>{if(!['Enter',' '].includes(event.key))return;if(event.repeat){event.preventDefault();return;}if(id!=='ending-confirm')capturePreflightChoice();};
 function moveTo(value){if(!data||!Number.isInteger(value)||value<0||value>=data.items.length||completedReview()&&(preflightFinalizing||preflightFinalized))return;if(completedReview())clearPostReviewError();const resume=continuous;index=value;show();if(resume){setContinuous(true);return play();}}
 $("prev").onclick=()=>moveTo(index-1);$("next").onclick=()=>moveTo(index+1);$("items").onchange=()=>moveTo(Number($("items").value));
 $("list-prev").onclick=()=>{listPage--;renderList();};$("list-next").onclick=()=>{listPage++;renderList();};

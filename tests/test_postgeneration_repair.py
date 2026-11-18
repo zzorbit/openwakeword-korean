@@ -123,6 +123,57 @@ def test_interruption_resumes_same_scope_without_regenerating_completed_calls(tm
     assert all(digest(path) == sha for path, sha in completed.items())
 
 
+def test_ending_repair_requires_individual_confirmation_and_keeps_approved_replacements(tmp_path, monkeypatch):
+    from korean_openwakeword import pilot
+    from korean_openwakeword.review import TRUNCATED_ENDING_REASON, apply_review
+
+    project, _, banks, _, queue, original, settings, _, model, _ = fixture(tmp_path, monkeypatch)
+    root = project.parent
+    generate = model.generate_voice_clone
+
+    def released_clone(**kwargs):
+        waves, rate = generate(**kwargs)
+        waves[0][-640:] *= np.linspace(1, 0, 640)
+        waves[0] = np.pad(waves[0], (0, 320))
+        return waves, rate
+
+    monkeypatch.setattr(model, "generate_voice_clone", released_clone)
+    rejected = {row["sample_id"]: {"decision": "keep", "listened": True} for row in queue}
+    rejected[queue[0]["sample_id"]].update(decision="discard", rejection_reason=TRUNCATED_ENDING_REASON)
+    report = apply_review(project, original["queue"], rejected, "positive")["report"]
+    request = repair.prepare_postgeneration_repair(project, original, report)
+    assert request["target"] == request["pending_review_count"] == 3 and request["carried_review_count"] == 3
+    generated = repair.generate_postgeneration_repair(project, settings, request)
+    checked = read_rows(generated["queue"])
+    assert checked[3:] == queue[1:]
+    assert all(row["ending_check_required"] and row["ending_check"]["expected_last_syllable"] == "아" for row in checked[:3])
+    assert pilot.combined_review_queue(root, generated["queue_binding"], 2, 2, ending_repair=True) == Path(generated["queue"])
+    accepted = {row["sample_id"]: {"decision": "keep", "listened": True} for row in checked}
+    with pytest.raises(ValueError, match="끝 음절을 확인"):
+        apply_review(project, generated["queue"], accepted, "positive")
+    for row in checked[:3]:
+        accepted[row["sample_id"]]["ending_confirmed"] = True
+    rejected_id = checked[1]["sample_id"]
+    accepted[rejected_id] = {"decision": "discard", "listened": True, "rejection_reason": TRUNCATED_ENDING_REASON}
+    report = apply_review(project, generated["queue"], accepted, "positive")["report"]
+    retry = repair.prepare_postgeneration_repair(project, generated, report)
+    assert retry["target"] == retry["pending_review_count"] == 1 and retry["carried_review_count"] == 5
+    generated = repair.generate_postgeneration_repair(project, settings, retry)
+    final_queue = read_rows(generated["queue"])
+    assert final_queue[:1] == checked[:1] and final_queue[2:] == checked[2:]
+    assert final_queue[1]["sha256"] != checked[1]["sha256"]
+    state = repair.postgeneration_repair_review(project, generated)
+    assert state["carried_decisions"][checked[0]["sample_id"]]["ending_confirmed"] is True
+    assert state["pending_ids"] == [final_queue[1]["sample_id"]] and model.calls == 4
+    answers = {**state["carried_decisions"], final_queue[1]["sample_id"]: {"decision": "keep", "listened": True, "ending_confirmed": True}}
+    apply_review(project, generated["queue"], answers, "positive")
+    monkeypatch.setattr(pilot, "_preflight_banks", lambda *_: banks)
+    monkeypatch.setattr(pilot, "_preflight_state", repair._preflight_state)
+    admitted = pilot.admit_postgeneration_positives(project, generated)
+    assert [len(read_rows(path)) for path in admitted] == [5, 7]
+    assert sum(row["individual_human_listening"] for path in admitted for row in read_rows(path)) == 6
+
+
 def test_exhausted_qc_keeps_old_corpus_and_reuses_existing_bounded_failures(tmp_path, monkeypatch):
     project, _, _, _, _, original, settings, report, model, _ = fixture(tmp_path, monkeypatch)
     request = repair.prepare_postgeneration_repair(project, original, report); before = hashes(project.parent); model.fail = True

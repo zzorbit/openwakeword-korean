@@ -40,6 +40,9 @@ def test_short_clone_caps_overlong_attempts_without_admitting_cut_off_audio(monk
     assert tts._short_clone_token_limit(wrapper, 256, text="조금 더 긴 유사어 문구") > limit
     assert limit < tts._short_clone_token_limit(wrapper, 256, text="춘식아", retry=True) < 102
     assert tts._short_clone_token_limit(wrapper, 256, text="가" * 50, retry=True) == 102
+    wider = tts._short_clone_token_limit(wrapper, 256, text="춘식아", ending_attempt=0)
+    assert wider > tts._short_clone_token_limit(wrapper, 256, text="춘식아", retry=True)
+    assert tts._short_clone_token_limit(wrapper, 256, text="춘식아", ending_attempt=6) <= 102
     assert tts._short_clone_token_limit(wrapper, None, text="춘식아") == limit
     assert tts._short_clone_token_limit(wrapper, 30, text="춘식아") == 30
     assert tts.generate_short_clone(wrapper, text="춘식아", max_new_tokens=30)[2] == 30
@@ -48,6 +51,17 @@ def test_short_clone_caps_overlong_attempts_without_admitting_cut_off_audio(monk
     generation.forced_eos_token_id = None
     tokenizer.model = object()
     assert tts._short_clone_token_limit(wrapper, 256) is None
+
+
+@pytest.mark.parametrize("termination,tokens", [("eos", [1, 9]), ("token_limit", [1, 1, 1]), ("without_eos", [1, 1])])
+def test_qwen_ending_observes_sampled_tokens_before_the_decoder_discards_them(termination, tokens):
+    talker = SimpleNamespace(generate=lambda **_: SimpleNamespace(sequences=np.array([tokens])))
+    original = talker.generate
+    model = SimpleNamespace(model=SimpleNamespace(talker=talker))
+    with tts._capture_qwen_termination(model, 3) as observed:
+        talker.generate(max_new_tokens=3, eos_token_id=9)
+    assert talker.generate is original
+    assert observed == {"termination": termination, "generated_tokens": len(tokens), "token_limit": 3}
 
 
 def legacy_run(tmp_path, *, count=50, scoped=True, pilot=True, unknown=False,
@@ -139,6 +153,76 @@ def test_call_generation_retries_cap_hit_before_counting_technical_pass(tmp_path
     assert first["qc"]["passed"] is False
     assert first["qc"]["reasons"] == ["generation_length_limit"]
     assert second["qc"]["passed"] is True
+    assert second["ending_boundary_qc"]["policy"] == tts.CALL_BOUNDARY_POLICY
+    assert "ending_check_required" not in second
+
+
+def test_new_ordinary_qwen_call_rejects_an_abrupt_terminal_waveform(tmp_path, monkeypatch):
+    monkeypatch.setattr(tts, "_seed", cpu_seed)
+    project = approved_project(tmp_path / "word", "clone", count=1)
+
+    class Ordinary(RecoveryModel):
+        def generate_short_clone(self, *, expected_reuses, retry, **kwargs):
+            self.calls += 1
+            waveform = .13 * np.sin(np.arange(24000) / 24)
+            if retry:
+                waveform[19000:] = 0
+            return [waveform], 24000, 60 if retry else 48
+
+    model = Ordinary()
+    result = tts.generate(project, limit=1, pilot=True, model=model)
+    cut, accepted = read_rows(result["review_queue"])
+    assert model.calls == 2 and result["full_target_reached"] is True
+    assert cut["qc"]["reasons"] == ["waveform_cuts_active_ending"]
+    assert cut["ending_boundary_qc"]["stored_pcm"]["active_at_end"] is True
+    assert accepted["ending_boundary_qc"]["stored_pcm"]["active_at_end"] is False
+    assert "ending_check_required" not in accepted
+
+
+def test_registered_ending_repair_rejects_caps_and_cuts_before_requiring_listening(tmp_path, monkeypatch):
+    monkeypatch.setattr(tts, "_seed", cpu_seed)
+    project = approved_project(tmp_path / "word", "clone", count=2)
+    root = project.parent
+    references = read_rows(root / "data/references/train/references.jsonl")
+    scope = {"kind": "preflight", "revision": "ending-review", "references": references,
+             "ending_repair": tts.REPAIR_ENDING_POLICY, "ending_repair_families": [references[0]["voice_family_id"]]}
+
+    class Ending(RecoveryModel):
+        def generate_ending_repair_clone(self, *, attempt, **kwargs):
+            self.calls += 1
+            tone = .12 * np.sin(np.arange(16000) / (23 + attempt))
+            if attempt == 0:
+                tone[11000 + attempt * 300:] = 0
+            else:
+                tone[-160:] = .08 + attempt * .01
+            observed = {"termination": ("token_limit", "unobserved", "eos")[attempt],
+                        "generated_tokens": (66, None, 10)[attempt], "token_limit": 66 + attempt * 8}
+            return [tone], 16000, observed
+
+    model = Ending()
+    result = tts.generate(project, limit=2, pilot=True, model=model, staged_scope=scope)
+    assert result["full_target_reached"] and model.calls == 4
+    rows = read_rows(result["review_queue"])
+    assert [row["qc"]["reasons"] for row in rows] == [
+        ["generation_length_limit"], ["waveform_cuts_active_ending"], [], []]
+    first, cut, accepted, unchanged = rows
+    assert first["ending_check"]["termination"] == "token_limit"
+    assert cut["ending_check"]["synthesized"]["active_at_end"]
+    assert accepted["ending_check_required"] and accepted["ending_check"]["requires_listening"]
+    assert accepted["ending_check"]["stored_pcm"]["active_at_end"] is True
+    assert accepted["ending_check"]["stored_pcm"]["frames"] == 16000
+    assert accepted["ending_check"]["expected_last_syllable"] == read_json(project)["wakeword"][-1]
+    assert "ending_check" not in unchanged and "ending_check_required" not in unchanged
+
+    # A natural stop may still leave an active edge. It stays in the listening
+    # queue and its metadata must match the actual saved WAV.
+    result = tts.generate(project, limit=2, pilot=True, model=model, staged_scope=scope)
+    assert result["full_target_reached"] and model.calls == 4
+    accepted["ending_check"]["stored_pcm"]["sha256"] = "0" * 64
+    journal = Path(result["review_queue"])
+    journal.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    with pytest.raises(ValueError, match="ending evidence differs"):
+        tts.generate(project, limit=2, pilot=True, model=model, staged_scope=scope)
 
 
 def test_production_keeps_legacy_attempts_and_runs_both_banks_before_recovery(tmp_path, monkeypatch):

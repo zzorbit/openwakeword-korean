@@ -50,9 +50,10 @@ def read_preflight_draft(state, review, rows):
             row.get("pronunciation_policy") != PREPOST_PILOT_POLICY
             or "preflight_round" not in row or row.get("qc", {}).get("passed") is not True for row in rows)):
         raise ValueError("자동 저장할 호출어 사전 검수 목록이 아닙니다.")
+    by_id = {row["sample_id"]: row for row in rows}
     expected = {"policy": PLAY_STARTED_POLICY, "project_id": state["id"],
                 "queue_id": review["id"], "queue_sha256": review["queue_sha256"],
-                "queued_audio_sha256": {row["sample_id"]: row["sha256"] for row in rows}}
+                "queued_audio_sha256": {sample: row["sha256"] for sample, row in by_id.items()}}
     path = preflight_draft_path(state, review)
     if not path.exists():
         return {**expected, "revision": 0, "decisions": {}}
@@ -67,17 +68,20 @@ def read_preflight_draft(state, review, rows):
                 not isinstance(draft.get("saved_at"), str) or not draft["saved_at"]
                 or draft.get("source_scope") != "Playback events and explicit decisions entered through the local review screen")):
         raise ValueError("자동 저장한 사전 검수 초안의 입력 출처가 올바르지 않습니다.")
-    for answer in draft["decisions"].values():
-        validate_started_decision(answer)
+    for sample, answer in draft["decisions"].items():
+        validate_started_decision(answer, ending_check_required=by_id[sample].get("ending_check_required") is True,
+                                  allow_unconfirmed_keep=True)
     return draft
 
 
 def draft_response(draft, rows):
+    decisions = draft["decisions"]
+    complete = all(row["sample_id"] in decisions and (row.get("ending_check_required") is not True
+                   or decisions[row["sample_id"]]["decision"] == "discard"
+                   or decisions[row["sample_id"]].get("ending_confirmed") is True) for row in rows)
     return {"state": "draft_saved", "autosave_policy": draft["policy"],
-            "queue_sha256": draft["queue_sha256"],
-            "draft_decisions": draft["decisions"], "draft_revision": draft["revision"],
-            "complete": set(draft["decisions"]) == {row["sample_id"] for row in rows},
-            "kept": sum(answer["decision"] == "keep" for answer in draft["decisions"].values()), "total": len(rows)}
+            "queue_sha256": draft["queue_sha256"], "draft_decisions": decisions, "draft_revision": draft["revision"],
+            "complete": complete, "kept": sum(answer["decision"] == "keep" for answer in decisions.values()), "total": len(rows)}
 
 
 def save_preflight_draft(state, review, rows, payload):
@@ -94,15 +98,17 @@ def save_preflight_draft(state, review, rows, payload):
     if type(started) is not bool or type(completed) is not bool or completed and not started:
         raise ValueError("재생 시작과 재생 완료 기록을 확인하세요.")
     previous = draft["decisions"].get(sample["sample_id"], {})
+    annotations = {key: payload[key] for key in ("rejection_reason", "ending_confirmed") if key in payload}
     if decision == "clear":
-        if started or completed or previous.get("playback_started") or previous.get("playback_completed"):
+        if annotations or started or completed or previous.get("playback_started") or previous.get("playback_completed"):
             raise ValueError("실제로 재생한 기록은 지울 수 없습니다. 정상 또는 다시 생성을 선택하세요.")
         changed = draft["decisions"].pop(sample["sample_id"], None) is not None
     else:
         answer = {"decision": decision, "playback_started": started or previous.get("playback_started", False),
-                  "playback_completed": completed or previous.get("playback_completed", False)}
+                  "playback_completed": completed or previous.get("playback_completed", False), **annotations}
         answer["listened"] = answer["playback_completed"]
-        validate_started_decision(answer)
+        validate_started_decision(answer, ending_check_required=sample.get("ending_check_required") is True,
+                                  allow_unconfirmed_keep=True)
         changed = answer != previous
         draft["decisions"][sample["sample_id"]] = answer
     if changed:

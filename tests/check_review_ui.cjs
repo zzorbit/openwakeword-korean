@@ -83,6 +83,7 @@ const reviewNotices=view=>view.parentMessages.filter(row=>row.message.type==='ko
   assert.match(voices.nodes.get("expected").textContent, /^샘플 문장: 오늘은/);
   assert.match(voices.nodes.get("criteria").innerHTML, /목소리가 자연스럽/);
   assert.equal(voices.nodes.get("state").textContent, "제외");
+  assert.equal(voices.nodes.get("ending-discard").hidden, true);
   assert.match(voices.nodes.get('review-progress').textContent,/판정한 음원 1 \/ 2개 · 미판정 1개 · 다시 확인 0개/);
   assert.equal(voices.nodes.get('listening-list').children[0].children[1].textContent,'제외');
   assert.equal(voices.nodes.get('listening-list').children[0].attributes['data-number'],'1');
@@ -319,12 +320,37 @@ const reviewNotices=view=>view.parentMessages.filter(row=>row.message.type==='ko
     assert.equal(body.action,'autosave');assert.equal(body.audio_sha256,state.items.find(row=>row.id===body.sample_id).audio_sha256);
     if(body.decision==='clear')delete state.draft_decisions[body.sample_id];
     else{if(body.decision==='keep')assert.equal(body.playback_started,true);state.draft_decisions[body.sample_id]={decision:body.decision,
-      playback_started:body.playback_started,playback_completed:body.playback_completed,listened:body.playback_completed};}
+      playback_started:body.playback_started,playback_completed:body.playback_completed,listened:body.playback_completed,
+      ...(body.rejection_reason?{rejection_reason:body.rejection_reason}:{}),...(body.ending_confirmed?{ending_confirmed:true}:{})};}
     state.draft_revision++;return {payload:{...state,state:'draft_saved'}};
   };}
   const preMessage=(view,type,overrides={})=>view.listeners.message({origin:'http://127.0.0.1:8794',source:view.parent,
     data:{type,project:'bora',queue_sha256:'fixed-queue',request:7,...overrides}});
   const finishPreflight=(view,timeStamp=1200)=>{const audio=view.nodes.get('audio');audio.currentTime=1;audio.paused=true;audio.ended=true;audio.onended({timeStamp});};
+  const endingPreState=preflightQueue(),endingPreActions=[];
+  Object.assign(endingPreState.items[0],{text:'보라야',ending_check_required:true,ending_check_index:1,ending_check_total:2});
+  const endingPre=await screen(endingPreState,'?project=bora&queue=pilot',{},preConfig,{...shared,respond:draftServer(endingPreState,endingPreActions)});
+  preMessage(endingPre,'koww:preflight-status');
+  assert.equal(endingPre.nodes.get('ending-discard').hidden,false);
+  assert.equal(endingPre.nodes.get('ending-discard').disabled,true);
+  assert.equal(endingPre.nodes.get('ending-confirm').textContent,'끝 음절 ‘야’ 확인');
+  assert.equal(endingPre.nodes.get('ending-confirm').disabled,true);
+  assert.match(endingPre.pickers[0].items[0].label,/음원 1 \/ 2/);
+  await endingPre.nodes.get('start').onclick();await endingPre.flush();
+  finishPreflight(endingPre);await endingPre.flush();
+  assert.equal(endingPre.pickers[0].selected,0,'a required take remains selected at its natural end');
+  assert.equal(endingPre.nodes.get('ending-confirm').disabled,false);
+  assert.equal(endingPre.pickers[0].items[0].badge,'끝 음절 확인 대기');
+  await endingPre.nodes.get('ending-confirm').onclick();await endingPre.flush();
+  assert.equal(endingPreActions.findLast(action=>action.sample_id==='one').ending_confirmed,true);
+  assert.equal(endingPre.pickers[0].items[0].badge,'적합');
+  assert.equal(endingPre.pickers[0].selected,1,'confirming the held take resumes continuous playback');
+  await endingPre.pickers[0].options.onSelect(0);await endingPre.flush();
+  endingPre.nodes.get('ending-discard').onclick({detail:1});await endingPre.flush();
+  assert.equal(endingPreActions.at(-1).rejection_reason,'truncated_ending');
+  assert.equal(endingPre.pickers[0].items[0].badge,'끝 음절 잘림');
+  finishPreflight(endingPre,1500);await endingPre.flush();
+  assert.equal(endingPreState.draft_decisions.one.rejection_reason,'truncated_ending','replay does not erase the reason');
   const preState=preflightQueue(),preActions=[],continuousPre=await screen(preState,'?project=bora&queue=pilot',heard,preConfig,{...shared,respond:draftServer(preState,preActions)});
   preMessage(continuousPre,'koww:preflight-status');
   assert.equal(continuousPre.nodes.get('keep').hidden,true);assert.equal(continuousPre.nodes.get('discard').textContent,'부적합');assert.equal(continuousPre.nodes.get('save').hidden,true);
@@ -472,6 +498,22 @@ const reviewNotices=view=>view.parentMessages.filter(row=>row.message.type==='ko
   const postState=(view)=>view.parentMessages.filter(row=>row.message.type==='koww:preflight-state').at(-1).message;
   const postPosts=(view)=>view.calls.filter(row=>row.options?.method==='POST');
   const postResponse=(state,handler)=>async(url,options)=>options?handler(JSON.parse(options.body)):{payload:state};
+  const endingPostData=postQueue();
+  Object.assign(endingPostData.items[0],{text:'보라야',ending_check_required:true});
+  const endingPost=await screen(endingPostData,'?project=bora&queue=positive',{two:{decision:'discard',listened:true,rejection_reason:'truncated_ending'}},postConfig,
+    {...shared,respond:postResponse(endingPostData,()=>({payload:{state:'postgeneration_repair_pending',review_finalized:true,workflow_action:'repair',policy_approved:false,kept:1,total:2}}))});
+  preMessage(endingPost,'koww:preflight-status');
+  assert.equal(endingPost.nodes.get('ending-confirm').disabled,true);
+  await endingPost.nodes.get('start').onclick();finishPreflight(endingPost,1400);await endingPost.flush();
+  assert.equal(endingPost.pickers[0].selected,0);
+  assert.equal(postState(endingPost).ready,false);
+  assert.equal(endingPost.nodes.get('ending-confirm').disabled,false);
+  endingPost.nodes.get('ending-confirm').onclick();
+  assert.equal(postState(endingPost).ready,true);
+  preMessage(endingPost,'koww:preflight-finalize');await endingPost.flush();
+  assert.deepEqual(JSON.parse(postPosts(endingPost)[0].options.body).decisions,{
+    one:{decision:'keep',listened:true,ending_confirmed:true},two:{decision:'discard',listened:true,rejection_reason:'truncated_ending'},
+  });
   const completePost=async(view)=>{await view.nodes.get('start').onclick();finishPreflight(view,1400);await view.flush();finishPreflight(view,1600);await view.flush();};
   const postData=postQueue(),post=await screen(postData,'?project=bora&queue=positive',{},postConfig,{...shared,
     respond:postResponse(postData,body=>({payload:{state:'saved',policy_approved:true}}))});

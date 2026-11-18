@@ -10,9 +10,23 @@ from .web_page import render_page_config
 
 
 PLAY_STARTED_POLICY = "play_started_default_keep_v1"
+TRUNCATED_ENDING_REASON = "truncated_ending"
 
 
-def validate_started_decision(answer):
+def validate_review_annotations(answer, *, allow_rejection_reason=False, ending_check_required=False,
+                                allow_unconfirmed_keep=False):
+    if "rejection_reason" in answer and (not allow_rejection_reason or answer.get("decision") != "discard"
+            or answer["rejection_reason"] != TRUNCATED_ENDING_REASON):
+        raise ValueError("끝 음절 잘림은 호출어 검수에서 부적합 사유로만 저장할 수 있습니다.")
+    needs_confirmation = ending_check_required and answer.get("decision") == "keep"
+    if (needs_confirmation and (not allow_unconfirmed_keep or "ending_confirmed" in answer)
+            and (answer.get("ending_confirmed") is not True or answer.get("listened") is not True)):
+        raise ValueError("대체 음원을 끝까지 듣고 끝 음절을 확인해야 적합으로 저장할 수 있습니다.")
+    if not needs_confirmation and "ending_confirmed" in answer:
+        raise ValueError("끝 음절 확인은 확인 대상인 적합 음원에만 저장할 수 있습니다.")
+
+
+def validate_started_decision(answer, *, ending_check_required=False, allow_unconfirmed_keep=False):
     """Keep actual playback start separate from completed listening."""
     if (not isinstance(answer, dict) or answer.get("decision") not in ("keep", "discard")
             or type(answer.get("playback_started")) is not bool
@@ -22,6 +36,10 @@ def validate_started_decision(answer):
             or answer["listened"] != answer["playback_completed"]
             or answer["decision"] == "keep" and not answer["playback_started"]):
         raise ValueError("실제 재생한 음원만 정상으로 기록할 수 있습니다. 재생 완료 여부는 별도로 보존합니다.")
+    validate_review_annotations(answer, allow_rejection_reason=True, ending_check_required=ending_check_required,
+                                allow_unconfirmed_keep=allow_unconfirmed_keep)
+    if "rejection_reason" in answer and not answer["playback_started"]:
+        raise ValueError("실제로 재생한 음원에만 끝 음절 잘림 사유를 기록할 수 있습니다.")
 
 
 def apply_review(project, queue, decisions, kind, *, playback_policy=None):
@@ -50,12 +68,16 @@ def apply_review(project, queue, decisions, kind, *, playback_policy=None):
     if set(decisions) != set(by_id):
         raise ValueError("Every queued item must be listened to or explicitly rejected/review-held")
     for key, value in decisions.items():
-        if value.get("decision") not in ("keep", "discard", "review"):
+        if not isinstance(value, dict) or value.get("decision") not in ("keep", "discard", "review"):
             raise ValueError("Invalid disposition")
+        ending_check_required = prepost and by_id[key].get("ending_check_required") is True
         if started_policy:
-            validate_started_decision(value)
-        elif prepost and (value.get("listened") is not True or value["decision"] == "review"):
-            raise ValueError("사전·본검수 음원을 끝까지 듣고 정상 또는 제외를 선택하세요.")
+            validate_started_decision(value, ending_check_required=ending_check_required)
+        else:
+            validate_review_annotations(value, allow_rejection_reason=prepost,
+                                        ending_check_required=ending_check_required)
+            if prepost and (value.get("listened") is not True or value["decision"] == "review"):
+                raise ValueError("사전·본검수 음원을 끝까지 듣고 정상 또는 제외를 선택하세요.")
         if not started_policy and value["decision"] == "keep" and not value.get("listened"):
             raise ValueError("Unheard audio cannot be silently marked listened/kept")
         if digest(resolved(root, by_id[key]["path"])) != by_id[key]["sha256"]:
