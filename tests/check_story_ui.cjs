@@ -806,15 +806,59 @@ async function main() {
     ["features", ["features"]], ["training", ["training", "package"]],
     ["evaluation", ["development", "evaluation", "results"]],
   ];
-  const navigationProject = step => {
-    const position = navigationGroups.findIndex(([id]) => id === step);
-    const complete = navigationGroups.slice(0, position + 1).flatMap(([, stages]) => stages);
-    const stages = navigationGroups.flatMap(([, stages]) => stages).map(id => ({ id, status: complete.includes(id) ? "completed" : "pending" }));
+  const navigationProject = (step, groups = navigationGroups) => {
+    const position = groups.findIndex(([id]) => id === step);
+    const complete = groups.slice(0, position + 1).flatMap(([, stages]) => stages);
+    const stages = groups.flatMap(([, stages]) => stages).map(id => ({ id, status: complete.includes(id) ? "completed" : "pending" }));
     return { id: "navigated", wakeword: "보라야", preset: "check", status: step === "evaluation" ? "completed" : "paused",
       stage_id: stages[complete.length]?.id || "completed", ...(step === "evaluation" ? { results: { url: "/results/navigated/" } } : {}),
       navigation_checkpoint: { policy: "explicit_story_v1", state: "awaiting_next", step }, stages, progress: {},
       reference_counts: { train: 20, validation: 30 }, reference_preview: { count: 50, train: 20, validation: 30, url: "/reference-preview/" } };
   };
+  await test("entering a work chapter waits for its own Start, including after reload", async () => {
+    const actions = p => p.calls.filter(call => ["start", "resume", "pause"].includes(call));
+    const groups = [...navigationGroups.slice(0, 2), ["call-pilot-generation", ["pilot"]],
+      ["call-pilot-review", ["pilot_review"]], ["positive-generation", ["positives"]],
+      ["pronunciation", ["positive_review"]], ...navigationGroups.slice(4)];
+    for (const [source, destination, stage] of [
+      ["downloads", "voices", "references"], ["voices", "call-pilot-generation", "pilot"],
+      ["call-pilot-review", "positive-generation", "positives"], ["phrases", "hard-generation", "hard_generation"],
+      ["hard-review", "features", "features"], ["features", "training", "training"], ["training", "evaluation", "development"],
+    ]) {
+      const project = navigationProject(source, groups);
+      project.settings = { pilot_review_policy: "one_per_voice_before_and_after_generation_v4" };
+      assert.equal(project.stage_id, stage);
+      const p = page(project, { action: (action, state, payload) => {
+        assert.equal(action, "resume");
+        assert.deepEqual(payload, {});
+        Object.assign(project, { status: "ready", process_alive: false });
+        Object.assign(project.navigation_checkpoint, { step: destination, state: "awaiting_start" });
+        state.busy = false;
+        p.ui.render();
+      } });
+      if (source === "voices") await visit(p, "voice-listening");
+      await p.next.fire("click");
+      await p.settle();
+      assert.equal(p.shell.dataset.step, destination);
+      assert.equal(p.operation.textContent, "시작");
+      assert.equal(p.operation.hidden, false);
+      assert.equal(p.next.disabled, true);
+      assert.deepEqual(actions(p), ["resume"]);
+      const refreshed = page(project, { action: (action, state, payload) => {
+        assert.equal(action, "start");
+        assert.deepEqual(payload, { expected_start_step: destination });
+        Object.assign(project, { status: "running", process_alive: true });
+        project.navigation_checkpoint.state = "running";
+        state.busy = false;
+        refreshed.ui.render();
+      } });
+      assert.equal(refreshed.shell.dataset.step, destination);
+      assert.equal(actions(refreshed).length, 0);
+      await refreshed.operation.fire("click");
+      assert.deepEqual(actions(refreshed), ["start"]);
+      assert.equal(refreshed.operation.textContent, "일시정지");
+    }
+  });
   await test("automatic and explicit forward transitions keep one cover across advanced worker snapshots", async () => {
     for (const via of ["poll", "next"]) {
       const project = navigationProject("hard-review");

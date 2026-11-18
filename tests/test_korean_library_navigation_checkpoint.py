@@ -33,8 +33,23 @@ def finish_report(worker):
                   artifact_bindings=[{"path": str(provenance), "sha256": digest(provenance)}])
 
 
-def finish_group(manager, project_id, group, *, finish_last=True):
+def enter_group(manager, project_id, step):
+    calls = len(manager.workers.calls)
     view = manager.start(project_id)
+    if step in {"voices", "call-pilot-generation", "positive-generation", "hard-generation", "features", "training", "evaluation"}:
+        assert view["navigation_checkpoint"] == {"policy": "explicit_story_v1", "step": step, "state": "awaiting_start"}
+        assert view["status"] == "ready"
+        manager.tick()
+        assert manager.start(project_id)["navigation_checkpoint"]["state"] == "awaiting_start"
+        with pytest.raises(ValueError, match="작업 시작 화면"):
+            manager.start(project_id, expected_start_step="downloads")
+        assert len(manager.workers.calls) == calls
+        view = manager.start(project_id, expected_start_step=step)
+    return view
+
+
+def finish_group(manager, project_id, group, *, finish_last=True):
+    view = enter_group(manager, project_id, group[0])
     assert view["navigation_checkpoint"] == {"policy": "explicit_story_v1", "step": group[0], "state": "running"}
     for number, stage in enumerate(group[1]):
         worker = manager.workers.items[-1]
@@ -218,7 +233,7 @@ def test_a_report_display_marker_without_bound_receipts_cannot_open_the_report(m
 def test_pausing_inside_voice_preparation_resumes_same_group_then_waits_before_pilot(manager):
     project = create(manager, navigation_checkpoints=True)
     finish_group(manager, project["id"], GROUPS[0])
-    manager.start(project["id"])
+    enter_group(manager, project["id"], "voices")
     manager.pause(project["id"])
     manager.workers.items[-1].finish()
     manager.tick()
@@ -236,7 +251,7 @@ def test_pausing_inside_voice_preparation_resumes_same_group_then_waits_before_p
 def test_failed_voice_generation_retries_before_the_completed_voice_checkpoint(manager):
     project = create(manager, navigation_checkpoints=True)
     finish_group(manager, project["id"], GROUPS[0])
-    manager.start(project["id"])
+    enter_group(manager, project["id"], "voices")
     manager.workers.items[-1].finish(error={"message": "temporary TTS failure"}); manager.tick()
     state = manager._load(project["id"])
     assert state["status"] == "error" and state["index"] == 4 and state["navigation_checkpoint"]["state"] == "running"

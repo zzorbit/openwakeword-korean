@@ -13,10 +13,11 @@ from test_korean_library_studio import create, manager  # noqa: F401
 from test_postgeneration_repair import fixture as acoustic_fixture
 
 
-def waiting_post(manager, tmp_path, monkeypatch):
+def waiting_post(manager, tmp_path, monkeypatch, *, story=False):
     project, config, banks, sources, queue, generated, targets, report, model, loads = acoustic_fixture(tmp_path, monkeypatch)
-    initial = create(manager)
+    initial = create(manager, navigation_checkpoints=story)
     state = manager._load(initial["id"])
+    story_plan = state["plan"]
     manager.registry["projects"][state["id"]] = str(project)
     write_json(manager.registry_path, manager.registry)
     root = project.parent
@@ -40,6 +41,10 @@ def waiting_post(manager, tmp_path, monkeypatch):
     receipt = root / ".studio/original_generation_result.json"
     write_json(receipt, {"result": state["results"]["positives"], "artifact_bindings": artifacts})
     state["history"] = [{"stage": "positives", "result": str(receipt), "sha256": digest(receipt)}]
+    if story:
+        state["plan"] = story_plan
+        state["index"] = next(i for i, stage in enumerate(story_plan) if stage["id"] == "positive_review")
+        state["navigation_checkpoint"].update(step="pronunciation", state="running")
     manager._save(state)
     # Concurrent source editing by other implementation owners is outside this
     # worker fixture. Individual guard tests below explicitly supply failures.
@@ -58,6 +63,25 @@ def finish_repair_worker(manager, project_id):
     worker.finish(output)
     manager.tick()
     return output
+
+
+def test_story_rejection_saves_repair_until_explicit_chapter_start(manager, tmp_path, monkeypatch):
+    state, descriptor, _, _, report, model, _ = waiting_post(manager, tmp_path, monkeypatch, story=True)
+    root, project_id = Path(state["project"]).parent, state["id"]
+    result = manager.save_review(project_id, "positive", rejection_payload(root, descriptor, report))
+    assert result["state"] == "postgeneration_repair_pending"
+    pending = manager._load(project_id)
+    assert pending["status"] == "ready"
+    assert pending["navigation_checkpoint"]["state"] == "awaiting_start"
+    assert manager.describe(pending)["postgeneration_repair"]["state"] == "awaiting_start"
+    manager.tick()
+    manager.start(project_id)
+    assert manager.retry_postgeneration(project_id)["state"] == "postgeneration_repair_pending"
+    assert not manager.workers.calls
+    assert manager.start(project_id, expected_start_step="pronunciation")["status"] == "running"
+    assert read_json(manager.workers.items[-1].request_path)["stage"] == "positive_review"
+    assert finish_repair_worker(manager, project_id)["state"] == "waiting_review"
+    assert model.calls == 3
 
 
 def test_rejection_starts_same_stage_preserves_generation_and_carries_only_true_old_answers(manager, tmp_path, monkeypatch):

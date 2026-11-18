@@ -1320,6 +1320,9 @@
     }
     function startWithSelectedCompute(action, project) {
       const stage = stageId(project), payload = {};
+      const checkpoint = navigationCheckpoint(project);
+      if (action === "start" && checkpoint?.state === "awaiting_start" && checkpoint.step !== "downloads")
+        payload.expected_start_step = checkpoint.step;
       if (stage === "frontend" && Object.hasOwn(toolBackends, project.dependency_backend))
         payload.expected_dependency_backend = project.dependency_backend;
       if (stage === "evaluation" && ["cpu", "cuda"].includes(project.evaluation_backend))
@@ -1464,6 +1467,7 @@
         || ["entry", "scale", "materials", "microphone"].includes(current)
         || current === "voice-listening" && !(mergedReferenceReview(project) && ["references", "references_review"].includes(stageId(project)))) return "";
       if (running(project.status)) return "pause";
+      if (navigationCheckpoint(project)?.state === "awaiting_start" && current !== "downloads") return "start";
       if (current === "downloads" && project.dependency_install_pending === true) return "start";
       if (["paused", "failed", "error", "interrupted"].includes(project.status)) return "resume";
       if (current === "downloads") return canStartDataPreparation(project) ? "start" : "";
@@ -2633,6 +2637,9 @@
             ? `적합 판정 ${retained}개는 보존하고, 부적합한 목소리의 호출어만 다시 생성합니다.`
             : `적합 판정 ${retained}개는 보존했습니다. 다시 생성한 ${count ?? "음원"}${count === null ? "" : "개"}만 끝까지 듣고 검수하세요.`;
         }
+      }
+      if (current === "pronunciation" && repair?.state === "awaiting_start") {
+        subtitle.textContent = "시작을 누르면 부적합한 목소리의 호출어만 다시 생성합니다.";
       }
       if (preparingResults) subtitle.textContent = "채점을 마쳤습니다. 학습 결과를 정리합니다.";
       else if (current === "evaluation" && reportAwaitingNext(project)) subtitle.textContent = "다음을 눌러 학습 결과를 확인하세요.";

@@ -48,6 +48,8 @@ _NAVIGATION_END = (
     ("training", ("training", "package")),
     ("evaluation", ("development", "evaluation", "results")),
 )
+_MANUAL_CHAPTER_STARTS = {"references", "pilot", "positives", "hard_pilot", "hard_generation",
+                          "features", "training", "development"}
 _LEGACY_TRAINING_PREPARATION_PHASES = {
     "feature_validation", "device_selection", "model_initialization", "gpu_cache_loading",
 }
@@ -2219,7 +2221,10 @@ class StudioManager:
         phase, step, index = checkpoint["state"], checkpoint["step"], state["index"]
         start, end = bounds[step]
         if phase == "awaiting_start":
-            if step != "downloads" or index != 0 or state.get("history") or state.get("job"):
+            repair = step == "pronunciation" and bool(state["inputs"].get("postgeneration_repair_rounds"))
+            if index != start or state.get("job") or step == "downloads" and state.get("history"):
+                raise ValueError("작업 시작 대기 기록이 실제 진행 상태와 다릅니다.")
+            if step != "downloads" and not repair and state["plan"][index]["id"] not in _MANUAL_CHAPTER_STARTS:
                 raise ValueError("작업 시작 대기 기록이 실제 진행 상태와 다릅니다.")
             return step
         if phase == "running":
@@ -2431,7 +2436,7 @@ class StudioManager:
         return self.start(project_id, retry_failed_generation=True)
 
     def start(self, project_id, *, retry_failed_generation=False, expected_dependency_backend=None,
-              expected_evaluation_backend=None):
+              expected_evaluation_backend=None, expected_start_step=None):
         with self._lock:
             state = self._load(project_id)
             if expected_dependency_backend is not None or expected_evaluation_backend is not None:
@@ -2451,6 +2456,8 @@ class StudioManager:
             if retry_failed_generation and (not retry or self._job_alive(state.get("job") or {})):
                 raise ValueError("다시 생성할 음성이 없습니다. 현재 작업 상태를 확인하세요.")
             if state["status"] == "completed":
+                if expected_start_step is not None:
+                    return self.describe(state)
                 checkpoint = state.get("navigation_checkpoint") or {}
                 if checkpoint == {"policy": "explicit_story_v1", "step": "evaluation", "state": "awaiting_next"}:
                     self._verify_results_ready_to_open(state)
@@ -2472,6 +2479,20 @@ class StudioManager:
                 if not reference_review:
                     raise ValueError("기준 목소리의 모든 묶음을 검수한 뒤 다음 단계로 이동하세요.")
                 bound_file(Path(state["project"]).parent, reference_review)
+            navigation = state.get("navigation_checkpoint") or {}
+            if (navigation.get("state") == "awaiting_start" and navigation_step != "downloads"
+                    and expected_start_step is None):
+                return self.describe(state)  # A repeated Next request cannot start the new chapter.
+            if expected_start_step is not None and (expected_start_step != navigation_step
+                    or navigation.get("state") not in ("awaiting_start", "running")):
+                raise ValueError("작업 시작 화면이 바뀌었습니다. 현재 화면을 확인하세요.")
+            if (navigation.get("state") == "awaiting_next" and navigation_step
+                    and state["plan"][state["index"]]["id"] in _MANUAL_CHAPTER_STARTS):
+                navigation.update(step=navigation_step, state="awaiting_start")
+                state.update(status="ready", auto_continue=False, input_submitted=False,
+                             next_action="시작을 누르면 이 단계의 작업을 시작합니다.")
+                self._save(state)
+                return self.describe(state)
             if state["status"] in ("running", "pausing") and self._job_alive(state.get("job") or {}):
                 state["auto_continue"] = True
                 self._save(state)
@@ -2623,7 +2644,8 @@ class StudioManager:
     def _can_edit_hard_phrases(self, state):
         plan, index = state["plan"], state["index"]
         status = state["status"]
-        if (status not in ("paused", "waiting_input", "interrupted", "error") or state.get("hard_phrase_edit")
+        pending_start = status == "ready" and (state.get("navigation_checkpoint") or {}).get("state") == "awaiting_start"
+        if (not pending_start and status not in ("paused", "waiting_input", "interrupted", "error") or state.get("hard_phrase_edit")
                 or index >= len(plan) or not (self._history_result(state, "hard_phrases") or {}).get("phrases")):
             return False
         job = state.get("job") or {}
@@ -3016,10 +3038,12 @@ class StudioManager:
         state["results"].pop("positive_review", None)
         checkpoint = state.get("navigation_checkpoint")
         if checkpoint:
-            checkpoint.update(step="pronunciation", state="running")
-        state.update(status="paused", auto_continue=False, input_submitted=False,
-                     next_action="부적합한 목소리의 호출어만 다시 생성합니다. 기존 적합 판정은 보존합니다.")
+            checkpoint.update(step="pronunciation", state="awaiting_start")
+        state.update(status="ready" if checkpoint else "paused", auto_continue=False, input_submitted=False,
+                     next_action="시작을 누르면 부적합한 목소리의 호출어만 다시 생성합니다.")
         self._save(state)
+        if checkpoint:
+            return {"state": "postgeneration_repair_pending", "review_finalized": True, "workflow_action": "repair"}
         return self._resume_postgeneration_repair(state)
 
     def _resume_postgeneration_repair(self, state):
@@ -3039,9 +3063,11 @@ class StudioManager:
         from .postgeneration_repair import postgeneration_repair_progress
         record, stage = rounds[-1], state["plan"][state["index"]]["id"] if state["index"] < len(state["plan"]) else "completed"
         request = record["request"]
+        checkpoint = state.get("navigation_checkpoint") or {}
         view = {"state": "completed" if stage != "positive_review" else
                 "waiting_review" if state["status"] == "waiting_review" else
                 "running" if state["status"] in ("running", "pausing") else
+                "awaiting_start" if checkpoint.get("state") == "awaiting_start" else
                 "failed" if state["status"] in ("error", "waiting_input") else "paused",
                 "round": request["round"], "repair_id": request["plan"]["sha256"],
                 "source_queue_sha256": record["source_queue_sha256"],
@@ -3064,12 +3090,14 @@ class StudioManager:
                     or state["settings"].get("pilot_review_policy") != PREPOST_PILOT_POLICY):
                 raise ValueError("현재 호출어 발음 검수에서만 다시 생성할 수 있습니다.")
             rounds = state.get("inputs", {}).get("postgeneration_repair_rounds", [])
-            if rounds and state["status"] in ("running", "pausing", "paused", "interrupted", "error"):
+            if rounds and state["status"] in ("ready", "running", "pausing", "paused", "interrupted", "error"):
                 expected = (payload or {}).get("queue_sha256")
                 if expected and expected != rounds[-1].get("source_queue_sha256"):
                     raise ValueError("다시 생성할 호출어 목록이 바뀌었습니다.")
                 if self._job_alive(state.get("job") or {}):
                     return {"state": "postgeneration_repair_started", "review_finalized": True, "workflow_action": "repair"}
+                if (state.get("navigation_checkpoint") or {}).get("state") == "awaiting_start":
+                    return {"state": "postgeneration_repair_pending", "review_finalized": True, "workflow_action": "repair"}
                 return self._resume_postgeneration_repair(state)
             state, descriptor, rows = self.review_queue(project_id, "positive")
             if (payload or {}).get("queue_sha256", descriptor["queue_sha256"]) != descriptor["queue_sha256"]:
@@ -3210,10 +3238,12 @@ class StudioManager:
             state["inputs"].get(key, {}).pop("pilot", None)
         checkpoint = state.get("navigation_checkpoint")
         if checkpoint:
-            checkpoint.update(step="call-pilot-generation", state="running")
-        state.update(index=pilot_index, status="paused", auto_continue=False,
-                     next_action="다시 생성할 목소리를 저장했습니다. 이어서 진행하면 해당 목소리만 다시 생성합니다.")
+            checkpoint.update(step="call-pilot-generation", state="awaiting_start")
+        state.update(index=pilot_index, status="ready" if checkpoint else "paused", auto_continue=False,
+                     next_action="다시 생성할 목소리를 저장했습니다. 시작을 누르면 해당 목소리만 다시 생성합니다.")
         self._save(state)
+        if checkpoint:
+            return {**result, "state": "pilot_retry_pending"}
         try:
             self.start(state["id"])
         except (OSError, ValueError) as error:
@@ -5758,7 +5788,8 @@ def make_studio_server(manager, port=8793):
                     if action in ("start", "resume"):
                         return self.respond(manager.start(project_id,
                             expected_dependency_backend=payload.get("expected_dependency_backend"),
-                            expected_evaluation_backend=payload.get("expected_evaluation_backend")))
+                            expected_evaluation_backend=payload.get("expected_evaluation_backend"),
+                            expected_start_step=payload.get("expected_start_step")))
                     methods = {"pause": manager.pause,
                                "edit_hard_phrases": manager.edit_hard_phrases,
                                "retry_generation": manager.retry_generation,
