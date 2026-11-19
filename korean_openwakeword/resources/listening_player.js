@@ -337,7 +337,7 @@
 
   const reviewOrder = ["학습용", "공통 평가용", "남성", "여성", "어린이", "청소년", "청년", "중년", "노년", "성인(연령 미지정)"];
   const koreanOrder = new Intl.Collator("ko-KR", {numeric: true});
-  function buildReviewPlaylist(items, {similar = false} = {}) {
+  function buildReviewPlaylist(items, {similar = false, folderSize = 0} = {}) {
     const root = {folders: [], items: []};
     for (const item of items) {
       const split = {train: "학습용", validation: "공통 평가용"}[item.split];
@@ -363,7 +363,16 @@
         || koreanOrder.compare(left.label, right.label));
       folder.folders.forEach(visit);
       folder.items.sort((left, right) => voiceNumber(left) - voiceNumber(right));
-      ordered.push(...folder.items);
+      for (const item of folder.items) ordered.push(item);
+      if (folderSize > 0 && folder.items.length > folderSize) {
+        const clips = folder.items;
+        folder.items = [];
+        for (let offset = 0; offset < clips.length; offset += folderSize) {
+          const items = clips.slice(offset, offset + folderSize);
+          const label = `${(offset + 1).toLocaleString("ko-KR")}–${(offset + items.length).toLocaleString("ko-KR")}번째 음원`;
+          folder.folders.push({label, folders: [], items, count: items.length});
+        }
+      }
       folder.count = ordered.length - start;
     }
     visit(root);

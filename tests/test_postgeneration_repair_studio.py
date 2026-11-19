@@ -117,6 +117,11 @@ def test_rejection_starts_same_stage_preserves_generation_and_carries_only_true_
     _, page, total = manager.positive_preview_rows(state["id"], 0, 100)
     assert total == 12 and len(page) == 12
     assert page[0][2]["sample_id"] == current_rows[0]["sample_id"]
+    _, directory_rows, directory_total = manager.positive_preview_rows(state["id"], 0, None)
+    assert directory_total == total
+    assert [(index, number, row["split"]) for index, number, row in directory_rows] == [
+        (index, number, row["split"]) for index, number, row in page]
+    assert all("path" not in row and "qc" not in row for _, _, row in directory_rows)
 
 
 def test_prior_saved_negative_report_recovery_never_rewrites_human_answers(manager, tmp_path, monkeypatch):

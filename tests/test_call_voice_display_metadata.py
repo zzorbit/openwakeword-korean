@@ -210,13 +210,28 @@ def test_active_post_http_labels_and_positive_page_audio_ordinals_remain_exact(m
     # The displayed audio ordinal remains independent from its reference family.
     row = {**rows[16], "sample_id": "production-audio-801"}
     page = [(800, 801, row), (801, 802, {**row, "sample_id": "production-audio-802"})]
-    monkeypatch.setattr(manager, "positive_preview_rows", lambda project, start, limit: (state, page, 3000))
+    directory_rows = [(0, 1, rows[0]), (1, 2, rows[16]), (2, 3, rows[16]), (3, 1, rows[49])]
+
+    def preview_rows(project, start, limit):
+        if limit is None:
+            assert start == 0
+            return state, directory_rows, len(directory_rows)
+        assert (start, limit) == (800, 100)
+        return state, page, 3000
+
+    monkeypatch.setattr(manager, "positive_preview_rows", preview_rows)
     whole = get_json(display_http, f"/positive-preview/queue?project={state['id']}&start=800")
     assert [item["number"] for item in whole["items"]] == [801, 802]
     assert [item["voice_number"] for item in whole["items"]] == [17, 17]
     assert whole["items"][0]["label"] == "학습용 · 여성 · 중년 · 801번"
     assert [item["id"] for item in whole["items"]] == ["production-audio-801", "production-audio-802"]
     assert [item["audio"] for item in whole["items"]] == [f"/positive-preview/audio/{index}?project={state['id']}" for index in (800, 801)]
+    directory = get_json(display_http, f"/positive-preview/queue?project={state['id']}&view=playlist")
+    assert directory == {"kind": "positive", "count": 4, "text": state["wakeword"], "groups": [
+        {"split": "train", "gender": "남성", "age_group": "어린이", "clips": [[0, 1, 1]]},
+        {"split": "train", "gender": "여성", "age_group": "중년", "clips": [[1, 2, 17], [2, 3, 17]]},
+        {"split": "validation", "gender": "여성", "age_group": "노년", "clips": [[3, 1, 30]]},
+    ]}
     assert before == {path: digest(path) for path in before}
     assert manager.workers.calls == []
 

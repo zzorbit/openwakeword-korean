@@ -4218,7 +4218,7 @@ class StudioManager:
         return state, rows
 
     def positive_preview_rows(self, project_id, start, limit):
-        """Read a bounded slice from the original, hash-bound generation manifests."""
+        """Read an audio slice, or just display metadata for the full directory."""
         state = self._load(project_id)
         result = self._effective_positive_generated(state, presentation=True)
         completed = next((entry for entry in reversed(state.get("history", [])) if entry["stage"] == "positives"), None)
@@ -4256,12 +4256,16 @@ class StudioManager:
                     if hasher.hexdigest() != expected:
                         raise ValueError("호출어 전체 음원 목록이 변경되었습니다.")
                     self._positive_preview_indexes[path] = (stamp, offsets)
-                for index in range(max(0, start - total), min(len(offsets), start + limit - total)):
+                stop = len(offsets) if limit is None else min(len(offsets), start + limit - total)
+                for index in range(max(0, start - total), stop):
                     handle.seek(offsets[index])
                     row = json.loads(handle.readline().decode("utf-8-sig"))
                     if (row.get("split") != split or row.get("text") != state["wakeword"]
                             or row.get("provenance") != "qwen_tts" or row.get("qc", {}).get("passed") is not True):
                         raise ValueError("호출어 전체 듣기 음원의 출처가 올바르지 않습니다.")
+                    if limit is None:
+                        row = {key: row[key] for key in ("split", "voice_family_id", "voice_number", "gender", "age_group",
+                               "preflight_reference", "voice_reference_sha256", "clone_reference_preparation") if key in row}
                     rows.append((total + index, index + 1, row))
                 total += len(offsets)
         if start >= total:
@@ -5633,6 +5637,16 @@ def make_studio_server(manager, port=8793):
                     if path == "/positive-preview/":
                         return self.respond((resources / "reference_preview.html").read_bytes(), kind="text/html; charset=utf-8")
                     if path == "/positive-preview/queue":
+                        if query.get("view") == ["playlist"]:
+                            state, rows, total = manager.positive_preview_rows(project_id, 0, None)
+                            labels = manager._call_voice_labels(state, [row for _, _, row in rows])
+                            groups = {}
+                            for (index, number, row), label in zip(rows, labels):
+                                key = (row["split"], label["gender"], label["age_group"])
+                                groups.setdefault(key, []).append([index, number, label.get("voice_number")])
+                            return self.respond({"kind": "positive", "count": total, "text": state["wakeword"], "groups": [
+                                {"split": split, "gender": gender, "age_group": age, "clips": clips}
+                                for (split, gender, age), clips in groups.items()]})
                         start = int(query.get("start", ["0"])[0])
                         state, rows, total = manager.positive_preview_rows(project_id, start, 100)
                         labels = manager._call_voice_labels(state, [row for _, _, row in rows], numbers=[number for _, number, _ in rows])

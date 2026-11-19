@@ -172,4 +172,16 @@ test("folder traversal matches the stable playback order and retains original it
   assert.equal(list.children[0].getAttribute("aria-label"), "폴더 · 다른 말 · 1개");
 });
 
+test("a large folder opens in compact ranges without changing global clip order", () => {
+  const p = screen();
+  const samples = Array.from({length: 205}, (_, index) => ({split: "train", voice_number: 205 - index}));
+  const playlist = p.buildReviewPlaylist(samples, {folderSize: 100});
+  const folder = playlist.folders[0];
+  assert.equal(folder.count, 205);
+  assert.deepEqual(Array.from(folder.folders, child => child.count), [100, 100, 5]);
+  assert.equal(folder.items.length, 0);
+  assert.deepEqual(Array.from(folder.folders.flatMap(child => child.items)), samples.toReversed());
+  assert.deepEqual(Array.from(playlist.items), samples.toReversed());
+});
+
 console.log(`Listening player UI: ${passed} tests passed`);
