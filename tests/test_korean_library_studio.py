@@ -1440,6 +1440,7 @@ def test_http_mic_initialization_failure_returns_recoverable_json(manager, http_
 
 
 def test_studio_microphone_compares_original_bundle_and_preserves_old_selection(manager, monkeypatch):
+    from importlib import import_module
     from types import SimpleNamespace
     from test_korean_library_microphone import FakeDetector
     project = create(manager)
@@ -1451,6 +1452,9 @@ def test_studio_microphone_compares_original_bundle_and_preserves_old_selection(
     before = old_selection.read_bytes()
     put_state(manager, project["id"], results={"package": {"result": {"bundle": str(original)}}})
     loaded = []
+    # Evaluation binds its detector factory at import time. Initialize it
+    # before replacing the microphone detector for this test.
+    import_module("korean_openwakeword.evaluate")
     monkeypatch.setattr("korean_openwakeword.runtime.WakeWordDetector", lambda bundle: loaded.append(bundle) or FakeDetector())
     def unexpected_selection(project_id):
         raise AssertionError("The comparison microphone must ignore old per-model selection")

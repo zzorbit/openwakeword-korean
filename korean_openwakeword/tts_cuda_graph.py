@@ -1,4 +1,4 @@
-"""Batch-one CUDA graph adapter retaining official prompt/talker/codec APIs.
+"""Fixed-batch CUDA graph adapters retaining official prompt/talker/codec APIs.
 
 The predictor graph uses unchanged MIT upstream primitives, with explicit
 float32 sampling to match installed HF GenerationMixin. Deployment requires
@@ -15,7 +15,7 @@ def initialize_cache_layers(graph):
     config=inner.config
     heads=getattr(config,'num_key_value_heads',config.num_attention_heads)
     dim=getattr(config,'head_dim',config.hidden_size//config.num_attention_heads)
-    dummy=torch.zeros(1,heads,1,dim,dtype=graph.dtype,device=graph.device)
+    dummy=torch.zeros(graph.batch_size,heads,1,dim,dtype=graph.dtype,device=graph.device)
     for layer in graph.static_cache.layers:
         if not layer.is_initialized:
             if len(inspect.signature(layer.lazy_initialization).parameters)==1:
@@ -24,16 +24,16 @@ def initialize_cache_layers(graph):
                 layer.lazy_initialization(dummy,dummy)
 
 
-def validate_predictor_arguments(kwargs):
+def validate_predictor_arguments(kwargs, batch_size=1):
     expected = {'max_new_tokens':15, 'do_sample':True, 'top_k':50,
                 'top_p':1.0, 'temperature':.9}
     if any(kwargs.get(k) != v for k,v in expected.items()):
         raise ValueError('Unqualified predictor sampling controls')
-    if tuple(kwargs['inputs_embeds'].shape[:2]) != (1,2):
-        raise ValueError('The qualified graph only supports batch-one two-token predictor input')
+    if tuple(kwargs['inputs_embeds'].shape[:2]) != (batch_size, 2):
+        raise ValueError('Unexpected predictor graph batch or token shape')
 
 
-def enable_predictor_graph(model, exact_shapes=False):
+def enable_predictor_graph(model, exact_shapes=False, *, batch_size=1):
     import torch
     from . import tts_cuda_predictor as module
     from .tts_cuda_sampling import sample_logits
@@ -50,7 +50,7 @@ def enable_predictor_graph(model, exact_shapes=False):
             self.decode_attn=[{'full_attention':None} for _ in self.decode_cache_positions]
     graph = CompatiblePredictorGraph(predictor, predictor.model.config,
         model.model.config.talker_config.hidden_size, device=device,
-        dtype=torch.bfloat16, do_sample=True, top_k=50, top_p=1.0, temperature=.9)
+        dtype=torch.bfloat16, do_sample=True, top_k=50, top_p=1.0, temperature=.9, batch_size=batch_size)
     if exact_shapes:
         original_update=graph.static_cache.update
         lengths={id(graph.prefill_cache_pos):2,
@@ -64,15 +64,15 @@ def enable_predictor_graph(model, exact_shapes=False):
         graph.capture()
     original = predictor.generate
     def generate(**kwargs):
-        validate_predictor_arguments(kwargs)
-        return SimpleNamespace(sequences=graph.run(kwargs['inputs_embeds']).unsqueeze(0))
+        validate_predictor_arguments(kwargs, batch_size)
+        return SimpleNamespace(sequences=graph.run(kwargs['inputs_embeds']))
     predictor.generate = generate
     return {'graph':graph, 'original_generate':original,
             'backend':'official_HF_with_BF16_predictor_CUDA_graph_float32_sampling_v1',
             'exact_attention_shapes':exact_shapes}
 
 
-def enable_exact_talker_graph(model,max_seq_len=512):
+def enable_exact_talker_graph(model,max_seq_len=512,*,batch_size=1):
     """Lazy per-length graph buckets retain original attention tensor shapes.
 
     A shared pool is safe because buckets execute sequentially and copy their
@@ -97,11 +97,11 @@ def enable_exact_talker_graph(model,max_seq_len=512):
     cache=ExactCache(config=config,max_cache_len=max_seq_len)
     heads=getattr(config,'num_key_value_heads',config.num_attention_heads)
     dim=getattr(config,'head_dim',config.hidden_size//config.num_attention_heads)
-    dummy=torch.zeros(1,heads,1,dim,dtype=torch.bfloat16,device=device)
+    dummy=torch.zeros(batch_size,heads,1,dim,dtype=torch.bfloat16,device=device)
     for layer in cache.layers:layer.lazy_initialization(dummy)
-    inputs=torch.zeros(1,1,config.hidden_size,dtype=torch.bfloat16,device=device)
+    inputs=torch.zeros(batch_size,1,config.hidden_size,dtype=torch.bfloat16,device=device)
     outputs=torch.empty_like(inputs)
-    positions=torch.zeros(3,1,1,dtype=torch.long,device=device)
+    positions=torch.zeros(3,batch_size,1,dtype=torch.long,device=device)
     cache_pos=torch.zeros(1,dtype=torch.long,device=device)
     with torch.cuda.device(device):
         pool=torch.cuda.graph_pool_handle()
@@ -117,7 +117,7 @@ def enable_exact_talker_graph(model,max_seq_len=512):
         if embedded.shape[1]>1:
             state['prefill_pending']=True
             return original(**kwargs)
-        if embedded.shape[:2]!=(1,1):raise ValueError('Batch-one single-token required')
+        if embedded.shape[:2]!=(batch_size,1):raise ValueError('Unexpected talker graph batch or token shape')
         position=int(kwargs['cache_position'][0].item())
         if not 0<=position<max_seq_len:raise ValueError('Graph capacity exceeded')
         if state['prefill_pending']:
@@ -129,7 +129,7 @@ def enable_exact_talker_graph(model,max_seq_len=512):
                 StaticCache.update(cache,layer.keys,layer.values,i,{'cache_position':indices})
             state['prefill_pending']=False
         if kwargs.get('attention_mask') is not None and not bool(kwargs['attention_mask'].all()):
-            raise ValueError('Unpadded batch-one prompt required')
+            raise ValueError('Unpadded talker graph prompt required')
         cache.logical_length=position+1
         inputs.copy_(embedded);positions.copy_(kwargs['position_ids']);cache_pos.copy_(kwargs['cache_position'])
         if position not in graphs:

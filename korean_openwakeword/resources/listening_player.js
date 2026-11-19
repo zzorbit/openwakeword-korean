@@ -344,7 +344,7 @@
       const label = item.label || item.group || "";
       const group = split || (label.startsWith("공통 평가용") ? "공통 평가용"
         : label.startsWith("학습용") ? "학습용" : "기타 목소리");
-      const trail = similar ? [item.text || "기타 유사어"] : [group, item.gender, item.age_group].filter(Boolean);
+      const trail = similar ? [item.text || "기타 유사어"] : [group, item.gender, item.age_group, item.voice_folder].filter(Boolean);
       let folder = root;
       for (const name of trail) {
         let child = folder.folders.find(entry => entry.label === name);

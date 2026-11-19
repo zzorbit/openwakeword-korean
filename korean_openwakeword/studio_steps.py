@@ -985,9 +985,10 @@ def run_stage(project, workspace, settings, stage_id, context=None, *, pause_req
             from .pilot import stage_positives_for_review
             if policy == PREPOST_PILOT_POLICY:
                 prior_rounds = context.get("inputs", {}).get("call_pilot_reviews", [])
-                generated = stage_positives_for_review(project, settings, prior_rounds=prior_rounds)
+                generated = stage_positives_for_review(project, settings, prior_rounds=prior_rounds,
+                                                       pause_requested=pause_requested)
             else:
-                generated = stage_positives_for_review(project, settings)
+                generated = stage_positives_for_review(project, settings, pause_requested=pause_requested)
             incomplete = _generation_complete(generated)
             if incomplete:
                 return incomplete
@@ -1002,7 +1003,7 @@ def run_stage(project, workspace, settings, stage_id, context=None, *, pause_req
                              "auto", config["training"]["cpu_threads"])
         outputs = []
         for split, target in (("train", settings["originals"]), ("validation", settings["validation_originals"])):
-            summary = generate(project, split, target, False, "clone", model=model)
+            summary = generate(project, split, target, False, "clone", model=model, pause_requested=pause_requested)
             incomplete = _generation_complete(summary)
             if incomplete:
                 return incomplete
@@ -1205,23 +1206,41 @@ def run_stage(project, workspace, settings, stage_id, context=None, *, pause_req
         return _completed({"originals": len(rows), "admission": admission}, [destination])
 
     if stage_id == "features":
+        from contextlib import nullcontext
         from .features import build_features, verify_cache
+        from .gpu_features import cuda_feature_frontend, feature_backend
+
+        directories = {role: resolved(root, config["pool_features"][role]) for role in BATCH}
+        backend = feature_backend(directories.values(), context.get("inputs", {}).get("dependency_backend"))
+        device_id = int(config["training"]["device"].partition(":")[2] or 0)
+        resource = nullcontext()
+        if backend == "cuda":
+            from .gpu_runtime_install import _managed_reason, gpu_runtime_environment
+
+            if (not os.environ.get("KOWW_GPU_RUNTIME_PATH") and _managed_reason() is None
+                    and not gpu_runtime_environment(root)):
+                report_task_progress("feature_frontend", "CUDA 특징 추출 도구 설치·확인", eta_eligible=False)
+                _prepare_evaluation_runtime(root)
+            resource = cuda_feature_frontend(root, resolved(root, config["frontend_dir"]), device_id)
         outputs = {}
-        for role in BATCH:
-            directory = resolved(root, config["pool_features"][role])
-            role_label = {"generic_negative": "일반 비호출", "korean_negative": "한국어 비호출",
-                          "positive": "호출어", "hard_negative": "유사어"}[role]
-            report_task_progress("feature_preparation", role_label + " 특징 자료·원본 확인", eta_eligible=False)
-            if role == "generic_negative" and (directory / "metadata.json").is_file():
-                outputs[role] = verify_cache(directory)
-            else:
-                outputs[role] = build_features(project, role, resume=(directory / "contract.json").exists())
+        with resource as frontend:
+            for role, directory in directories.items():
+                role_label = {"generic_negative": "일반 비호출", "korean_negative": "한국어 비호출",
+                              "positive": "호출어", "hard_negative": "유사어"}[role]
+                report_task_progress("feature_preparation", role_label + " 특징 자료·원본 확인", eta_eligible=False)
+                if role == "generic_negative" and (directory / "metadata.json").is_file():
+                    outputs[role] = verify_cache(directory)
+                else:
+                    outputs[role] = build_features(project, role, resume=(directory / "contract.json").exists(),
+                                                   frontend=frontend)
+            qualification = frontend.qualification if frontend else None
         positive = outputs["positive"]
         expected = settings["originals"] * settings["rounds"]
         if positive.get("feature_rows") != expected:
             raise ValueError("N × rounds does not match actual Positive feature rows")
         return _completed({"pools": outputs, "positive_expected_rows": expected,
-                           "positive_actual_rows": positive["feature_rows"]},
+                           "positive_actual_rows": positive["feature_rows"],
+                           **({"cuda_feature_qualification": qualification} if qualification else {})},
                           [resolved(root, config["pool_features"][role]) / "metadata.json" for role in BATCH])
 
     if stage_id == "training":

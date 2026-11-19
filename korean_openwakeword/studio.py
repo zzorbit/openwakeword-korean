@@ -266,8 +266,8 @@ def _execution_contract(*, legacy_reference_review=False):
         bindings["reference_voice_review.py"] = _REFERENCE_REVIEW_COMPATIBLE_FILES[1]
     gpu_loader = bindings.get("gpu_evaluation.py")
     if gpu_loader in _GPU_LOADER_COMPATIBLE_DIGESTS:
-        # This audited change only corrects runtime selection. It preserves
-        # the qualified CUDA and CPU scoring algorithms and checkpoint identity.
+        # These audited versions preserve the qualified CUDA and CPU scores
+        # and their checkpoint identity.
         bindings["gpu_evaluation.py"] = _GPU_LOADER_COMPATIBLE_DIGESTS[gpu_loader]
     for name in _COMPUTE_DISPATCH_COMPATIBLE_DIGESTS:
         bindings[name] = _compute_dispatch_compatible_digest(name, bindings[name])
@@ -299,7 +299,7 @@ def _execution_contract(*, legacy_reference_review=False):
                 "tts_cuda_predictor.py", "tts_cuda_sampling.py"},
         "hard_pilot": {"hard_pilot.py"},
         "postgeneration_repair": {"postgeneration_repair.py"},
-        "features": {"features.py", "paired.py", "preparation.py"},
+        "features": {"features.py", "gpu_features.py", "paired.py", "preparation.py"},
         "training": {"train.py"},
         "models": {"bundle.py", "final_integrity.py", "runtime.py", "events.py"},
         "results": {"selection.py", "cache_analysis.py", "calibration.py"},
@@ -365,6 +365,12 @@ _GPU_LOADER_COMPATIBLE_DIGESTS = {
         "6b54b650912ec310c30389ca484f368812e44b4c51980aa1802b3bf8ec738aca",
     "ba8541e8af58375029aebe41912c5ca74eb490f5a82840babbdd2fbe8cd1f05c":
         "8a827b57411055f16d17f6ff9dc08d004e8039c55cb9f53e7bb50a0f9c945009",
+    # Retaining only the frames fed to the models leaves CUDA scores and
+    # existing evaluation checkpoints bitwise compatible.
+    "fd58a37e82dbde87c74b1b5c66def41775d84cf7996170673e169bb2eb25b40b":
+        "531e5458bf1736325ad756081e6088daaffcd07710a374e472cde50b5f80085b",
+    "afae63f974d2f974988bf35f8ced3c13746ce681d4c70c6d040a388cdabf3038":
+        "cfee79b5fca89add1b2e843f56ce867f796c89bbf1679b811499539edd943375",
 }
 
 # Exact device-dispatch updates keep synthesis QC, model math and the
@@ -399,6 +405,12 @@ _COMPUTE_DISPATCH_COMPATIBLE_DIGESTS = {
             "35e797140ce4bc13235a0d9e259b129d63b7bbd66aac23fe2b1f8f624d9808bf",
         "cc2afcf3e99ec921a69a0d24479bf6ee3aba6c4b94913ae364dcb744fa846e9e":
             "4b80f8a5561ba98454b8e6fd8b0449301b6bf3852d6eb78b8f3af043b52bb488",
+        # The CUDA batch journal binds its own dispatch policy; the existing
+        # waveform QC and evidence identities also cover legacy serial runs.
+        "b4a7b0e4a6bf2654fa9beccfc551efc7e5537a4398f44a83a5c0328ce3e036cf":
+            "4b80f8a5561ba98454b8e6fd8b0449301b6bf3852d6eb78b8f3af043b52bb488",
+        "7129dcad56dbbea4222c74e9b82e42c11d74863aea670a21b2c2b020e2d3d983":
+            "35e797140ce4bc13235a0d9e259b129d63b7bbd66aac23fe2b1f8f624d9808bf",
     },
     "hard_pilot.py": {
         "4ffa5d27c2ce746846c15e6eeb96767d786b3d533ba892a458c1269b45f25d77":
@@ -944,6 +956,34 @@ _AUDITED_SYNTHESIS_QUALITY_UPDATES = {
         "cafe0373b50ec788c143ddfe2835334a08a63aa32b07324356c2847c2294f961",
     ),
 }
+_CUDA_WORKFLOW_UPDATE_FILES = ("gpu_features.py", "pilot.py", "postgeneration_repair.py", "studio_steps.py",
+                               "tts_cuda_graph.py", "tts_cuda_predictor.py", "tts_runtime.py")
+_CUDA_WORKFLOW_UPDATE_EVIDENCE = "a8bd1acfabc17c150333a8f42ef14376a7dcc3427dc1add5d9379758eddc799a"
+# Verify both installed packages and the Unix/Windows checkout forms. New
+# call scopes bind the GPU batch policy; started scopes keep their original
+# journal, and feature caches retain their bound frontend.
+_AUDITED_CUDA_WORKFLOW_UPDATES = {
+    "2a6e60e76bef456ee7a8710d0cec2f47b519b801ea5f72719a1c1ce7ab83d854": (
+        "8b8bfdf7c11186114d06414f929d3f3795a0f013adcc9c4cae6195fd2be171cb",
+        "fc8f6535b70620c9e30ab69d6f151aed8dc4b430382fbf49bffc1a6fbe8ef54e",
+        "f3c26d66ed2cc86289042f4e9db409201252a75e1f7c00faf59f67ce30a322f0",
+    ),
+    "16bd6ff1b84fdb0090de4c43d7bb6ca3fd39d23ff2aeaab199c24b1f9532d0dd": (
+        "4d0865d6a9314eff1a8e55a1c91e1a3a3be4034a04ed674abcb62ffc568e3f71",
+        "67fed88c37d16b596c136f4146c9fc9f2cc5c57c28308eacfa28f4e4bdc86b2e",
+        "c184388ec90a3a74c02761855d0fda62c440ca059bcd4bc3e0eb8c4421d0edc9",
+    ),
+    "7a04d315b8e71f55a4b406640c8e0a8d3ccada6c98e2d80ec1d78a5fd462f532": (
+        "0c56641815115d80d05318831d29163d3abee9d8b479d690868e9173354995d2",
+        "59d22e4b989411e1475ab437d3122c4578be28c780b1fb82d42fa1720302b53a",
+        "7281936d3b90aaec6f6215cbd008648c5e20da56e958fe77760808f3221c0088",
+    ),
+    "6566f2fb916b3804f85eabc070959f078b8f89ec29a859a05246f067090e30fb": (
+        "34a56629ffc9e4848828a006973e4728590c94751b5928f22138708b2b0d9567",
+        "5e45e23221acaaeb22e5922918b621adcc0861d8d7aeada4234c05e1d0e65317",
+        "d08a6bfc67a9d1ee11d5254d6891430c871aa709ef769c13b51f4a8c4b9147a9",
+    ),
+}
 _ACQUISITION_UPDATE_FILES = {
     "downloads.py", "download_control.py", "material_downloads.py", "studio_data.py",
     "evaluation_materials.py", "evaluation_rir.py", "studio_evaluation_data.py", "official_music.py", "studio_steps.py",
@@ -1135,10 +1175,18 @@ def _audited_reference_update(previous, current):
 def _audited_acquisition_update(previous, current):
     """Return the audit for an exact stage update that preserves stored work."""
     source = previous.get("computation_sha256")
+    cuda_workflow = _AUDITED_CUDA_WORKFLOW_UPDATES.get(source)
     synthesis_quality = _AUDITED_SYNTHESIS_QUALITY_UPDATES.get(source)
     ending_repair = _AUDITED_ENDING_REPAIR_UPDATES.get(source)
     device_scoring = _AUDITED_DEVICE_SCORING_UPDATES.get(source)
-    if synthesis_quality:
+    if cuda_workflow:
+        old_stages, new_computation, new_stages = cuda_workflow
+        allowed_files = _CUDA_WORKFLOW_UPDATE_FILES
+        audit = dict(source_stages_sha256=old_stages, target_computation_sha256=new_computation,
+                     target_stages_sha256=new_stages, changed_files=allowed_files,
+                     evidence_sha256=_CUDA_WORKFLOW_UPDATE_EVIDENCE)
+        kind = "audited_cuda_workflow_update"
+    elif synthesis_quality:
         old_stages, new_computation, new_stages = synthesis_quality
         allowed_files = _SYNTHESIS_QUALITY_UPDATE_FILES
         audit = dict(source_stages_sha256=old_stages, target_computation_sha256=new_computation,
@@ -1841,6 +1889,8 @@ class StudioManager:
                            if audited_update and audited_update.get("kind") == "audited_call_ending_repair_update" else
                            "기존 음원과 검수 기록을 보존하고 새 합성부터 품질 확인과 재시도 규칙을 적용할 수 있습니다."
                            if audited_update and audited_update.get("kind") == "audited_synthesis_quality_update" else
+                           "저장한 음원과 특징을 확인하고 새 합성 작업과 특징 추출에 CUDA 가속을 적용할 수 있습니다."
+                           if audited_update and audited_update.get("kind") == "audited_cuda_workflow_update" else
                            "GPU 평가에 실패하면 CPU로 전환하지 않고 멈춥니다. 기존 CPU 점수는 보존하고 별도의 GPU 평가로 진행합니다."
                            if audited_update and audited_update.get("changed_files") == ["evaluation_backend.py", "gpu_runtime_install.py", "studio_steps.py"] else
                            "다운로드 순서·진행 표시 변경의 자료 동일성을 확인한 업데이트입니다. 기존 설정과 완료 결과를 검증한 뒤 적용할 수 있습니다."
@@ -2434,7 +2484,7 @@ class StudioManager:
             elif phase == "paused" and stage == "references" and self._reference_preparation_required(state):
                 state.update(status="paused", auto_continue=False,
                              next_action="현재 후보 묶음을 저장했습니다. 재개하면 남은 분류를 준비합니다.")
-            elif phase == "paused" and stage in ("hard_pilot", "hard_generation"):
+            elif phase == "paused" and stage in ("positives", "hard_pilot", "hard_generation"):
                 state.update(status="paused", auto_continue=False,
                              next_action="완료한 음성을 저장했습니다. 재개하면 남은 음성을 생성합니다.")
             else:
@@ -2631,7 +2681,7 @@ class StudioManager:
                 candidate_preparation = job["stage"] == "references" and self._reference_preparation_required(state)
                 next_action = request_stage_pause(state, job, candidate_preparation=candidate_preparation)
                 state.update(status="pausing", next_action=next_action)
-            elif job.get("stage") in ("hard_pilot", "hard_generation") and self._finish_job(state):
+            elif job.get("stage") in ("positives", "hard_pilot", "hard_generation") and self._finish_job(state):
                 if state["status"] == "ready":
                     state.update(status="paused", next_action="이어서 진행을 누르면 재개합니다.")
             elif state["status"] not in ("completed", "waiting_review", "waiting_input"):
@@ -5640,13 +5690,17 @@ def make_studio_server(manager, port=8793):
                         if query.get("view") == ["playlist"]:
                             state, rows, total = manager.positive_preview_rows(project_id, 0, None)
                             labels = manager._call_voice_labels(state, [row for _, _, row in rows])
-                            groups = {}
+                            groups, voice_groups = {}, {}
                             for (index, number, row), label in zip(rows, labels):
-                                key = (row["split"], label["gender"], label["age_group"])
-                                groups.setdefault(key, []).append([index, number, label.get("voice_number")])
+                                category = (row["split"], label["gender"], label["age_group"])
+                                family_id = row.get("voice_family_id")
+                                family = family_id if isinstance(family_id, str) and family_id else label.get("voice_number")
+                                voices = voice_groups.setdefault(category, {})
+                                voice_group = voices.setdefault(family, len(voices) + 1) if family is not None else None
+                                groups.setdefault((*category, voice_group), []).append([index, number, label.get("voice_number")])
                             return self.respond({"kind": "positive", "count": total, "text": state["wakeword"], "groups": [
-                                {"split": split, "gender": gender, "age_group": age, "clips": clips}
-                                for (split, gender, age), clips in groups.items()]})
+                                {"split": split, "gender": gender, "age_group": age, "voice_group": voice_group, "clips": clips}
+                                for (split, gender, age, voice_group), clips in groups.items()]})
                         start = int(query.get("start", ["0"])[0])
                         state, rows, total = manager.positive_preview_rows(project_id, start, 100)
                         labels = manager._call_voice_labels(state, [row for _, _, row in rows], numbers=[number for _, number, _ in rows])

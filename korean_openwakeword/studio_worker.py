@@ -83,8 +83,9 @@ def _training_torch_backend(root, config, backend):
     return backend
 
 
-def _hard_stage(request, request_path, run_stage):
+def _speech_generation_stage(request, request_path, run_stage):
     from .hard_tts import HardGenerationPaused
+    from .tts import CallGenerationPaused
 
     pause_path = request_path.parent / "pause.json"
 
@@ -98,7 +99,7 @@ def _hard_stage(request, request_path, run_stage):
         if not pause_requested():
             return run_stage(request["project"], request["workspace"], request["settings"], request["stage"],
                              request.get("context", {}), pause_requested=pause_requested)
-    except HardGenerationPaused:
+    except (CallGenerationPaused, HardGenerationPaused):
         pass
     return {"state": "paused"}
 
@@ -352,8 +353,8 @@ def _execute(request_path):
                 if stage == "training":
                     backend = _training_torch_backend(Path(request["project"]).parent, before, backend)
                 _prepare_selected_torch(Path(request["project"]).parent, backend)
-            if stage in ("hard_pilot", "hard_generation"):
-                result["result"] = _hard_stage(request, request_path, run_stage)
+            if stage in ("positives", "hard_pilot", "hard_generation"):
+                result["result"] = _speech_generation_stage(request, request_path, run_stage)
             else:
                 context = request.get("context", {})
                 settings = request["settings"]

@@ -229,7 +229,7 @@ def _runtime(config, root):
 
 
 def _replacements(project, root, config, request, plan, *, generate=False):
-    from .tts import call_generation_location, generate as synthesize
+    from .tts import VOICE_FILL_SCHEDULE, call_generation_location, generate as synthesize
     excluded, replacements, scopes, summaries = set(plan["excluded_sha256"]), {}, [], []
     model, completed = None, 0
     directory = _directory(root, request)
@@ -240,7 +240,13 @@ def _replacements(project, root, config, request, plan, *, generate=False):
         if item.get("ending_repair"):
             scope["ending_repair"] = item["ending_repair"]
         output, _ = call_generation_location(root, split, scope)
-        rows, passing = _passing_slots(root, config, split, [item["reference"]], output, scope)
+        if not (output / "contract.json").is_file() and "ending_repair" not in scope:
+            scope["schedule"] = VOICE_FILL_SCHEDULE
+            output, _ = call_generation_location(root, split, scope)
+        if generate and (output / "pending_cuda_batch.json").is_file():
+            rows, passing = [], {}  # The generation writer repairs the pending journal suffix.
+        else:
+            rows, passing = _passing_slots(root, config, split, [item["reference"]], output, scope)
         if generate:
             scope_binding = snapshot_json(root, scope, "postgeneration_repair_scope")
             progress = {"plan": request["plan"], "done": completed, "total": request["target"], "phase": "generating",

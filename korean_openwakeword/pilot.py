@@ -522,8 +522,8 @@ def prepare_prepost_pilot(project, settings, *, prior_rounds=(), quality_retry_r
         return result
 
 
-def _generate_production_banks(project, root, banks, targets, revision, heard_hashes, model):
-    from .tts import call_generation_location, generate
+def _generate_production_banks(project, root, banks, targets, revision, heard_hashes, model, *, pause_requested=None):
+    from .tts import VOICE_FILL_SCHEDULE, call_generation_location, generate
 
     scopes = {split: {"kind": "production", "revision": revision, "references": bank,
                       "excluded_sha256": sorted(heard_hashes)} for split, bank in banks.items()}
@@ -536,6 +536,18 @@ def _generate_production_banks(project, root, banks, targets, revision, heard_ha
 
     # An older validation bank could only start after the train bank finished.
     # Reconstruct its exact scope so its existing IDs and receipts stay usable.
+    if not any((directory / "contract.json").is_file() for directory in directories.values()):
+        scopes = {split: {**scope, "schedule": VOICE_FILL_SCHEDULE} for split, scope in scopes.items()}
+        directories = {split: call_generation_location(root, split, scope)[0] for split, scope in scopes.items()}
+        train = generate(project, "train", targets["train"], True, "clone", model=model,
+                         staged_scope=scopes["train"], pause_requested=pause_requested)
+        validation = {"full_target_reached": False, "technical_pass": 0, "attempts": 0}
+        if train["full_target_reached"]:
+            validation = generate(project, "validation", targets["validation"], True, "clone", model=model,
+                                  staged_scope=scopes["validation"], excluded_sha256=saved_hashes("train"),
+                                  pause_requested=pause_requested)
+        return scopes, directories, {"train": train, "validation": validation}
+
     hashes = {split: saved_hashes(split) for split in scopes}
     if len(hashes["train"]) == targets["train"] and not (directories["validation"] / "contract.json").exists():
         legacy_scope = {"kind": "production", "revision": revision, "references": banks["validation"],
@@ -553,12 +565,13 @@ def _generate_production_banks(project, root, banks, targets, revision, heard_ha
                 continue
             other = "validation" if split == "train" else "train"
             summaries[split] = generate(project, split, targets[split], True, "clone", model=model,
-                staged_scope=scopes[split], attempt_ceiling=ceiling, excluded_sha256=hashes[other])
+                staged_scope=scopes[split], attempt_ceiling=ceiling, excluded_sha256=hashes[other],
+                pause_requested=pause_requested)
             hashes[split] = saved_hashes(split)
     return scopes, directories, summaries
 
 
-def stage_positives_for_review(project, settings, *, prior_rounds=None):
+def stage_positives_for_review(project, settings, *, prior_rounds=None, pause_requested=None):
     """Freeze the full technical-pass corpus and select one call per voice."""
     from .tts import call_generation_location, generate
     from .tts_runtime import CloneRuntime
@@ -581,7 +594,7 @@ def stage_positives_for_review(project, settings, *, prior_rounds=None):
     model = CloneRuntime(config["tts"]["clone_model"], config["tts"], root, "auto", config["training"]["cpu_threads"])
     if preflight:
         scopes, directories, summaries = _generate_production_banks(
-            project, root, banks, targets, revision, heard_hashes, model)
+            project, root, banks, targets, revision, heard_hashes, model, pause_requested=pause_requested)
         if any(not value["full_target_reached"] for value in summaries.values()):
             return {"full_target_reached": False, "target": sum(targets.values()),
                     "technical_pass": sum(value["technical_pass"] for value in summaries.values()),
@@ -600,7 +613,7 @@ def stage_positives_for_review(project, settings, *, prior_rounds=None):
         if preflight:
             scope, directory, summary = scopes[split], directories[split], summaries[split]
         else:
-            summary = generate(project, split, target, True, "clone", model=model)
+            summary = generate(project, split, target, True, "clone", model=model, pause_requested=pause_requested)
             if summary.get("full_target_reached") is not True:
                 return summary
         _, passing = _passing_slots(root, config, split, banks[split], directory, scope)

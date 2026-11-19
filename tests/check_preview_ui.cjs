@@ -278,9 +278,10 @@ const choice=(view,label)=>{
   assert.equal(volumeAudio.muted,false);assert.equal(volumeAudio.volume,0.25,'raising volume unmutes the inline player');
   assert.deepEqual(volumeScreen.parentMessages,[],'inline volume and mute never request iframe expansion');
   assert.equal(volumeScreen.calls.length,1,'volume controls do not autoplay, reload the queue, or save listening decisions');
-  const positivePlaylist={kind:'positive',count:103,text:'가영아',groups:[
-    {split:'validation',gender:'여성',age_group:'청년',clips:[[102,1,1]]},
-    {split:'train',gender:'남성',age_group:'어린이',clips:Array.from({length:102},(_,i)=>[101-i,102-i,102-i])},
+  const positivePlaylist={kind:'positive',count:105,text:'가영아',groups:[
+    {split:'validation',gender:'여성',age_group:'청년',voice_group:1,clips:[[104,1,1]]},
+    {split:'train',gender:'남성',age_group:'어린이',voice_group:2,clips:[[1,2,19],[103,104,19]]},
+    {split:'train',gender:'남성',age_group:'어린이',voice_group:1,clips:Array.from({length:102},(_,i)=>[i?i+1:0,i?i+2:1,9])},
   ]};
   const positiveLabels=await screen('positive-preview',[],{respond:async(url,options)=>{
     assert.equal(options,undefined,'entire-list listening remains read only');
@@ -289,24 +290,28 @@ const choice=(view,label)=>{
   }});
   const positiveButton=positiveLabels.nodes.get('voice-picker-button'),positiveList=positiveLabels.nodes.get('voice-picker-list');
   const positiveAudio=positiveLabels.nodes.get('audio');
-  assert.equal(positiveLabels.nodes.get('voice-picker-label').textContent,'학습용 · 남성 · 어린이 · 1번');
+  assert.equal(positiveLabels.nodes.get('voice-picker-label').textContent,'학습용 · 남성 · 어린이 · 목소리 1 · 1번');
   assert.equal(positiveLabels.nodes.get('voice').children.length,0,'folders do not build a hidden full-corpus select');
   positiveButton.handlers.click();
-  for(const name of ['학습용','남성','어린이'])choice(positiveLabels,`폴더 · ${name}`).handlers.click();
+  for(const name of ['학습용','남성','어린이','목소리 1'])choice(positiveLabels,`폴더 · ${name}`).handlers.click();
   const rangeFolders=positiveList.children.filter(option=>option.attributes['data-entry-kind']==='folder');
   assert.equal(rangeFolders.length,2,'large folders use bounded child folders rather than a bottom pager');
   rangeFolders[0].handlers.click();
   assert.equal(positiveList.children.filter(option=>option.attributes['data-entry-kind']==='clip').length,100);
-  choice(positiveLabels,'학습용 · 남성 · 어린이 · 100번').handlers.click();
-  assert.equal(positiveAudio.src,'/positive-preview/audio/99?project=bora');
-  assert.equal(positiveLabels.nodes.get('position').textContent,'100 / 103');
+  choice(positiveLabels,'학습용 · 남성 · 어린이 · 목소리 1 · 100번').handlers.click();
+  assert.equal(positiveAudio.src,'/positive-preview/audio/100?project=bora');
+  assert.equal(positiveLabels.nodes.get('position').textContent,'100 / 105');
   assert.equal(positiveAudio.played,0,'navigating folders and selecting a paused clip does not start playback');
   positiveLabels.nodes.get('continuous').handlers.click();
-  positiveAudio.finish();assert.equal(positiveAudio.src,'/positive-preview/audio/100?project=bora');
-  positiveLabels.nodes.get('preview-next').handlers.click();assert.equal(positiveAudio.src,'/positive-preview/audio/101?project=bora');
-  positiveAudio.finish();assert.equal(positiveAudio.src,'/positive-preview/audio/102?project=bora');
-  assert.equal(positiveLabels.nodes.get('voice-picker-label').textContent,'공통 평가용 · 여성 · 청년 · 1번');
-  assert.equal(positiveLabels.nodes.get('position').textContent,'103 / 103');
+  positiveAudio.finish();assert.equal(positiveAudio.src,'/positive-preview/audio/101?project=bora');
+  positiveLabels.nodes.get('preview-next').handlers.click();assert.equal(positiveAudio.src,'/positive-preview/audio/102?project=bora');
+  positiveAudio.finish();assert.equal(positiveAudio.src,'/positive-preview/audio/1?project=bora');
+  assert.equal(positiveLabels.nodes.get('voice-picker-label').textContent,'학습용 · 남성 · 어린이 · 목소리 2 · 1번');
+  positiveAudio.finish();assert.equal(positiveAudio.src,'/positive-preview/audio/103?project=bora');
+  assert.equal(positiveLabels.nodes.get('voice-picker-label').textContent,'학습용 · 남성 · 어린이 · 목소리 2 · 2번');
+  positiveAudio.finish();assert.equal(positiveAudio.src,'/positive-preview/audio/104?project=bora');
+  assert.equal(positiveLabels.nodes.get('voice-picker-label').textContent,'공통 평가용 · 여성 · 청년 · 목소리 1 · 1번');
+  assert.equal(positiveLabels.nodes.get('position').textContent,'105 / 105');
   assert.equal(positiveLabels.nodes.get('preview-next').disabled,true);
   assert.equal(positiveLabels.calls.length,1,'switching folders never loads another page or writes a decision');
   assert.doesNotMatch(html,/id="listen-page/,'the whole-list modal has no bottom pagination bar');

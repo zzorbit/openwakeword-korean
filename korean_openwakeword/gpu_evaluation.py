@@ -216,12 +216,13 @@ class _GpuBatchScorer:
             mel = self.mel.run(None, {self.mel.get_inputs()[0].name: raw})[0]
             mel = np.asarray(mel).reshape(len(active), -1, 32) / 10 + 2
             for slot, index in enumerate(active):
-                mels[index] = np.vstack((mels[index], mel[slot]))[-970:]
+                # Each independent stream only feeds its latest model window.
+                mels[index] = np.vstack((mels[index], mel[slot]))[-76:]
             windows = np.stack([mels[index][-76:].astype(np.float32) for index in active])[:, :, :, None]
             embedded = self.embedding.run(None, {self.embedding.get_inputs()[0].name: windows})[0]
             embedded = np.asarray(embedded).reshape(len(active), 96)
             for slot, index in enumerate(active):
-                features[index] = np.vstack((features[index], embedded[slot]))[-120:]
+                features[index] = np.vstack((features[index], embedded[slot]))[-16:]
             inputs = np.stack([features[index][-16:].astype(np.float32) for index in active])
             values = np.column_stack([head.run(None, {head.get_inputs()[0].name: inputs})[0].reshape(-1)
                                       for head in self.heads]).astype(np.float32)

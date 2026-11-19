@@ -460,17 +460,21 @@ function parsePositivePlaylist(payload){
   for(const group of groups){
     if(!group||!['train','validation'].includes(group.split)||!Array.isArray(group.clips)||
       [group.gender,group.age_group].some(value=>value!=null&&typeof value!=='string'))throw invalid();
-    const {split,gender,age_group}=group;
+    const {split,gender,age_group,voice_group}=group;
+    if(voice_group!=null&&(!Number.isSafeInteger(voice_group)||voice_group<=0))throw invalid();
     const purpose=split==='train'?'학습용':'공통 평가용';
-    const description=[purpose,gender,age_group].filter(Boolean).join(' · ');
+    const voice_folder=voice_group==null?'목소리 정보 없음':`목소리 ${voice_group}`;
+    const description=[purpose,gender,age_group,voice_folder].filter(Boolean).join(' · ');
+    let localNumber=0;
     for(const clip of group.clips){
       if(!Array.isArray(clip)||clip.length!==3)throw invalid();
       const [index,number,voice_number]=clip;
       if(!Number.isSafeInteger(index)||index<0||index>=count||seen[index]||
         !Number.isSafeInteger(number)||number<=0||voice_number!=null&&(!Number.isSafeInteger(voice_number)||voice_number<=0))throw invalid();
       seen[index]=1;
-      rows.push({id:String(index),text,number,voice_number,group:purpose,split,gender,age_group,
-        label:`${description} · ${number}번`,audio:`/positive-preview/audio/${index}`+audioQuery});
+      localNumber++;
+      rows.push({id:String(index),text,number:localNumber,group:purpose,split,gender,age_group,voice_folder,
+        label:`${description} · ${localNumber}번`,audio:`/positive-preview/audio/${index}`+audioQuery});
     }
   }
   if(rows.length!==count)throw invalid();

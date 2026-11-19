@@ -7,6 +7,7 @@ from collections import Counter
 from contextlib import contextmanager
 import hashlib
 from importlib.metadata import PackageNotFoundError, version
+import json
 import math
 import os
 import random
@@ -37,6 +38,8 @@ STYLE_OPTIONS = (
 # general exception for journals produced by unknown implementations.
 LEGACY_CALL_IMPLEMENTATION = "a8a62455fee84260915d489aa2bccb0249ad874c9bfb2496678a5c725292473e"
 CALL_RECOVERY_POLICY = "prepared_clone_bounded_recovery_v1"
+VOICE_FILL_SCHEDULE = "same_voice_fill_cuda4_v1"
+CALL_BATCH_SIZE = 4
 ORIGINAL_ATTEMPTS = 3
 CLONE_ATTEMPTS = 6
 _MAX_CALL_DURATION_S = 8
@@ -581,6 +584,82 @@ def call_generation_contract(config, split, references, pilot, method, staged_sc
     return contract
 
 
+def _attempt_seed(config, split, slot, attempt, scope_id):
+    parts = [config["tts"]["seed"], split, slot, attempt]
+    if scope_id:
+        parts.append(scope_id)
+    return int(identity(parts)[:8], 16)
+
+
+def _batch_identity(config, split, slots, scope_id, contract_id):
+    seeds = [_attempt_seed(config, split, slot, 0, scope_id) for slot in slots]
+    return {"policy": VOICE_FILL_SCHEDULE, "slots": slots,
+            "seed": int(identity([contract_id, seeds, slots])[:8], 16)}
+
+
+def _validate_batch_entry(config, split, row, reference_count, scope, scope_id, contract_id):
+    batch = row["cuda_batch"]
+    slots = batch.get("slots") if isinstance(batch, dict) else None
+    if (not scope or scope.get("schedule") != VOICE_FILL_SCHEDULE or row.get("attempt") != 0
+            or not isinstance(slots, list) or len(slots) != CALL_BATCH_SIZE
+            or any(type(slot) is not int or slot < 0 for slot in slots) or row.get("slot") not in slots
+            or slots[0] // reference_count % CALL_BATCH_SIZE
+            or slots != [slots[0] + index * reference_count for index in range(CALL_BATCH_SIZE)]
+            or batch != _batch_identity(config, split, slots, scope_id, contract_id)):
+        raise ValueError("CUDA clone batch identity changed")
+    ending = row.get("ending_boundary_qc", {})
+    limit, count, stop = ending.get("token_limit"), ending.get("generated_tokens"), ending.get("termination")
+    if (row.get("short_clone_policy") != SHORT_CLONE_POLICY or ending.get("policy") != CALL_BOUNDARY_POLICY
+            or type(limit) is not int or limit != row.get("generation_token_limit")
+            or type(count) is not int or not 1 <= count <= limit or stop not in ("eos", "token_limit", "without_eos")
+            or (stop == "token_limit") != (count == limit and stop != "eos")
+            or stop != "eos" and row.get("qc", {}).get("passed") is not False):
+        raise ValueError("CUDA clone batch ending evidence changed")
+
+
+def _finish_call_batch(output, intent):
+    """Publish journal bytes once, including after an interrupted partial append."""
+    journal = output / "candidates.jsonl"
+    offset, rows = intent["offset"], intent["rows"]
+    payload = "".join(json.dumps(row, ensure_ascii=False, allow_nan=False) + os.linesep for row in rows).encode("utf-8")
+    with journal.open("r+b" if journal.exists() else "w+b") as stream:
+        size = stream.seek(0, os.SEEK_END)
+        if type(offset) is not int or not 0 <= offset <= size or size - offset > len(payload):
+            raise ValueError("CUDA clone batch journal boundary changed")
+        if offset:
+            stream.seek(offset - 1)
+            if stream.read(1) != b"\n":
+                raise ValueError("CUDA clone batch begins inside another journal row")
+        stream.seek(offset)
+        tail = stream.read()
+        if not payload.startswith(tail):
+            raise ValueError("CUDA clone batch journal does not match its pending rows")
+        stream.write(payload[len(tail):])
+        stream.flush()
+        os.fsync(stream.fileno())
+    (output / "pending_cuda_batch.json").unlink()
+
+
+def _recover_call_batch(root, output, config, split, references, scope, scope_id, settings):
+    pending = output / "pending_cuda_batch.json"
+    if not pending.exists():
+        return
+    intent = read_json(pending)
+    contract_id = identity(settings)
+    rows = intent.get("rows") if isinstance(intent, dict) else None
+    if (not isinstance(rows, list) or len(rows) != CALL_BATCH_SIZE or intent.get("contract_id") != contract_id
+            or read_json(output / "contract.json") != settings or scope.get("schedule") != VOICE_FILL_SCHEDULE):
+        raise ValueError("Pending CUDA clone batch does not belong to this generation contract")
+    for row in rows:
+        _validate_batch_entry(config, split, row, len(references), scope, scope_id, contract_id)
+        if row.get("path") is not None:
+            bound_file(root, row)
+    if [row["slot"] for row in rows] != rows[0]["cuda_batch"]["slots"] or any(
+            row["cuda_batch"] != rows[0]["cuda_batch"] for row in rows):
+        raise ValueError("Pending CUDA clone batch order changed")
+    _finish_call_batch(output, intent)
+
+
 def _journal_prefix(path, count):
     """Hash exact old JSONL bytes; never normalize or replace old history."""
     value = hashlib.sha256()
@@ -661,6 +740,7 @@ def validate_call_rows(root, config, split, references, rows, context, *, scope=
     implementation_sha = _generation_evidence_sha256() if method == "clone" else None
     production = scope is not None and scope.get("kind") == "production"
     old_prompt_attempts = Counter()
+    batches = {}
     for index, row in enumerate(rows):
         slot = row.get("slot")
         if type(slot) is not int or slot < 0 or not references:
@@ -694,7 +774,6 @@ def validate_call_rows(root, config, split, references, rows, context, *, scope=
         if historical and attempt >= ORIGINAL_ATTEMPTS:
             raise ValueError("Legacy generation retry budget changed")
         if method == "clone" and not historical:
-            seed_parts = [config["tts"]["seed"], split, slot, attempt] + ([scope_id] if scope_id else [])
             preparation = row.get("clone_reference_preparation")
             policy = preparation.get("policy") if isinstance(preparation, dict) else None
             compacted = policy == clone_reference.INTERNAL_SILENCE_POLICY
@@ -702,7 +781,7 @@ def validate_call_rows(root, config, split, references, rows, context, *, scope=
             if (compacted and not production or extended and (not compacted or attempt >= 2 * CLONE_ATTEMPTS
                     or old_prompt_attempts[slot] != CLONE_ATTEMPTS)
                     or row.get("attempt") != attempt
-                    or row.get("seed") != int(identity(seed_parts)[:8], 16)
+                    or row.get("seed") != _attempt_seed(config, split, slot, attempt, scope_id)
                     or row.get("clone_input_policy") != CALL_RECOVERY_POLICY
                     or row.get("retry_phase") != ("conditioned_recovery" if extended else
                                                   "recovery" if attempt >= ORIGINAL_ATTEMPTS else "initial")
@@ -721,6 +800,10 @@ def validate_call_rows(root, config, split, references, rows, context, *, scope=
                 if (row["short_clone_policy"] != SHORT_CLONE_POLICY or type(limit) is not int or limit < 3
                         or ("generation_length_limit" in row["qc"]["reasons"] and row["qc"]["passed"] is not False)):
                     raise ValueError("Short-clone generation evidence changed")
+        if "cuda_batch" in row:
+            _validate_batch_entry(config, split, row, len(references), scope, scope_id, expected_id)
+            ordered_slots = tuple(row["cuda_batch"]["slots"])
+            batches.setdefault(ordered_slots, []).append(slot)
         if row.get("generation_error"):
             if (historical or method != "clone" or row["generation_error"] != {"kind": "invalid_waveform", "audio_saved": False}
                     or row.get("path") is not None or row.get("sha256") is not None
@@ -747,6 +830,8 @@ def validate_call_rows(root, config, split, references, rows, context, *, scope=
         counts[slot] += 1
         if row.get("qc", {}).get("passed") is True:
             passing[slot] = row
+    if any(list(slots) != recorded for slots, recorded in batches.items()):
+        raise ValueError("CUDA clone batch journal does not contain all four outputs in order")
     return passing, counts
 
 
@@ -777,9 +862,13 @@ def _exhausted_slots(rows, references, target, passing, limit, split, *, recover
     return result
 
 
+class CallGenerationPaused(Exception):
+    """Stop before starting another attempt; completed audio is journaled."""
+
+
 @project_storage
 def generate(project, split="train", limit=None, pilot=False, method="clone", model=None, *,
-             staged_scope=None, attempt_ceiling=None, excluded_sha256=()):
+             staged_scope=None, attempt_ceiling=None, excluded_sha256=(), pause_requested=None):
     root, config = load_project(project)
     if split not in ("train", "validation", "final") or method not in ("clone", "design") or limit is not None and (type(limit) is not int or limit < 1):
         raise ValueError("Use a valid split/method and a positive generation limit")
@@ -799,6 +888,9 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
         raise ValueError("Scoped pronunciation generation is only for staged Train or Validation calls")
     scope_kind = staged_scope.get("kind") if isinstance(staged_scope, dict) else None
     production = scope_kind == "production"
+    same_voice_fill = staged_scope is not None and staged_scope.get("schedule") == VOICE_FILL_SCHEDULE
+    if same_voice_fill and (scope_kind not in ("production", "postgeneration_repair") or attempt_ceiling is not None):
+        raise ValueError("Voice-fill scheduling requires a complete production or repair call target")
     if attempt_ceiling is not None or excluded_sha256:
         if scope_kind not in ("preflight", "production"):
             raise ValueError("Retry scheduling is only for staged preflight or production calls")
@@ -843,6 +935,8 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
     settings = call_generation_contract(config, split, references, pilot, method, staged_scope)
     with writer_lock(output):
         if method == "clone":
+            if same_voice_fill:
+                _recover_call_batch(root, output, config, split, references, staged_scope, scope_id, settings)
             rows, context = call_journal_context(root, output, settings)
             by_slot, attempts_by_slot = validate_call_rows(root, config, split, references, rows, context, scope=staged_scope)
         else:
@@ -859,9 +953,14 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
         # An intermediate sweep does not change the frozen per-slot budget.
         ceiling = attempt_limit if attempt_ceiling is None else attempt_ceiling
         runnable = [slot for slot in pending if attempts_by_slot[slot] < ceiling]
+
+        def check_pause():
+            if pause_requested is not None and pause_requested():
+                raise CallGenerationPaused
+
         prepared = {}
         recovery_slots = set()
-        if production and attempt_ceiling is None:
+        if production and attempt_ceiling is None and not same_voice_fill:
             # Re-open a spent slot only when all six attempts used the earlier,
             # unconditioned prompt. Persisted rows preserve that boundary.
             old_prompt_attempts = Counter(row["slot"] for row in rows
@@ -869,12 +968,14 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
                 and (row.get("clone_reference_preparation") or {}).get("policy") == clone_reference.POLICY)
             recovery_slots = {slot for slot in pending if old_prompt_attempts[slot] == CLONE_ATTEMPTS}
         if method == "clone" and (runnable or recovery_slots):
+            check_pause()
             # Prepare/verify before model loading, and only for unfinished slots.
             report_progress("tts_prompt_preparation", "기준 목소리 복제 입력 확인", eta_eligible=False)
             for slot in [*runnable, *sorted(recovery_slots)]:
                 reference = references[slot % len(references)]
                 key = (reference["voice_family_id"], reference["sha256"])
                 if key not in prepared:
+                    check_pause()
                     if production:
                         prepared[key] = clone_reference.prepare_clone_reference(root, reference, compact_internal_silence=True)
                     else:
@@ -886,6 +987,7 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
             if runnable:
                 rows, context = call_journal_context(root, output, settings, create=True)
         if model is None and runnable:
+            check_pause()
             report_progress("tts_model_loading", "음성 생성 모델 준비", eta_eligible=False)
             model = _load_model(config["tts"]["clone_model" if method == "clone" else "design_model"], config["tts"], root)
         prompts = {}
@@ -898,136 +1000,223 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
         remaining = (Counter(slot % len(references) for slot in runnable)
                      if method == "clone" else {})
         completed_for_target = sum(0 <= slot < target for slot in by_slot)
-        for slot in runnable:
+        def record_attempt(slot, attempt, waveform, rate, token_limit, termination, axes, started, batch=None):
+            reference = references[slot % len(references)]
+            family = reference.get("voice_family_id", reference.get("family_id"))
+            check_ending = requires_ending_check(staged_scope, family)
+            sample_id = f"{split}_{slot:06d}_attempt{attempt}"
+            if scope_id:
+                sample_id = scope_id + "_" + sample_id
+            seed = _attempt_seed(config, split, slot, attempt, scope_id)
+            if check_ending:
+                # Keep the existing waveform rules for already-frozen plans.
+                qc, converted = technical_qc(waveform, rate)
+                stop = termination["termination"]
+                if converted is not None:
+                    if stop == "token_limit" or stop == "unobserved" and short_clone_hit_limit(waveform, rate, token_limit):
+                        qc["passed"] = False
+                        qc["reasons"].append("generation_length_limit")
+                    elif stop == "without_eos":
+                        qc["passed"] = False
+                        qc["reasons"].append("generation_stopped_without_eos")
+            else:
+                waveform, qc, converted = check_short_clone_audio(waveform, rate, token_limit, termination)
+            if converted is None and method != "clone":
+                raise ValueError("Nonfinite/empty TTS output; cannot persist or silently accept")
+            path, sha, bounds = None, None, None
+            ending = None
+            if check_ending:
+                ending = {"policy": REPAIR_ENDING_POLICY, "expected_last_syllable": config["wakeword"][-1],
+                          **termination, "requires_listening": True, "synthesized": None, "stored_pcm": None}
+            elif token_limit is not None:
+                ending = {"policy": CALL_BOUNDARY_POLICY, **termination, "synthesized": None, "stored_pcm": None}
+            if converted is not None:
+                samples, bounds = encode_candidate_pcm16(converted, qc)
+                if ending:
+                    ending["synthesized"] = _ending_signal(waveform, int(rate))
+                    ending["stored_pcm"] = _ending_signal(samples, 16000, pcm=True)
+                    if _waveform_cuts_ending(ending) and "waveform_cuts_active_ending" not in qc["reasons"]:
+                        qc["passed"] = False
+                        qc["reasons"].append("waveform_cuts_active_ending")
+                path = output / (sample_id + ".wav")
+                if (production or same_voice_fill) and path.exists():
+                    # An interruption can leave a WAV without its journal row.
+                    # Keep that uncommitted output before retrying its exact seed.
+                    orphan = output / "interrupted_audio" / f"{sample_id}_{digest(path)}.wav"
+                    orphan.parent.mkdir(exist_ok=True)
+                    if not orphan.exists():
+                        path.rename(orphan)
+                    elif digest(path) != digest(orphan):
+                        raise ValueError("An interrupted generation WAV differs from its archived copy")
+                sf.write(path, samples, 16000, subtype="PCM_16")
+                sha = digest(path)
+                if sha in existing_hashes:
+                    qc["passed"] = False; qc["reasons"].append("exact_duplicate")
+            row = {"sample_id": sample_id, "slot": slot, "source_id": "qwen:" + config["project_id"] + ":" + sample_id,
+                "path": str(path.relative_to(root)) if path is not None else None, "sha256": sha, "split": split,
+                "voice_family_id": family, "text": config["wakeword"], "provenance": "qwen_tts",
+                "human_reference_used": False, "call_start_s": bounds[0] if bounds else None,
+                "call_end_s": bounds[1] if bounds else None, "qc": qc, "axes": {"voice_family": family, **axes, "text_profile": "standalone"},
+                "generation_contract_id": generation_contract_id, "generation_seconds": time.perf_counter() - started,
+                "generation_method": method, "tts_settings_id": tts_settings_id,
+                "individual_human_listening": False, "created_at": now()}
+            if converted is not None:
+                row["candidate_pcm_qc"] = CANDIDATE_PCM_QC
+            if check_ending:
+                row.update(ending_check_required=True, ending_check=ending)
+            elif ending:
+                row["ending_boundary_qc"] = ending
+            if method == "clone":
+                row.update(attempt=attempt, seed=seed, clone_input_policy=CALL_RECOVERY_POLICY,
+                    retry_phase=("conditioned_recovery" if attempt >= CLONE_ATTEMPTS else
+                                 "recovery" if attempt >= ORIGINAL_ATTEMPTS else "initial"),
+                    generation_implementation_sha256=settings["implementation_sha256"],
+                    generation_update=context["update"],
+                    clone_reference_preparation=prepared[(family, reference["sha256"])][1])
+                if token_limit is not None:
+                    row.update(generation_token_limit=token_limit, short_clone_policy=SHORT_CLONE_POLICY)
+                if converted is None:
+                    row["generation_error"] = {"kind": "invalid_waveform", "audio_saved": False}
+            if staged_scope is not None:
+                row["voice_reference_sha256"] = reference["sha256"]
+            if not pilot and qc["passed"]:
+                row["admission"] = admission
+            if batch is not None:
+                row["cuda_batch"] = batch
+            return row
+
+        def track(row):
+            nonlocal completed_for_target
+            slot, sha = row["slot"], row["sha256"]
+            rows.append(row)
+            if sha:
+                existing_hashes.add(sha)
+            attempts_by_slot[slot] += 1
+            if row["qc"]["passed"]:
+                by_slot[slot] = row
+                completed_for_target += 1
+
+        def clone_options(reference):
+            prompt_key = (reference["voice_family_id"], reference["sha256"])
+            if prompt_key not in prompts:
+                report_progress("tts_prompt_preparation", "기준 목소리 복제 정보 준비", eta_eligible=False)
+                prompt_path, _ = prepared[prompt_key]
+                prompts[prompt_key] = model.create_voice_clone_prompt(ref_audio=str(prompt_path),
+                    ref_text=reference["text"], x_vector_only_mode=False)
+            return dict(text=config["wakeword"], language="Korean", voice_clone_prompt=prompts[prompt_key],
+                        **config["tts"]["generation"])
+
+        def clone_axes(reference):
+            return {key: reference.get(key, "reference_style")
+                    for key in ("style", "speed", "intonation", "vocal_effort", "call_length")}
+
+        def progress():
+            print(f"TTS {split}: accepted technical {completed_for_target}/{target}; attempts {len(rows)}", flush=True)
+
+        def run_single(slot):
             reference_index = slot % len(references)
             reference = references[reference_index]
             family = reference.get("voice_family_id", reference.get("family_id"))
             check_ending = requires_ending_check(staged_scope, family)
             slot_ceiling = 2 * ceiling if slot in recovery_slots else ceiling
             for attempt in range(attempts_by_slot[slot], slot_ceiling):
-                sample_id = f"{split}_{slot:06d}_attempt{attempt}"
-                seed_parts = [config["tts"]["seed"], split, slot, attempt]
-                if scope_id:
-                    sample_id = scope_id + "_" + sample_id
-                    seed_parts.append(scope_id)
-                seed = int(identity(seed_parts)[:8], 16)
-                _seed(seed)
+                check_pause()
+                _seed(_attempt_seed(config, split, slot, attempt, scope_id))
                 started = time.perf_counter()
-                token_limit = None
-                termination = {}
+                token_limit, termination = None, {}
                 if method == "clone":
-                    prompt_key = (family, reference["sha256"])
-                    if prompt_key not in prompts:
-                        report_progress("tts_prompt_preparation", "기준 목소리 복제 정보 준비", eta_eligible=False)
-                        prompt_path, preparation = prepared[prompt_key]
-                        prompts[prompt_key] = model.create_voice_clone_prompt(ref_audio=str(prompt_path),
-                            ref_text=reference["text"], x_vector_only_mode=False)
+                    generation = clone_options(reference)
+                    axes = clone_axes(reference)
                     with generation_attempt() as timing:
-                        generation = dict(text=config["wakeword"], language="Korean",
-                                          voice_clone_prompt=prompts[prompt_key], **config["tts"]["generation"])
                         if check_ending:
                             wavs, rate, termination = _generate_ending_repair_clone(model, attempt, **generation)
                             token_limit = termination["token_limit"]
                         else:
                             wavs, rate, token_limit = generate_short_clone(model, retry=attempt > 0,
                                 expected_reuses=remaining[reference_index], termination=termination, **generation)
-                    axes = {k: reference.get(k, "reference_style") for k in ("style", "speed", "intonation", "vocal_effort", "call_length")}
                 else:
                     style, instruction = STYLE_OPTIONS[slot % len(STYLE_OPTIONS)]
                     speed = ("slow", "natural", "quick")[(slot // len(references)) % 3]
+                    axes = {"style": style, "speed": speed, "intonation": "natural variation",
+                            "vocal_effort": style, "call_length": speed}
                     with generation_attempt() as timing:
                         wavs, rate = model.generate_voice_design(text=config["wakeword"], language="Korean",
                             instruct=reference["description"] + f" {instruction}. {speed} speaking rate. Say only the provided word once. No other words, breaths, laughs or background.",
                             **config["tts"]["generation"])
-                    axes = {"style": style, "speed": speed, "intonation": "natural variation", "vocal_effort": style, "call_length": speed}
                 waveform = wavs[0] if wavs is not None and len(wavs) else []
-                if check_ending:
-                    # Keep the existing waveform rules for already-frozen plans.
-                    qc, converted = technical_qc(waveform, rate)
-                    stop = termination["termination"]
-                    if converted is not None:
-                        if stop == "token_limit" or stop == "unobserved" and short_clone_hit_limit(waveform, rate, token_limit):
-                            qc["passed"] = False
-                            qc["reasons"].append("generation_length_limit")
-                        elif stop == "without_eos":
-                            qc["passed"] = False
-                            qc["reasons"].append("generation_stopped_without_eos")
-                else:
-                    waveform, qc, converted = check_short_clone_audio(waveform, rate, token_limit, termination)
-                if converted is None and method != "clone":
-                    raise ValueError("Nonfinite/empty TTS output; cannot persist or silently accept")
-                path, sha, bounds = None, None, None
-                ending = None
-                if check_ending:
-                    ending = {"policy": REPAIR_ENDING_POLICY, "expected_last_syllable": config["wakeword"][-1],
-                              **termination, "requires_listening": True, "synthesized": None, "stored_pcm": None}
-                elif token_limit is not None:
-                    ending = {"policy": CALL_BOUNDARY_POLICY, **termination, "synthesized": None, "stored_pcm": None}
-                if converted is not None:
-                    samples, bounds = encode_candidate_pcm16(converted, qc)
-                    if ending:
-                        ending["synthesized"] = _ending_signal(waveform, int(rate))
-                        ending["stored_pcm"] = _ending_signal(samples, 16000, pcm=True)
-                        if _waveform_cuts_ending(ending) and "waveform_cuts_active_ending" not in qc["reasons"]:
-                            qc["passed"] = False
-                            qc["reasons"].append("waveform_cuts_active_ending")
-                    path = output / (sample_id + ".wav")
-                    if production and path.exists():
-                        # An interruption can leave a WAV without its journal row.
-                        # Keep that uncommitted output before retrying its exact seed.
-                        orphan = output / "interrupted_audio" / f"{sample_id}_{digest(path)}.wav"
-                        orphan.parent.mkdir(exist_ok=True)
-                        if not orphan.exists():
-                            path.rename(orphan)
-                        elif digest(path) != digest(orphan):
-                            raise ValueError("An interrupted generation WAV differs from its archived copy")
-                    sf.write(path, samples, 16000, subtype="PCM_16")
-                    sha = digest(path)
-                    if sha in existing_hashes:
-                        qc["passed"] = False; qc["reasons"].append("exact_duplicate")
-                row = {"sample_id": sample_id, "slot": slot, "source_id": "qwen:" + config["project_id"] + ":" + sample_id,
-                    "path": str(path.relative_to(root)) if path is not None else None, "sha256": sha, "split": split,
-                    "voice_family_id": family, "text": config["wakeword"], "provenance": "qwen_tts",
-                    "human_reference_used": False, "call_start_s": bounds[0] if bounds else None,
-                    "call_end_s": bounds[1] if bounds else None, "qc": qc, "axes": {"voice_family": family, **axes, "text_profile": "standalone"},
-                    "generation_contract_id": generation_contract_id, "generation_seconds": time.perf_counter() - started,
-                    "generation_method": method, "tts_settings_id": tts_settings_id,
-                    "individual_human_listening": False, "created_at": now()}
-                if converted is not None:
-                    row["candidate_pcm_qc"] = CANDIDATE_PCM_QC
-                if check_ending:
-                    row.update(ending_check_required=True, ending_check=ending)
-                elif ending:
-                    row["ending_boundary_qc"] = ending
-                if method == "clone":
-                    row.update(attempt=attempt, seed=seed, clone_input_policy=CALL_RECOVERY_POLICY,
-                        retry_phase=("conditioned_recovery" if attempt >= CLONE_ATTEMPTS else
-                                     "recovery" if attempt >= ORIGINAL_ATTEMPTS else "initial"),
-                        generation_implementation_sha256=settings["implementation_sha256"],
-                        generation_update=context["update"],
-                        clone_reference_preparation=prepared[(family, reference["sha256"])][1])
-                    if token_limit is not None:
-                        row.update(generation_token_limit=token_limit, short_clone_policy=SHORT_CLONE_POLICY)
-                    if converted is None:
-                        row["generation_error"] = {"kind": "invalid_waveform", "audio_saved": False}
-                if staged_scope is not None:
-                    row["voice_reference_sha256"] = reference["sha256"]
-                if not pilot and qc["passed"]:
-                    row["admission"] = admission
+                row = record_attempt(slot, attempt, waveform, rate, token_limit, termination, axes, started)
                 append_row(output / "candidates.jsonl", row)
                 if timing is not None:
-                    timing.committed(qc["passed"])
-                rows.append(row)
-                if sha:
-                    existing_hashes.add(sha)
-                attempts_by_slot[slot] += 1
-                if qc["passed"]:
-                    by_slot[slot] = row
-                    completed_for_target += 1
+                    timing.committed(row["qc"]["passed"])
+                track(row)
+                if row["qc"]["passed"]:
                     break
             if remaining:
                 remaining[reference_index] -= 1
-            print(f"TTS {split}: accepted technical {completed_for_target}/{target}; attempts {len(rows)}", flush=True)
+            progress()
+
+        def run_batch(slots, batches_left, generate_batch):
+            check_pause()
+            index = slots[0] % len(references)
+            reference = references[index]
+            batch = _batch_identity(config, split, slots, scope_id, generation_contract_id)
+            _seed(_attempt_seed(config, split, slots[0], 0, scope_id))
+            generation = clone_options(reference)
+            started = time.perf_counter()
+            with generation_attempt() as timing:
+                result = generate_batch(batch_seed=batch["seed"], expected_reuses=batches_left, **generation)
+            if result is None:
+                return
+            wavs, rate, token_limit, endings = result
+            if (len(wavs) != CALL_BATCH_SIZE or len(endings) != CALL_BATCH_SIZE
+                    or type(token_limit) is not int
+                    or any(ending.get("token_limit") != token_limit for ending in endings)):
+                raise ValueError("CUDA clone batch did not return one bounded result per slot")
+            synthesis_share = (time.perf_counter() - started) / CALL_BATCH_SIZE
+            axes = clone_axes(reference)
+            published = []
+            for slot, waveform, termination in zip(slots, wavs, endings, strict=True):
+                row = record_attempt(slot, 0, waveform, rate, token_limit, termination, axes,
+                                     time.perf_counter() - synthesis_share, batch)
+                _validate_batch_entry(config, split, row, len(references), staged_scope, scope_id, generation_contract_id)
+                published.append(row)
+                track(row)
+            journal = output / "candidates.jsonl"
+            intent = {"contract_id": generation_contract_id, "offset": journal.stat().st_size if journal.exists() else 0,
+                      "rows": published}
+            write_json(output / "pending_cuda_batch.json", intent)
+            _finish_call_batch(output, intent)
+            remaining[index] -= sum(row["qc"]["passed"] for row in published)
+            if timing is not None:
+                timing.committed(sum(row["qc"]["passed"] for row in published))
+            progress()
+
+        if same_voice_fill:
+            generate_batch = getattr(model, "generate_short_clone_batch", None)
+            allowed = set(runnable)
+            reference_count = len(references)
+            for reference_index, reference in enumerate(references):
+                assigned = list(range(reference_index, target, reference_count))
+                groups = [assigned[start:start + CALL_BATCH_SIZE] for start in range(0, len(assigned), CALL_BATCH_SIZE)]
+                batch_groups = {index for index, slots in enumerate(groups)
+                                if generate_batch is not None and not requires_ending_check(staged_scope, reference["voice_family_id"])
+                                and len(slots) == CALL_BATCH_SIZE
+                                and all(slot in allowed and attempts_by_slot[slot] == 0 for slot in slots)}
+                batches_left = len(batch_groups)
+                for index, slots in enumerate(groups):
+                    if index in batch_groups:
+                        run_batch(slots, batches_left, generate_batch)
+                        batches_left -= 1
+                    for slot in slots:
+                        if slot in allowed and slot not in by_slot:
+                            run_single(slot)
+                    if any(slot not in by_slot for slot in slots):
+                        break
+                if any(slot not in by_slot for slot in assigned):
+                    break
+        else:
+            for slot in runnable:
+                run_single(slot)
         report_progress("tts_finalizing", "생성 음원 목록·검사 결과 저장", eta_eligible=False)
         passed = sorted(by_slot.values(), key=lambda r: r["slot"])
         # Atomically publish the currently accepted candidates, including partial

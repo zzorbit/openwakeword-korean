@@ -57,7 +57,7 @@ def worker_lock_paths(root):
 
 def request_stage_pause(state, job, *, candidate_preparation):
     """Send a cooperative pause request to stages that support it."""
-    if job["stage"] in ("hard_pilot", "hard_generation"):
+    if job["stage"] in ("positives", "hard_pilot", "hard_generation"):
         path = Path(job["directory"]) / "pause.json"
         write_json(path, {"task_id": job["task_id"], "requested_at": now()})
         return "현재 생성 중인 음성을 저장한 뒤 일시정지합니다."

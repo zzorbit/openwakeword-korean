@@ -210,7 +210,7 @@ def test_active_post_http_labels_and_positive_page_audio_ordinals_remain_exact(m
     # The displayed audio ordinal remains independent from its reference family.
     row = {**rows[16], "sample_id": "production-audio-801"}
     page = [(800, 801, row), (801, 802, {**row, "sample_id": "production-audio-802"})]
-    directory_rows = [(0, 1, rows[0]), (1, 2, rows[16]), (2, 3, rows[16]), (3, 1, rows[49])]
+    directory_rows = [(0, 1, rows[0]), (1, 2, rows[16]), (2, 3, rows[0]), (3, 4, rows[1]), (4, 1, rows[49])]
 
     def preview_rows(project, start, limit):
         if limit is None:
@@ -227,10 +227,11 @@ def test_active_post_http_labels_and_positive_page_audio_ordinals_remain_exact(m
     assert [item["id"] for item in whole["items"]] == ["production-audio-801", "production-audio-802"]
     assert [item["audio"] for item in whole["items"]] == [f"/positive-preview/audio/{index}?project={state['id']}" for index in (800, 801)]
     directory = get_json(display_http, f"/positive-preview/queue?project={state['id']}&view=playlist")
-    assert directory == {"kind": "positive", "count": 4, "text": state["wakeword"], "groups": [
-        {"split": "train", "gender": "남성", "age_group": "어린이", "clips": [[0, 1, 1]]},
-        {"split": "train", "gender": "여성", "age_group": "중년", "clips": [[1, 2, 17], [2, 3, 17]]},
-        {"split": "validation", "gender": "여성", "age_group": "노년", "clips": [[3, 1, 30]]},
+    assert directory == {"kind": "positive", "count": 5, "text": state["wakeword"], "groups": [
+        {"split": "train", "gender": "남성", "age_group": "어린이", "voice_group": 1, "clips": [[0, 1, 1], [2, 3, 1]]},
+        {"split": "train", "gender": "여성", "age_group": "중년", "voice_group": 1, "clips": [[1, 2, 17]]},
+        {"split": "train", "gender": "남성", "age_group": "어린이", "voice_group": 2, "clips": [[3, 4, 2]]},
+        {"split": "validation", "gender": "여성", "age_group": "노년", "voice_group": 1, "clips": [[4, 1, 30]]},
     ]}
     assert before == {path: digest(path) for path in before}
     assert manager.workers.calls == []
