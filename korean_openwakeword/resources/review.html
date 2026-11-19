@@ -67,7 +67,7 @@ const config=JSON.parse($("koww-page-config")?.textContent||"{}");
 const labels={keep:'정상',discard:'제외',review:'다시 확인'};
 const truncatedEnding='truncated_ending';
 const queueKind=new URLSearchParams(location.search).get('queue');
-let reviewPicker,groupSummary='';
+let reviewPicker,reviewPlaylist,sourceQueueItems,groupSummary='';
 const project=new URLSearchParams(location.search).get('project'),preflightPolicy='play_started_default_keep_v1';
 let preflightAutosave=false,preflightRevision=0,preflightWriter=null,preflightBlocked=false,preflightFinalizing=false,preflightFinalized=false,preflightReported='';
 let preflightParentRequest=null,preflightPendingRequest=null;
@@ -174,6 +174,7 @@ window.KowwChapterReady?.loading();
 Promise.resolve().then(()=>fetch(localUrl(config.queue_url||'/queue'))).then(async r=>{const d=await r.json();if(!r.ok)throw Error(d.error||'목록을 불러오지 못했습니다.');return d;}).then(d=>{
   if(!Array.isArray(d.items)||!d.items.length||d.items.some(r=>!r||typeof r.id!=='string'||typeof r.text!=='string'))throw Error('음원 목록이 올바르지 않습니다.');
   d.items=d.items.map(r=>({...r,audio:localUrl(r.audio)}));
+  sourceQueueItems=d.items;
   referenceReview=d.kind==='references'||queueKind==='references';
   const kind=d.kind||queueKind;
   const callReview=kind==='pilot'||kind==='positive';
@@ -223,13 +224,23 @@ Promise.resolve().then(()=>fetch(localUrl(config.queue_url||'/queue'))).then(asy
   }
   if(callReviewPhase||hardCompactReview)document.documentElement.classList.add('compact-call-review');
   preparePostReview(d);
+  const listening=window.KowwListening;
+  const folderReview=callReviewPhase||hardCompactReview||d.review_kind==='call'||d.review_kind==='similar';
+  if(!referenceReview&&folderReview&&listening?.buildReviewPlaylist&&listening.createFolderPicker){
+    reviewPlaylist=listening.buildReviewPlaylist(d.items,{similar:hardCompactReview||d.review_kind==='similar'});
+    d.items=reviewPlaylist.items;
+  }
   const groupCounts=new Map([['학습용',0],['공통 평가용',0]]);
   d.items.forEach((r,i)=>{
     if(callReviewPhase&&typeof r.label==='string'&&r.label.trim()){
       const take=endingCheckRequired(r)&&Number.isSafeInteger(r.ending_check_index)&&Number.isSafeInteger(r.ending_check_total)&&
         r.ending_check_total>1&&r.ending_check_index>0&&r.ending_check_index<=r.ending_check_total;
-      const label=take?`${r.label} · 음원 ${r.ending_check_index} / ${r.ending_check_total}`:r.label;
+      const detailLabel=take?`음원 ${r.ending_check_index} / ${r.ending_check_total}`:'';
+      const label=detailLabel?`${r.label} · ${detailLabel}`:r.label;
       r.voice={label,fullLabel:label};
+      if(reviewPlaylist&&Number.isSafeInteger(r.voice_number)&&r.voice_number>0){
+        Object.assign(r.voice,{groupLabel:'목소리',voiceNumber:`${r.voice_number}번`,detailLabel});
+      }
     }
     if(!r.voice&&pilotReview&&!referenceReview&&groupCounts.has(r.group)){
       const position=groupCounts.get(r.group)+1;
@@ -288,7 +299,8 @@ function applyPreflightDraft(payload){
 async function reconcilePreflight(){
   const response=await fetch(localUrl(config.queue_url||'/queue')),payload=await response.json();
   if(!response.ok)throw Error(payload.error||'저장 상태를 확인하지 못했습니다.');
-  if(!Array.isArray(payload.items)||payload.items.length!==data.items.length||payload.items.some((row,i)=>row.id!==data.items[i].id||row.audio_sha256!==data.items[i].audio_sha256))
+  if(!Array.isArray(payload.items)||payload.items.length!==sourceQueueItems.length||
+    payload.items.some((row,i)=>row?.id!==sourceQueueItems[i].id||row.audio_sha256!==sourceQueueItems[i].audio_sha256))
     throw Error('검수 목록이 바뀌었습니다. 화면을 새로고침해 주세요.');
   applyPreflightDraft(payload);
 }
@@ -388,8 +400,8 @@ async function finalizeHardReview(){
     saving=true;
     const submitted=postDecisionSnapshot(),kept=data.items.filter(row=>submitted[row.id]?.decision==='keep').length;
     const freshResponse=await fetch(localUrl(config.queue_url||'/queue')),fresh=await freshResponse.json();
-    if(!freshResponse.ok||fresh.queue_sha256!==queue||!Array.isArray(fresh.items)||fresh.items.length!==data.items.length||
-      fresh.items.some((row,i)=>row?.id!==data.items[i].id||localUrl(row.audio)!==data.items[i].audio))
+    if(!freshResponse.ok||fresh.queue_sha256!==queue||!Array.isArray(fresh.items)||fresh.items.length!==sourceQueueItems.length||
+      fresh.items.some((row,i)=>row?.id!==sourceQueueItems[i].id||localUrl(row.audio)!==sourceQueueItems[i].audio))
       throw Error('검수 목록이 변경됐습니다. 화면을 다시 불러온 뒤 확인해 주세요.');
     if(preflightParentRequest!==request||data.queue_sha256!==queue)return;
     // The deliberate parent Next confirms use of the kept phrases. Playback
@@ -489,37 +501,53 @@ function decisionBadge(row){
 function setupListening(){
   const listening=window.KowwListening, controls=$("review-controls"), play=$("start");
   const kind=data.kind||queueKind;
-  const hardReview=kind==='hard'||hardCompactReview;
+  const hardReview=kind==='hard'||hardCompactReview||data.review_kind==='similar';
   const compactReview=hardReview||((kind==='pilot'||kind==='positive')&&!data.policy_review);
-  if(!compactReview||referenceReview||!listening?.createPicker){
-    listening?.enhance(audio,controls,{play,previous:$("prev"),next:$("next")});
+  const previous=$("prev"),next=$("next"),volume=$("review-volume");
+  if(!reviewPlaylist&&(!compactReview||referenceReview||!listening?.createPicker)){
+    listening?.enhance(audio,controls,{play,previous,next});
     return;
   }
   const button=$("review-picker-button"), list=$("review-picker-list");
-  if(hardReview){
+  if(reviewPlaylist){
+    button.setAttribute('aria-label','음원 목록');
+    list.setAttribute('aria-label','음원 목록');
+  }else if(hardReview){
     button.setAttribute('aria-label','확인할 유사어 음원');
     list.setAttribute('aria-label','확인할 유사어 음원');
   }
-  reviewPicker=listening.createPicker({
+  const pickerOptions={
     container:$("review-picker"),button,label:$("review-picker-label"),
-    popup:$("review-picker-popup"),list,onSelect:moveTo,
+    popup:$("review-picker-popup"),list,
     onOpenChange:callReviewBridge()&&window.parent!==window?preflightPickerChanged:undefined,
-  });
-  reviewPicker.setItems(data.items.map((row,i)=>{
+  };
+  const describe=(row,i)=>{
     const badge=decisionBadge(row);
     if(hardReview){
       const phrase=row.text||row.group||`음원 ${i+1}`;
-      return {label:phrase,fullLabel:`유사어 음원 ${i+1} · ${phrase}`,badge};
+      const voiceNumber=reviewPlaylist?`${i+1}번`:undefined;
+      return {label:phrase,fullLabel:`유사어 음원 ${i+1} · ${phrase}`,voiceNumber,badge};
     }
     return {...(row.voice||{label:`목소리 ${i+1}`,groupLabel:'목소리',voiceNumber:i+1}),badge};
-  }));
-  if(preflightAutosave)preflightBadgeCache=data.items.map(decisionBadge);
-  listening.enhance(audio,controls,{play,volume:$("review-volume")});
+  };
+  if(reviewPlaylist){
+    const positions=new Map(data.items.map((item,i)=>[item,i]));
+    reviewPicker=listening.createFolderPicker({
+      ...pickerOptions,folders:reviewPlaylist.folders,emptyLabel:'음원 없음',
+      describe:row=>describe(row,positions.get(row)),onSelect:row=>moveTo(positions.get(row)),
+    });
+    listening.enhance(audio,controls,{play,previous,next,volume});
+  }else{
+    reviewPicker=listening.createPicker({...pickerOptions,onSelect:moveTo});
+    reviewPicker.setItems(data.items.map(describe));
+    if(preflightAutosave)preflightBadgeCache=data.items.map(decisionBadge);
+    listening.enhance(audio,controls,{play,volume});
+    previous.hidden=true;next.hidden=true;
+  }
   document.documentElement.classList.add('compact-review','listen-voice-compact');
   $("review-sidebar").hidden=true;
   $("review-picker").hidden=false;
-  $("prev").hidden=true;$("next").hidden=true;
-  $("review-volume").hidden=false;
+  volume.hidden=false;
   $("review-player").insertBefore($("expected"),$("state"));
 }
 function renderList(){
@@ -582,7 +610,11 @@ function renderDecision(){
       $("ending-confirm").textContent=ending?`끝 음절 ‘${ending}’ 확인`:'끝 음절 확인';
     }
   }
-  if(reviewPicker){if(preflightAutosave)data.items.forEach((item,i)=>{const badge=decisionBadge(item);if(preflightBadgeCache[i]!==badge){preflightBadgeCache[i]=badge;reviewPicker.setBadge(i,badge);}});else reviewPicker.setBadge(index,decisionBadge(row));}else renderList();
+  if(reviewPlaylist){
+    const locked=(preflightAutosave||completedReview())&&guarded;
+    $("prev").disabled=locked||index===0;$("next").disabled=locked||index===data.items.length-1;
+    reviewPicker.refresh();
+  }else if(reviewPicker){if(preflightAutosave)data.items.forEach((item,i)=>{const badge=decisionBadge(item);if(preflightBadgeCache[i]!==badge){preflightBadgeCache[i]=badge;reviewPicker.setBadge(i,badge);}});else reviewPicker.setBadge(index,decisionBadge(row));}else renderList();
   renderProgress();
 }
 function show(){
@@ -591,7 +623,7 @@ function show(){
   stop();playbackAllowed=true;if(preflightAutosave)preflightPlaybackError='';
   $("title").textContent=`${index+1} / ${data.items.length}`;
   $("expected").textContent=(referenceReview?'샘플 문장: ':r.group&&!r.voice?'확인할 소리: ':'기대 문장: ')+r.text;
-  $("instruction").textContent=r.instruction||'';audio.src=r.audio;$("items").value=index;reviewPicker?.setSelected(index);
+  $("instruction").textContent=r.instruction||'';audio.src=r.audio;$("items").value=index;reviewPicker?.setSelected(reviewPlaylist?r:index);
   $("prev").disabled=index===0;$("next").disabled=index===data.items.length-1;listPage=Math.floor(index/pageSize);renderDecision();
 }
 function choose(decision,event){if(!data?.items[index]||(pronunciationReview&&decision==='review'))return;
@@ -730,7 +762,12 @@ function capturePreflightChoice(){if(!(preflightAutosave||completedReview())||!d
 $("discard").onpointerdown=capturePreflightChoice;
 $("discard").onpointercancel=()=>{preflightChoiceTarget=null;};
 for(const id of ['discard','ending-confirm'])$(id).onkeydown=event=>{if(!['Enter',' '].includes(event.key))return;if(event.repeat){event.preventDefault();return;}if(id==='discard')capturePreflightChoice();};
-function moveTo(value){if(!data||!Number.isInteger(value)||value<0||value>=data.items.length||completedReview()&&(preflightFinalizing||preflightFinalized))return;if(completedReview())clearPostReviewError();const resume=continuous;index=value;show();if(resume){setContinuous(true);return play();}}
+function moveTo(value){
+  if(!data||!Number.isInteger(value)||value<0||value>=data.items.length)return;
+  if((completedReview()||reviewPlaylist&&preflightAutosave)&&(preflightFinalizing||preflightFinalized||preflightBlocked))return;
+  if(completedReview())clearPostReviewError();
+  const resume=continuous;index=value;show();if(resume){setContinuous(true);return play();}
+}
 $("prev").onclick=()=>moveTo(index-1);$("next").onclick=()=>moveTo(index+1);$("items").onchange=()=>moveTo(Number($("items").value));
 $("list-prev").onclick=()=>{listPage--;renderList();};$("list-next").onclick=()=>{listPage++;renderList();};
 $("review-pending").onclick=()=>{

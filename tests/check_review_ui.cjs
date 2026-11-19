@@ -6,8 +6,12 @@ const vm = require("node:vm");
 const crypto = require("node:crypto");
 const html = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources/review.html"), "utf8");
 const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
+const listeningScript = fs.readFileSync(path.join(__dirname, "../korean_openwakeword/resources/listening_player.js"), "utf8");
+const listeningContext = {window:{KowwChapterReady:{}},document:{}};
+vm.runInNewContext(listeningScript,listeningContext);
+const {buildReviewPlaylist} = listeningContext.window.KowwListening;
 
-async function screen(queue, search, saved = {}, config = {}, { playback, sharedControls = false, queueGate, queueError,respond,actualPlaying=true,mainHeight=160,embedded=true } = {}) {
+async function screen(queue, search, saved = {}, config = {}, { playback, sharedControls = false, folderControls = false, queueGate, queueError,respond,actualPlaying=true,mainHeight=160,embedded=true } = {}) {
   const element=()=>({ textContent: "", innerHTML: "", children: [], attributes:{}, setAttribute(key,value){this.attributes[key]=value;}, removeAttribute(key){if(key==='src')delete this.src;else delete this.attributes[key];}, append(...nodes) { this.children.push(...nodes); },replaceChildren(...nodes){this.children=nodes;},insertBefore(node,before){this.children.splice(this.children.indexOf(before),0,node);} });
   const nodes = new Map([...html.matchAll(/id="([^"]+)"/g)].map(match => [match[1],element()]));
   const calls = [], writes = [], readiness = [], parentMessages=[], listeners = {}, documentEvents={}, resizeObservers=[],audioEffects = {pauses: 0, plays: 0};
@@ -43,6 +47,18 @@ async function screen(queue, search, saved = {}, config = {}, { playback, shared
       return picker;
     },
   };
+  if(folderControls)Object.assign(context.KowwListening,{
+    buildReviewPlaylist,
+    createFolderPicker(options){
+      const picker={options,selected:null,revealed:[],refreshCount:0,request:null,
+        setSelected(item){this.selected=item;},refresh(){this.refreshCount++;},reveal(request){this.revealed.push(request);},
+        show(request){this.request=request;options.onOpenChange?.(true,request);},
+        close(){if(this.request!==null){options.onOpenChange?.(false,this.request);this.request=null;}},
+      };
+      pickers.push(picker);
+      return picker;
+    },
+  });
   context.addEventListener = (type, handler) => { listeners[type] = handler; };
   vm.runInContext(script, context);
   for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve));
@@ -788,6 +804,65 @@ const reviewNotices=view=>view.parentMessages.filter(row=>row.message.type==='ko
   incompleteHard.nodes.get('audio').played={length:1,start:()=>.5,end:()=>1};await incompleteHard.nodes.get('start').onclick();finishPreflight(incompleteHard,1400);await incompleteHard.flush();
   assert.equal(incompleteHard.writes.length,0);assert.equal(postState(incompleteHard).ready,false);
   console.log('Hard compact review: explicit Next admission, no checkbox exception, factual full playback, same-source recheck, isolated pool ACK and zero-kept hold passed');
+  const folderOptions={...shared,folderControls:true};
+  const folderPre=preflightQueue(),folderPreActions=[],folderPost=postQueue(),folderHard={...hardQueue(),review_kind:'similar'};
+  folderPre.items.reverse();folderPost.items.reverse();folderHard.items.reverse();
+  for(const [queueData,kind,config,options] of [
+    [folderPre,'pilot',preConfig,{respond:draftServer(folderPre,folderPreActions)}],
+    [folderPost,'positive',postConfig,{}],
+    [folderHard,'hard',hardConfig,{respond:postResponse(folderHard,()=>({payload:hardSuccess(2)}))}],
+  ]){
+    const view=await screen(queueData,`?project=bora&queue=${kind}`,{},config,{...folderOptions,...options});
+    assert.equal(view.readiness.at(-1).status,'ready');
+    const [picker]=view.pickers,[transport]=view.enhanced;
+    const {previous,next,play}=transport.options;
+    assert.equal(previous,view.nodes.get('prev'));
+    assert.equal(next,view.nodes.get('next'));
+    assert.equal(play,view.nodes.get('start'));
+    assert.notEqual(previous.hidden,true);assert.notEqual(next.hidden,true);
+    const [first,second]=Array.from(picker.options.folders,folder=>folder.items[0]);
+    assert.equal(first.id,'one');assert.equal(second.id,'two');
+    assert.equal(picker.selected,first);assert.equal(previous.disabled,true);
+    assert.equal(view.nodes.get('audio').src,first.audio);
+    picker.options.onSelect(second);assert.equal(picker.selected,second);assert.equal(next.disabled,true);
+    assert.equal(view.nodes.get('audio').src,second.audio);
+    previous.onclick();assert.equal(picker.selected,first);
+    next.onclick();assert.equal(picker.selected,second);
+    previous.onclick();
+    preMessage(view,'koww:preflight-status',kind==='hard'?{phase:'hard'}:{});
+    picker.show(51);preMessage(view,'koww:preflight-picker-ready',{...(kind==='hard'?{phase:'hard'}:{}),picker_request:51});
+    assert.deepEqual(picker.revealed,[51]);picker.close();
+    await play.onclick();finishPreflight(view,1400);await view.flush();
+    assert.equal(view.nodes.get('audio').src,second.audio,'continuous playback uses the folder order');
+    assert.equal(picker.selected,second);
+    finishPreflight(view,1600);await view.flush();
+    assert.match(picker.options.describe(first).badge,/정상|적합/);
+    if(kind==='pilot'){
+      assert.deepEqual([...new Set(folderPreActions.map(action=>action.sample_id))],['one','two']);
+    }else if(kind==='hard'){
+      hardMessage(view,'koww:preflight-finalize');await view.flush();
+      assert.equal(postPosts(view).length,1,'folder sorting preserves the source order for queue revalidation');
+      assert.equal(postState(view).error,false);
+    }
+  }
+  const unrelated=await screen({...queue,kind:'references'},'?queue=references',{}, {},folderOptions);
+  assert.equal(unrelated.pickers.length,0,'reference voices keep their existing review layout');
+  const recoveredQueue=preflightQueue(),recoveredActions=[];
+  recoveredQueue.items.reverse();
+  const recoverDraft=draftServer(recoveredQueue,recoveredActions);
+  let failFirstSave=true;
+  const recovered=await screen(recoveredQueue,'?project=bora&queue=pilot',{},preConfig,{...folderOptions,respond:(url,options)=>{
+    if(options&&failFirstSave){failFirstSave=false;return {ok:false,payload:{error:'저장 연결이 끊겼습니다.'}};}
+    return recoverDraft(url,options);
+  }});
+  await recovered.nodes.get('start').onclick();await recovered.flush();
+  assert.match(reviewNotices(recovered).at(-1).message.message,/판정이 아직 저장되지 않았습니다/,
+    'recovery accepts the unchanged queue in wire order');
+  await recovered.nodes.get('preflight-retry').onclick();await recovered.flush();
+  assert.equal(recovered.nodes.get('start').disabled,false);
+  assert.equal(recovered.nodes.get('audio').paused,true);
+  assert.equal(recoveredActions[0].sample_id,'one','retry preserves the selected sample despite sorting');
+  console.log('Folder review: three compact chapter playlists share ordered selection, transport and continuous playback');
   }
   console.log('Preflight continuous review: factual playing defaults, unsuitable toggle, ACK-independent relay, gesture/source guards, recovery and finalization passed');
   console.log('Post compact review: strict completed listening, factual local draft, trusted Next finalization, hold/error retry, stale/duplicate guards and standalone fallback passed');

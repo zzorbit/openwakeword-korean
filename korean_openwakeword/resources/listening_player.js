@@ -335,7 +335,103 @@
     return {setItems, setSelected, setBadge, close, reveal};
   }
 
-  window.KowwListening = Object.freeze({enhance, createPicker, closePickers: () => closePickers()});
+  const reviewOrder = ["학습용", "공통 평가용", "남성", "여성", "어린이", "청소년", "청년", "중년", "노년", "성인(연령 미지정)"];
+  const koreanOrder = new Intl.Collator("ko-KR", {numeric: true});
+  function buildReviewPlaylist(items, {similar = false} = {}) {
+    const root = {folders: [], items: []};
+    for (const item of items) {
+      const split = {train: "학습용", validation: "공통 평가용"}[item.split];
+      const label = item.label || item.group || "";
+      const group = split || (label.startsWith("공통 평가용") ? "공통 평가용"
+        : label.startsWith("학습용") ? "학습용" : "기타 목소리");
+      const trail = similar ? [item.text || "기타 유사어"] : [group, item.gender, item.age_group].filter(Boolean);
+      let folder = root;
+      for (const name of trail) {
+        let child = folder.folders.find(entry => entry.label === name);
+        if (!child) { child = {label: name, folders: [], items: []}; folder.folders.push(child); }
+        folder = child;
+      }
+      folder.items.push(item);
+    }
+    const ordered = [];
+    const rank = label => reviewOrder.includes(label) ? reviewOrder.indexOf(label) : reviewOrder.length;
+    const voiceNumber = item => Number.isSafeInteger(item.voice_number) && item.voice_number > 0
+      ? item.voice_number : Number.MAX_SAFE_INTEGER;
+    function visit(folder) {
+      const start = ordered.length;
+      folder.folders.sort((left, right) => (similar ? 0 : rank(left.label) - rank(right.label))
+        || koreanOrder.compare(left.label, right.label));
+      folder.folders.forEach(visit);
+      folder.items.sort((left, right) => voiceNumber(left) - voiceNumber(right));
+      ordered.push(...folder.items);
+      folder.count = ordered.length - start;
+    }
+    visit(root);
+    return {items: ordered, folders: root.folders};
+  }
+
+  function createFolderPicker({container, button, label, popup, list, folders, describe, onSelect, onOpenChange,
+    emptyLabel = "음원 없음"}) {
+    const rootLabel = list.getAttribute("aria-label") || "음원 목록";
+    let trail = [], selected = null, entries = [];
+    const paths = new Map();
+    function index(folderList, parent = []) {
+      for (const folder of folderList) {
+        const path = [...parent, folder];
+        for (const item of folder.items) paths.set(item, path);
+        index(folder.folders, path);
+      }
+    }
+    function setSelected(item) {
+      selected = paths.has(item) ? item : null;
+      picker.setSelected(entries.findIndex(entry => entry.item === selected), selected ? describe(selected).label : emptyLabel);
+    }
+    function openFolder(path) { trail = path; render(); }
+    function render(restore = null) {
+      const current = trail.at(-1);
+      const pathLabel = trail.map(folder => folder.label).join(" › ");
+      list.setAttribute("aria-label", pathLabel || rootLabel);
+      entries = [];
+      if (current) entries.push({kind: "back", label: "상위 폴더", detailLabel: current.label,
+        fullLabel: "상위 폴더 · 현재 " + pathLabel, keepOpenOnSelect: true,
+        run: () => { trail = trail.slice(0, -1); render(current); }});
+      for (const folder of current ? current.folders : folders) {
+        entries.push({kind: "folder", label: folder.label, fullLabel: `폴더 · ${folder.label}`,
+          badge: `${folder.count.toLocaleString("ko-KR")}개`, keepOpenOnSelect: true,
+          folder, run: () => openFolder([...trail, folder])});
+      }
+      const selectedPath = paths.get(selected);
+      if (!current && selectedPath) entries.push({kind: "folder", label: "현재 음원 폴더",
+        detailLabel: selectedPath.at(-1).label, fullLabel: `현재 음원 폴더 · ${selectedPath.map(folder => folder.label).join(" › ")}`,
+        keepOpenOnSelect: true, run: () => openFolder(selectedPath)});
+      for (const item of current?.items || []) entries.push({...describe(item), kind: "clip", item, run: () => onSelect(item)});
+      const selectedIndex = entries.findIndex(entry => entry.item === selected);
+      const activeIndex = restore ? entries.findIndex(entry => entry.folder === restore) : selectedIndex;
+      picker.setItems(entries, selectedIndex, selected ? describe(selected).label : emptyLabel,
+        {keepOpen: true, activeIndex: Math.max(0, activeIndex)});
+    }
+    const picker = createPicker({container, button, label, popup, list, onSelect: entry => entries[entry].run(),
+      onOpenChange: (open, request) => {
+        if (open) { trail = []; render(); }
+        if (onOpenChange) onOpenChange(open, request);
+        else if (open) picker.reveal(request);
+      }});
+    index(folders);
+    render();
+    function refresh(nextFolders) {
+      if (nextFolders) {
+        picker.close(); paths.clear(); folders = nextFolders; trail = []; index(folders);
+        if (!paths.has(selected)) selected = null;
+        render();
+      } else entries.forEach((entry, offset) => {
+        if (entry.item) picker.setBadge(offset, describe(entry.item).badge || "");
+      });
+    }
+    return {setSelected, refresh, close: picker.close, reveal: picker.reveal};
+  }
+
+  window.KowwListening = Object.freeze({enhance, createPicker, createFolderPicker, buildReviewPlaylist,
+    closePickers: () => closePickers()});
 })();
 
 /* A chapter reports rendered UI readiness, independently of playback or review decisions. */

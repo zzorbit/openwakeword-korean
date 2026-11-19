@@ -153,6 +153,7 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-phrase-grid,.story-live #input-form .hard-phrase-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;width:100%;max-width:560px;margin-inline:auto}
 .story-phrase-grid input,.story-live #input-form .hard-phrase-field input{width:100%;min-width:0;height:44px;padding:8px 12px;border:1px solid #424a56;border-radius:7px;background:#22272e;color:#e3e7ec;font:400 17px/26px system-ui,"Malgun Gothic",sans-serif}
 .story-saved-review{width:100%;min-width:0;text-align:left}
+.story-saved-review .listen-voice-compact .listen-controls.is-compact .listen-skip{flex:none;min-width:0;width:24px;min-height:32px;padding:0}
 .story-saved-review-decisions label[data-checked="true"]{background:#485462;border-color:#8594a8;color:#eaedf1}
 .story-saved-review-decisions input{position:absolute;opacity:0;width:1px;height:1px;padding:0;margin:0;pointer-events:none}
 .story-saved-review-decisions label[data-checked="true"]::before{content:"✓";font-size:14px;line-height:20px}

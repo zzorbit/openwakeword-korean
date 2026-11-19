@@ -22,17 +22,22 @@ function screen() {
     }
     setAttribute(name, value) { this.attributes[name] = String(value); }
     getAttribute(name) { return this.attributes[name] ?? null; }
+    removeAttribute(name) { delete this.attributes[name]; }
+    replaceChildren(...nodes) { this.children = nodes; }
+    getBoundingClientRect() { return {left: 8, width: 280, top: 40, bottom: 80}; }
+    focus() { this.focused = true; }
     addEventListener(name, fn) { (this.handlers[name] ||= []).push(fn); }
     fire(name) { this["on" + name]?.(); for (const fn of this.handlers[name] || []) fn(); }
   }
   const context = vm.createContext({ document: { createElement: tag => new Element(tag) } });
   context.window = context;
+  context.innerHeight = 500; context.innerWidth = 768;
   vm.runInContext(source, context);
   const audio = new Element("audio"), controls = new Element("div");
   const previous = new Element("button"), play = new Element("button"), next = new Element("button");
   controls.append(previous, play, next);
   Object.assign(audio, { controls: true, duration: 120, currentTime: 30, src: "/unchanged.wav", volume: 0.7, playbackRate: 1.25, muted: false });
-  return { enhance: context.KowwListening.enhance, audio, controls, previous, play, next };
+  return {...context.KowwListening, audio, controls, previous, play, next, Element};
 }
 
 let passed = 0;
@@ -132,6 +137,39 @@ test("metadata, time, duration, and emptied events keep elapsed time and the see
   p.audio.duration = NaN; p.audio.currentTime = 0; p.audio.fire("emptied");
   assert.equal(time.textContent, "0:00 / 0:00"); assert.equal(seek.disabled, true);
   assert.equal(seek.style.getPropertyValue("--listen-progress"), "0%");
+});
+
+test("folder traversal matches the stable playback order and retains original items when selecting", () => {
+  const p = screen();
+  const samples = [
+    {id: "eval", split: "validation", gender: "남성", age_group: "어린이", voice_number: 1},
+    {id: "senior", split: "train", gender: "남성", age_group: "노년", voice_number: 1},
+    {id: "child2", split: "train", gender: "남성", age_group: "어린이", voice_number: 2},
+    {id: "child1", split: "train", gender: "남성", age_group: "어린이", voice_number: 1},
+  ];
+  const playlist = p.buildReviewPlaylist(samples);
+  assert.deepEqual(Array.from(playlist.items, item => item.id), ["child1", "child2", "senior", "eval"]);
+  assert.deepEqual(samples.map(item => item.id), ["eval", "senior", "child2", "child1"]);
+  const [container, popup, list, button, label] = Array.from({length: 5}, () => new p.Element("div"));
+  let selected = null;
+  const picker = p.createFolderPicker({container, button, label, popup, list, folders: playlist.folders,
+    describe: item => ({label: item.id}), onSelect: item => { selected = item; }});
+  picker.setSelected(samples[0]);
+  button.fire("click");
+  assert.equal(list.children[0].getAttribute("aria-label"), "폴더 · 학습용 · 3개");
+  list.children[0].fire("click");
+  assert.equal(selected, null);
+  list.children[1].fire("click");
+  list.children[1].fire("click");
+  assert.equal(list.getAttribute("aria-label"), "학습용 › 남성 › 어린이");
+  list.children[1].fire("click");
+  assert.equal(selected, samples[3]);
+  assert.equal(popup.hidden, true);
+  const nextQueue = p.buildReviewPlaylist([{id: "other", text: "다른 말"}], {similar: true});
+  picker.refresh(nextQueue.folders);
+  assert.equal(label.textContent, "음원 없음");
+  button.fire("click");
+  assert.equal(list.children[0].getAttribute("aria-label"), "폴더 · 다른 말 · 1개");
 });
 
 console.log(`Listening player UI: ${passed} tests passed`);

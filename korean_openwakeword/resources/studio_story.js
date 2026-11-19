@@ -344,7 +344,7 @@
     const savedReviewPickerContainer = node("div", undefined, "voice-picker");
     const savedReviewPickerButton = node("button", undefined, "voice-picker-button");
     savedReviewPickerButton.type = "button";
-    savedReviewPickerButton.setAttribute("aria-label", "저장된 음원");
+    savedReviewPickerButton.setAttribute("aria-label", "음원 목록");
     savedReviewPickerButton.setAttribute("aria-haspopup", "listbox");
     savedReviewPickerButton.setAttribute("aria-controls", "saved-review-voice-list");
     const savedReviewPickerLabel = node("span", undefined, "voice-picker-label");
@@ -417,9 +417,11 @@
       volume: savedReviewVolume,
     });
     savedReviewVolume.hidden = true;
-    const savedReviewPicker = window.KowwListening?.createPicker?.({
+    const savedReviewPicker = window.KowwListening?.createFolderPicker?.({
       container: savedReviewPickerContainer, button: savedReviewPickerButton, label: savedReviewPickerLabel,
-      popup: savedReviewPickerPopup, list: savedReviewPickerList, onSelect: position => selectHistoryReview(position),
+      popup: savedReviewPickerPopup, list: savedReviewPickerList, folders: [],
+      describe: item => ({ ...(item.voice || { label: item.text || item.label || "음원" }), badge: historyReviewBadge(item) }),
+      onSelect: item => selectHistoryReview(historyReviewItems.indexOf(item)),
     });
     const listenDialog = makeDialog("유사어 전체 듣기");
     listenDialog.dialog.classList.add("story-listen-dialog");
@@ -2321,7 +2323,7 @@
           : item.decision === "review" ? "저장된 판정 · 다시 확인" : !["keep", "discard"].includes(item.decision) ? "판정 기록이 없습니다." : "",
       ].filter(Boolean).join(" ");
       if (savedReviewPickerContainer.hidden) renderHistoryReviewList();
-      else savedReviewPicker.setSelected(historyReviewIndex);
+      else savedReviewPicker.setSelected(item);
       historyControls();
       if (continuePlayback && source) return playHistoryReview();
     }
@@ -2411,39 +2413,33 @@
         savedReviewSidebar.hidden = compact;
         savedReviewPickerContainer.hidden = !compact;
         savedReviewText.hidden = compact;
-        savedReviewPrevious.hidden = compact;
-        savedReviewNext.hidden = compact;
         savedReviewVolume.hidden = !compact;
-        const groupCounts = new Map([["학습용", 0], ["공통 평가용", 0]]);
-        historyReviewItems = callReviewSteps.has(current) ? reviewItems.map((item, i) => {
-          if (typeof item.label === "string" && item.label.trim())
-            return { ...item, voice: { label: item.label, fullLabel: item.label } };
-          const grouped = groupCounts.has(item.group);
-          const groupLabel = grouped ? item.group : "목소리";
-          const position = grouped ? groupCounts.get(groupLabel) + 1 : i + 1;
-          if (grouped) groupCounts.set(groupLabel, position);
-          const voiceNumber = Number.isSafeInteger(item.voice_number) && item.voice_number > 0 ? item.voice_number : position;
-          const fullLabel = grouped ? `${groupLabel} · 목소리 ${voiceNumber}` : `목소리 ${voiceNumber}`;
-          const label = grouped ? `${groupLabel} · ${voiceNumber}` : fullLabel;
-          return { ...item, voice: { label, fullLabel, groupLabel, voiceNumber } };
-        }) : reviewItems;
         savedReviewCompletion.hidden = compact || callReviewSteps.has(current);
-        if (!sameQueue) historyReviewIndex = 0;
         savedReview.hidden = false; historyContent.replaceChildren();
-        if (compact && (!sameQueue || layoutChanged)) {
-          savedReviewPicker.setItems(historyReviewItems.map((item, i) => {
-            const name = item.text || item.label || `음원 ${i + 1}`;
-            const entry = item.voice || { label: name, fullLabel: `유사어 음원 ${i + 1} · ${name}` };
-            return { ...entry, badge: historyReviewBadge(item) };
-          }));
-        }
-        if (!sameQueue || savedReviewSelect.children.length !== reviewItems.length) {
+        if (!sameQueue || layoutChanged) {
+          const groupCounts = new Map([["학습용", 0], ["공통 평가용", 0]]);
+          const items = callReviewSteps.has(current) ? reviewItems.map((item, i) => {
+            if (typeof item.label === "string" && item.label.trim())
+              return { ...item, voice: { label: item.label, fullLabel: item.label } };
+            const grouped = groupCounts.has(item.group);
+            const groupLabel = grouped ? item.group : "목소리";
+            const position = grouped ? groupCounts.get(groupLabel) + 1 : i + 1;
+            if (grouped) groupCounts.set(groupLabel, position);
+            const voiceNumber = Number.isSafeInteger(item.voice_number) && item.voice_number > 0 ? item.voice_number : position;
+            const fullLabel = grouped ? `${groupLabel} · 목소리 ${voiceNumber}` : `목소리 ${voiceNumber}`;
+            const label = grouped ? `${groupLabel} · ${voiceNumber}` : fullLabel;
+            return { ...item, voice: { label, fullLabel, groupLabel, voiceNumber } };
+          }) : reviewItems;
+          const playlist = window.KowwListening?.buildReviewPlaylist?.(items, { similar: current === "hard-review" });
+          historyReviewItems = playlist?.items || items;
+          historyReviewIndex = 0;
+          if (compact) savedReviewPicker.refresh(playlist.folders);
           savedReviewSelect.replaceChildren(...historyReviewItems.map((item, i) => {
             const label = item.voice && groupCounts.has(item.group) ? item.voice.fullLabel : `${i + 1}. ${item.text || item.label || "음원"}`;
             const option = node("option", label); option.value = String(i); return option;
           }));
           updateHistoryReview();
-        } else if (layoutChanged || !savedReviewAudio.getAttribute("src")) updateHistoryReview();
+        } else if (!savedReviewAudio.getAttribute("src")) updateHistoryReview();
         return;
       }
       stopHistoryPlayback(true);

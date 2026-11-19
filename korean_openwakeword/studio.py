@@ -4814,6 +4814,7 @@ class StudioManager:
                 voice_labels = self._call_voice_labels(state, audio_rows) if step in ("call-pilot-review", "pronunciation") else [{} for _ in audio_rows]
                 items = [{"id": audio["sample_id"], "text": audio.get("text", ""),
                     "group": audio.get("review_group") or audio.get("voice_family_id"),
+                    **({"split": audio["split"]} if audio.get("split") in ("train", "validation") else {}),
                     **({"voice_number": audio["voice_number"]} if "voice_number" in audio else {}),
                     "decision": decisions.get(audio["sample_id"], {}).get("decision"),
                     "listened": decisions.get(audio["sample_id"], {}).get("listened") is True,
@@ -5687,6 +5688,11 @@ def make_studio_server(manager, port=8793):
                                               "group": r.get("review_group"), "instruction": r.get("review_instruction"),
                                               **({"voice_number": r["voice_number"]} if "voice_number" in r else {}),
                                               "audio": f"/review/audio/{i}" + base} for i, r in enumerate(rows)]}
+                        if review["kind"] in ("pilot", "positive") or review.get("synthetic_review_policy") or review["id"] == "hard":
+                            payload["review_kind"] = "call" if review["kind"] in ("pilot", "positive") else "similar"
+                            for item, row in zip(payload["items"], rows):
+                                if row.get("split") in ("train", "validation"):
+                                    item["split"] = row["split"]
                         if call_phase:
                             payload.update(review_phase=call_phase, require_listened_discard=True)
                             ending_totals = Counter(row["voice_family_id"] for row in rows if row.get("ending_check_required") is True)

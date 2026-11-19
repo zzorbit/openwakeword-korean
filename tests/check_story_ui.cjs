@@ -61,7 +61,7 @@ function page(initialProject = null, options = {}) {
       if (tag === "audio") { this.paused = true; this.ended = false; this.playCalls = 0; this.loadCalls = 0; }
       this.classList = {
         contains: name => this.className.split(/\s+/).includes(name),
-        add: name => { this.className = [...new Set([...this.className.split(/\s+/).filter(Boolean), name])].join(" "); },
+        add: (...names) => { this.className = [...new Set([...this.className.split(/\s+/).filter(Boolean), ...names])].join(" "); },
         remove: (...names) => { this.className = this.className.split(/\s+/).filter(value => !names.includes(value)).join(" "); },
         toggle: (name, force) => { if (force) this.classList.add(name); else this.classList.remove(name); },
       };
@@ -2159,20 +2159,44 @@ async function main() {
     { id: "one", text: "언니야", audio: "/history-stage/audio/0?project=history&step=hard-review", decision: "keep", listened: true },
     { id: "two", text: "언제나", audio: "/history-stage/audio/1?project=history&step=hard-review", decision: "discard", listened: false },
   ] } } });
-  await test("completed pronunciation and hard reviews use the compact picker with read-only verdicts", async () => {
+  const folderOptions = (popup, kind) => popup.querySelectorAll(".voice-picker-option")
+    .filter(option => option.getAttribute("data-entry-kind") === kind);
+  async function openSavedReviewPicker(picker) {
+    picker.getBoundingClientRect = () => ({ left: 80, top: 200, bottom: 240, width: 600 });
+    await picker.fire("click");
+  }
+  async function openSavedReviewClips(popup) {
+    for (let depth = 0; depth < 6; depth++) {
+      const clips = folderOptions(popup, "clip");
+      if (clips.length) return clips;
+      const folder = folderOptions(popup, "folder")[0];
+      assert.ok(folder, "the saved review exposes nested folders");
+      await folder.fire("click");
+    }
+    assert.fail("no saved audio clips found in the folders");
+  }
+  await test("completed pronunciation and hard reviews use the folder picker with read-only verdicts", async () => {
     const view = savedListeningView()["hard-review"];
-    const model = historyModel({ pronunciation: view, "hard-review": view });
-    const original = JSON.stringify(view);
+    const callView = { completed: true, review: { items: view.review.items.map((item, i) => ({ ...item,
+      group: "학습용", gender: "남성", age_group: "중년", voice_number: i + 1,
+    })).reverse() } };
+    const model = historyModel({ pronunciation: callView, "hard-review": view });
+    const original = JSON.stringify(model.completed_stage_views);
     const p = page(model, { compactListening: true }); await visit(p, "pronunciation");
     const review = p.shell.querySelector(".story-saved-review");
     const picker = review.querySelector(".voice-picker-button"), popup = review.querySelector(".voice-picker-popup");
     const player = review.querySelector(".listen-player"), decisions = player.querySelector(".listen-decisions");
-    picker.getBoundingClientRect = () => ({ left: 80, top: 200, bottom: 240, width: 600 });
     assert.equal(review.querySelector(".listen-sidebar").hidden, true);
     assert.equal(player.querySelector(".listen-volume").hidden, false);
-    await picker.fire("click");
+    const controls = player.querySelector(".listen-controls"), audio = player.querySelector("audio");
+    assert.deepEqual(controls.children.map(control => ["skip-previous", "play", "seek", "time", "skip-next", "mute", "volume"]
+      .find(name => control.classList.contains(`listen-${name}`))), ["skip-previous", "play", "seek", "time", "skip-next", "mute", "volume"]);
+    assert.equal(controls.querySelector(".listen-skip-next").hidden, false);
+    assert.ok(audio.getAttribute("src").includes("/0?"), "the first clip follows folder order regardless of server ordering");
+    await openSavedReviewPicker(picker);
     assert.equal(popup.hidden, false);
-    const option = popup.querySelectorAll(".voice-picker-option")[1];
+    assert.equal(folderOptions(popup, "clip").length, 0);
+    const option = (await openSavedReviewClips(popup))[1];
     assert.equal(option.querySelector(".voice-picker-badge").textContent, "부적합");
     await option.fire("click");
     assert.equal(popup.hidden, true);
@@ -2181,15 +2205,21 @@ async function main() {
     assert.equal(decisions.hidden, true, "completed call review uses saved badges instead of inert verdict buttons");
     assert.ok(decisions.querySelectorAll("input").every(input => input.disabled));
     assert.equal(player.querySelector("audio").playCalls, 0);
+    await controls.querySelector(".listen-skip-previous").fire("click");
+    assert.ok(audio.getAttribute("src").includes("/0?"));
+    await controls.querySelector(".listen-play").fire("click");
+    audio.paused = true; audio.ended = true; await audio.fire("pause"); await audio.fire("ended");
+    assert.ok(audio.getAttribute("src").includes("/1?"), "continuous playback follows the same order shown in the folder");
+    assert.equal(audio.paused, false);
     await visit(p, "hard-review");
     assert.equal(decisions.hidden, false, "legacy hard history retains its read-only verdicts");
-    await picker.fire("click");
-    const hardOption = popup.querySelectorAll(".voice-picker-option")[0];
-    assert.equal(hardOption.querySelector(".voice-picker-group").textContent, "언니야");
+    await openSavedReviewPicker(picker);
+    assert.equal(folderOptions(popup, "folder")[0].querySelector(".voice-picker-group").textContent, "언니야");
+    const hardOption = (await openSavedReviewClips(popup))[0];
     await hardOption.fire("click");
     assert.equal(player.querySelector(".listen-position").textContent, "1 / 2");
     assert.equal(decisions.querySelectorAll("input").find(input => input.checked).value, "keep");
-    assert.equal(JSON.stringify(view), original);
+    assert.equal(JSON.stringify(model.completed_stage_views), original);
     assert.equal(p.calls.some(call => ["create", "start", "resume", "input"].includes(call)), false);
   });
   await test("saved review advances to the next clip and stops at the end without changing decisions", async () => {
@@ -2549,7 +2579,8 @@ async function main() {
     const picker=p.shell.querySelector('.voice-picker-label');assert.equal(picker.textContent,label);
     assert.deepEqual(p.shell.querySelector('.story-saved-review-decisions').querySelectorAll('span').map(span=>span.textContent),['적합','부적합']);
     assert.equal(p.shell.querySelector('.story-saved-review-decisions').hidden,true,'completed preflight history uses the existing saved badge instead of two inactive choice controls');
-    assert.equal(p.shell.querySelector('.voice-picker-badge').textContent,'적합');
+    await openSavedReviewPicker(p.shell.querySelector('.voice-picker-button'));
+    assert.equal((await openSavedReviewClips(p.shell.querySelector('.voice-picker-popup')))[0].querySelector('.voice-picker-badge').textContent,'적합');
   });
   const postflightProject=()=>{
     const project=preflightProject();project.stage_id='positive_review';
@@ -2781,7 +2812,8 @@ async function main() {
     const p=page(project,{compactListening:true});await visit(p,'pronunciation');
     assert.equal(p.shell.querySelector('.story-saved-review-decisions').hidden,true);
     assert.equal(p.shell.querySelector('.voice-picker-label').textContent,'학습용 · 남성 · 어린이 · 1번');
-    assert.equal(p.shell.querySelector('.voice-picker-badge').textContent,'적합');
+    await openSavedReviewPicker(p.shell.querySelector('.voice-picker-button'));
+    assert.equal((await openSavedReviewClips(p.shell.querySelector('.voice-picker-popup')))[0].querySelector('.voice-picker-badge').textContent,'적합');
     assert.equal(p.calls.some(call=>['start','resume','input'].includes(call)),false);
   });
   const repairProgress=()=>({state:'running',source_queue_sha256:'current-postflight-queue',done:0,total:50,unit:'개',
