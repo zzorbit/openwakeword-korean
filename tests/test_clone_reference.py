@@ -35,6 +35,18 @@ def padded_reference(root, rate=24000):
     return reference(root, wave, rate), wave
 
 
+@pytest.mark.parametrize("frame", [160, 480, 960, 1920])
+def test_native_energy_frames_preserve_threshold_and_partial_tail(frame):
+    rule = preparation.RULES["activity_rms"]
+    close = np.float32(rule)
+    levels = [np.nextafter(close, np.float32(0)), close, np.nextafter(close, np.float32(1))]
+    waveform = np.repeat(np.asarray(levels, dtype="float32"), frame)
+    waveform = np.r_[waveform, np.full(frame // 3, levels[-1], dtype="float32")]
+    scalar = [start for start in range(0, len(waveform), frame)
+              if np.sqrt(np.mean(waveform[start:start + frame].astype(np.float64) ** 2)) >= rule]
+    assert preparation._active_frames(waveform, frame) == scalar
+
+
 @pytest.mark.parametrize("subtype", ["FLOAT", "PCM_16", "PCM_24"])
 def test_normal_voice_keeps_original_bytes_without_creating_a_copy(tmp_path, subtype):
     original = reference(tmp_path, tone(1.6), subtype=subtype)

@@ -2,11 +2,13 @@
 from pathlib import Path
 from collections import Counter, defaultdict
 from contextlib import ExitStack
+from hashlib import sha256
+from io import BytesIO
 import math
 import numpy as np
 import soundfile as sf
 
-from .audio import active_speech_mask, pcm16, noise_scale, measured_snr, rms, common_headroom_gain
+from .audio import active_speech_mask, pcm16, noise_scale, measured_snr, rms, common_headroom_gain, _noise_scale_from_rms
 from .checkpoint_io import write_checkpoint_json
 from .common import (bound_file, digest, identity, read_json, read_rows, resolved, require_final_lock,
                      write_immutable_rows, write_json, writer_lock)
@@ -305,7 +307,7 @@ def _balanced_noise_window(root, noise, speech, mask, rng, snrs, peak_cache, *, 
         diagnostics, reason = [], None
         for context in all_contexts:
             call, active = context["speech"], context["mask"]
-            raw = np.pad(samples, (0, len(call) - len(samples)))
+            raw = samples if len(call) == len(samples) else np.pad(samples, (0, len(call) - len(samples)))
             noise_rms, call_rms = rms(raw, active), rms(call, active)
             detail = {"context": context["id"], "call_active_rms_db": 20 * math.log10(max(call_rms, 1e-300)),
                       "background_active_rms": noise_rms,
@@ -317,7 +319,7 @@ def _balanced_noise_window(root, noise, speech, mask, rng, snrs, peak_cache, *, 
                 # With fixed waveforms, the peak bound is convex in noise
                 # amplitude. Clean plus the strongest requested noise bounds
                 # every intermediate SNR without changing any of them.
-                scaled = raw * noise_scale(call, raw, active, min(snrs))
+                scaled = raw * _noise_scale_from_rms(call_rms, noise_rms, min(snrs))
                 gain = common_headroom_gain(call, [scaled])
                 output_rms = rms(call * gain, active)
                 accepted = output_rms >= 10 ** (-35 / 20)
@@ -411,6 +413,36 @@ def _coverage(pools, selections, entries, recipe, manifest):
             "all_sources_used": available == used_count,
             "limitation": None if available == used_count else "Limited original/section slots and balanced type allocation leave some available sources unused"}
     return result
+
+
+def _scale_backgrounds(speech, mask, snrs, backgrounds):
+    """Reuse the same read and RMS for all SNRs of each selected background."""
+    speech_rms = rms(speech, mask)
+    variants = []
+    for category, section, noise, offset, samples, source_group, construction in backgrounds:
+        raw = samples if len(speech) == len(samples) else np.pad(samples, (0, len(speech) - len(samples)))
+        noise_rms = rms(raw, mask)
+        for snr in snrs:
+            scaled = raw * _noise_scale_from_rms(speech_rms, noise_rms, snr)
+            variants.append((category, section, snr, noise, offset, scaled, source_group, construction))
+    return variants
+
+
+def _paired_headroom(speech, variants, snrs):
+    # Clean and the loudest copy of each background bound every intermediate
+    # linear mix. The final measured SNR still uses each actual scaled waveform.
+    strongest = min(snrs)
+    return common_headroom_gain(speech, [variant[5] for variant in variants if variant[2] == strongest])
+
+
+def _write_paired_wav(path, samples):
+    """Write the exact PCM WAV encoded for the manifest's hash in one pass."""
+    with BytesIO() as stream:
+        sf.write(stream, pcm16(samples), 16000, format="WAV", subtype="PCM_16")
+        payload = stream.getvalue()
+    if path.write_bytes(payload) != len(payload):
+        raise OSError(f"Incomplete paired WAV write: {path}")
+    return sha256(payload).hexdigest()
 
 
 class PairedPreparationPaused(RuntimeError):
@@ -561,7 +593,7 @@ def _prepare_evaluation(project, output, split, originals, noise_sections, snrs,
                                  "rir_source_id": source_key(values[0]), "rir_sha256": values[0]["sha256"]}
                                 for group, values in wet_conditions.items()]
         # One shared headroom gain for all the original's paired variants and clean baseline.
-        variants = []
+        backgrounds = []
         for category in CATEGORIES:
             candidates = [n for n in noises if n["category"] == category]
             if not candidates:
@@ -591,10 +623,9 @@ def _prepare_evaluation(project, output, split, originals, noise_sections, snrs,
                     if len(samples) < len(speech):
                         samples = np.tile(samples, int(np.ceil(len(speech) / len(samples))))
                     samples = samples[:len(speech)]
-                for snr in snrs:
-                    scaled = samples * noise_scale(speech, samples, mask, snr)
-                    variants.append((category, section, snr, noise, offset, scaled, source_group, construction, samples))
-        headroom = common_headroom_gain(speech, [v[5] for v in variants])
+                backgrounds.append((category, section, noise, offset, samples, source_group, construction))
+        variants = _scale_backgrounds(speech, mask, snrs, backgrounds)
+        headroom = _paired_headroom(speech, variants, snrs)
         if rms(speech * headroom, mask) < 10 ** (-35 / 20):
             if pools is not None:
                 culprit = max(variants, key=lambda v: np.max(np.abs(speech + v[5])))
@@ -605,18 +636,18 @@ def _prepare_evaluation(project, output, split, originals, noise_sections, snrs,
                     "source_dropped": False, "SNR_changed": False, "policy_lowered": False})
             raise ValueError("Paired word becomes too quiet after common headroom; choose another noise section, do not add playback-only gain")
         base = output / "audio" / f"original_{order+1:04d}_clean.wav"
-        sf.write(base, pcm16(speech * headroom), 16000, subtype="PCM_16")
+        checksum = _write_paired_wav(base, speech * headroom)
         entries.append({**common, "sample_id": f"original_{order+1:04d}_clean", "category": "clean", "snr_db": None,
-            "path": str(base), "sha256": digest(base), "common_headroom_gain": headroom,
+            "path": str(base), "sha256": checksum, "common_headroom_gain": headroom,
             "component_source_ids": [source_key(row)], "components": [call_lineage]})
-        for category, section, snr, noise, offset, scaled, source_group, construction, _ in variants:
+        for category, section, snr, noise, offset, scaled, source_group, construction in variants:
             name = f"original_{order+1:04d}_{category}_section{section+1}_snr{snr}"
             path = output / "audio" / (name + ".wav")
-            sf.write(path, pcm16((speech + scaled) * headroom), 16000, subtype="PCM_16")
+            checksum = _write_paired_wav(path, (speech + scaled) * headroom)
             entries.append({**common, "sample_id": name, "category": category, "snr_db": snr,
                 "noise_section": section + 1, "noise_source_id": source_key(noise), "noise_offset_s": offset,
                 "measured_snr_db": measured_snr(speech, scaled, mask), "common_headroom_gain": headroom,
-                "path": str(path), "sha256": digest(path), "component_source_ids": [source_key(row), source_key(noise)],
+                "path": str(path), "sha256": checksum, "component_source_ids": [source_key(row), source_key(noise)],
                 "components": [call_lineage, component_lineage(noise, "background")]})
             if source_group is not None:
                 entries[-1].update(noise_eval_type=source_group["eval_type"], noise_eval_label=noise.get("eval_type_label"),
@@ -629,14 +660,9 @@ def _prepare_evaluation(project, output, split, originals, noise_sections, snrs,
                 else:
                     rir = _reverb_choice(reverb_pools, group, reverb_order[row["sample_id"]], config["augmentation"]["seed"])
                     wet, wet_mask, calls, details = _reverberated_call(root, speech, rir, common["calls"], rir_cache)
-                wet_variants = []
-                for category, section, snr, noise, offset, _, source_group, construction, samples in variants:
-                    # Exactly the dry recording/window is reused; the full RIR
-                    # tail extends the WAV with explicit silence in its background.
-                    raw = np.pad(samples, (0, len(wet) - len(samples)))
-                    scaled = raw * noise_scale(wet, raw, wet_mask, snr)
-                    wet_variants.append((category, section, snr, noise, offset, scaled, source_group, construction))
-                wet_headroom = common_headroom_gain(wet, [variant[5] for variant in wet_variants])
+                # Reuse the full dry excerpts and pad the RIR tail once per background.
+                wet_variants = _scale_backgrounds(wet, wet_mask, snrs, backgrounds)
+                wet_headroom = _paired_headroom(wet, wet_variants, snrs)
                 if rms(wet * wet_headroom, wet_mask) < 10 ** (-35 / 20):
                     culprit = max(wet_variants, key=lambda variant: max(np.max(np.abs(wet + variant[5])),
                                                                        np.max(np.abs(variant[5]))))
@@ -661,19 +687,19 @@ def _prepare_evaluation(project, output, split, originals, noise_sections, snrs,
                 rir_lineage = component_lineage(rir, "rir")
                 name = f"original_{order+1:04d}_reverb_{group}_clean"
                 path = output / "audio" / (name + ".wav")
-                sf.write(path, pcm16(wet * wet_headroom), 16000, subtype="PCM_16")
+                checksum = _write_paired_wav(path, wet * wet_headroom)
                 entries.append({**common_wet, "sample_id": name, "category": "clean", "snr_db": None,
-                    "path": str(path), "sha256": digest(path), "common_headroom_gain": wet_headroom,
+                    "path": str(path), "sha256": checksum, "common_headroom_gain": wet_headroom,
                     "component_source_ids": [source_key(row), source_key(rir)], "components": [call_lineage, rir_lineage]})
                 for category, section, snr, noise, offset, scaled, source_group, construction in wet_variants:
                     name = f"original_{order+1:04d}_reverb_{group}_{category}_section{section+1}_snr{snr}"
                     path = output / "audio" / (name + ".wav")
-                    sf.write(path, pcm16((wet + scaled) * wet_headroom), 16000, subtype="PCM_16")
+                    checksum = _write_paired_wav(path, (wet + scaled) * wet_headroom)
                     entry = {**common_wet, "sample_id": name, "category": category, "snr_db": snr,
                         "noise_section": section + 1, "noise_source_id": source_key(noise), "noise_offset_s": offset,
                         "measured_snr_db": measured_snr(wet, scaled, wet_mask), "common_headroom_gain": wet_headroom,
                         "background_right_padding_samples": len(wet) - len(speech),
-                        "path": str(path), "sha256": digest(path),
+                        "path": str(path), "sha256": checksum,
                         "component_source_ids": [source_key(row), source_key(noise), source_key(rir)],
                         "components": [call_lineage, component_lineage(noise, "background"), rir_lineage]}
                     if source_group is not None:

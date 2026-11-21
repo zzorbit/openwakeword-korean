@@ -56,6 +56,18 @@ def _binding(root, path):
     return {"path": name, "sha256": digest(path)}
 
 
+def _active_frames(samples, frame):
+    complete = len(samples) // frame * frame
+    windows = samples[:complete].reshape(-1, frame).astype(np.float64)
+    levels = np.sqrt(np.mean(windows ** 2, axis=1))
+    active = (np.flatnonzero(levels >= RULES["activity_rms"]) * frame).tolist()
+    if complete < len(samples):
+        tail = samples[complete:].astype(np.float64)
+        if np.sqrt(np.mean(tail ** 2)) >= RULES["activity_rms"]:
+            active.append(complete)
+    return active
+
+
 def _source_plan(root, reference, *, compact_internal_silence=False):
     if not isinstance(reference, dict) or not isinstance(reference.get("path"), str):
         raise ValueError("복제할 기준 목소리의 원본 연결을 확인하세요.")
@@ -74,8 +86,7 @@ def _source_plan(root, reference, *, compact_internal_silence=False):
         raise ValueError("복제할 기준 목소리는 유효한 단일 채널 음원이어야 합니다.")
     mono = samples[:, 0]
     frame = max(1, round(rate * RULES["frame_ms"] / 1000))
-    active = [start for start in range(0, len(mono), frame)
-              if np.sqrt(np.mean(mono[start:start + frame].astype(np.float64) ** 2)) >= RULES["activity_rms"]]
+    active = _active_frames(mono, frame)
     if not active:
         raise ValueError("기준 목소리에 복제할 수 있는 소리 구간이 없습니다.")
     context = round(rate * RULES["context_ms"] / 1000)
@@ -266,8 +277,7 @@ def _generated_plan(root, raw_reference, source, *, publish_raw):
         raise GeneratedReferenceQualityError("새 기준 목소리 원본은 유효한 단일 채널 음원이어야 합니다.")
     mono = samples[:, 0]
     frame = max(1, round(rate * RULES["frame_ms"] / 1000))
-    active = [start for start in range(0, len(mono), frame)
-              if np.sqrt(np.mean(mono[start:start + frame].astype(np.float64) ** 2)) >= RULES["activity_rms"]]
+    active = _active_frames(mono, frame)
     if not active:
         raise GeneratedReferenceQualityError("새 기준 목소리에 보존할 수 있는 소리 구간이 없습니다.")
     context = round(rate * RULES["context_ms"] / 1000)

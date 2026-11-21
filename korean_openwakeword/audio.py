@@ -77,20 +77,28 @@ def active_speech_mask(samples: np.ndarray, call_start_s: float,
     This is a documented energy heuristic, not a semantic VAD. Explicit manual
     intervals are preferable when silence/quiet syllables need closer review.
     """
-    bounds = intervals_mask(len(samples), [[call_start_s, call_end_s]])
-    start, end = np.flatnonzero(bounds)[[0, -1]]
-    end += 1
+    start, end = round(call_start_s * SAMPLE_RATE), round(call_end_s * SAMPLE_RATE)
+    if not 0 <= start < end <= len(samples):
+        raise ValueError(f"Active interval [{call_start_s}, {call_end_s}] exceeds audio")
     hop = round(0.02 * SAMPLE_RATE)
-    windows = [(i, min(i + hop, end)) for i in range(start, end, hop)]
-    levels = [rms(samples[i:j]) for i, j in windows]
-    maximum = max(levels)
+    if np.ndim(samples) == 1:
+        # Reduce complete mono windows together. The final partial window
+        # keeps its own denominator and the original float64 reduction.
+        complete, tail = divmod(end - start, hop)
+        region = np.ascontiguousarray(samples[start:end], dtype=np.float64)
+        windows = region[:complete * hop].reshape(complete, hop)
+        levels = np.sqrt(np.mean(np.square(windows), axis=1))
+        if tail:
+            levels = np.append(levels, rms(region[-tail:]))
+    else:
+        # Preserve the original memory-order reduction for multichannel arrays.
+        levels = np.array([rms(samples[i:min(i + hop, end)]) for i in range(start, end, hop)])
+    maximum = float(max(levels))
     if maximum <= 1e-8:
         raise ValueError("Call bounds contain silence")
     minimum = maximum * 10 ** (relative_db / 20)
     mask = np.zeros(len(samples), dtype=bool)
-    for (i, j), level in zip(windows, levels):
-        if level >= minimum:
-            mask[i:j] = True
+    mask[start:end] = np.repeat(levels >= minimum, hop)[:end - start]
     return mask
 
 
@@ -102,7 +110,10 @@ def mask_intervals(mask: np.ndarray) -> list[list[float]]:
 
 def noise_scale(speech: np.ndarray, noise: np.ndarray, mask: np.ndarray,
                 snr_db: float) -> float:
-    speech_rms, noise_rms = rms(speech, mask), rms(noise, mask)
+    return _noise_scale_from_rms(rms(speech, mask), rms(noise, mask), snr_db)
+
+
+def _noise_scale_from_rms(speech_rms: float, noise_rms: float, snr_db: float) -> float:
     if speech_rms <= 1e-8 or noise_rms <= 1e-8:
         raise ValueError("Speech and noise must be non-silent in the clean active region")
     return speech_rms / (noise_rms * 10 ** (snr_db / 20))

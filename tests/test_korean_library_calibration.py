@@ -31,7 +31,7 @@ def test_vectorized_events_equal_scalar_detector(warmup, cooldown, count):
     rng = np.random.default_rng(305)
     lengths = [0, 3, 52, 89, 2, 45]
     offsets = np.r_[0, np.cumsum(lengths)]
-    values = rng.choice(np.asarray([0, .2, .5, .98625, .98625004, 1], np.float32), offsets[-1])
+    values = rng.choice(np.asarray([0, .01, .2, .5, .98625, .98625004, .99, 1], np.float32), offsets[-1])
     # Sustained highs across boundaries and a pre-warmup qualified run exercise
     # the eligibility edge and ensure cooldown cannot leak between sessions.
     values[40:81] = 1
@@ -48,6 +48,11 @@ def test_vectorized_events_equal_scalar_detector(warmup, cooldown, count):
                     expected.append(start + local)
         actual = prepared.events(prepared.rolling_scores(values, count), threshold)
         assert actual.tolist() == expected
+    rolling = prepared.rolling_scores(values, count)
+    positions, lower, upper = prepared.grid_events(values)[count]
+    for rank, threshold in enumerate(calibration.COARSE_THRESHOLDS, 1):
+        actual = prepared._apply_cooldown(positions[(lower < rank) & (rank <= upper)])
+        np.testing.assert_array_equal(actual, prepared.events(rolling, threshold))
 
 
 @pytest.mark.parametrize("count", [1, 2, 4])

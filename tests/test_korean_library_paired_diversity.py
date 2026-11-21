@@ -8,8 +8,10 @@ import soundfile as sf
 
 from korean_openwakeword.common import digest, identity, read_json, read_rows, write_json
 from korean_openwakeword.data import CATEGORIES
-from korean_openwakeword.paired import _balanced_pool, _balanced_choice, _balanced_noise_window, _assignment_order, prepare_evaluation
-from korean_openwakeword.audio import active_speech_mask, common_headroom_gain, measured_snr, noise_scale, rms
+from korean_openwakeword.paired import (_balanced_pool, _balanced_choice, _balanced_noise_window,
+                                       _assignment_order, _scale_backgrounds, _paired_headroom,
+                                       _write_paired_wav, prepare_evaluation)
+from korean_openwakeword.audio import active_speech_mask, common_headroom_gain, measured_snr, noise_scale, pcm16, rms
 from korean_openwakeword.project import create_project
 
 
@@ -26,6 +28,49 @@ def noise(category, subtype, number):
 def synthetic_pool():
     return [noise(category, subtype, i) for category in CATEGORIES
             for subtype in ("type_a", "type_b", "type_c") for i in range(4)]
+
+
+@pytest.mark.parametrize("layout", ["mono", "strided", "multichannel"])
+def test_active_mask_matches_per_window_reductions_with_a_partial_tail(layout):
+    values = np.random.default_rng(1972).normal(size=(1297, 2))
+    samples = {"mono": values[:, 0].copy(), "strided": values[:, 0],
+               "multichannel": np.asfortranarray(values)}[layout]
+    samples[327:967] *= 0.003
+    start, end = 7, 1180
+    windows = [(i, min(i + 320, end)) for i in range(start, end, 320)]
+    levels = [rms(samples[i:j]) for i, j in windows]
+    expected = np.zeros(len(samples), dtype=bool)
+    for (i, j), level in zip(windows, levels):
+        expected[i:j] = level >= max(levels) * .01
+    assert np.array_equal(active_speech_mask(samples, start / 16000, end / 16000), expected)
+
+
+def test_paired_headroom_and_scales_match_all_raw_snr_variants():
+    rng = np.random.default_rng(68)
+    speech = rng.uniform(-.9, .9, 1024)
+    mask = np.arange(len(speech)) % 3 != 0
+    backgrounds = [("environment", i, {}, 0.0, rng.normal(size=length), None, None)
+                   for i, length in enumerate((1024, 701, 936))]
+    snrs = [20, -5, 10, 0, -5]
+    variants = _scale_backgrounds(speech, mask, snrs, backgrounds)
+    expected = []
+    for background in backgrounds:
+        samples = background[4]
+        raw = np.pad(samples, (0, len(speech) - len(samples)))
+        expected.extend(raw * noise_scale(speech, raw, mask, snr) for snr in snrs)
+    assert len(variants) == len(expected)
+    assert all(np.array_equal(variant[5].view("u8"), samples.view("u8"))
+               for variant, samples in zip(variants, expected))
+    assert _paired_headroom(speech, variants, snrs) == common_headroom_gain(speech, expected)
+
+
+def test_paired_wav_write_returns_digest_of_the_exact_pcm_file(tmp_path):
+    samples = np.r_[-1.0, 1.0, np.linspace(-0.8, 0.8, 1779)]
+    legacy, actual = tmp_path / "legacy.wav", tmp_path / "actual.wav"
+    sf.write(legacy, pcm16(samples), 16000, subtype="PCM_16")
+    checksum = _write_paired_wav(actual, samples)
+    assert actual.read_bytes() == legacy.read_bytes()
+    assert checksum == digest(actual)
 
 
 def test_balancing_types_then_sources_is_uniform_and_deterministic():

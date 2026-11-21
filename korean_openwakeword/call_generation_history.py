@@ -43,6 +43,11 @@ CONDITIONING_ONLY_REFERENCE_DIGESTS = {
         "4323c23f792ad308af81a305f8fdfb07e0b176d38b69d2f9dc63cb403fd262ae",
     "6766a71cf7464f113dcf1d2716af4f7ee99e386f62340666d641be34da7d862a":
         "c4a6a2a2e9385217a9821feba19cb3d7efea03431a34a657caa4f73186cc3332",
+    # Vectorized windows preserve the original native samples and trim plan.
+    "2e1e0632e7a4cc47eaee3aba4635eee956a74cc386ccc11047a9f12785cf2caa":
+        "c4a6a2a2e9385217a9821feba19cb3d7efea03431a34a657caa4f73186cc3332",
+    "46e292eca09ad4d8d2d5daf9aa96b4376f7f0ed40d5df8a2f54d961480affd81":
+        "4323c23f792ad308af81a305f8fdfb07e0b176d38b69d2f9dc63cb403fd262ae",
 }
 
 _PREVIOUS_HARD_IMPLEMENTATIONS = {

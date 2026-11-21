@@ -143,11 +143,16 @@ def positive_statistics(rows: list[dict], seed: int = 20260928) -> dict:
     ci = None
     if len(units) >= 2:
         rng = np.random.default_rng(seed)
-        estimates = []
+        estimates = np.empty(2000, dtype=np.float64)
+        successes, totals = np.ascontiguousarray(counts.T)
+        size = len(counts)
+        batch = max(1, min(len(estimates), 262144 // size))
         # Cluster bootstrap keeps the same speaker/original's variants together.
-        for _ in range(2000):
-            sampled = counts[rng.integers(0, len(counts), len(counts))].sum(axis=0)
-            estimates.append(sampled[0] / sampled[1])
+        # Draw the same random indices, grouped to bound temporary arrays.
+        for start in range(0, len(estimates), batch):
+            stop = min(start + batch, len(estimates))
+            selection = rng.integers(0, size, (stop - start, size))
+            estimates[start:stop] = successes[selection].sum(axis=1) / totals[selection].sum(axis=1)
         ci = [float(value) for value in np.quantile(estimates, [0.025, 0.975])]
     latencies = [row["latency_s"] for row in rows if row["success"]]
     return dict(calls=len(rows), successes=sum(row["success"] for row in rows),

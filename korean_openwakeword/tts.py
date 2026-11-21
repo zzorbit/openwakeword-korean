@@ -78,10 +78,15 @@ def _clone_reference_evidence_sha256():
 
 
 def technical_qc(samples, rate):
+    qc, converted, _ = _technical_qc(samples, rate)
+    return qc, converted
+
+
+def _technical_qc(samples, rate):
     samples = np.asarray(samples, dtype=np.float64)
     reasons = []
     if samples.ndim != 1 or not len(samples) or not np.isfinite(samples).all():
-        return {"passed": False, "reasons": ["empty_nonfinite_or_nonmono"]}, None
+        return {"passed": False, "reasons": ["empty_nonfinite_or_nonmono"]}, None, ()
     duration = len(samples) / rate
     if np.max(np.abs(samples)) > .999:
         reasons.append("clipping")
@@ -95,6 +100,7 @@ def technical_qc(samples, rate):
     if np.max(np.abs(mono)) > 1:
         reasons.append("resampling_clipping")
     bounds = None
+    ranges = ()
     if not reasons:
         try:
             mask = active_speech_mask(mono, 0, len(mono) / 16000)
@@ -105,7 +111,7 @@ def technical_qc(samples, rate):
         except ValueError:
             reasons.append("no_active_audio")
     return {"passed": not reasons, "reasons": reasons, "duration_s": duration, "rms": level,
-            "boundary_method": "energy_envelope_candidate_no_semantic_STT", "pronunciation_listened": False}, (mono, bounds)
+            "boundary_method": "energy_envelope_candidate_no_semantic_STT", "pronunciation_listened": False}, (mono, bounds), ranges
 
 
 def encode_candidate_pcm16(converted, qc):
@@ -256,7 +262,7 @@ def check_short_clone_audio(waveform, rate, token_limit, termination):
                 if start or end < len(samples):
                     trim = {"leading_samples": start, "trailing_samples": len(samples) - end, "sample_rate": rate}
                     waveform = samples[start:end]
-    qc, converted = technical_qc(waveform, rate)
+    qc, converted, intervals = _technical_qc(waveform, rate)
     if converted is None:
         return waveform, qc, converted
     if trim is not None:
@@ -265,7 +271,6 @@ def check_short_clone_audio(waveform, rate, token_limit, termination):
         qc["generation_termination"] = stop
     if qc["passed"] and token_limit is not None and failure is None:
         mono = converted[0]
-        intervals = mask_intervals(active_speech_mask(mono, 0, len(mono) / 16000))
         if any(right[0] - left[1] >= 0.5 for left, right in zip(intervals, intervals[1:])):
             failure = "long_pause_inside_utterance"
         elif stop != "eos" and _ending_signal(waveform, rate)["active_at_end"] and _ending_signal(mono, 16000)["active_at_end"]:

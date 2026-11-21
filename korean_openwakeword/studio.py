@@ -377,7 +377,56 @@ _GPU_LOADER_COMPATIBLE_DIGESTS = {
 
 # Exact device-dispatch updates keep synthesis QC, model math and the
 # identity of existing checkpoints. Their stored device/build still match.
+# Exact-output CPU optimizations are recorded in docs/cpu_pipeline_parity_audit.json.
 _COMPUTE_DISPATCH_COMPATIBLE_DIGESTS = {
+    "audio.py": {
+        "904cba7543dc1df1d9252b3332b0b1b47e79dc579265a3a7235991bcdb74211d":
+            "50c163adaff4a0d0436369144134e15ac48ec94170929d49f91c59ec103c812c",
+        "fa9aef8dd14860f8bbfb851908d6692453e8fcb49b48bc81daa59feb4d3f28ad":
+            "2b4b7b1a0f188ead63275362310d89c026ec1fa36e320bbdca6351e496e2ac06",
+    },
+    "calibration.py": {
+        "8de6d96522cb56e1b9985b3134b9ed61ede29aa6b20bb2aa7ab4e8a15d5e846d":
+            "b49653edce24a75800fe5a40e9dffd8a9325ae642ea97283f977b8c36ac66123",
+        "c341cbb7e0b57cccbe551c7eb0ab819a23cafd71c35be05126581c6a9fe8d6ff":
+            "05dcfad0fb4549368bf1748f4764dbe5a2820cfd0c8c2ae9a2a2b4f9acba66dd",
+    },
+    "clone_reference.py": {
+        "2e1e0632e7a4cc47eaee3aba4635eee956a74cc386ccc11047a9f12785cf2caa":
+            "6766a71cf7464f113dcf1d2716af4f7ee99e386f62340666d641be34da7d862a",
+        "46e292eca09ad4d8d2d5daf9aa96b4376f7f0ed40d5df8a2f54d961480affd81":
+            "c26c086ecc6bf0fc72b0d721fe984d867a21ee730a21ee19543c00c97b8c822e",
+    },
+    "evaluation_coverage.py": {
+        "64df851ae7502f33fd1e9feb16f6ef4f9a674b97d87a4db501a8d1e539be1702":
+            "6d9e4c9fa69c90ba8faf3f9b4a5a905be9a0b51213c658fdbcc244243773d038",
+        "229edc67808e0760376df567a91232bca0f01b246747af9c82d72d9bbe88ed4d":
+            "583cd6454cbe778faf2bbd81b6070a8ebde670a0b71526e889dd0608ba593a26",
+    },
+    "events.py": {
+        "3fc880427ffad0c6008c2ffb96d488d4f1a9503bb89e3d0c246c87e76fdae1af":
+            "c018f28abf0c4cf15b255266e38d3b4081e0957f426bb1c661ffb38391377760",
+        "e3b6ffb6934651654fcd8c5cd5fba70e7573819c50269491eac122ada777b3f0":
+            "95c12d9041f8638c990a04e158038e0122f1d3fa4c14c9c04aebeb29c6caa355",
+    },
+    "negative_streams.py": {
+        "60cc69737c16105266f4fa2c73abf3e674814359bd467681376ccaa509118483":
+            "a7f3fccba92dd403a20f9bbbf4eae743597c56dde2a3563b7d05b94e78c6b000",
+        "48478aedd2b83ea0015d285b08731de359f813bc2d6a724209c367a4d7b6065d":
+            "192b3771755781f5123527134eabc2f01cff1f3f30c761e71cc468460db834e9",
+    },
+    "paired.py": {
+        "86ec50d2d792371cd09c68c275295b73991784c6fccb5f678ae87bed5d3a87cf":
+            "cb22209e6d760d8b09f1113adbbb033f31bdbc54e88ea716c27c04852ecb4b5a",
+        "e51759e097977b3ac8bb7f612c6139aeb0128ae419dc8fe0a3637f75607e4fcb":
+            "88a449f823f5d1e8cb9be5a83466b245990265bcd00aca731dcbd5c72c224906",
+    },
+    "selection.py": {
+        "15daea09f33aa60ca42d0b8bf39b8964ce5a3a1b55001bc0167bd5118f348845":
+            "77512ff70f6753dde4f7bf050f53ef38558e6007dfa8b6bce15b88cdfbb6e3c6",
+        "e5683720955516ca63ddaaec199bac749f257f495e309c1c03b190fcf582999f":
+            "9efe22cdb5c7aa4030517d565f558160238ba595bb95b4c34687c316710e8e94",
+    },
     "train.py": {
         "2da8d20d025a324e63cf9f6eda515084a2f3f391374674c1e5426bb606922aa6":
             "c1ac1c6aa4b6cc37041c1bf800b2fa766a0d950f740b19dd85601976a1e26939",
@@ -391,6 +440,10 @@ _COMPUTE_DISPATCH_COMPATIBLE_DIGESTS = {
             "df61837471a4768378f96cf0c5fcab825292515e10c3aca678ec7510ec2a87da",
     },
     "tts.py": {
+        "6e33adc9398ce01f460a32b98f58e425c4f9569af3747b5c0ecf6cbe64653487":
+            "4b80f8a5561ba98454b8e6fd8b0449301b6bf3852d6eb78b8f3af043b52bb488",
+        "4599627ef67f2495cbc6498a684291e159c44421b57ffefbfa485234c4c7baed":
+            "35e797140ce4bc13235a0d9e259b129d63b7bbd66aac23fe2b1f8f624d9808bf",
         "cf3359d89b53bf21531381658f3dabc0c5599d53170150fb0b61e2479c061d08":
             "4b80f8a5561ba98454b8e6fd8b0449301b6bf3852d6eb78b8f3af043b52bb488",
         "5714cd590420168112fec8540dc6c854b2ff94728dcabd449f94ed5a9018ac3f":
@@ -464,6 +517,10 @@ _COMPUTE_DISPATCH_COMPATIBLE_DIGESTS = {
             "0491525772c9e79f0aa31d940b98b7cb56cbe35a4ec158120524cdb69e3de973",
     },
     "call_generation_history.py": {
+        "7959ac1243a7bea9286e71b4053ebcdc32afebccf9cc6babcfb049d072d8bd28":
+            "5642fa75e3e266db62a49beb670af3284ba6b15dcfe832cb76fb3592aa1a24ed",
+        "5026ddf88eaf72be48ddd7bb29275fe55e05cb5f74c02f11809d686ee1f134b5":
+            "3327691160f4eaf92224bc66aff4d8c3f79e264524bbdc1aad776de62bd48f42",
         "6125b65d6d83030782315f10e6ea6f76e99e38c8046eade3a65ac6f55e0328e1":
             "5642fa75e3e266db62a49beb670af3284ba6b15dcfe832cb76fb3592aa1a24ed",
         "c3790237e4a76ce5d581c8c07a9e76af89e79e5ca2500e4deca471594ae7283b":

@@ -52,7 +52,7 @@ def verified_evaluation(project, bundle, evaluation):
     return verified
 
 
-def _verified_evaluation_snapshot(project, bundle, evaluation):
+def _verified_evaluation_snapshot(project, bundle, evaluation, *, visit_clip=None):
     project, bundle, evaluation = (Path(path).resolve() for path in (project, bundle, evaluation))
     root = project.parent
     config, project_sha256 = _read_json_snapshot(project)
@@ -110,6 +110,8 @@ def _verified_evaluation_snapshot(project, bundle, evaluation):
         if (not np.isclose(row.get("duration_s", -1), duration, atol=1e-8, rtol=0)
                 or not np.isclose(row.get("eligible_seconds", -1), eligible, atol=1e-8, rtol=0)):
             raise ValueError("Development duration does not match actual cached frames")
+        if visit_clip is not None:
+            visit_clip(row)
     return (root, config, package, report, clips, scores, offsets, candidates), bindings
 
 

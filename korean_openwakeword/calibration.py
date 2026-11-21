@@ -70,6 +70,8 @@ SEARCH_POLICY = dict(PREVIOUS_SEARCH_POLICY, method=METHOD,
                      for reverb, category, snr in HARD_CONDITIONS],
     objective="Equal-weight mean of 18 recalls across moderate and strong reverberation, SNR 10, 5 and 0 dB, and all three noise categories; missing conditions prevent a recommendation")
 
+_SCORE_CLIP_FIELDS = ("sample_id", "kind", "category", "snr_db", "reverb_condition", "calls", "eligible_seconds")
+
 
 def _measured_false_alarm_rate(value):
     return type(value) in (int, float) and math.isfinite(value) and value >= 0
@@ -92,11 +94,12 @@ def recommendation_is_available(row):
 
 def _point_statistics(success, latency):
     count = len(success)
+    successes = int(np.count_nonzero(success))
     values = latency[success]
-    return {"calls": count, "successes": int(np.count_nonzero(success)),
-            "recall": float(np.mean(success)) if count else None,
-            "latency_p50_s": float(np.quantile(values, .5)) if len(values) else None,
-            "latency_p95_s": float(np.quantile(values, .95)) if len(values) else None}
+    p50, p95 = map(float, np.quantile(values, (.5, .95))) if successes else (None, None)
+    return {"calls": count, "successes": successes,
+            "recall": successes / count if count else None,
+            "latency_p50_s": p50, "latency_p95_s": p95}
 
 
 class PreparedScores:
@@ -108,11 +111,10 @@ class PreparedScores:
     earliest-unmatched assignment rule rather than counting one event twice.
     """
     def __init__(self, clips, offsets, runtime):
-        self.rows = [{key: deepcopy(row[key]) for key in
-                     ("sample_id", "kind", "category", "snr_db", "reverb_condition", "calls", "eligible_seconds")
-                     if key in row} for row in clips]
+        self.rows = [{key: deepcopy(row[key]) for key in _SCORE_CLIP_FIELDS if key in row} for row in clips]
         self.offsets = np.asarray(offsets, dtype=np.int64)
         lengths = np.diff(self.offsets)
+        self.session_starts = self.offsets[:-1][lengths > 0]
         self.session = np.repeat(np.arange(len(lengths), dtype=np.int32), lengths)
         self.local = np.arange(int(self.offsets[-1]), dtype=np.int64) - self.offsets[self.session]
         self.eligible = self.local * .08 + 1e-9 >= runtime["warmup_s"]
@@ -169,24 +171,61 @@ class PreparedScores:
         qualified = rolling >= threshold
         starts = qualified.copy()
         starts[1:] &= ~qualified[:-1]
-        starts[self.offsets[:-1][np.diff(self.offsets) > 0]] = qualified[self.offsets[:-1][np.diff(self.offsets) > 0]]
+        starts[self.session_starts] = qualified[self.session_starts]
         starts[self.first_eligible] = qualified[self.first_eligible]
         starts &= self.eligible
-        indices = np.flatnonzero(starts)
-        if self.runtime["cooldown_s"] > 0 and len(indices):
-            keep = np.ones(len(indices), dtype=bool)
-            prior_session, prior_frame = -1, 0
-            for position, frame in enumerate(indices):
-                session = self.session[frame]
-                if session != prior_session or (frame - prior_frame) * .08 + 1e-9 >= self.runtime["cooldown_s"]:
-                    prior_session, prior_frame = session, frame
-                else:
-                    keep[position] = False
-            indices = indices[keep]
-        return indices
+        return self._apply_cooldown(np.flatnonzero(starts))
+
+    def _apply_cooldown(self, indices):
+        cooldown = self.runtime["cooldown_s"]
+        if cooldown <= 0 or len(indices) < 2:
+            return indices
+        sessions = self.session[indices]
+        conflicts = np.flatnonzero((sessions[1:] == sessions[:-1]) & (np.diff(indices) * .08 + 1e-9 < cooldown)) + 1
+        if not len(conflicts):
+            return indices
+        keep = np.ones(len(indices), dtype=bool)
+        previous_conflict = -1
+        for position in conflicts.tolist():
+            # A sufficiently distant preceding edge always emits. Only a
+            # contiguous run of nearby edges needs the greedy cooldown rule.
+            if position != previous_conflict + 1:
+                prior_frame = indices[position - 1]
+            frame = indices[position]
+            if (frame - prior_frame) * .08 + 1e-9 >= cooldown:
+                prior_frame = frame
+            else:
+                keep[position] = False
+            previous_conflict = position
+        return indices[keep]
+
+    def grid_events(self, values):
+        """Index all possible rising edges in the fixed comparison grid."""
+        # A rank is the number of exact float64 grid thresholds a score meets.
+        # Its ordering preserves rolling minima and both rising-edge bounds.
+        ranks = np.searchsorted(COARSE_THRESHOLDS, np.asarray(values, dtype=np.float64), side="right")
+        ranks = ranks.astype(np.min_scalar_type(len(COARSE_THRESHOLDS)))
+        edge_ranges = {}
+        for count in CONSECUTIVE_COUNTS:
+            rolling = ranks.copy()
+            for shift in range(1, count):
+                np.minimum(rolling[shift:], ranks[:-shift], out=rolling[shift:])
+            rolling[self.local < count - 1] = 0
+            prior = np.empty_like(rolling)
+            prior[:1] = 0
+            prior[1:] = rolling[:-1]
+            # At either boundary even an already qualified run is eligible.
+            prior[self.session_starts] = 0
+            prior[self.first_eligible] = 0
+            indices = np.flatnonzero((rolling > prior) & self.eligible)
+            edge_ranges[count] = indices, prior[indices], rolling[indices]
+        return edge_ranges
 
     def summary(self, values, threshold, count, candidate, rolling=None):
         indices = self.events(self.rolling_scores(values, count) if rolling is None else rolling, threshold)
+        return self._summarize_indices(indices, candidate)
+
+    def _summarize_indices(self, indices, candidate):
         success = np.zeros(len(self.calls), dtype=bool)
         latency = np.full(len(self.calls), np.nan, dtype=np.float64)
         if len(indices) and len(self.calls):
@@ -495,9 +534,17 @@ def recommend(project, bundle, evaluation, output, progress_callback=None, *, pa
         return result
     if pause_requested and pause_requested():
         raise EvaluationPaused()
-    verified, bindings = _verified_evaluation_snapshot(project, bundle, evaluation)
-    root, config, package, report, clips, scores, offsets, candidates = verified
-    prepared = PreparedScores(clips, offsets, package["runtime"])
+    score_clips = []
+
+    def collect_clip(clip):
+        score_clips.append({key: clip[key] for key in _SCORE_CLIP_FIELDS if key in clip})
+
+    # The snapshot reader still validates every row and hashes the archive.
+    # Keep the search's small projection during that pass.
+    verified, bindings = _verified_evaluation_snapshot(project, bundle, evaluation, visit_clip=collect_clip)
+    root, config, package, report, _, scores, offsets, candidates = verified
+    prepared = PreparedScores(score_clips, offsets, package["runtime"])
+    del score_clips
     if _bindings(project, bundle, evaluation) != bindings:
         raise ValueError("Automatic detection recommendation inputs changed during verification")
     protocol = report.get("execution", {}).get("scoring_protocol", "reference_cpu_session_v1")
@@ -505,7 +552,7 @@ def recommend(project, bundle, evaluation, output, progress_callback=None, *, pa
     declaration = {"bindings": bindings, "search_policy": SEARCH_POLICY,
                    "candidates": candidates, "adoption_criteria": adoption_criteria(config),
                    "recommendation_criteria": recommendation_criteria(config)}
-    if any(_calls_need_sort(clip) for clip in clips):
+    if any(_calls_need_sort(clip) for clip in prepared.rows):
         declaration["call_matching"] = CALL_MATCHING_REVISION
     journal = output / "comparisons.jsonl"
     comparisons = defaultdict(dict)
@@ -534,16 +581,19 @@ def recommend(project, bundle, evaluation, output, progress_callback=None, *, pa
         completed = 0
         for column, candidate in enumerate(candidates):
             cache = comparisons[candidate["id"]]
-            values = scores[:, column]
-            rolling = {count: prepared.rolling_scores(values, count) for count in CONSECUTIVE_COUNTS}
-            def compare(threshold, count):
-                nonlocal completed
+            edge_ranges = None
+            def compare(threshold, rank, count):
+                nonlocal completed, edge_ranges
                 if pause_requested and pause_requested():
                     raise EvaluationPaused()
                 key = (threshold, count)
                 if key not in cache:
+                    if edge_ranges is None:
+                        edge_ranges = prepared.grid_events(scores[:, column])
+                    positions, lower, upper = edge_ranges[count]
+                    indices = prepared._apply_cooldown(positions[(lower < rank) & (rank <= upper)])
                     runtime = dict(package["runtime"], threshold=threshold, consecutive_frames=count)
-                    metrics = prepared.summary(values, threshold, count, candidate, rolling=rolling[count])
+                    metrics = prepared._summarize_indices(indices, candidate)
                     entry = {"runtime": runtime, "metrics": metrics, "adoption": adoption([metrics], config, candidate["id"]),
                              "constraint_checks": _constraint_checks(metrics, declaration["recommendation_criteria"])}
                     row = {"candidate": candidate["id"], "entry": entry}
@@ -557,9 +607,9 @@ def recommend(project, bundle, evaluation, output, progress_callback=None, *, pa
                                        "unit": "조합", "label": "모델별 감지 설정 비교",
                                        "threshold": threshold, "consecutive_frames": count})
                 return cache[key]
-            for threshold in COARSE_THRESHOLDS:
+            for rank, threshold in enumerate(COARSE_THRESHOLDS, 1):
                 for count in CONSECUTIVE_COUNTS:
-                    compare(threshold, count)
+                    compare(threshold, rank, count)
             baseline = cache[(.5, 1)]
             best = deepcopy(max(cache.values(), key=_rank))
             checks = best["constraint_checks"]
@@ -579,7 +629,7 @@ def recommend(project, bundle, evaluation, output, progress_callback=None, *, pa
                         verification_scope="reference_cpu_scores" if cpu else "cached_score_protocol_only")
             selected.append(best)
             print(f"Detection settings: {candidate['id']} threshold={best['runtime']['threshold']:g} frames={best['runtime']['consecutive_frames']} recommendation_available={best['recommendation_available']} targets_passed={best['passed']}", flush=True)
-            del rolling
+            del edge_ranges
         result = {"schema_version": 1, "method": METHOD, "stage": "development", "created_at": now(),
                   "bindings": bindings, "search_policy": SEARCH_POLICY,
                   "adoption_criteria": declaration["adoption_criteria"],

@@ -7,6 +7,7 @@ import pytest
 
 from korean_openwakeword.common import read_json, write_json
 from korean_openwakeword.evaluation_workers import EvaluationJournal, worker_plan
+from korean_openwakeword.events import positive_statistics
 
 
 def test_auto_cpu_workers_are_small_for_short_runs_and_memory_bounded():
@@ -23,6 +24,22 @@ def test_auto_cpu_workers_are_small_for_short_runs_and_memory_bounded():
 def test_invalid_workers_are_rejected(value):
     with pytest.raises(ValueError, match="workers"):
         worker_plan(value, 100)
+
+
+@pytest.mark.parametrize("size", [2, 7, 257])
+def test_batched_bootstrap_keeps_seeded_cluster_intervals(size):
+    rows = [{"provenance": "qwen_tts", "original_utterance_id": cluster,
+             "success": (cluster * 3 + variant) % 7 < 4, "latency_s": .08}
+            for cluster in range(size) for variant in range(1 + cluster % 5)]
+    counts = np.array([[sum((cluster * 3 + variant) % 7 < 4 for variant in range(1 + cluster % 5)),
+                        1 + cluster % 5] for cluster in range(size)], dtype=float)
+    seed = 31862
+    rng = np.random.default_rng(seed)
+    original = []
+    for _ in range(2000):
+        hits, total = counts[rng.integers(0, size, size)].sum(axis=0)
+        original.append(hits / total)
+    assert positive_statistics(rows, seed)["ci95"] == np.quantile(original, [.025, .975]).tolist()
 
 
 def _add(journal, index):

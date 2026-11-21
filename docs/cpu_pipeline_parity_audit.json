@@ -1,0 +1,126 @@
+{
+  "schema_version": 1,
+  "source_commit": "6167d5f81bf4d1d877c1879a05e691603d154011",
+  "environment": {
+    "cpu": "AMD Ryzen 7 5800X3D",
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "storage": "Project HDD"
+  },
+  "measurements": {
+    "paired_evaluation_wavs": {
+      "held_out_calls": 36,
+      "reverb_originals": 12,
+      "output_wavs": 960,
+      "baseline_seconds": [
+        115.874,
+        18.296,
+        24.451
+      ],
+      "optimized_seconds": [
+        14.382,
+        13.304,
+        13.345
+      ],
+      "scope": "Source audit, mix and reverberation construction, PCM WAV writes, checkpoint and coverage publication.",
+      "parity": "PCM WAV bytes, diagnostics, manifest rows and coverage agree. The candidate resumed after 448 verified WAVs from the baseline.",
+      "independent_384_wav_sample_median_seconds": [10.446, 5.088]
+    },
+    "cuda_features": {
+      "input_calls": 256,
+      "resumed_prefix_rows": 32,
+      "baseline_median_seconds": 9.017,
+      "optimized_median_seconds": 8.318,
+      "scope": "Actual augmentation through CUDA embedding, feature writes and verification.",
+      "parity": "Feature array and augmentation journal SHA-256, metadata and resumed results agree."
+    },
+    "recommendation": {
+      "sessions": 48137,
+      "score_frames": 3958731,
+      "model_columns": 4,
+      "fixed_grid_comparisons": 2376,
+      "baseline_seconds": [
+        122.224,
+        151.426
+      ],
+      "optimized_seconds": [
+        62.582,
+        87.506
+      ],
+      "scope": "Bound inputs, complete grid evaluation, durable per-comparison journal and published artifacts.",
+      "parity": "All comparison records, search, recommendation and receipt bytes agree at fixed publication times."
+    },
+    "evaluation_summary": {
+      "sessions": 48137,
+      "baseline_seconds": [
+        43.216,
+        44.565
+      ],
+      "optimized_seconds": [
+        23.461,
+        23.135
+      ],
+      "scope": "Read the persisted clip report, summarize the candidates and publish a report.",
+      "parity": "The report SHA-256 agrees with the completed report."
+    },
+    "evaluation_coverage": {
+      "manifest_bytes": 265239238,
+      "baseline_median_seconds": 6.82,
+      "optimized_median_seconds": 3.787,
+      "parity": "The coverage record SHA-256 agrees with the completed coverage record."
+    },
+    "continuous_negative_streams": {
+      "source_recordings": 258,
+      "output_streams": 6,
+      "baseline_seconds": [
+        36.849,
+        22.299
+      ],
+      "optimized_seconds": [
+        19.468,
+        14.164
+      ],
+      "scope": "Read and hash source intervals from bound completed evidence, render WAVs, validate saved PCM and write receipts.",
+      "parity": "WAV and original PCM SHA-256, interval order and lineage agree with the completed output."
+    },
+    "tts_quality_and_wav_storage": {
+      "clips": 268,
+      "baseline_median_seconds": 6.46,
+      "optimized_median_seconds": 5.955,
+      "scope": "Technical checks, PCM conversion, WAV serialization and file SHA-256.",
+      "parity": "Every technical result and WAV byte agrees."
+    },
+    "reference_preparation": {
+      "voices": 20,
+      "baseline_median_seconds": 2.9,
+      "optimized_median_seconds": 2.81,
+      "scope": "Reference trimming, preparation, waveform storage and receipt validation.",
+      "parity": "PCM, settings, trim plan and inspected WAV structure agree. New PCM-float file creation timestamps are normalized for the comparison."
+    }
+  },
+  "alternatives": {
+    "cuda_reverb": {
+      "source_rir_pairs": 30,
+      "baseline_cpu_median_ms": 79.4,
+      "cuda_with_transfer_median_ms": 47.1,
+      "matching_pcm_files": 30,
+      "matching_rms_and_snr_pairs": 12,
+      "adopted": false
+    },
+    "cuda_bootstrap": {
+      "sessions": 48137,
+      "cpu_vectorized_compute_and_save_median_seconds": 14.466,
+      "gpu_compute_transfer_and_save_median_seconds": 18.127,
+      "statistics_match": true,
+      "adopted": false
+    },
+    "single_thread_export_verifier": {
+      "model_members": 3,
+      "baseline_export_and_check_median_ms": 304.9,
+      "alternate_median_ms": 283.9,
+      "scope": "Warm CPU export and model format check for all trained heads. The existing shipping export implementation was used.",
+      "adopted": false
+    }
+  },
+  "scope": "Each measurement covers the stated stage. Disk contention varies across runs. These measurements cover completed public-source and synthetic test evidence plus the recorded training artifacts.",
+  "compatibility": "Release digest aliases bind the qualified source bytes to the previous output contract. Revalidate both installation layouts and the source checkout line endings."
+}

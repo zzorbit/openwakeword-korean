@@ -13,6 +13,9 @@ def assess_common_evaluation(policy, report, manifest, noise_coverage):
     theorem or a guarantee of real-speaker or deployment performance.
     """
     coverage = read_json(noise_coverage) if isinstance(noise_coverage, (str, Path)) else noise_coverage
+    policy_id = policy.get("id")
+    verify_negative = policy_id in ("common_development_v2", "common_development_v3", "common_development_v4", "common_development_v5")
+    negative_rows = []
     originals, dry_originals, families, conditions = set(), set(), set(), Counter()
     reverb_conditions, reverb_originals, reverb_sources, reverb_rooms = Counter(), {}, {}, {}
     paired_cells = {} if policy.get("id") in ("common_development_v3", "common_development_v4", "common_development_v5") else None
@@ -20,6 +23,8 @@ def assess_common_evaluation(policy, report, manifest, noise_coverage):
                 ("environment", "music", "competing_speech")}
     for row in iter_rows(manifest):
         if row.get("kind") != "positive":
+            if verify_negative and row.get("kind") == "negative":
+                negative_rows.append(row)
             continue
         originals.add(row.get("original_id", row["sample_id"]))
         if row.get("voice_family_id"):
@@ -110,14 +115,13 @@ def assess_common_evaluation(policy, report, manifest, noise_coverage):
     if minimum_hours is None or minimum_hours < target_hours:
         shortages.append(f"연속 비호출 평가 {minimum_hours if minimum_hours is not None else '미측정'}/{target_hours}시간")
     negative_materials = None
-    if policy.get("id") in ("common_development_v2", "common_development_v3", "common_development_v4", "common_development_v5"):
+    if verify_negative:
         from .evaluation_materials import evaluation_material_coverage
         try:
-            negative_rows = (row for row in iter_rows(manifest) if row.get("kind") == "negative")
             negative_materials = evaluation_material_coverage(negative_rows, strict_common_pool=True) \
-                if policy.get("id") in ("common_development_v4", "common_development_v5") else evaluation_material_coverage(negative_rows)
+                if policy_id in ("common_development_v4", "common_development_v5") else evaluation_material_coverage(negative_rows)
         except ValueError as exc:
-            if policy.get("id") not in ("common_development_v4", "common_development_v5"):
+            if policy_id not in ("common_development_v4", "common_development_v5"):
                 raise
             negative_materials = {"target_met": False, "shortages": [str(exc)]}
         # The material helper owns interval union/source deduplication; neither

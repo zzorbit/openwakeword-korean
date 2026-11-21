@@ -21,6 +21,9 @@ from .storage import project_storage
 from .task_progress import emit as report_task_progress
 
 
+_STREAM_BLOCK_FRAMES = 262144
+
+
 def negative_scoring_budget(rows, seconds=600, warmup_s=2, frame_samples=1280):
     """Exact duration after the same whole-recording packing and runtime rules.
 
@@ -194,11 +197,11 @@ def _render(root, output, recipe_sha, number, bucket, sources):
                 source.seek(item["start"])
                 remaining = item["frames"]
                 while remaining:
-                    block = source.read(min(65536, remaining), dtype="int16")
+                    block = source.read(min(_STREAM_BLOCK_FRAMES, remaining), dtype="int16")
                     if not len(block):
                         raise ValueError("Original evaluation audio ended before its declared interval")
                     destination.write(block)
-                    pcm_hash.update(block.astype("<i2", copy=False).tobytes())
+                    pcm_hash.update(block.astype("<i2", copy=False))
                     written += len(block); remaining -= len(block)
                     report_task_progress("material_stream_write", f"비호출 평가 스트림 {number} 저장",
                                          written, offset, "개 프레임", eta_eligible=False)
@@ -211,8 +214,9 @@ def _render(root, output, recipe_sha, number, bucket, sources):
     with sf.SoundFile(partial) as stream:
         if (stream.samplerate, stream.channels, stream.subtype) != (16000, 1, "PCM_16"):
             raise ValueError("Persisted evaluation stream changed PCM format")
-        for block in stream.blocks(blocksize=65536, dtype="int16"):
-            verified.update(block.astype("<i2", copy=False).tobytes()); actual += len(block)
+        for block in stream.blocks(blocksize=_STREAM_BLOCK_FRAMES, dtype="int16"):
+            verified.update(block.astype("<i2", copy=False))
+            actual += len(block)
             report_task_progress("material_stream_verify", f"비호출 평가 스트림 {number} 원본 일치 검사",
                                  actual, offset, "개 프레임", eta_eligible=False)
     if actual != written or written != offset or verified.hexdigest() != pcm_hash.hexdigest():
