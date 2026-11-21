@@ -419,6 +419,11 @@ _COMPUTE_DISPATCH_COMPATIBLE_DIGESTS = {
             "18ecacbb2cfc82db32c295644175bb7d2f68f2d3a3a664a927b06321535b1164",
     },
     "hard_tts.py": {
+        # The mixed scheduler is bound only to new Hard contracts.
+        "6738dee705b18505bb00b25dd0053d3f41e00157a09a24ebec9c409d704ce44a":
+            "bbe435b58a3e21e4f6d5e24d3c6f809c7d0c3d5df02610b4343e35021cc39c37",
+        "36a9211815fbc13ff60850f065d1ce2d02681047e6c7ec8bdce097bfd53dffea":
+            "bd75d7e028246ac3da21722510b5250691461f968a14776d8511720439109350",
         "63fffbc8ebee268c1cc70e64f80fb0c2c49a563668f2c52af462ad855caba105":
             "43deed598cefa6503d105761ccb9fd7c9c2a5cb56ee700bfea402688c838bcc3",
         "a68cfa27a8c5fd55d707c8bf2b718177c81f3b5010624c7af3e7bc8bb8d0d1ef":
@@ -427,6 +432,20 @@ _COMPUTE_DISPATCH_COMPATIBLE_DIGESTS = {
             "bd75d7e028246ac3da21722510b5250691461f968a14776d8511720439109350",
         "0f97690140dafdec9286cda15d7c77724e4960f296628deca7e37894b980111e":
             "bbe435b58a3e21e4f6d5e24d3c6f809c7d0c3d5df02610b4343e35021cc39c37",
+    },
+    # The mixed-voice entry point is used only by Hard scopes that bind the new
+    # batch policy. Existing synthesis entry points and contracts stay valid.
+    "tts_runtime.py": {
+        "e002580fadb9e53131abc270eb19969212b517397d177491e71333394883401e":
+            "fb494730e01c6076f5a0875bdd6f3262007e97e2ab072cc77ad42fae4c3df7b4",
+        "fefd4627760768112d3e82cddd92caa820c0dd828f1449b8583f8994d41cac2e":
+            "0491525772c9e79f0aa31d940b98b7cb56cbe35a4ec158120524cdb69e3de973",
+    },
+    "call_generation_history.py": {
+        "6125b65d6d83030782315f10e6ea6f76e99e38c8046eade3a65ac6f55e0328e1":
+            "5642fa75e3e266db62a49beb670af3284ba6b15dcfe832cb76fb3592aa1a24ed",
+        "c3790237e4a76ce5d581c8c07a9e76af89e79e5ca2500e4deca471594ae7283b":
+            "3327691160f4eaf92224bc66aff4d8c3f79e264524bbdc1aad776de62bd48f42",
     },
     "pool_review.py": {
         "e1bf5eaff41b907a8d2b3aa0c6bccf55cd03a8be54005fd6db21e1d5eda12a22":

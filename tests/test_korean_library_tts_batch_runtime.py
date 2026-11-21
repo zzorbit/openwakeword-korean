@@ -166,3 +166,58 @@ def test_incompatible_device_or_prompt_does_not_invoke_cuda(tmp_path, monkeypatc
     runtime._cuda_graph_capable = False
     assert generate(runtime, [object()]) is None
     assert timeline == []
+
+
+def test_mixed_voice_batch_keeps_prompt_order_and_restores_scalar_graph_and_rng(tmp_path, monkeypatch):
+    runtime, gpu_rng, _, talker, stock, _, single = mock_batch_runtime(tmp_path, monkeypatch)
+    runtime._mixed_voice_batch_capable = True
+    prompts = [object() for _ in range(4)]
+    calls = []
+
+    def synthesize(*, text, language, voice_clone_prompt, max_new_tokens):
+        assert text == ["보리야"] * 4 and language == "Korean"
+        assert voice_clone_prompt == prompts and max_new_tokens == 6
+        assert (talker.code_predictor.generate, talker.model.forward) == stock
+        calls.append(voice_clone_prompt)
+        values = (torch.rand(4) + torch.rand(4, generator=gpu_rng)).numpy()
+        talker.generate(max_new_tokens=max_new_tokens, eos_token_id=91)
+        return [np.array([index, value]) for index, value in enumerate(values)], 16000
+
+    monkeypatch.setattr(runtime.model, "generate_voice_clone", synthesize)
+    original_cpu, original_gpu = torch.get_rng_state(), gpu_rng.get_state()
+    options = {"batch_seed": 814, "voice_clone_prompts": [[p] for p in prompts],
+               "text": "보리야", "language": "Korean"}
+    first = runtime.generate_short_clone_mixed_voice_batch(**options)
+    second = runtime.generate_short_clone_mixed_voice_batch(**options)
+
+    assert len(calls) == 2 and first[1:] == second[1:]
+    assert [wave[0] for wave in first[0]] == list(range(4))
+    assert all(np.array_equal(a, b) for a, b in zip(first[0], second[0], strict=True))
+    assert [row["termination"] for row in first[3]] == ["eos", "eos", "without_eos", "eos"]
+    assert torch.equal(original_cpu, torch.get_rng_state()) and torch.equal(original_gpu, gpu_rng.get_state())
+    assert (talker.code_predictor.generate, talker.model.forward) == single
+
+
+def test_mixed_voice_batch_stays_on_model_device_after_oom(tmp_path, monkeypatch):
+    runtime, _, _, talker, stock, _, single = mock_batch_runtime(tmp_path, monkeypatch)
+    options = {"batch_seed": 814, "voice_clone_prompts": [[object()] for _ in range(4)],
+               "text": "보리야", "language": "Korean"}
+    called = []
+
+    def oom(**kwargs):
+        assert (talker.code_predictor.generate, talker.model.forward) == stock
+        called.append("synthesize")
+        raise torch.cuda.OutOfMemoryError("fixture OOM")
+
+    monkeypatch.setattr(runtime.model, "generate_voice_clone", oom)
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: called.append("release"))
+    assert runtime.generate_short_clone_mixed_voice_batch(**options) is None
+    assert called == []
+
+    runtime._mixed_voice_batch_capable = True
+    assert runtime.generate_short_clone_mixed_voice_batch(**options) is None
+    assert runtime.generate_short_clone_mixed_voice_batch(**options) is None
+    assert called == ["synthesize", "release"]
+    assert runtime.report["mixed_voice_batch_fallback"] == "fixture OOM"
+    assert not runtime.disabled and not runtime._batch_disabled
+    assert (talker.code_predictor.generate, talker.model.forward) == single

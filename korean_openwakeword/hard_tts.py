@@ -19,6 +19,7 @@ from .data import validate_hard_negative
 from .hard_phrase_policy import protected_call_terms, validate_noncall_text
 from .project import load_project
 from .storage import project_storage
+from .tts_runtime import MIXED_VOICE_BATCH_SIZE
 
 MAX_ORIGINALS = 100_000
 MAX_ATTEMPTS = 3
@@ -26,6 +27,7 @@ _RECOVERY_ATTEMPTS = 2 * MAX_ATTEMPTS
 _SHORT_CLONE_UPDATE = "hard_short_clone_update_v1"
 _SHORT_CLONE_RECEIPT = "short_clone_update.json"
 _LENGTH_FAILURES = {"duration_outlier", "does_not_fit_full_call_feature_window"}
+_MIXED_VOICE_BATCH_POLICY = "mixed_voice_cuda4_v1"
 
 
 def hard_phrase_scope(base, revision):
@@ -78,6 +80,73 @@ def _combination(slot, phrases, references):
 def _seed(config, slot, attempt, phrase, reference):
     return int(identity([config["tts"]["seed"], "hard_negative", slot, attempt,
                          phrase, reference["voice_family_id"], reference["sha256"]])[:8], 16)
+
+
+def _batch_slots(contract, first):
+    phrases = len(contract["texts"])
+    size = MIXED_VOICE_BATCH_SIZE
+    if (contract.get("hard_batch_policy") != _MIXED_VOICE_BATCH_POLICY
+            or len(contract["references"]) < size or first // phrases % size
+            or first + (size - 1) * phrases >= contract["original_count"]):
+        return None
+    return [first + index * phrases for index in range(size)]
+
+
+def _batch_identity(contract, contract_id, slots):
+    seeds = [_seed(contract, slot, 0, *_combination(slot, contract["texts"], contract["references"]))
+             for slot in slots]
+    return {"policy": _MIXED_VOICE_BATCH_POLICY, "slots": slots,
+            "seed": int(identity([contract_id, seeds, slots])[:8], 16)}
+
+
+def _validate_batch_attempt(row, contract, contract_id):
+    batch = row.get("cuda_batch")
+    slots = batch.get("slots") if isinstance(batch, dict) else None
+    if (row.get("attempt") != 0 or not isinstance(slots, list) or len(slots) != MIXED_VOICE_BATCH_SIZE
+            or any(type(slot) is not int or slot < 0 for slot in slots)
+            or row.get("slot") not in slots or slots != _batch_slots(contract, slots[0])
+            or batch != _batch_identity(contract, contract_id, slots)):
+        raise ValueError("Hard CUDA batch identity changed")
+    ending = row.get("batch_termination")
+    if not isinstance(ending, dict):
+        raise ValueError("Hard CUDA batch ending evidence is missing")
+    stop, tokens, limit = ending.get("termination"), ending.get("generated_tokens"), ending.get("token_limit")
+    if (type(limit) is not int or limit != row.get("generation_token_limit")
+            or type(tokens) is not int or not 1 <= tokens <= limit
+            or stop not in ("eos", "token_limit", "without_eos")
+            or (stop == "token_limit") != (tokens == limit and stop != "eos")
+            or stop != "eos" and row.get("technical_pass") is not False):
+        raise ValueError("Hard CUDA batch ending evidence changed")
+
+
+def _recover_hard_batch(root, output, contract, contract_id, binding):
+    pending = output / "pending_cuda_batch.json"
+    if not pending.exists():
+        return
+    intent = read_json(pending)
+    rows = intent.get("rows") if isinstance(intent, dict) else None
+    if (not isinstance(rows, list) or len(rows) != MIXED_VOICE_BATCH_SIZE or type(intent.get("offset")) is not int
+            or intent.get("contract_id") != contract_id or any(not isinstance(row, dict) for row in rows)):
+        raise ValueError("Pending Hard CUDA batch does not belong to this generation contract")
+    for row in rows:
+        _validate_batch_attempt(row, contract, contract_id)
+        slot = row["slot"]
+        phrase, reference = _combination(slot, contract["texts"], contract["references"])
+        sample_id = f"hard_train_{slot:06d}_attempt0"
+        if (row.get("generation_contract_id") != contract_id or row.get("generation_contract") != binding
+                or row.get("sample_id") != sample_id or row.get("text") != phrase
+                or row.get("voice_family_id") != reference["voice_family_id"]
+                or row.get("reference_sha256") != reference["sha256"]
+                or row.get("seed") != _seed(contract, slot, 0, phrase, reference)
+                or type(row.get("technical_pass")) is not bool or not isinstance(row.get("qc"), dict)
+                or row["technical_pass"] is not row["qc"].get("passed")):
+            raise ValueError("Pending Hard CUDA batch contains a changed candidate")
+        _validate_short_clone_attempt(row, historical=False, update=None)
+        _candidate_path(root, output, row, sample_id)
+    batch = rows[0]["cuda_batch"]
+    if [row["slot"] for row in rows] != batch["slots"] or any(row["cuda_batch"] != batch for row in rows):
+        raise ValueError("Pending Hard CUDA batch order changed")
+    tts._finish_call_batch(output, intent)
 
 
 def _legacy_recovery_slots(rows):
@@ -175,6 +244,8 @@ def hard_generation_recovery_available(output, *, pilot=False):
 
 def short_clone_admission_context(root, output, contract, *, pilot=False):
     """Verify the immutable update once and index its exact appended attempts."""
+    if "hard_batch_policy" in contract and (pilot or contract["hard_batch_policy"] != _MIXED_VOICE_BATCH_POLICY):
+        raise ValueError("Invalid Hard CUDA batch policy")
     if "short_clone_policy" in contract:
         if contract["short_clone_policy"] != tts.SHORT_CLONE_POLICY or (output / _SHORT_CLONE_RECEIPT).exists():
             raise ValueError("Invalid Hard short-clone generation policy")
@@ -193,6 +264,8 @@ def short_clone_admission_context(root, output, contract, *, pilot=False):
 
 def verify_short_clone_admission(root, row, reference, contract, context):
     update, appended, recovery, verified = context
+    if "cuda_batch" in row or "batch_termination" in row:
+        _validate_batch_attempt(row, contract, identity(contract))
     current_contract = contract.get("short_clone_policy") == tts.SHORT_CLONE_POLICY
     if current_contract or "short_clone_policy" in row:
         _validate_short_clone_attempt(row, historical=False, update=update)
@@ -273,6 +346,16 @@ def _synthesise(model, phrase, prompt, settings, *, retry, expected_reuses):
     return qc, converted, token_limit
 
 
+def _mixed_voice_waveforms(result):
+    wavs, rate, limit, endings = result
+    if (len(wavs) != MIXED_VOICE_BATCH_SIZE or len(endings) != MIXED_VOICE_BATCH_SIZE
+            or type(rate) not in (int, float) or not np.isfinite(rate) or not 8000 <= rate <= 192000 or int(rate) != rate
+            or type(limit) is not int or limit < 1
+            or any(not isinstance(ending, dict) or ending.get("token_limit") != limit for ending in endings)):
+        raise ValueError("Qwen Hard CUDA batch must return one bounded waveform per voice")
+    return wavs, int(rate), limit, endings
+
+
 def _store_candidate(root, output, sample_id, converted, qc, hashes):
     if converted is None:
         return None, None, None
@@ -310,6 +393,8 @@ def _validate_saved_candidate(path, row):
 
 def _validate_existing(root, output, rows, contract, config, phrases, references, count, pause_requested, update, boundary, recovery):
     passed, hashes, prepared = {}, set(), set()
+    batches = {}
+    contract_id, settings_id = identity(contract), identity(config["tts"])
     contract_binding = {"path": (output / "contract.json").relative_to(root).as_posix(),
                         "sha256": digest(output / "contract.json")}
     attempts = Counter()
@@ -329,14 +414,17 @@ def _validate_existing(root, output, rows, contract, config, phrases, references
         attempts[slot] += 1
         path = _candidate_path(root, output, row, sample_id)
         _validate_short_clone_attempt(row, historical=historical, update=update)
+        if "cuda_batch" in row or "batch_termination" in row:
+            _validate_batch_attempt(row, contract, contract_id)
+            batches.setdefault(tuple(row["cuda_batch"]["slots"]), []).append(slot)
         if not historical:
             _verify_prepared_reference(root, row, reference, prepared)
         if (row.get("sample_id") != sample_id or row.get("text") != phrase or
             row.get("voice_family_id") != reference["voice_family_id"] or
             row.get("reference_sha256") != reference["sha256"] or row.get("split") != "train" or
             row.get("generation_contract") != contract_binding or
-            row.get("generation_contract_id") != identity(contract) or
-            row.get("tts_settings_id") != identity(config["tts"]) or
+            row.get("generation_contract_id") != contract_id or
+            row.get("tts_settings_id") != settings_id or
             row.get("seed") != _seed(config, slot, attempt, phrase, reference) or
             row.get("individual_human_listening") is not False or row.get("admission") is not None):
             raise ValueError("Hard candidate contract/provenance changed")
@@ -351,6 +439,8 @@ def _validate_existing(root, output, rows, contract, config, phrases, references
             passed[slot] = row
         if path is not None:
             hashes.add(row["sha256"])
+    if any(list(slots) != published for slots, published in batches.items()):
+        raise ValueError("Hard CUDA batch journal contains an incomplete or reordered group")
     return passed, attempts, hashes
 
 
@@ -370,6 +460,8 @@ def generate_hard(project, phrases, count=None, model=None, *, samples_per_phras
     generation never publishes training admission or listening decisions.
     New attempts record quality validation of stored PCM. Earlier accepted
     attempts keep their records and must still pass QC from the saved audio.
+    A new per-phrase scope can group four different voices for its first
+    CUDA attempt. Each failure retains its existing individual retry seed.
     """
     check_generation_pause(pause_requested)
     root, config = load_project(project)
@@ -419,12 +511,17 @@ def generate_hard(project, phrases, count=None, model=None, *, samples_per_phras
                         samples_per_phrase=samples_per_phrase,
                         phrase_count=len(phrases),
                         allocation="every_phrase_cycles_train_references_v1")
+        if min(samples_per_phrase, len(references)) >= MIXED_VOICE_BATCH_SIZE:
+            contract["hard_batch_policy"] = _MIXED_VOICE_BATCH_POLICY
     with writer_lock(output):
         expected = contract
         contract_path = output / "contract.json"
         if contract_path.exists():
             from .call_generation_history import compatible_hard_contract
             saved = read_json(contract_path)
+            # An earlier frozen scope must keep its original scalar schedule.
+            if isinstance(saved, dict) and "hard_batch_policy" not in saved:
+                expected = {key: value for key, value in expected.items() if key != "hard_batch_policy"}
             if not compatible_hard_contract(saved, expected):
                 raise ValueError("Hard settings/reference/code/count changed; use a versioned output/project")
             contract = saved
@@ -433,7 +530,10 @@ def generate_hard(project, phrases, count=None, model=None, *, samples_per_phras
                 raise ValueError("Hard candidate journal exists without its frozen contract")
             write_json(contract_path, contract)
         contract_binding = {"path": contract_path.relative_to(root).as_posix(), "sha256": digest(contract_path)}
-        rows = read_rows(output / "candidates.jsonl")
+        contract_id, settings_id = identity(contract), identity(config["tts"])
+        _recover_hard_batch(root, output, contract, contract_id, contract_binding)
+        journal = output / "candidates.jsonl"
+        rows = read_rows(journal)
         update, boundary, recovery = _short_clone_context(root, output, contract, expected, rows)
         passed, attempts, hashes = _validate_existing(root, output, rows, contract, config, phrases, references,
                                                       count, pause_requested, update, boundary, recovery)
@@ -447,26 +547,24 @@ def generate_hard(project, phrases, count=None, model=None, *, samples_per_phras
         prompts = {}
         remaining = Counter((phrase, reference["voice_family_id"])
                             for phrase, reference in (_combination(slot, phrases, references) for slot in pending))
-        for slot, attempt in _attempt_rounds(count, passed, attempts, recovery):
-            check_generation_pause(pause_requested)
-            phrase, reference = _combination(slot, phrases, references)
-            family = reference["voice_family_id"]
-            prompt_key = (family, reference["sha256"])
+        generate_batch = getattr(model, "generate_short_clone_mixed_voice_batch", None)
+        batch_available = getattr(model, "mixed_voice_batch_available", None)
+        synthesis_settings = config["tts"]["generation"]
+
+        def prepare_prompt(reference):
+            prompt_key = reference["voice_family_id"], reference["sha256"]
             if prompt_key not in prompts:
+                check_generation_pause(pause_requested)
                 report_progress("tts_prompt_preparation", "기준 목소리 복제 정보 준비", eta_eligible=False)
                 prompt_path, preparation = clone_reference.prepare_clone_reference(root, reference, compact_internal_silence=True)
                 prompt = model.create_voice_clone_prompt(ref_audio=str(prompt_path), ref_text=reference["text"],
                                                         x_vector_only_mode=False)
                 prompts[prompt_key] = prompt, preparation
-            prompt, preparation = prompts[prompt_key]
-            check_generation_pause(pause_requested)
+            return prompts[prompt_key]
+
+        def record_attempt(slot, attempt, phrase, reference, preparation, qc, converted, token_limit, started):
+            family = reference["voice_family_id"]
             sample_id = f"hard_train_{slot:06d}_attempt{attempt}"
-            seed = _seed(config, slot, attempt, phrase, reference)
-            tts._seed(seed)
-            started = time.perf_counter()
-            with generation_attempt() as timing:
-                qc, converted, token_limit = _synthesise(model, phrase, prompt, config["tts"]["generation"],
-                    retry=attempt > 0, expected_reuses=remaining[phrase, family])
             path, sha, bounds = _store_candidate(root, output, sample_id, converted, qc, hashes)
             row = {"sample_id": sample_id, "slot": slot, "attempt": attempt,
                     "source_id": "qwen:" + config["project_id"] + ":" + sample_id,
@@ -481,24 +579,82 @@ def generate_hard(project, phrases, count=None, model=None, *, samples_per_phras
                     "qc": qc, "technical_pass": qc["passed"], "status": "pending_content_review" if qc["passed"] else "quarantined_technical_failure",
                     "axes": {"voice_family": family, "text_profile": "standalone_nonwake_phrase"},
                     "text_profile": "standalone_nonwake_phrase", "generation_method": "clone",
-                    "generation_contract": contract_binding, "generation_contract_id": identity(contract),
+                    "generation_contract": contract_binding, "generation_contract_id": contract_id,
                     "short_clone_policy": tts.SHORT_CLONE_POLICY, "short_clone_update": update,
                     "generation_token_limit": token_limit, "clone_reference_preparation": preparation,
-                    "tts_settings_id": identity(config["tts"]), "seed": seed,
+                    "tts_settings_id": settings_id, "seed": _seed(config, slot, attempt, phrase, reference),
                     "generation_seconds": time.perf_counter() - started, "created_at": now(),
                     "individual_human_listening": False, "content_review": "pending", "training_admitted": False}
             if path is not None:
                 row["candidate_pcm_qc"] = tts.CANDIDATE_PCM_QC
-            append_row(output / "candidates.jsonl", row)
-            if timing is not None:
-                timing.committed(qc["passed"])
+            return row
+
+        def track(row):
+            slot = row["slot"]
             rows.append(row)
             attempts[slot] += 1
-            if qc["passed"]:
+            if row["technical_pass"]:
                 passed[slot] = row
-            if qc["passed"] or attempts[slot] == (_RECOVERY_ATTEMPTS if slot in recovery else MAX_ATTEMPTS):
-                remaining[phrase, family] -= 1
+            if row["technical_pass"] or attempts[slot] == (_RECOVERY_ATTEMPTS if slot in recovery else MAX_ATTEMPTS):
+                remaining[row["text"], row["voice_family_id"]] -= 1
+
+        def progress():
             print(f"TTS Hard: technical {len(passed)}/{count}; attempts {len(rows)}; content approval pending", flush=True)
+
+        def run_batch(slots, phrase):
+            voices = [_combination(slot, phrases, references)[1] for slot in slots]
+            prepared = [prepare_prompt(reference) for reference in voices]
+            check_generation_pause(pause_requested)
+            batch = _batch_identity(contract, contract_id, slots)
+            started = time.perf_counter()
+            with generation_attempt() as timing:
+                result = generate_batch(batch_seed=batch["seed"],
+                    voice_clone_prompts=[prompt for prompt, _ in prepared], text=phrase, language="Korean",
+                    **synthesis_settings)
+            if result is None:
+                return False
+            wavs, rate, token_limit, endings = _mixed_voice_waveforms(result)
+            synthesis_share = (time.perf_counter() - started) / len(slots)
+            batch_rows = []
+            candidates = zip(slots, voices, prepared, wavs, endings, strict=True)
+            for slot, reference, (_, preparation), waveform, ending in candidates:
+                started = time.perf_counter() - synthesis_share
+                _, qc, converted = tts.check_short_clone_audio(waveform, rate, token_limit, ending)
+                row = record_attempt(slot, 0, phrase, reference, preparation, qc, converted, token_limit, started)
+                row.update(cuda_batch=batch, batch_termination=ending)
+                _validate_batch_attempt(row, contract, contract_id)
+                batch_rows.append(row)
+            intent = {"contract_id": contract_id, "offset": journal.stat().st_size if journal.exists() else 0,
+                      "rows": batch_rows}
+            write_json(output / "pending_cuda_batch.json", intent)
+            tts._finish_call_batch(output, intent)
+            for row in batch_rows:
+                track(row)
+            if timing is not None:
+                timing.committed(sum(row["technical_pass"] for row in batch_rows))
+            progress()
+            return True
+
+        for slot, attempt in _attempt_rounds(count, passed, attempts, recovery):
+            check_generation_pause(pause_requested)
+            phrase, reference = _combination(slot, phrases, references)
+            slots = _batch_slots(contract, slot) if attempt == 0 and callable(generate_batch) else None
+            if (slots and not any(attempts[current] for current in slots)
+                    and (not callable(batch_available) or batch_available()) and run_batch(slots, phrase)):
+                continue
+            prompt, preparation = prepare_prompt(reference)
+            check_generation_pause(pause_requested)
+            tts._seed(_seed(config, slot, attempt, phrase, reference))
+            started = time.perf_counter()
+            with generation_attempt() as timing:
+                qc, converted, token_limit = _synthesise(model, phrase, prompt, synthesis_settings,
+                    retry=attempt > 0, expected_reuses=remaining[phrase, reference["voice_family_id"]])
+            row = record_attempt(slot, attempt, phrase, reference, preparation, qc, converted, token_limit, started)
+            append_row(journal, row)
+            if timing is not None:
+                timing.committed(qc["passed"])
+            track(row)
+            progress()
         check_generation_pause(pause_requested)
         report_progress("tts_finalizing", "유사어 음원 목록·검사 결과 저장", eta_eligible=False)
         accepted = sorted(passed.values(), key=lambda r: r["slot"])

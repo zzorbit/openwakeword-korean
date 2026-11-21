@@ -65,6 +65,11 @@ _SHORT_CLONE_HARD_RELEASES = {
     # 6b33b72 contracts store the normalized fingerprints for Git archive
     # bytes or Windows checkout bytes. Match each release pair together.
     "hard_tts.py": {
+        # Last scalar release, in Git and Windows checkout formats.
+        ("bbe435b58a3e21e4f6d5e24d3c6f809c7d0c3d5df02610b4343e35021cc39c37",
+         "4b80f8a5561ba98454b8e6fd8b0449301b6bf3852d6eb78b8f3af043b52bb488"),
+        ("bd75d7e028246ac3da21722510b5250691461f968a14776d8511720439109350",
+         "35e797140ce4bc13235a0d9e259b129d63b7bbd66aac23fe2b1f8f624d9808bf"),
         ("43deed598cefa6503d105761ccb9fd7c9c2a5cb56ee700bfea402688c838bcc3",
          "4b80f8a5561ba98454b8e6fd8b0449301b6bf3852d6eb78b8f3af043b52bb488"),
         ("fa9ef4a2393fcf61f7df80097cceb656339e45588a66e4843c978212e948a061",
