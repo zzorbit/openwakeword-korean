@@ -163,7 +163,7 @@ tts.generate(Path(sys.argv[1]), limit=8, pilot=True, model=BatchModel(reject_fir
 
 def test_studio_pauses_only_after_publishing_current_batch_and_resumes_at_next(tmp_path, monkeypatch):
     from korean_openwakeword.studio_jobs import request_stage_pause
-    from korean_openwakeword.studio_worker import _speech_generation_stage
+    from korean_openwakeword.studio_worker import _run_pausable_stage
 
     project, _, scope = fixture(tmp_path, monkeypatch, 8)
     request = {"project": project, "workspace": tmp_path, "settings": {}, "stage": "positives", "task_id": "first"}
@@ -188,7 +188,7 @@ def test_studio_pauses_only_after_publishing_current_batch_and_resumes_at_next(t
         return run
 
     first_model = PausingBatch(first_job)
-    result = _speech_generation_stage(request, request_path, run_stage(first_model))
+    result = _run_pausable_stage(request, request_path, run_stage(first_model))
     directory, _ = tts.call_generation_location(project.parent, "train", scope)
     saved = read_rows(directory / "candidates.jsonl")
     assert result == {"state": "paused"}
@@ -199,7 +199,7 @@ def test_studio_pauses_only_after_publishing_current_batch_and_resumes_at_next(t
     next_request = {**request, "task_id": "next"}
     next_path = tmp_path / "next/request.json"
     next_model = PausingBatch({**next_request, "directory": next_path.parent})
-    result = _speech_generation_stage(next_request, next_path, run_stage(next_model))
+    result = _run_pausable_stage(next_request, next_path, run_stage(next_model))
     assert result["full_target_reached"] and read_rows(result["review_queue"])[:4] == saved
     assert [call[:2] for call in next_model.calls] == [("batch", "voice_1")]
 

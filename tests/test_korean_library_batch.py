@@ -18,6 +18,41 @@ from korean_openwakeword.review import apply_review
 from test_korean_library import project
 
 
+def test_training_read_ahead_keeps_order_and_checkpoints_before_the_next_draw():
+    from korean_openwakeword.train import _training_batches
+
+    counts = {"positive": 2, "other": 3}
+    sizes = {"positive": 7, "other": 9}
+    source = {role: np.arange(size) for role, size in sizes.items()}
+
+    class Delivery:
+        uses_read_ahead = True
+
+        def read_uncached(self, indices):
+            return {role: source[role][idx] for role, idx in indices.items()}
+
+        def batch(self, indices, prepared):
+            return np.concatenate(list(prepared.values()))
+
+    baseline = PoolSampler(sizes, 13, counts)
+    sampler = PoolSampler(sizes, 13, counts)
+    delivery = Delivery()
+    batches = _training_batches(delivery, sampler, 8)
+    for _ in range(3):
+        actual, rng = next(batches)
+        expected = np.concatenate(list(delivery.read_uncached(baseline.next_indices()).values()))
+        np.testing.assert_array_equal(actual, expected)
+    checkpoint = sampler.state(rng)
+    batches.close()
+    assert checkpoint["rng"] == baseline.state()["rng"]
+    assert checkpoint["draws"] == baseline.draws
+    resumed = PoolSampler(sizes, 13, counts)
+    resumed.restore(checkpoint)
+    for actual, _ in _training_batches(delivery, resumed, 5):
+        expected = np.concatenate(list(delivery.read_uncached(baseline.next_indices()).values()))
+        np.testing.assert_array_equal(actual, expected)
+    for role in sizes:
+        np.testing.assert_array_equal(resumed.seen[role], baseline.seen[role])
 def test_default_targets_batch_and_actual_labels():
     config = default_profile()
     assert config['targets']['generic_hours'] == 3500

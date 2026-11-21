@@ -2,9 +2,22 @@
 
 from pathlib import Path
 import os
+import re
 import subprocess
 
 from .common import now, write_json
+
+
+STAGE_PAUSE_MESSAGES = {
+    "pilot": "현재 발음 후보를 저장한 뒤 일시정지합니다.",
+    "positives": "현재 생성 중인 음성을 저장한 뒤 일시정지합니다.",
+    "hard_pilot": "현재 생성 중인 음성을 저장한 뒤 일시정지합니다.",
+    "hard_generation": "현재 생성 중인 음성을 저장한 뒤 일시정지합니다.",
+    "features": "현재 특징 추출 묶음을 저장한 뒤 일시정지합니다.",
+    "training": "현재 학습 묶음을 저장한 뒤 일시정지합니다.",
+    "development": "현재 원본의 평가 음원을 저장한 뒤 일시정지합니다.",
+    "evaluation": "현재 채점 또는 감지 기준 비교를 저장한 뒤 일시정지합니다.",
+}
 
 
 def process_identity(pid):
@@ -52,15 +65,21 @@ def worker_lock_paths(root):
     roots = (root / "features", root / "runs", root / "data", root / ".studio")
     patterns = (".writer.lock", "*/.writer.lock", "*/*/.writer.lock", "*/*/*/.writer.lock")
     revision_locks = (root / "data/generated/hard_phrase_revisions").glob("*/*/.writer.lock")
-    return [path for base in roots if base.exists() for pattern in patterns for path in base.glob(pattern)] + list(revision_locks)
+    paths = [path for base in roots if base.exists() for pattern in patterns for path in base.glob(pattern)]
+    paths.extend(revision_locks)
+    for path in (root / "reports").glob("studio_*/.writer.lock"):
+        if re.fullmatch(r"studio_(?:(?:evaluation|paired)(?:_attempt[0-9]+)?|runtime_recommendations_[0-9a-f]{16}_[0-9a-f]{12})",
+                        path.parent.name):
+            paths.append(path)
+    return paths
 
 
 def request_stage_pause(state, job, *, candidate_preparation):
     """Send a cooperative pause request to stages that support it."""
-    if job["stage"] in ("positives", "hard_pilot", "hard_generation"):
+    if job["stage"] in STAGE_PAUSE_MESSAGES:
         path = Path(job["directory"]) / "pause.json"
         write_json(path, {"task_id": job["task_id"], "requested_at": now()})
-        return "현재 생성 중인 음성을 저장한 뒤 일시정지합니다."
+        return STAGE_PAUSE_MESSAGES[job["stage"]]
     if candidate_preparation:
         path = Path(state["project"]).parent / ".studio/reference-candidates/preparation/pause.json"
         write_json(path, {"task_id": job["task_id"], "requested_at": now()})

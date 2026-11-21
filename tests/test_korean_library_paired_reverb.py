@@ -10,7 +10,7 @@ from korean_openwakeword.common import digest, read_json, read_rows
 from korean_openwakeword.audio import active_speech_mask, measured_snr, rms
 from korean_openwakeword.evaluation_coverage import assess_common_evaluation
 from korean_openwakeword.evaluation_rir import estimate_rt60_t20, render_rir_review_previews
-from korean_openwakeword.paired import prepare_evaluation, reverb_subset
+from korean_openwakeword.paired import PairedPreparationPaused, prepare_evaluation, reverb_subset
 from test_korean_library_paired_diversity import delayed_call_with_uneven_background, project, rows
 
 
@@ -32,6 +32,47 @@ def rirs(project):
                 "reverb_group_basis": "declared_test_fixture", "acoustic_source_type": "simulated"})
     rows(root / config["manifests"]["rir_validation"], values)
     return values
+
+
+def test_paired_preparation_resumes_after_a_complete_original(project):
+    root = project.parent
+    rirs(project)
+    settings = dict(originals=3, noise_sections=1, noise_selection="balanced_sources", reverb_originals=1)
+    expected = prepare_evaluation(project, root / "reports/uninterrupted", **settings)
+    output = root / "reports/resumable"
+    done = 0
+
+    def progress(record):
+        nonlocal done
+        if record["phase"] == "preparation_generation":
+            done = record["done"]
+
+    with pytest.raises(PairedPreparationPaused):
+        prepare_evaluation(project, output, progress=progress, pause_requested=lambda: done > 0, **settings)
+    saved_wavs = {path: path.stat().st_mtime_ns for path in (output / "audio").glob("*.wav")}
+    assert len(saved_wavs) == done and done in (16, 48)
+    assert not (output / "manifest.jsonl").exists()
+    path = next(iter(saved_wavs))
+    payload = path.read_bytes()
+    path.write_bytes(payload + b"changed")
+    with pytest.raises(ValueError, match="Checkpoint evaluation WAV"):
+        prepare_evaluation(project, output, resume=True, **settings)
+    path.write_bytes(payload)
+    saved_wavs[path] = path.stat().st_mtime_ns
+
+    resumed = prepare_evaluation(project, output, resume=True, **settings)
+    assert all(path.stat().st_mtime_ns == original for path, original in saved_wavs.items())
+    assert not (output / "_preparation").exists()
+    for key in ("manifest", "noise_coverage"):
+        baseline_file = expected[key] if key == "manifest" else expected[key]["path"]
+        resumed_file = resumed[key] if key == "manifest" else resumed[key]["path"]
+        if key == "manifest":
+            assert [{k: v for k, v in row.items() if k != "path"} for row in read_rows(baseline_file)] == [
+                {k: v for k, v in row.items() if k != "path"} for row in read_rows(resumed_file)]
+        else:
+            baseline, actual = read_json(baseline_file), read_json(resumed_file)
+            assert {k: v for k, v in baseline.items() if k != "manifest"} == {
+                k: v for k, v in actual.items() if k != "manifest"}
 
 
 @pytest.mark.parametrize("count", [625, 1000])

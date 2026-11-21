@@ -1,12 +1,13 @@
 """Prepare and check one generated reference attempt without deciding admission."""
 
 from unicodedata import normalize
+from uuid import uuid4
 
 import numpy as np
 import soundfile as sf
 
 from .clone_reference import GeneratedReferenceQualityError, RULES, prepare_generated_reference
-from .common import digest, identity, read_json, write_json
+from .common import bound_file, digest, identity, read_json, write_json
 from .task_progress import generation_attempt
 
 
@@ -18,6 +19,8 @@ _SECONDS_PER_TEXT_CHARACTER = 0.5
 _MIN_SECONDS_PER_TEXT_CHARACTER = 0.05
 _MAX_REFERENCE_GENERATION_S = 30
 _STOP_POLICY = "qwen_reference_termination_v1"
+DESIGN_BATCH_POLICY = "cuda_reference_design4_v1"
+DESIGN_BATCH_SIZE = 4
 
 
 def _text_units(text):
@@ -96,11 +99,94 @@ def reference_raw_path(raw):
     return raw
 
 
-def prepare_reference_attempt(root, raw, prepared, generation, settings, load_model):
+def _write_reference_stop(raw, generation, source_sha, stop):
+    write_json(_stop_receipt_path(raw), {**stop, "policy": _STOP_POLICY, "source_sha256": source_sha,
+                                        "generation_id": identity(generation)})
+
+
+def prepare_reference_batch(root, directory, generations, settings, load_model):
+    """Return the first four candidate attempts with immutable batch and EOS evidence."""
+    from .tts import _qwen_audio_token_limit
+    from .tts_runtime import _capture_batch_termination
+
+    if len(generations) != DESIGN_BATCH_SIZE or len({row["text"] for row in generations}) != 1:
+        raise ValueError("기준 목소리 동시 생성 계획이 다릅니다.")
+    text = generations[0]["text"]
+    batch = {"policy": DESIGN_BATCH_POLICY, "generation_ids": [identity(row) for row in generations]}
+    batch["seed"] = int(identity(batch)[:8], 16)
+    journal = directory / "batch.json"
+    attempts = [directory / f"{index}.wav" for index in range(DESIGN_BATCH_SIZE)]
+    if journal.exists():
+        receipt = read_json(journal)
+        if receipt.get("batch") != batch:
+            raise ValueError("기준 목소리 동시 생성 기록이 다릅니다.")
+        rows = receipt.get("rows")
+        if rows == []:
+            return {}, None
+        if not isinstance(rows, list) or len(rows) != DESIGN_BATCH_SIZE:
+            raise ValueError("기준 목소리 동시 생성 수량 기록이 다릅니다.")
+        for raw, row in zip(attempts, rows, strict=True):
+            if row["raw"]["path"] != raw.relative_to(root).as_posix():
+                raise ValueError("기준 목소리 동시 생성 경로 기록이 다릅니다.")
+            bound_file(root, row["raw"])
+            bound_file(root, row["stop"])
+        return dict(zip(batch["generation_ids"], attempts, strict=True)), None
+
+    model = load_model()
+    limit = _qwen_audio_token_limit(model, settings.get("max_new_tokens"), _reference_generation_seconds(text))
+    device = getattr(model, "device", None)
+    if limit is None or getattr(device, "type", None) != "cuda":
+        write_json(journal, {"batch": batch, "rows": []})
+        return {}, None
+
+    import torch
+
+    if torch.version.hip is not None:
+        write_json(journal, {"batch": batch, "rows": []})
+        return {}, None
+    oom = False
+    try:
+        with generation_attempt() as timing:
+            with (torch.cuda.device(device), torch.random.fork_rng(devices=[device]), torch.inference_mode(),
+                  _capture_batch_termination(model, limit) as endings):
+                torch.default_generator.manual_seed(batch["seed"])
+                torch.cuda.manual_seed(batch["seed"])
+                waves, rate = model.generate_voice_design(text=[text] * DESIGN_BATCH_SIZE, language="Korean",
+                    instruct=[row["instruction"] for row in generations], **dict(settings, max_new_tokens=limit))
+        if len(waves) != DESIGN_BATCH_SIZE:
+            raise ValueError("기준 목소리 동시 생성 결과의 수량이 다릅니다.")
+    except torch.cuda.OutOfMemoryError:
+        oom = True
+    if oom:
+        with torch.cuda.device(device):
+            torch.cuda.empty_cache()
+        # Persist the same-device scalar path before retrying the planned seeds.
+        write_json(journal, {"batch": batch, "rows": []})
+        return {}, None
+
+    rows = []
+    directory.mkdir(parents=True, exist_ok=True)
+    for raw, wave, generation, stop in zip(attempts, waves, generations, endings, strict=True):
+        temp = raw.with_name(f"{uuid4().hex}.tmp.wav")
+        try:
+            sf.write(temp, wave, rate, subtype="FLOAT")
+            temp.replace(raw)
+        finally:
+            temp.unlink(missing_ok=True)
+        sha = digest(raw)
+        _write_reference_stop(raw, generation, sha, stop)
+        stop_path = _stop_receipt_path(raw)
+        rows.append({"raw": {"path": raw.relative_to(root).as_posix(), "sha256": sha},
+                     "stop": {"path": stop_path.relative_to(root).as_posix(), "sha256": digest(stop_path)}})
+    write_json(journal, {"batch": batch, "rows": rows})
+    return dict(zip(batch["generation_ids"], attempts, strict=True)), timing
+
+
+def prepare_reference_attempt(root, raw, prepared, generation, settings, load_model, *, batch_raw=None):
     """Retain raw evidence and reject invalid attempts before they are published."""
     from .tts import _capture_qwen_termination, _qwen_audio_token_limit, _seed, short_clone_hit_limit
 
-    raw = reference_raw_path(raw)
+    raw = batch_raw if batch_raw is not None else reference_raw_path(raw)
     timing = stop = None
     if not raw.exists():
         if raw_receipt_path(raw).exists() or _stop_receipt_path(raw).exists():
@@ -124,8 +210,7 @@ def prepare_reference_attempt(root, raw, prepared, generation, settings, load_mo
             stop["termination"] = "waveform_at_limit"
     source_sha = digest(raw)
     if stop is not None:
-        write_json(_stop_receipt_path(raw), {**stop, "policy": _STOP_POLICY, "source_sha256": source_sha,
-                                            "generation_id": identity(generation)})
+        _write_reference_stop(raw, generation, source_sha, stop)
     try:
         preparation = prepare_generated_reference(root,
             {"path": raw.relative_to(root).as_posix(), "sha256": source_sha, "generation": generation}, prepared)

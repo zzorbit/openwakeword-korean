@@ -82,6 +82,38 @@ def test_round_counts_nested_and_immutable(project):
     assert meta["feature_rows"] == 3
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+def test_feature_resume_keeps_verified_prefix_and_replaces_torn_tail(project, legacy):
+    from korean_openwakeword.features import FeatureGenerationPaused
+
+    class CudaIdentityStub(StubFrontend):
+        identity = {**StubFrontend.identity, "provider": "CUDAExecutionProvider"}
+
+    root, _ = load_project(project)
+    baseline = root / "ordered-complete"
+    paused = root / "ordered-paused"
+    kwargs = {"rounds": 3, "batch_size": 2, "frontend": CudaIdentityStub(), "smoke": True}
+    full = build_features(project, "positive", output=baseline, **kwargs)
+    checkpoint = paused / "augmentation_checkpoint.json"
+    journal = paused / "augmentation.jsonl"
+    with pytest.raises(FeatureGenerationPaused):
+        build_features(project, "positive", output=paused, pause_requested=checkpoint.exists, **kwargs)
+    assert read_json(checkpoint)["rows"] == 2
+    expected_prefix = (baseline / journal.name).read_bytes().splitlines(keepends=True)[:2]
+    assert journal.read_bytes() == b"".join(expected_prefix)
+    if legacy:
+        checkpoint.unlink()
+    with journal.open("ab") as stream:
+        if not legacy:
+            # A fully written row still has no authority beyond the durable cursor.
+            stream.write((baseline / journal.name).read_bytes().splitlines(keepends=True)[2])
+        stream.write(b'{"feature_row":2,"torn_tail":')
+    resumed = build_features(project, "positive", output=paused, resume=True, **kwargs)
+    assert resumed["feature_sha256"] == full["feature_sha256"]
+    assert resumed["journal_sha256"] == full["journal_sha256"]
+    assert read_json(checkpoint)["rows"] == 9
+
+
 def test_formal_training_refuses_unreviewed(project):
     with pytest.raises(ValueError, match="unapproved"):
         train(project)
@@ -130,6 +162,56 @@ def test_interrupted_resume_is_exact(project, monkeypatch):
     assert all(torch.equal(v, b["model"][k]) for k, v in a["model"].items())
     assert full["members"][0]["model_sha256"] == resumed["members"][0]["model_sha256"]
     assert full["members"][0]["exposure"] == resumed["members"][0]["exposure"]
+
+
+def test_training_pause_saves_between_milestones_and_reuses_the_exact_updates(project):
+    import korean_openwakeword.train as module
+
+    root, config = load_project(project)
+    config["training"]["seeds"] = [41]
+    write_json(project, config)
+    uninterrupted = train(project, root / "runs/uninterrupted", smoke=True)["members"][0]
+    run = root / "runs/paused"
+    member = run / "member1_seed41"
+
+    def after_first_update():
+        progress = member / "progress.json"
+        return progress.exists() and read_json(progress).get("update") == 1
+
+    with pytest.raises(module.TrainingPaused):
+        train(project, run, smoke=True, pause_requested=after_first_update)
+    assert not (member / "last_checkpoint.json").exists()
+    assert read_json(member / "recovery_checkpoint.json")["update"] == 1
+    assert read_json(member / "progress.json")["completed_updates"] == 1
+    with (member / "training.jsonl").open("ab") as stream:
+        stream.write(b'{"update":2}\n{"update":')
+    resumed = train(project, run, smoke=True, resume=True)["members"][0]
+    assert resumed["model_sha256"] == uninterrupted["model_sha256"]
+    assert resumed["exposure"] == uninterrupted["exposure"]
+    assert [json.loads(line)["update"] for line in (member / "training.jsonl").read_text().splitlines()] == [1, 2, 4]
+
+
+def test_training_pause_checks_during_the_first_feature_scan(project, monkeypatch):
+    import korean_openwakeword.features as features
+    from korean_openwakeword.train import TrainingPaused
+
+    monkeypatch.setattr(features, "FEATURE_SCAN_BLOCK_BYTES", 1024)
+    checks = 0
+
+    def during_first_pool():
+        nonlocal checks
+        checks += 1
+        return checks == 7
+
+    root, config = load_project(project)
+    pool = root / config["pool_features"]["generic_negative"]
+    initial_receipt = (pool / "metadata.json").read_bytes()
+    directory = root / "paused-during-verification"
+    with pytest.raises(TrainingPaused):
+        train(project, directory, smoke=True, pause_requested=during_first_pool)
+    assert not directory.exists()
+    assert (pool / "metadata.json").read_bytes() == initial_receipt
+    assert verify_cache(pool)["feature_rows"] == 3
 
 
 def test_fast_frontend_qualifies_real_sources(tmp_path):

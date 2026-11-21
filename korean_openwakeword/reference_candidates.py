@@ -14,7 +14,8 @@ import uuid
 from .clone_reference import GeneratedReferenceQualityError
 from .common import bound_file, digest, identity, now, read_json, read_rows, resolved, snapshot_json, write_immutable_rows, write_json, writer_lock
 from .project import load_project
-from .reference_attempt import check_reference_timing as _check_candidate_timing, prepare_reference_attempt, publish_reference_attempt
+from .reference_attempt import (DESIGN_BATCH_POLICY, DESIGN_BATCH_SIZE, check_reference_timing as _check_candidate_timing,
+                                prepare_reference_attempt, prepare_reference_batch, publish_reference_attempt)
 from .reference_qc import _check_wave
 from .storage import project_storage
 
@@ -274,6 +275,7 @@ def _plan_candidate_batch(project, saved, group, *, rng=None):
             "split": group["split"], "gender": group["gender"], "age": group["age"],
             "originals": saved["originals"], "options_sha256": identity(OPTIONS),
             "sequence_start": sequence_start,
+            "batch_policy": DESIGN_BATCH_POLICY,
             "generation": deepcopy(config["tts"]["generation"]),
             "candidates": candidates, "created_at": now()}
     if _planned(saved):
@@ -313,7 +315,8 @@ def _validate_plan(plan, config):
     if (not re.fullmatch(r"[a-f0-9]{32}", plan.get("batch_id", ""))
             or type(plan.get("sequence_start")) is not int or plan["sequence_start"] < 1
             or (plan["sequence_start"] - 1) % BATCH_SIZE
-            or plan.get("generation") != config["tts"]["generation"]):
+            or plan.get("generation") != config["tts"]["generation"]
+            or plan.get("batch_policy") not in (None, DESIGN_BATCH_POLICY)):
         raise ValueError("목소리 후보의 묶음 식별자 또는 생성 설정이 다릅니다.")
     from .tts import REFERENCE_TEXT
     all_seeds = []
@@ -358,6 +361,13 @@ def generate_candidate_batch(project, output, job_key, plan, all_hashes, *, load
             model = (load_model or _load_model)(config["tts"]["design_model"], config["tts"], root)
         return model
 
+    def generation_for(item, attempt):
+        return {"kind": BATCH_KIND, "candidate_id": item["candidate_id"],
+                "batch_id": plan["batch_id"], "plan_binding": plan_binding,
+                "model": item["model"], "text": item["text"], "seed": item["attempt_seeds"][attempt],
+                "attempt": attempt, "instruction": item["design_instruction"],
+                "voice_controls": item["voice_controls"], "generation": plan["generation"]}
+
     with writer_lock(output):
         plan_path = output / "plan.json"
         if plan_path.exists():
@@ -366,6 +376,12 @@ def generate_candidate_batch(project, output, job_key, plan, all_hashes, *, load
         else:
             write_json(plan_path, plan)
         plan_binding = {"path": plan_path.relative_to(root).as_posix(), "sha256": digest(plan_path)}
+        batch_raws, batch_timing, batch_passed = {}, None, 0
+        batch_directory = output / "design_batch"
+        if plan.get("batch_policy") == DESIGN_BATCH_POLICY:
+            generations = [generation_for(item, 0) for item in plan["candidates"][:DESIGN_BATCH_SIZE]]
+            batch_raws, batch_timing = prepare_reference_batch(
+                root, batch_directory, generations, plan["generation"], resident_model)
         for item in plan["candidates"]:
             target, record = output / f"{item['candidate_id']}.wav", output / f"{item['candidate_id']}.json"
             if record.exists():
@@ -378,14 +394,11 @@ def generate_candidate_batch(project, output, job_key, plan, all_hashes, *, load
                 for attempt, seed in enumerate(item["attempt_seeds"]):
                     raw = output / "raw" / f"{item['candidate_id']}_attempt{attempt}.wav"
                     attempt_target = output / "prepared" / f"{item['candidate_id']}_attempt{attempt}.wav"
-                    generation = {"kind": BATCH_KIND, "candidate_id": item["candidate_id"],
-                                  "batch_id": plan["batch_id"], "plan_binding": plan_binding,
-                                  "model": item["model"], "text": item["text"], "seed": seed,
-                                  "attempt": attempt, "instruction": item["design_instruction"],
-                                  "voice_controls": item["voice_controls"], "generation": plan["generation"]}
+                    generation = generation_for(item, attempt)
+                    batch_raw = batch_raws.get(identity(generation))
                     try:
                         preparation, timing_check, timing = prepare_reference_attempt(
-                            root, raw, attempt_target, generation, plan["generation"], resident_model)
+                            root, raw, attempt_target, generation, plan["generation"], resident_model, batch_raw=batch_raw)
                     except GeneratedReferenceQualityError:
                         continue
                     metrics = preparation["technical_metrics"]
@@ -412,6 +425,11 @@ def generate_candidate_batch(project, output, job_key, plan, all_hashes, *, load
                                    "reference_preparation": preparation,
                                    "reference_timing_check": timing_check,
                                    "generation_job": job_key, "created_at": now()}
+                        if batch_raw is not None:
+                            batch_record = batch_directory / "batch.json"
+                            row["reference_design_batch"] = {"path": batch_record.relative_to(root).as_posix(),
+                                                             "sha256": digest(batch_record)}
+                            batch_passed += 1
                         write_json(record, {"kind": BATCH_KIND, "candidate": row})
                         if timing is not None:
                             timing.committed(True)
@@ -425,6 +443,8 @@ def generate_candidate_batch(project, output, job_key, plan, all_hashes, *, load
             hashes.update((row["sha256"], row["decoded_pcm_sha256"]))
             write_json(output.parent / "progress.json", {"kind": BATCH_KIND, "phase": "generating", "completed": len(rows),
                 "total": BATCH_SIZE, "message": f"기준 목소리 후보 {len(rows)} / {BATCH_SIZE}개 생성"})
+        if batch_timing is not None:
+            batch_timing.committed(batch_passed)
     return rows
 
 
@@ -459,6 +479,17 @@ def _verify_candidate(root, row):
                 or preparation["generation"] != expected_generation
                 or preparation["technical_metrics"] != row["technical_metrics"]):
             raise ValueError("목소리 후보의 원본·검수용 음원 또는 정리 기록이 다릅니다.")
+        if "reference_design_batch" in row:
+            receipt = read_json(_inside(root, row["reference_design_batch"], jobs))
+            batch = receipt["batch"]
+            generation_id = identity(expected_generation)
+            if (plan.get("batch_policy") != DESIGN_BATCH_POLICY or batch.get("policy") != DESIGN_BATCH_POLICY
+                    or generation_id not in batch["generation_ids"]):
+                raise ValueError("목소리 후보의 동시 생성 기록이 다릅니다.")
+            batch_row = receipt["rows"][batch["generation_ids"].index(generation_id)]
+            if batch_row["raw"] != preparation["source"]:
+                raise ValueError("목소리 후보의 동시 생성 원본이 다릅니다.")
+            _inside(root, batch_row["stop"], jobs)
     if "reference_timing_check" in row and row["reference_timing_check"] != _check_candidate_timing(audio, row["text"]):
         raise ValueError("목소리 후보의 발화 길이 검사 기록이 다릅니다.")
     return audio

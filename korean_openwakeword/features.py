@@ -1,13 +1,16 @@
 """Deterministic N×R cache with explicit counts, journal and exact resume."""
-import time
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
+import os
+import time
 from itertools import islice
 from pathlib import Path
 import numpy as np
 from scipy.signal import fftconvolve
 
 from .audio import active_speech_mask, pcm16, rms, noise_scale, measured_snr
+from .checkpoint_io import write_checkpoint_json
 from .common import digest, identity, iter_rows, now, read_json, resolved, write_json, writer_lock
 from .data import audit_project, rows_for, validate_admission, seek_audio, source_key
 from .streaming import manifest_index
@@ -18,6 +21,86 @@ from .task_progress import emit as report_task_progress
 MAX_NOISE_OFFSET_ATTEMPTS = 64
 MIN_NOISE_RMS = 1e-8
 FEATURE_SCAN_BLOCK_BYTES = 8 * 1024 * 1024
+# The previous writer used identical augmentation and frontend math.
+_PRIOR_FEATURE_WRITERS = {
+    "f86b59f800747b10e0a1b87abfe4f2313a6fccbcc1606937a06e7e396d0322b6",
+    "548dcd0cd13e0fa84918d3a48c2bf2fe2215b3aba1359e93d18d58f22b66a44b",
+}
+
+
+class FeatureGenerationPaused(RuntimeError):
+    """Feature preparation stopped at a durable row boundary."""
+
+
+def _check_feature_pause(pause_requested):
+    if pause_requested is not None and pause_requested():
+        raise FeatureGenerationPaused("특징 추출을 일시정지했습니다.")
+
+
+def _feature_digest(path, pause_requested):
+    if pause_requested is None:
+        return digest(path)
+    hasher = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for block in iter(lambda: stream.read(FEATURE_SCAN_BLOCK_BYTES), b""):
+            _check_feature_pause(pause_requested)
+            hasher.update(block)
+    return hasher.hexdigest()
+
+
+def _resume_feature_journal(journal, checkpoint, array, contract_sha, pause_requested=None):
+    """Validate the durable prefix before discarding an interrupted append."""
+    record = read_json(checkpoint) if checkpoint.exists() else None
+    if record is not None and (record["contract_sha256"] != contract_sha
+            or record["schema_version"] != 1 or not 0 < record["rows"] <= len(array)
+            or record["journal_bytes"] <= 0):
+        raise ValueError("Invalid feature checkpoint")
+    hasher = hashlib.sha256()
+    rows, offset = 0, 0
+    with journal.open("a+b") as stream:
+        stream.seek(0)
+        while record is None or offset < record["journal_bytes"]:
+            if rows % 512 == 0:
+                _check_feature_pause(pause_requested)
+            raw = stream.readline()
+            if not raw.endswith(b"\n"):
+                break
+            row = json.loads(raw)
+            if (rows >= len(array) or row["feature_row"] != rows
+                    or row["feature_sha256"] != hashlib.sha256(array[rows].tobytes()).hexdigest()):
+                raise ValueError("Committed feature prefix changed; do not resume")
+            hasher.update(raw)
+            rows += 1
+            offset += len(raw)
+        if record is not None and (rows, offset, hasher.hexdigest()) != (
+                record["rows"], record["journal_bytes"], record["journal_sha256"]):
+            raise ValueError("Committed feature journal changed; do not resume")
+        if stream.seek(0, os.SEEK_END) != offset:
+            stream.truncate(offset)
+            stream.flush()
+            os.fsync(stream.fileno())
+    return rows, offset, hasher
+
+
+def _prepared_feature_batches(items, prepare, batch_size, workers, pause_requested):
+    """Keep one bounded batch queued while the current batch is embedded."""
+    if workers == 1:
+        while (batch := list(islice(items, batch_size))):
+            _check_feature_pause(pause_requested)
+            yield [prepare(item) for item in batch]
+        return
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="feature-audio") as executor:
+        pending = []
+        try:
+            pending = [executor.submit(prepare, item) for item in islice(items, batch_size)]
+            while pending:
+                _check_feature_pause(pause_requested)
+                ready = [future.result() for future in pending]
+                pending = [executor.submit(prepare, item) for item in islice(items, batch_size)]
+                yield ready
+        finally:
+            for future in pending:
+                future.cancel()
 
 
 def _manifest_inventory(path):
@@ -159,7 +242,9 @@ def augment(root, row, role, round_id, settings, noises, rirs, noise_index=None)
 
 
 @project_storage
-def build_features(project, role, output=None, rounds=None, batch_size=32, smoke=False, resume=False, frontend=None):
+def build_features(project, role, output=None, rounds=None, batch_size=32, smoke=False, resume=False, frontend=None,
+                   *, pause_requested=None):
+    _check_feature_pause(pause_requested)
     report_task_progress("feature_admission", "특징 추출 원본·승인 자료 확인", eta_eligible=False)
     root, config = load_project(project)
     pool = "positive_train" if role == "positive" else role
@@ -184,6 +269,7 @@ def build_features(project, role, output=None, rounds=None, batch_size=32, smoke
             provenances.add(row.get("provenance"))
             yield row
             if index % 64 == 0 or index == source_count:
+                _check_feature_pause(pause_requested)
                 report_task_progress("feature_admission", "특징 추출 원본 승인 검사", index, source_count,
                                      "개 원본", eta_eligible=False)
 
@@ -194,6 +280,7 @@ def build_features(project, role, output=None, rounds=None, batch_size=32, smoke
         raise ValueError("Split/source audit failed: " + str(audit["errors"][:5]))
     materials = {}
     for material in ("noise", "rir"):
+        _check_feature_pause(pause_requested)
         report_task_progress("feature_material_audit", "소음·잔향 원본 승인 확인", eta_eligible=False)
         _, rows = rows_for(root, config, material)
         if rows:
@@ -233,80 +320,104 @@ def build_features(project, role, output=None, rounds=None, batch_size=32, smoke
     with writer_lock(directory):
         contract_path = directory / "contract.json"
         if contract_path.exists():
-            if not resume or read_json(contract_path) != contract:
+            prior = read_json(contract_path)
+            compatible = prior.get("implementation_sha256") in _PRIOR_FEATURE_WRITERS
+            expected_contract = {**contract, "implementation_sha256": prior["implementation_sha256"]} if compatible else contract
+            if not resume or prior != expected_contract:
                 raise ValueError("Immutable cache exists or resume identity changed")
             if (directory / "metadata.json").exists():
-                return verify_cache(directory)
+                return verify_cache(directory, pause_requested=pause_requested) if pause_requested else verify_cache(directory)
         else:
             write_json(contract_path, contract)
         if qualification is not None and not (directory / "frontend_qualification.json").exists():
             write_json(directory / "frontend_qualification.json", qualification)
         journal = directory / "augmentation.jsonl"
-        start = sum(1 for _ in iter_rows(journal))
+        checkpoint = directory / "augmentation_checkpoint.json"
+        contract_sha = digest(contract_path)
         path = directory / "features.npy"
-        if start:
+        if checkpoint.exists() or journal.exists() and journal.stat().st_size:
+            if not path.is_file() or not journal.is_file():
+                raise ValueError("Missing resumable feature artifacts")
             array = np.lib.format.open_memmap(path, mode="r+")
-            for i, row in enumerate(iter_rows(journal)):
-                if row["feature_row"] != i or row["feature_sha256"] != __import__("hashlib").sha256(array[i].tobytes()).hexdigest():
-                    raise ValueError("Committed feature prefix changed; do not resume")
         else:
             array = np.lib.format.open_memmap(path, mode="w+", dtype=np.float32, shape=(expected, 16, 96))
-        if array.shape != (expected, 16, 96):
+        if array.shape != (expected, 16, 96) or array.dtype != np.float32:
             raise ValueError("Resume cache shape mismatch")
+        start, journal_bytes, journal_hash = _resume_feature_journal(journal, checkpoint, array, contract_sha, pause_requested)
         started = time.perf_counter()
-        pending, rows = [], []
-        for source_index, source in enumerate(iter_rows(manifest)):
-            if source_index < start // rounds:
-                continue
-            for round_id in range(rounds):
-                index = source_index * rounds + round_id
-                if index < start:
-                    continue
-                if index >= expected:
-                    raise ValueError("Source manifest row count changed during extraction")
-                samples, info = augment(root, source, role, round_id, config["augmentation"], materials["noise"], materials["rir"], noise_index)
-                pending.append(samples)
-                rows.append({"feature_row": index, **info})
-                if len(pending) == batch_size or index == expected - 1:
-                    values = frontend.embed(np.asarray(pending, dtype=np.int16))
-                    if values.shape != (len(rows), 16, 96) or not np.isfinite(values).all():
-                        raise ValueError("Invalid frontend output")
-                    offset = rows[0]["feature_row"]
-                    array[offset:offset + len(rows)] = values
-                    array.flush()
-                    for item, value in zip(rows, values):
-                        item["feature_sha256"] = hashlib.sha256(value.tobytes()).hexdigest()
-                    # Commit one bounded batch, not one disk fsync per feature row.
-                    with journal.open("a", encoding="utf-8") as handle:
-                        for item in rows:
-                            handle.write(json.dumps(item, ensure_ascii=False) + "\n")
-                        handle.flush()
-                        __import__("os").fsync(handle.fileno())
-                    print(f"{role} R{rounds}: {index+1}/{expected}", flush=True)
-                    report_task_progress("feature_extraction", {
-                        "generic_negative": "일반 비호출", "korean_negative": "한국어 비호출",
-                        "positive": "호출어 음성", "hard_negative": "유사어 음성"}[role],
-                        index + 1, expected, "개 특징", eta_eligible=True)
-                    pending, rows = [], []
+        def items_to_prepare():
+            sources = islice(iter_rows(manifest), start // rounds, None)
+            for source_index, source in enumerate(sources, start // rounds):
+                for round_id in range(rounds):
+                    index = source_index * rounds + round_id
+                    if index >= expected:
+                        raise ValueError("Source manifest row count changed during extraction")
+                    if index >= start:
+                        yield index, source, round_id
+
+        def prepare(item):
+            index, source, round_id = item
+            samples, info = augment(root, source, role, round_id, config["augmentation"],
+                                    materials["noise"], materials["rir"], noise_index)
+            return samples, {"feature_row": index, **info}
+
+        workers = 2 if frontend.identity.get("provider") == "CUDAExecutionProvider" else 1
+        timings = dict(audio_wait=0.0, frontend=0.0, checkpoint=0.0)
+        ready_at = time.perf_counter()
+        committed = start
+        with path.open("r+b") as feature_file, journal.open("ab") as journal_file:
+            for batch in _prepared_feature_batches(items_to_prepare(), prepare, batch_size, workers, pause_requested):
+                stamp = time.perf_counter()
+                timings["audio_wait"] += stamp - ready_at
+                samples, rows = zip(*batch)
+                values = frontend.embed(np.asarray(samples, dtype=np.int16))
+                if values.shape != (len(rows), 16, 96) or values.dtype != np.float32 or not np.isfinite(values).all():
+                    raise ValueError("Invalid frontend output")
+                checkpoint_started = time.perf_counter()
+                timings["frontend"] += checkpoint_started - stamp
+                array[committed:committed + len(rows)] = values
+                array.flush()
+                os.fsync(feature_file.fileno())
+                for item, value in zip(rows, values):
+                    item["feature_sha256"] = hashlib.sha256(value.tobytes()).hexdigest()
+                encoded = "".join(json.dumps(item, ensure_ascii=False) + os.linesep for item in rows).encode("utf-8")
+                journal_file.write(encoded)
+                journal_file.flush()
+                os.fsync(journal_file.fileno())
+                journal_hash.update(encoded)
+                journal_bytes += len(encoded)
+                committed += len(rows)
+                write_checkpoint_json(checkpoint, {"schema_version": 1, "contract_sha256": contract_sha,
+                    "rows": committed, "journal_bytes": journal_bytes, "journal_sha256": journal_hash.hexdigest()})
+                timings["checkpoint"] += time.perf_counter() - checkpoint_started
+                print(f"{role} R{rounds}: {committed}/{expected}", flush=True)
+                report_task_progress("feature_extraction", {
+                    "generic_negative": "일반 비호출", "korean_negative": "한국어 비호출",
+                    "positive": "호출어 음성", "hard_negative": "유사어 음성"}[role],
+                    committed, expected, "개 특징", eta_eligible=True)
+                ready_at = time.perf_counter()
         del array
-        if _manifest_inventory(manifest) != (source_count, source_manifest_sha):
+        if committed != expected or _manifest_inventory(manifest) != (source_count, source_manifest_sha):
             raise ValueError("Source manifest changed during feature extraction")
         metadata = {"schema_version": 1, "role": role, "split": "train", "feature_rows": expected,
             "original_count": source_count, "rounds": rounds, "frontend_id": identity(frontend.identity),
             "journal_layout": "source_then_round_v1",
             "frontend": frontend.identity, "provenance": "qwen_tts" if role == "positive" else
                 next(iter(provenances)) if len(provenances) == 1 else "mixed_reviewed_sources",
-            "human_reference_used": False, "feature_sha256": digest(path), "journal_sha256": digest(journal),
-            "contract_sha256": digest(contract_path), "split_audit_passed": True,
+            "human_reference_used": False, "feature_sha256": _feature_digest(path, pause_requested),
+            "journal_sha256": journal_hash.hexdigest(),
+            "contract_sha256": contract_sha, "split_audit_passed": True,
             "unique_source_hours": audit["pools"][pool]["unique_source_hours"], "smoke_test_only": smoke,
             "source_time_scope": "Union of declared parent coordinates where supplied; caption offsets are not sample-exact original alignment",
-            "elapsed_this_invocation_s": time.perf_counter() - started, "created_at": now(),
+            "elapsed_this_invocation_s": time.perf_counter() - started,
+            "extraction_pipeline": {"augmentation_workers": workers, "elapsed_seconds": timings},
+            "created_at": now(),
             "quality_review": "accepted" if not smoke else "unapproved_smoke_only"}
         write_json(directory / "metadata.json", metadata)
-        return verify_cache(directory)
+        return verify_cache(directory, pause_requested=pause_requested) if pause_requested else verify_cache(directory)
 
 
-def _verify_feature_payload(feature_path, expected_sha256, feature_rows):
+def _verify_feature_payload(feature_path, expected_sha256, feature_rows, pause_requested=None):
     """Verify every file byte and every stored float in one sequential read.
 
     NumPy's public NPY reader validates v1/v2/v3 headers, payload bounds and
@@ -320,13 +431,13 @@ def _verify_feature_payload(feature_path, expected_sha256, feature_rows):
     except (ValueError, OSError, EOFError):
         # Match the existing hash-first rejection when a damaged header or
         # truncated file also has a mismatching digest.
-        if digest(feature_path) != expected_sha256:
+        if _feature_digest(feature_path, pause_requested) != expected_sha256:
             raise ValueError("Feature payload hash changed")
         raise
     shape, dtype, data_offset, payload_bytes = header.shape, header.dtype, int(header.offset), int(header.nbytes)
     del header
     if shape != (feature_rows, 16, 96) or not np.issubdtype(dtype, np.floating):
-        if digest(feature_path) != expected_sha256:
+        if _feature_digest(feature_path, pause_requested) != expected_sha256:
             raise ValueError("Feature payload hash changed")
         raise ValueError("Invalid feature shape/dtype")
     hasher = __import__("hashlib").sha256()
@@ -336,6 +447,7 @@ def _verify_feature_payload(feature_path, expected_sha256, feature_rows):
     with Path(feature_path).open("rb") as stream:
         remaining = data_offset
         while remaining:
+            _check_feature_pause(pause_requested)
             block = stream.read(min(remaining, FEATURE_SCAN_BLOCK_BYTES))
             if not block:
                 complete = False
@@ -344,6 +456,7 @@ def _verify_feature_payload(feature_path, expected_sha256, feature_rows):
             remaining -= len(block)
         remaining = payload_bytes
         while complete and remaining:
+            _check_feature_pause(pause_requested)
             block = stream.read(min(remaining, FEATURE_SCAN_BLOCK_BYTES))
             if not block:
                 complete = False
@@ -360,6 +473,7 @@ def _verify_feature_payload(feature_path, expected_sha256, feature_rows):
             report_task_progress("feature_cache_verification", "기존 특징 배열 무결성·형식 검사",
                                  payload_bytes - remaining, payload_bytes, "bytes", eta_eligible=False)
         for block in iter(lambda: stream.read(FEATURE_SCAN_BLOCK_BYTES), b""):
+            _check_feature_pause(pause_requested)
             hasher.update(block)
     if hasher.hexdigest() != expected_sha256:
         raise ValueError("Feature payload hash changed")
@@ -378,7 +492,7 @@ def _round_error(entries, count, rounds):
     return None
 
 
-def _verify_journal(directory, meta):
+def _verify_journal(directory, meta, pause_requested=None):
     """Check old interleaved journals and new ordered journals without full lists."""
     journal = directory / "augmentation.jsonl"
     count, order_valid, error = 0, True, None
@@ -394,6 +508,8 @@ def _verify_journal(directory, meta):
                     error = error or problem
 
             for position, row in enumerate(iter_rows(journal)):
+                if position % 512 == 0:
+                    _check_feature_pause(pause_requested)
                 count += 1
                 order_valid = order_valid and row["feature_row"] == position
                 sample = row["sample_id"]
@@ -411,6 +527,8 @@ def _verify_journal(directory, meta):
             # compatibility while putting the grouping and sort on disk.
             index.db.execute("CREATE TABLE journal(sample TEXT, position INTEGER, round_id TEXT, seed TEXT, pcm TEXT)")
             for position, row in enumerate(iter_rows(journal)):
+                if position % 512 == 0:
+                    _check_feature_pause(pause_requested)
                 count += 1
                 order_valid = order_valid and row["feature_row"] == position
                 index.db.execute("INSERT INTO journal VALUES (?,?,?,?,?)", (
@@ -418,6 +536,7 @@ def _verify_journal(directory, meta):
                     json.dumps(row["seed"]), row["pcm_sha256"]))
             index.db.execute("CREATE INDEX journal_sample ON journal(sample)")
             for sample, group_count in index.db.execute("SELECT sample,COUNT(*) FROM journal GROUP BY sample ORDER BY MIN(position)"):
+                _check_feature_pause(pause_requested)
                 if group_count != rounds:
                     error = "Missing rounds or repeated augmentation seeds"
                     break
@@ -434,20 +553,22 @@ def _verify_journal(directory, meta):
         raise ValueError(error)
 
 
-def verify_cache(directory):
+def verify_cache(directory, *, pause_requested=None):
+    _check_feature_pause(pause_requested)
     directory = Path(directory)
     meta = read_json(directory / "metadata.json")
     feature_path = resolved(directory, meta.get("feature_path", "features.npy"))
-    shape, dtype = _verify_feature_payload(feature_path, meta["feature_sha256"], meta["feature_rows"])
+    shape, dtype = _verify_feature_payload(feature_path, meta["feature_sha256"], meta["feature_rows"], pause_requested)
     if meta.get("imported_precomputed"):
         from .assets import GENERIC_SHA
         if meta.get("role") != "generic_negative" or meta["feature_sha256"] != GENERIC_SHA or meta["feature_rows"] != 5625000 or dtype != np.float16:
             raise ValueError("Unsupported imported feature cache")
         return meta
     report_task_progress("feature_journal_verification", "특징 완료 기록·원본 순서 확인", eta_eligible=False)
-    if digest(directory / "augmentation.jsonl") != meta["journal_sha256"] or digest(directory / "contract.json") != meta["contract_sha256"]:
+    if (_feature_digest(directory / "augmentation.jsonl", pause_requested) != meta["journal_sha256"]
+            or digest(directory / "contract.json") != meta["contract_sha256"]):
         raise ValueError("Feature journal/contract changed")
-    _verify_journal(directory, meta)
+    _verify_journal(directory, meta, pause_requested)
     return meta
 
 
@@ -456,6 +577,10 @@ def compare_rounds(first, second):
     ma, mb = verify_cache(a), verify_cache(b)
     ca, cb = read_json(a / "contract.json"), read_json(b / "contract.json")
     ca.pop("rounds"); cb.pop("rounds")
+    known_writers = _PRIOR_FEATURE_WRITERS | {digest(__file__)}
+    if ca.get("implementation_sha256") in known_writers and cb.get("implementation_sha256") in known_writers:
+        ca.pop("implementation_sha256")
+        cb.pop("implementation_sha256")
     if ca != cb:
         raise ValueError("R comparison changed sources, noise distribution, frontend or code")
     with manifest_index(a) as index:

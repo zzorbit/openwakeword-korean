@@ -62,7 +62,8 @@ def test_legacy_pilot_keeps_frozen_twenty_four_generation_and_review(tmp_path, m
     write_immutable_rows(queue, rows)
     calls = []
 
-    def generate(*args):
+    def generate(*args, pause_requested):
+        assert pause_requested is None
         calls.append(args)
         return {"full_target_reached": True, "technical_pass": 24, "review_queue": str(queue)}
 
@@ -86,7 +87,8 @@ def test_current_pilot_stage_prepares_one_call_per_voice_in_both_banks_and_keeps
     before = {path: digest(path) for path in (project, project.parent / "voices.json", project.parent / "approval.json", queue)}
     calls = []
 
-    def prepare(path, supplied_settings, *, prior_rounds):
+    def prepare(path, supplied_settings, *, prior_rounds, pause_requested):
+        assert pause_requested is None
         calls.append((path, supplied_settings, prior_rounds))
         return {"target": expected + 30, "technical_pass": expected + 30, "full_target_reached": True,
                 "review_queue": str(queue), "split_counts": {

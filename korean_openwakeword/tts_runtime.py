@@ -20,6 +20,7 @@ from .task_progress import emit
 _GRAPH_BACKEND = "exact_shape_predictor_and_talker_cuda_graph"
 _CLONE_BATCH_SIZE = 4
 _BATCH_GRAPH_BACKEND = "exact_shape_predictor_and_talker_cuda_graph_batch4"
+_EAGER_BATCH_BACKEND = "eager_cuda_same_voice_batch4"
 MIXED_VOICE_BATCH_SIZE = _CLONE_BATCH_SIZE
 _MIXED_VOICE_BATCH_BACKEND = "eager_cuda_mixed_voice_batch4"
 _PROMPT_CACHE_LIMIT = 544  # Covers a complete Studio Train and Validation voice bank.
@@ -31,7 +32,7 @@ def _graph_capacity_exceeded(error):
 
 
 @contextmanager
-def _capture_batch_termination(model, limit):
+def _capture_batch_termination(model, limit, batch_size=_CLONE_BATCH_SIZE):
     """Distinguish the first EOS in each row from padding added afterward."""
     talker = model.model.talker
     generate = talker.generate
@@ -50,7 +51,7 @@ def _capture_batch_termination(model, limit):
         if len(observed) != 1:
             raise ValueError("Batch generation must expose one sampled sequence per audio")
         sequence, observed_limit, eos = observed[0]
-        if (sequence is None or sequence.ndim != 2 or sequence.shape[0] != _CLONE_BATCH_SIZE
+        if (sequence is None or sequence.ndim != 2 or sequence.shape[0] != batch_size
                 or not 0 < sequence.shape[1] <= limit or observed_limit != limit or type(eos) is not int):
             raise ValueError("Batch generation did not expose valid termination evidence")
         for row in sequence.tolist():
@@ -139,6 +140,8 @@ class CloneRuntime:
         self._batch_rejected = {}
         self._mixed_voice_batch_capable = False
         self._mixed_voice_batch_disabled = False
+        self._mixed_voice_pair_disabled = False
+        self._eager_same_voice_disabled = False
         self.report = {"requested_backend": backend, "created_at": now(), "qualifications": [],
                        "actual_backend": "eager", "expected_utterances_per_prompt": expected_reuses,
                        "minimum_warm_speedup_fraction": _MIN_WARM_GAIN,
@@ -302,17 +305,18 @@ class CloneRuntime:
     def _run_batch(self, kwargs, limit, *, accelerated):
         import torch
 
-        with _capture_batch_termination(self.model, limit) as endings:
+        batch_size = len(kwargs["text"])
+        with _capture_batch_termination(self.model, limit, batch_size) as endings:
             if accelerated:
                 with torch.inference_mode(), self._use_batch_graph():
                     wavs, rate = self.model.generate_voice_clone(**kwargs)
             else:
                 wavs, rate = self._eager(kwargs)
-        if len(wavs) != _CLONE_BATCH_SIZE:
+        if len(wavs) != batch_size:
             raise ValueError("Batch generation returned an unexpected number of audio clips")
         return wavs, rate, endings
 
-    def _qualify_batch(self, kwargs, limit, expected_reuses, report):
+    def _qualify_batch(self, kwargs, limit, expected_reuses, report, eager_reference):
         import torch
 
         device = self.cuda_device
@@ -328,6 +332,8 @@ class CloneRuntime:
             return result, time.perf_counter() - start
 
         expected, eager_seconds = measure(False)
+        if eager_reference is not None:
+            eager_reference.append(expected)
         expected_cpu, expected_cuda = torch.get_rng_state(), torch.cuda.get_rng_state(device)
         report["eager_seconds"] = eager_seconds
         buckets = len(self._batch_graph[2]) if self._batch_graph is not None else None
@@ -359,14 +365,16 @@ class CloneRuntime:
             return None
         return actual
 
-    def generate_short_clone_batch(self, *, batch_seed, expected_reuses=None, retry=False, **kwargs):
+    def generate_short_clone_batch(self, *, batch_seed, expected_reuses=None, retry=False, allow_eager=False, **kwargs):
         """Synthesize four clips for one prompt, returning each clip's EOS evidence."""
         if type(batch_seed) is not int or not 0 <= batch_seed < 2**32:
             raise ValueError("A batch seed must be a 32-bit unsigned integer")
         self._load()
         prompt = kwargs.get("voice_clone_prompt")
         text, language = kwargs.get("text"), kwargs.get("language")
-        if (self._batch_disabled or not self._cuda_graph_capable or not isinstance(prompt, list) or len(prompt) != 1
+        graph = not self._batch_disabled and self._cuda_graph_capable
+        eager = allow_eager and self._mixed_voice_batch_capable and not self._eager_same_voice_disabled
+        if ((not graph and not eager) or not isinstance(prompt, list) or len(prompt) != 1
                 or not isinstance(text, str) or not isinstance(language, str)):
             return None
         from .tts import _short_clone_token_limit
@@ -377,36 +385,59 @@ class CloneRuntime:
             return None
         kwargs.update(max_new_tokens=limit, text=[text] * _CLONE_BATCH_SIZE)
         key = (id(prompt), identity({name: value for name, value in kwargs.items() if name != "voice_clone_prompt"}))
-        if key in self._batch_rejected:
+        graph = graph and key not in self._batch_rejected
+        if not graph and not eager:
             return None
         qualified = key in self._batch_checked
         report = {"at": now(), "batch_size": _CLONE_BATCH_SIZE, "accepted": False,
                   "expected_batches_per_prompt": expected_reuses, "requalified_replay": qualified}
-        try:
-            if not qualified:
-                emit("tts_qualification", "4개 동시 합성의 CUDA 가속 확인", eta_eligible=False)
-            device = self.cuda_device
+        device = self.cuda_device
+
+        def run_seeded(operation):
             with torch.cuda.device(device), torch.random.fork_rng(devices=[device]):
                 torch.default_generator.manual_seed(batch_seed)
                 torch.cuda.manual_seed(batch_seed)
-                result = (self._run_batch(kwargs, limit, accelerated=True) if qualified
-                          else self._qualify_batch(kwargs, limit, expected_reuses, report))
-        except (ValueError, RuntimeError, TypeError, AttributeError) as error:
-            report["reason"] = str(error)
-            result = None
-            if isinstance(error, torch.cuda.OutOfMemoryError) or self._batch_graph is None:
-                self._batch_graph = None
-                self._batch_disabled = True
-        if result is None:
-            self._batch_checked.pop(key, None)
-            self._batch_rejected[key] = prompt
-        elif not qualified:
-            self._batch_checked[key] = prompt
-            report.update(accepted=True, backend=_BATCH_GRAPH_BACKEND)
-            self.report["batch_backend"] = _BATCH_GRAPH_BACKEND
-        if not qualified or result is None:
-            self.report.setdefault("batch_qualifications", []).append(report)
-            self._save()
+                return operation()
+
+        result = None
+        eager_reference = [] if eager else None
+        if graph and (not eager or qualified or expected_reuses != 1):
+            try:
+                if not qualified:
+                    emit("tts_qualification", "4개 동시 합성의 CUDA 가속 확인", eta_eligible=False)
+                result = run_seeded(lambda: self._run_batch(kwargs, limit, accelerated=True) if qualified
+                                    else self._qualify_batch(kwargs, limit, expected_reuses, report, eager_reference))
+            except (ValueError, RuntimeError, TypeError, AttributeError) as error:
+                report["reason"] = str(error)
+                if isinstance(error, torch.cuda.OutOfMemoryError) or self._batch_graph is None:
+                    self._batch_graph = None
+                    self._batch_disabled = True
+            if result is None:
+                self._batch_checked.pop(key, None)
+                self._batch_rejected[key] = prompt
+            elif not qualified:
+                self._batch_checked[key] = prompt
+                report.update(accepted=True, backend=_BATCH_GRAPH_BACKEND)
+                self.report["batch_backend"] = _BATCH_GRAPH_BACKEND
+            if not qualified or result is None:
+                self.report.setdefault("batch_qualifications", []).append(report)
+                self._save()
+        if result is None and eager:
+            oom = False
+            try:
+                result = eager_reference[0] if eager_reference else run_seeded(
+                    lambda: self._run_batch(kwargs, limit, accelerated=False))
+            except (ValueError, RuntimeError, TypeError, AttributeError) as error:
+                self._eager_same_voice_disabled = True
+                self.report["same_voice_eager_batch_fallback"] = str(error)
+                oom = isinstance(error, torch.cuda.OutOfMemoryError)
+            if oom:
+                with torch.cuda.device(device):
+                    torch.cuda.empty_cache()
+            if result is None or self.report.get("same_voice_eager_batch_backend") != _EAGER_BATCH_BACKEND:
+                if result is not None:
+                    self.report["same_voice_eager_batch_backend"] = _EAGER_BATCH_BACKEND
+                self._save()
         emit("tts_generation", "호출어 음성 생성", eta_eligible=True)
         if result is None:
             return None
@@ -418,6 +449,10 @@ class CloneRuntime:
         self._load()
         return self._mixed_voice_batch_capable and not self._mixed_voice_batch_disabled
 
+    def mixed_voice_pair_available(self):
+        self._load()
+        return self._mixed_voice_batch_capable and not self._mixed_voice_pair_disabled
+
     def generate_short_clone_mixed_voice_batch(self, *, batch_seed, voice_clone_prompts, **kwargs):
         """Generate one copy of the same phrase for each prompt, in slot order."""
         if type(batch_seed) is not int or not 0 <= batch_seed < 2**32:
@@ -425,11 +460,13 @@ class CloneRuntime:
         text, language = kwargs.get("text"), kwargs.get("language")
         if (not isinstance(text, str) or not isinstance(language, str)
                 or not isinstance(voice_clone_prompts, (list, tuple))
-                or len(voice_clone_prompts) != MIXED_VOICE_BATCH_SIZE
+                or len(voice_clone_prompts) not in (2, MIXED_VOICE_BATCH_SIZE)
                 or any(not isinstance(prompt, list) or len(prompt) != 1 for prompt in voice_clone_prompts)):
             return None
         prompts = [prompt[0] for prompt in voice_clone_prompts]
-        if len({id(prompt) for prompt in prompts}) != MIXED_VOICE_BATCH_SIZE or not self.mixed_voice_batch_available():
+        size = len(prompts)
+        available = self.mixed_voice_pair_available if size == 2 else self.mixed_voice_batch_available
+        if len({id(prompt) for prompt in prompts}) != size or not available():
             return None
         limit = self._short_clone_limit(kwargs.get("max_new_tokens"), text, False)
         if limit is None:
@@ -437,7 +474,7 @@ class CloneRuntime:
 
         import torch
 
-        kwargs.update(text=[text] * MIXED_VOICE_BATCH_SIZE, voice_clone_prompt=prompts, max_new_tokens=limit)
+        kwargs.update(text=[text] * size, voice_clone_prompt=prompts, max_new_tokens=limit)
         device = self.cuda_device
         try:
             with torch.cuda.device(device), torch.random.fork_rng(devices=[device]):
@@ -445,15 +482,18 @@ class CloneRuntime:
                 torch.cuda.manual_seed(batch_seed)
                 wavs, rate, endings = self._run_batch(kwargs, limit, accelerated=False)
         except (ValueError, RuntimeError, TypeError, AttributeError) as error:
-            # The scheduler retries these items through the scalar path on this model's device.
-            self._mixed_voice_batch_disabled = True
-            self.report["mixed_voice_batch_fallback"] = str(error)
             oom = isinstance(error, torch.cuda.OutOfMemoryError)
+            if size == MIXED_VOICE_BATCH_SIZE:
+                self._mixed_voice_batch_disabled = True
+            if size == 2 or not oom:
+                self._mixed_voice_pair_disabled = True
+            self.report["mixed_voice_batch_fallback"] = str(error)
         else:
-            if self.report.get("mixed_voice_batch_backend") != _MIXED_VOICE_BATCH_BACKEND:
-                self.report["mixed_voice_batch_backend"] = _MIXED_VOICE_BATCH_BACKEND
+            backend = _MIXED_VOICE_BATCH_BACKEND if size == MIXED_VOICE_BATCH_SIZE else "eager_cuda_mixed_voice_batch2"
+            if self.report.get("mixed_voice_batch_backend") != backend:
+                self.report["mixed_voice_batch_backend"] = backend
                 self._save()
-            emit("tts_generation", "유사어 음성 생성", eta_eligible=True)
+            emit("tts_generation", "음성 생성", eta_eligible=True)
             return wavs, rate, limit, endings
 
         if oom:
@@ -649,7 +689,8 @@ class CloneRuntime:
         return (actual, actual_rate) if qualification["accepted"] else (expected, rate)
 
 
-def generate_with_runtime(project, split="train", limit=None, pilot=False, method="clone", backend="auto", cpu_threads=4):
+def generate_with_runtime(project, split="train", limit=None, pilot=False, method="clone", backend="auto", cpu_threads=4,
+                          *, pause_requested=None):
     if backend not in ("auto", "eager") or type(cpu_threads) is not int or cpu_threads < 1:
         raise ValueError("Use backend auto/eager and a positive CPU thread count")
     from .tts import generate
@@ -657,4 +698,4 @@ def generate_with_runtime(project, split="train", limit=None, pilot=False, metho
     # Lazy loading retains generate's approval, split and Final checks before
     # opening weights, prompts or audio. Design retains the original path.
     model = CloneRuntime(config["tts"]["clone_model"], config["tts"], root, backend, cpu_threads) if method == "clone" else None
-    return generate(project, split, limit, pilot, method, model=model)
+    return generate(project, split, limit, pilot, method, model=model, pause_requested=pause_requested)

@@ -34,8 +34,12 @@ def preflight_quality_retry_rounds(inputs):
 
 def _passing_slots(root, config, split, references, directory, scope=None):
     """Validate the saved generation contract and every recorded attempt."""
-    from .tts import call_generation_contract, call_journal_context, validate_call_rows
+    from .tts import _recover_call_batch, call_generation_contract, call_generation_location, call_journal_context, validate_call_rows
     expected = call_generation_contract(config, split, references, True, "clone", scope)
+    if scope is not None and (directory / "pending_cuda_batch.json").is_file():
+        with writer_lock(directory):
+            _, scope_id = call_generation_location(root, split, scope)
+            _recover_call_batch(root, directory, config, split, references, scope, scope_id, expected)
     rows, context = call_journal_context(root, directory, expected)
     passing, _ = validate_call_rows(root, config, split, references, rows, context, scope=scope)
     return rows, passing
@@ -118,7 +122,8 @@ def combined_approval_matches(root, descriptor, approval):
             and read_json(report).get("queue_sha256") == descriptor["queue_sha256"])
 
 
-def prepare_pilot(project, train_count=None, *, validation_count=None, tts_backend="auto", tts_cpu_threads=4):
+def prepare_pilot(project, train_count=None, *, validation_count=None, tts_backend="auto", tts_cpu_threads=4,
+                  pause_requested=None):
     """Publish one successful call per admitted reference in each requested bank.
 
     With no Validation count, retain the Train-only queue used by older Studio
@@ -142,11 +147,12 @@ def prepare_pilot(project, train_count=None, *, validation_count=None, tts_backe
                                          & {row["sha256"] for row in banks["validation"]}):
         raise ValueError("Train and Validation pilot reference audio must be disjoint")
 
+    pause_options = {} if pause_requested is None else {"pause_requested": pause_requested}
     if validation_count is None:
         def generate(path, split, limit):
             from .tts_runtime import generate_with_runtime
             return generate_with_runtime(path, split, limit, True, "clone",
-                                         backend=tts_backend, cpu_threads=tts_cpu_threads)
+                                         backend=tts_backend, cpu_threads=tts_cpu_threads, **pause_options)
     else:
         model = None
 
@@ -157,7 +163,7 @@ def prepare_pilot(project, train_count=None, *, validation_count=None, tts_backe
             if model is None:
                 model = CloneRuntime(config["tts"]["clone_model"], config["tts"], root, tts_backend,
                                      tts_cpu_threads, expected_reuses=1)
-            return generate_calls(path, split, limit, True, "clone", model=model)
+            return generate_calls(path, split, limit, True, "clone", model=model, **pause_options)
 
     selected, split_counts, split_bindings, missing_families, exhausted_slots = [], {}, {}, [], []
     for split, references in banks.items():
@@ -346,7 +352,7 @@ def _alternate_reference(root, config, original, round_key, load_design_model, r
     raise ValueError("교체 기준 목소리의 기술 검사를 통과하지 못했습니다.")
 
 
-def _preflight_scope_samples(project, root, config, split, scope, model, *, ceiling=0, excluded=()):
+def _preflight_scope_samples(project, root, config, split, scope, model, *, ceiling=0, excluded=(), pause_requested=None):
     from .tts import CLONE_ATTEMPTS, _exhausted_slots, call_generation_location, generate
 
     references = scope["references"]
@@ -355,14 +361,15 @@ def _preflight_scope_samples(project, root, config, split, scope, model, *, ceil
     counts = Counter(row["slot"] for row in rows)
     if any(slot not in passing and counts[slot] < ceiling for slot in range(len(references))):
         generate(project, split, len(references), True, "clone", model=model, staged_scope=scope,
-                 attempt_ceiling=ceiling, excluded_sha256=excluded)
+                 attempt_ceiling=ceiling, excluded_sha256=excluded, pause_requested=pause_requested)
         rows, passing = _passing_slots(root, config, split, references, output, scope)
     failures = _exhausted_slots(rows, references, len(references), passing, CLONE_ATTEMPTS, split)
     return rows, passing, failures
 
 
-def _generate_preflight_banks(project, root, config, banks, pending, reviewed_hashes, round_key, model, retry_rounds, ending_repairs=()):
-    from .tts import CLONE_ATTEMPTS, REPAIR_ENDING_POLICY, call_generation_location
+def _generate_preflight_banks(project, root, config, banks, pending, reviewed_hashes, round_key, model, retry_rounds,
+                             ending_repairs=(), *, pause_requested=None):
+    from .tts import CLONE_ATTEMPTS, PREFLIGHT_BATCH_POLICY, REPAIR_ENDING_POLICY, call_generation_location
 
     def make_scope(references, excluded):
         scope = {"kind": "preflight", "revision": round_key, "references": references,
@@ -376,6 +383,11 @@ def _generate_preflight_banks(project, root, config, banks, pending, reviewed_ha
         directory, _ = call_generation_location(root, split, scope)
         return (directory / "contract.json").is_file()
 
+    def new_scope(split, scope):
+        if has_scope(split, scope) or not callable(getattr(model, "generate_short_clone_mixed_voice_batch", None)):
+            return scope
+        return {**scope, "batch_policy": PREFLIGHT_BATCH_POLICY}
+
     def missing(bank):
         return [row for row in bank["references"] if row["voice_family_id"] not in bank["passing"]]
 
@@ -384,7 +396,8 @@ def _generate_preflight_banks(project, root, config, banks, pending, reviewed_ha
 
     def visit(split, bank, scope, ceiling=0):
         rows, passing, failures = _preflight_scope_samples(
-            project, root, config, split, scope, model, ceiling=ceiling, excluded=tuple(sorted(known_hashes)))
+            project, root, config, split, scope, model, ceiling=ceiling, excluded=tuple(sorted(known_hashes)),
+            pause_requested=pause_requested)
         journals[(split, identity(scope))] = rows
         for row in passing.values():
             family = row["voice_family_id"]
@@ -419,7 +432,7 @@ def _generate_preflight_banks(project, root, config, banks, pending, reviewed_ha
             base = legacy_scope
         else:
             base = {**make_scope(references, reviewed_hashes), "schedule": "deferred_failures_v1"}
-        bank = {"references": references, "base": base, "passing": {}, "failed": {}}
+        bank = {"references": references, "base": new_scope(split, base), "passing": {}, "failed": {}}
         work[split] = bank
         if legacy_complete and has_scope(split, legacy_scope):
             failures = visit(split, bank, legacy_scope)
@@ -447,8 +460,8 @@ def _generate_preflight_banks(project, root, config, banks, pending, reviewed_ha
     for retry_round in range(legacy_retry, retry_rounds + 1):
         if not any(missing(bank) for bank in work.values()):
             break
-        scopes = {split: {**make_scope(missing(bank), known_hashes), "quality_retry_round": retry_round,
-                          "schedule": "deferred_failures_v1"}
+        scopes = {split: new_scope(split, {**make_scope(missing(bank), known_hashes), "quality_retry_round": retry_round,
+                          "schedule": "deferred_failures_v1"})
                   for split, bank in work.items() if missing(bank)}
         for ceiling in range(1, CLONE_ATTEMPTS + 1):
             for split, scope in scopes.items():
@@ -463,9 +476,9 @@ def _generate_preflight_banks(project, root, config, banks, pending, reviewed_ha
 
 
 @project_storage
-def prepare_prepost_pilot(project, settings, *, prior_rounds=(), quality_retry_rounds=0):
+def prepare_prepost_pilot(project, settings, *, prior_rounds=(), quality_retry_rounds=0, pause_requested=None):
     """Prepare only pending voices; each reviewed round is immutable evidence."""
-    from .tts import _load_model
+    from .tts import CallGenerationPaused, _load_model
     from .tts_runtime import CloneRuntime
 
     if type(quality_retry_rounds) is not int or not 0 <= quality_retry_rounds <= MAX_PREFLIGHT_QUALITY_RETRY_ROUNDS:
@@ -492,6 +505,8 @@ def prepare_prepost_pilot(project, settings, *, prior_rounds=(), quality_retry_r
             for split, bank in banks.items():
                 for index, original in enumerate(bank):
                     if original["voice_family_id"] in pending:
+                        if pause_requested is not None and pause_requested():
+                            raise CallGenerationPaused
                         reference = _alternate_reference(root, config, original, round_key, load_design_model, reference_hashes)
                         bank[index] = reference
                         reference_hashes.add(reference["sha256"])
@@ -499,7 +514,8 @@ def prepare_prepost_pilot(project, settings, *, prior_rounds=(), quality_retry_r
         model = CloneRuntime(config["tts"]["clone_model"], config["tts"], root, "auto",
                              config["training"]["cpu_threads"], expected_reuses=1)
         work, attempts, exhausted = _generate_preflight_banks(
-            project, root, config, banks, pending, heard_hashes, round_key, model, quality_retry_rounds, ending_repairs)
+            project, root, config, banks, pending, heard_hashes, round_key, model, quality_retry_rounds, ending_repairs,
+            pause_requested=pause_requested)
         selected, split_counts = [], {}
         for split, bank in work.items():
             passing = bank["passing"]
@@ -523,7 +539,7 @@ def prepare_prepost_pilot(project, settings, *, prior_rounds=(), quality_retry_r
 
 
 def _generate_production_banks(project, root, banks, targets, revision, heard_hashes, model, *, pause_requested=None):
-    from .tts import VOICE_FILL_SCHEDULE, call_generation_location, generate
+    from .tts import EAGER_VOICE_FILL_POLICY, VOICE_FILL_SCHEDULE, call_generation_location, generate
 
     scopes = {split: {"kind": "production", "revision": revision, "references": bank,
                       "excluded_sha256": sorted(heard_hashes)} for split, bank in banks.items()}
@@ -539,6 +555,10 @@ def _generate_production_banks(project, root, banks, targets, revision, heard_ha
     if not any((directory / "contract.json").is_file() for directory in directories.values()):
         scopes = {split: {**scope, "schedule": VOICE_FILL_SCHEDULE} for split, scope in scopes.items()}
         directories = {split: call_generation_location(root, split, scope)[0] for split, scope in scopes.items()}
+        if (not any((directory / "contract.json").is_file() for directory in directories.values())
+                and callable(getattr(model, "generate_short_clone_batch", None))):
+            scopes = {split: {**scope, "batch_policy": EAGER_VOICE_FILL_POLICY} for split, scope in scopes.items()}
+            directories = {split: call_generation_location(root, split, scope)[0] for split, scope in scopes.items()}
         train = generate(project, "train", targets["train"], True, "clone", model=model,
                          staged_scope=scopes["train"], pause_requested=pause_requested)
         validation = {"full_target_reached": False, "technical_pass": 0, "attempts": 0}

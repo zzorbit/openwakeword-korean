@@ -3,9 +3,10 @@
 No experimental AST rewriting or machine-specific paths are used by this API.
 The selected CNN, sampler, dropout hook, optimizer and schedule math are retained.
 """
-import copy
-from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing, contextmanager
 from contextvars import ContextVar
+import json
 import math
 import os
 import random
@@ -14,12 +15,19 @@ from pathlib import Path
 import numpy as np
 
 from .common import digest, identity, now, read_json, resolved, write_json, append_row, writer_lock
-from .features import verify_cache
+from .checkpoint_io import publish_checkpoint, write_checkpoint_json
+from .features import FeatureGenerationPaused, verify_cache
 from .project import BATCH, LEGACY_BATCH, training_batch, load_project, workload_summary
 from .storage import project_storage
 
 
 _TRAINING_PROGRESS = ContextVar("training_progress_callback", default=None)
+_RECOVERY_INTERVAL_S = 60.0
+_RECOVERY_INTERVAL_UPDATES = 1000
+
+
+class TrainingPaused(RuntimeError):
+    """Model training stopped after safely saving its completed updates."""
 
 
 def _training_implementation_sha256():
@@ -76,16 +84,24 @@ class PoolSampler:
         self.seen = {r: np.zeros(n, bool) for r, n in sizes.items()}
 
     def next_indices(self):
-        result = {}
-        for r, count in self.batch.items():
-            idx = self.rngs[r].integers(self.sizes[r], size=count)
-            self.draws[r] += count
-            self.seen[r][idx] = True
-            result[r] = idx
-        return result
+        indices = self.draw_indices()
+        self.record_indices(indices)
+        return indices
 
-    def state(self):
-        return {"rng": {r: copy.deepcopy(g.bit_generator.state) for r, g in self.rngs.items()},
+    def draw_indices(self):
+        return {role: self.rngs[role].integers(self.sizes[role], size=count)
+                for role, count in self.batch.items()}
+
+    def record_indices(self, indices):
+        for r, count in self.batch.items():
+            self.draws[r] += count
+            self.seen[r][indices[r]] = True
+
+    def rng_state(self):
+        return {r: g.bit_generator.state for r, g in self.rngs.items()}
+
+    def state(self, rng=None):
+        return {"rng": self.rng_state() if rng is None else rng,
                 "draws": dict(self.draws), "seen": {r: x.copy() for r, x in self.seen.items()}}
 
     def restore(self, state):
@@ -143,9 +159,10 @@ class InputDelivery:
     """Preserve stored dtype on GPU, convert sampled rows to float32 exactly.
 
     Large pools are copied in bounded sequential chunks only if they fit the
-    measured budget. Uncached mmap pools use the original CPU gather path.
+    measured budget. For mixed CUDA runs, CPU read-ahead prepares the next
+    sampled rows from uncached mmap pools.
     """
-    def __init__(self, pools, device, budget_mb=0, mode="auto", batch=None):
+    def __init__(self, pools, device, budget_mb=0, mode="auto", batch=None, *, pause_requested=None):
         import torch
         self.batch_counts = dict(batch if batch is not None else LEGACY_BATCH if set(pools) == set(LEGACY_BATCH) else BATCH)
         self.pools, self.device, self.cached = pools, device, {}
@@ -168,6 +185,8 @@ class InputDelivery:
             if array.nbytes <= budget:
                 cached = torch.empty(array.shape, dtype=torch.float16 if array.dtype == np.float16 else torch.float32, device=device)
                 for i in range(0, len(array), 4096):
+                    if pause_requested is not None and pause_requested():
+                        raise TrainingPaused("모델 학습을 일시정지했습니다.")
                     cached[i:i+4096] = torch.from_numpy(np.array(array[i:i+4096], copy=True)).to(device)
                     copied_bytes += array[i:i+4096].nbytes
                     _report_training_progress("gpu_cache_loading", "학습 자료를 GPU에 준비", copied_bytes, cache_bytes, "bytes")
@@ -176,14 +195,24 @@ class InputDelivery:
         self.report = {r: {"mode": "GPU_pool_cache" if r in self.cached else "CPU_mmap_gather",
                           "rows": len(a), "storage_bytes": a.nbytes} for r, a in pools.items()}
 
-    def batch(self, indices):
+    @property
+    def uses_read_ahead(self):
+        return self.device.startswith("cuda") and len(self.cached) < len(self.pools)
+
+    def read_uncached(self, indices):
+        return {role: np.asarray(self.pools[role][indices[role]], dtype=np.float32)
+                for role in self.batch_counts if role not in self.cached}
+
+    def batch(self, indices, prepared=None):
         import torch
         xs, ys = [], []
         for role, count in self.batch_counts.items():
             if role in self.cached:
                 x = self.cached[role][torch.as_tensor(indices[role], device=self.device)].float()
             else:
-                x = torch.from_numpy(np.asarray(self.pools[role][indices[role]], dtype=np.float32)).to(self.device)
+                data = (prepared[role] if prepared is not None else
+                        np.asarray(self.pools[role][indices[role]], dtype=np.float32))
+                x = torch.from_numpy(data).to(self.device)
             xs.append(x)
             ys.append(torch.full((count, 1), float(role == "positive"), device=self.device))
         return torch.cat(xs), torch.cat(ys)
@@ -204,15 +233,17 @@ class _SharedInputDelivery:
     reserve stay unchanged. Constructing after model allocation also avoids
     consuming memory for a completed-only resume. No sampler or RNG is shared.
     """
-    def __init__(self, pools, settings):
+    def __init__(self, pools, settings, *, pause_requested=None):
         self.pools, self.settings = pools, settings
+        self.pause_requested = pause_requested
         self.value, self.creations, self.member_uses = None, 0, 0
 
     def __call__(self, device, batch):
         created = self.value is None
         if created:
             self.value = InputDelivery(self.pools, device,
-                self.settings.get("gpu_cache_budget_mb", 0), self.settings.get("delivery", "auto"), batch)
+                self.settings.get("gpu_cache_budget_mb", 0), self.settings.get("delivery", "auto"), batch,
+                pause_requested=self.pause_requested)
             self.creations += 1
         self.value.validate_member(self.pools, device, batch)
         self.member_uses += 1
@@ -226,8 +257,98 @@ class _SharedInputDelivery:
         return self.value
 
 
+def _training_batches(delivery, sampler, count):
+    if not getattr(delivery, "uses_read_ahead", False):
+        for _ in range(count):
+            yield delivery.batch(sampler.next_indices()), None
+        return
+    if count == 0:
+        return
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="training-mmap") as executor:
+        indices = sampler.draw_indices()
+        pending = executor.submit(delivery.read_uncached, indices)
+        try:
+            for remaining in range(count - 1, -1, -1):
+                prepared = pending.result()
+                sampler.record_indices(indices)
+                current = indices
+                next_rng = None
+                if remaining:
+                    # A subsequent checkpoint records the RNG before the unused draw.
+                    next_rng = sampler.rng_state()
+                    indices = sampler.draw_indices()
+                    pending = executor.submit(delivery.read_uncached, indices)
+                yield delivery.batch(current, prepared), next_rng
+        finally:
+            pending.cancel()
+
+
+def _resume_training_checkpoint(output, contract_id, device, updates):
+    import torch
+
+    candidates = []
+    for filename in ("last_checkpoint.json", "recovery_checkpoint.json"):
+        pointer = output / filename
+        if pointer.exists():
+            candidates.append((read_json(pointer), filename))
+    for record, filename in sorted(candidates, key=lambda item: item[0]["update"], reverse=True):
+        step = record["update"]
+        filenames = {f"checkpoint_{step:06d}.pt"} if filename == "last_checkpoint.json" else {
+            "recovery_checkpoint_0.pt", "recovery_checkpoint_1.pt"}
+        if not 1 <= step <= updates or record["path"] not in filenames:
+            raise ValueError("Invalid resume checkpoint record")
+        path = output / record["path"]
+        if not path.is_file() or digest(path) != record["sha256"]:
+            continue
+        # Load only this run's own hash-bound trusted file, never an arbitrary pickle.
+        state = torch.load(path, map_location=device, weights_only=False)
+        if state["contract_id"] != contract_id or state["step"] != step:
+            raise ValueError("Checkpoint belongs to a different experiment or update")
+        return state
+    if candidates:
+        raise ValueError("Resume checkpoint changed")
+    return None
+
+
+def _restore_training_log(path, step):
+    if not path.exists():
+        return
+    with path.open("r+b") as stream:
+        offset = 0
+        for raw in stream:
+            if not raw.endswith(b"\n") or json.loads(raw)["update"] > step:
+                break
+            offset += len(raw)
+        if stream.seek(0, os.SEEK_END) != offset:
+            stream.truncate(offset)
+            stream.flush()
+            os.fsync(stream.fileno())
+
+
+def _save_training_checkpoint(output, state, milestone):
+    import torch
+
+    step = state["step"]
+    if milestone:
+        pointer = output / "last_checkpoint.json"
+        path = output / f"checkpoint_{step:06d}.pt"
+    else:
+        pointer = output / "recovery_checkpoint.json"
+        latest = read_json(pointer)["path"] if pointer.exists() else None
+        slot = 1 if latest == "recovery_checkpoint_0.pt" else 0
+        path = output / f"recovery_checkpoint_{slot}.pt"
+    publish_checkpoint(path, lambda stream: torch.save(state, stream))
+    record = {"path": path.name, "sha256": digest(path), "update": step}
+    if milestone:
+        write_json(pointer, record)
+    else:
+        write_checkpoint_json(pointer, record)
+
+
 def _train_member(config, root, metadata, pools, seed, output, smoke, resume,
-                  selected_device=None, delivery=None):
+                  selected_device=None, delivery=None, pause_requested=None):
+    if pause_requested is not None and pause_requested():
+        raise TrainingPaused("모델 학습을 일시정지했습니다.")
     _report_training_progress("model_initialization", "학습 모델 준비")
     import torch
     settings = config["training"]
@@ -266,7 +387,8 @@ def _train_member(config, root, metadata, pools, seed, output, smoke, resume,
         # checks and this member's model allocation. Cache copies use no RNG;
         # every member retains its own seeded model, optimizer and sampler.
         if delivery is None:
-            delivery = InputDelivery(pools, device, settings.get("gpu_cache_budget_mb", 0), settings.get("delivery", "auto"), batch)
+            delivery = InputDelivery(pools, device, settings.get("gpu_cache_budget_mb", 0),
+                                     settings.get("delivery", "auto"), batch, pause_requested=pause_requested)
         elif callable(delivery):
             delivery = delivery(device, batch)
         delivery.validate_member(pools, device, batch)
@@ -275,56 +397,61 @@ def _train_member(config, root, metadata, pools, seed, output, smoke, resume,
             "sampler_and_random_states_shared": False,
         }))
         step = 0
-        if resume and (output / "last_checkpoint.json").exists():
-            record = read_json(output / "last_checkpoint.json")
-            path = output / record["path"]
-            if digest(path) != record["sha256"]:
-                raise ValueError("Resume checkpoint changed")
-            # Only load this run's own hash-bound trusted checkpoint, never arbitrary downloaded pickle.
-            state = torch.load(path, map_location=device, weights_only=False)
-            if state["contract_id"] != contract_id:
-                raise ValueError("Checkpoint belongs to a different experiment")
+        state = _resume_training_checkpoint(output, contract_id, device, settings["updates"]) if resume else None
+        if state is not None:
             model.load_state_dict(state["model"]); optimizer.load_state_dict(state["optimizer"])
             sampler.restore(state["sampler"]); step = state["step"]
             torch.set_rng_state(state["torch_rng"].cpu()); np.random.set_state(state["numpy_rng"]); random.setstate(state["python_rng"])
             if device.startswith("cuda"):
                 torch.cuda.set_rng_state_all([v.cpu() for v in state["cuda_rng"]])
+            del state
+        if resume:
+            _restore_training_log(output / "training.jsonl", step)
         _report_training_progress("training", "모델 학습", step, settings["updates"], "학습 업데이트")
         started = time.perf_counter()
         write_json(output / "progress.json", {"state": "running", "pid": __import__("os").getpid(),
             "started_at": now(), "completed_updates": step, "total_updates": settings["updates"], "device": device})
         rate_step, rate_stamp = step, time.perf_counter()
-        for step in range(step + 1, settings["updates"] + 1):
-            x, y = delivery.batch(sampler.next_indices())
-            for group in optimizer.param_groups:
-                group["lr"] = lr_at(step, settings)
-            optimizer.zero_grad(set_to_none=True)
-            logits = model(x)
-            elements = torch.nn.functional.binary_cross_entropy_with_logits(logits, y, reduction="none")
-            loss = elements.mean() if settings["positive_loss_weight"] == 1 else (elements * (1 + (settings["positive_loss_weight"] - 1) * y)).mean()
-            loss.backward(); optimizer.step()
-            if step == 1 or step % settings["log_every"] == 0 or step == settings["updates"]:
-                loss_value = float(loss.detach().cpu())
-                if not math.isfinite(loss_value):
-                    raise ValueError("Nonfinite training loss")
-                row = {"update": step, "loss": loss_value, "elapsed_s": time.perf_counter() - started,
-                       "learning_rate": optimizer.param_groups[0]["lr"], "draws": dict(sampler.draws)}
-                append_row(output / "training.jsonl", row)
-                write_json(output / "progress.json", {"state": "running", **row, "total_updates": settings["updates"]})
-                stamp = time.perf_counter()
-                _report_training_progress("training", "모델 학습", step, settings["updates"], "학습 업데이트",
-                                          rate_sample=(step - rate_step, stamp - rate_stamp))
-                rate_step, rate_stamp = step, stamp
-                print(f"seed {seed}: {step}/{settings['updates']} loss={loss_value:.6f}", flush=True)
-            if step in settings["checkpoints"] or step == settings["updates"]:
-                path = output / f"checkpoint_{step:06d}.pt"
-                state = {"model": model.state_dict(), "optimizer": optimizer.state_dict(), "sampler": sampler.state(),
-                    "step": step, "contract_id": contract_id, "torch_rng": torch.get_rng_state(),
-                    "cuda_rng": torch.cuda.get_rng_state_all() if device.startswith("cuda") else [],
-                    "numpy_rng": np.random.get_state(), "python_rng": random.getstate()}
-                temporary = path.with_suffix(".tmp")
-                torch.save(state, temporary); temporary.replace(path)
-                write_json(output / "last_checkpoint.json", {"path": path.name, "sha256": digest(path), "update": step})
+        saved_step, saved_at = rate_step, rate_stamp
+        batches = _training_batches(delivery, sampler, settings["updates"] - step)
+        with closing(batches):
+            for step, ((x, y), next_rng) in enumerate(batches, step + 1):
+                for group in optimizer.param_groups:
+                    group["lr"] = lr_at(step, settings)
+                optimizer.zero_grad(set_to_none=True)
+                logits = model(x)
+                elements = torch.nn.functional.binary_cross_entropy_with_logits(logits, y, reduction="none")
+                loss = elements.mean() if settings["positive_loss_weight"] == 1 else (elements * (1 + (settings["positive_loss_weight"] - 1) * y)).mean()
+                loss.backward(); optimizer.step()
+                if step == 1 or step % settings["log_every"] == 0 or step == settings["updates"]:
+                    loss_value = float(loss.detach().cpu())
+                    if not math.isfinite(loss_value):
+                        raise ValueError("Nonfinite training loss")
+                    row = {"update": step, "loss": loss_value, "elapsed_s": time.perf_counter() - started,
+                           "learning_rate": optimizer.param_groups[0]["lr"], "draws": dict(sampler.draws)}
+                    append_row(output / "training.jsonl", row)
+                    write_json(output / "progress.json", {"state": "running", **row, "total_updates": settings["updates"]})
+                    stamp = time.perf_counter()
+                    _report_training_progress("training", "모델 학습", step, settings["updates"], "학습 업데이트",
+                                              rate_sample=(step - rate_step, stamp - rate_stamp))
+                    rate_step, rate_stamp = step, stamp
+                    print(f"seed {seed}: {step}/{settings['updates']} loss={loss_value:.6f}", flush=True)
+                milestone = step in settings["checkpoints"] or step == settings["updates"]
+                paused = pause_requested is not None and pause_requested()
+                if (milestone or paused or step - saved_step >= _RECOVERY_INTERVAL_UPDATES
+                        or time.perf_counter() - saved_at >= _RECOVERY_INTERVAL_S):
+                    state = {"model": model.state_dict(), "optimizer": optimizer.state_dict(),
+                        "sampler": sampler.state(next_rng), "step": step, "contract_id": contract_id,
+                        "torch_rng": torch.get_rng_state(),
+                        "cuda_rng": torch.cuda.get_rng_state_all() if device.startswith("cuda") else [],
+                        "numpy_rng": np.random.get_state(), "python_rng": random.getstate()}
+                    _save_training_checkpoint(output, state, milestone)
+                    del state
+                    saved_step, saved_at = step, time.perf_counter()
+                if paused:
+                    write_json(output / "progress.json", {"state": "paused", "completed_updates": step,
+                               "total_updates": settings["updates"], "device": device})
+                    raise TrainingPaused("모델 학습을 일시정지했습니다.")
         _report_training_progress("training_finalizing", "학습 모델 내보내기·검증", eta_eligible=False)
         model.eval().cpu()
         scoring = torch.nn.Sequential(model, torch.nn.Sigmoid()).eval()
@@ -345,6 +472,7 @@ def _train_member(config, root, metadata, pools, seed, output, smoke, resume,
             "model_sha256": digest(output / "model.onnx"), "contract_id": contract_id,
             "seed": seed, "updates": step, "exposure": exposure, "delivery": delivery.report,
             "input_delivery_reuse": delivery_reuse,
+            "input_read_ahead_batches": int(bool(getattr(delivery, "uses_read_ahead", False))),
             "device": device, "compute_precision": "float32 with recorded backend; no AMP",
             "elapsed_this_invocation_s": time.perf_counter() - started,
             "onnx_max_absolute_export_error": float(np.max(np.abs(actual - expected))), "completed_at": now()}
@@ -355,7 +483,7 @@ def _train_member(config, root, metadata, pools, seed, output, smoke, resume,
 
 
 @project_storage
-def train(project, output=None, smoke=False, resume=False):
+def train(project, output=None, smoke=False, resume=False, *, pause_requested=None):
     root, config = load_project(project)
     workload = workload_summary(config)
     name = f"{config['project_id']}_{config['training']['architecture']}_R{config['augmentation_rounds']}"
@@ -367,9 +495,14 @@ def train(project, output=None, smoke=False, resume=False):
     labels = {"generic_negative": "일반 비호출", "korean_negative": "한국어 비호출",
               "positive": "호출어 음성", "hard_negative": "유사어 음성"}
     for index, role in enumerate(roles):
+        if pause_requested is not None and pause_requested():
+            raise TrainingPaused("모델 학습을 일시정지했습니다.")
         _report_training_progress("feature_validation", labels.get(role, role) + " 학습 자료 검증", index, len(roles), "개 자료")
         cache = resolved(root, config["pool_features"][role])
-        meta = verify_cache(cache)
+        try:
+            meta = verify_cache(cache, pause_requested=pause_requested) if pause_requested else verify_cache(cache)
+        except FeatureGenerationPaused as error:
+            raise TrainingPaused("모델 학습을 일시정지했습니다.") from error
         if meta.get("role") != role or meta.get("split") != "train" or not meta.get("split_audit_passed"):
             raise ValueError("Wrong pool role/split/audit")
         if not smoke and (meta.get("smoke_test_only") or meta.get("quality_review") != "accepted"):
@@ -413,10 +546,10 @@ def train(project, output=None, smoke=False, resume=False):
         probe_path = root / "reports" / f"resource_probe_{probe_key}.json"
         probe = read_json(probe_path) if probe_path.exists() else benchmark_training(probe_path, steps=10, architecture=config["training"]["architecture"], batch=training_batch(config))
         selected_device = probe["fastest_measured"]
-    shared_delivery = _SharedInputDelivery(pools, config["training"])
+    shared_delivery = _SharedInputDelivery(pools, config["training"], pause_requested=pause_requested)
     for index, seed in enumerate(config["training"]["seeds"], 1):
         receipts.append(_train_member(config, root, metadata, pools, seed,
-            directory / f"member{index}_seed{seed}", smoke, resume, selected_device, shared_delivery))
+            directory / f"member{index}_seed{seed}", smoke, resume, selected_device, shared_delivery, pause_requested))
     return {"directory": str(directory), "members": receipts, "formal_training": not smoke,
             "selected_workload": workload_summary(config),
             "input_delivery_reuse": {"scope": "This invocation only; exact pools/device/batch; independent member RNGs",

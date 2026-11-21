@@ -1,13 +1,15 @@
 """Controlled evaluation audio: same word, same noise section, changing SNR."""
 from pathlib import Path
 from collections import Counter, defaultdict
-import json
+from contextlib import ExitStack
 import math
 import numpy as np
 import soundfile as sf
 
 from .audio import active_speech_mask, pcm16, noise_scale, measured_snr, rms, common_headroom_gain
-from .common import bound_file, digest, identity, read_rows, resolved, require_final_lock, write_json
+from .checkpoint_io import write_checkpoint_json
+from .common import (bound_file, digest, identity, read_json, read_rows, resolved, require_final_lock,
+                     write_immutable_rows, write_json, writer_lock)
 from .data import audit_project, rows_for, seek_audio, source_key, CATEGORIES
 from .project import load_project
 from .storage import project_storage
@@ -411,8 +413,47 @@ def _coverage(pools, selections, entries, recipe, manifest):
     return result
 
 
+class PairedPreparationPaused(RuntimeError):
+    """Paired audio can resume from the last complete original."""
+
+
+def paired_preparation_pending(directory, recipe):
+    directory = Path(directory)
+    checkpoint = directory / "_preparation" / "binding.json"
+    return (checkpoint.is_file() and not (directory / "preparation_complete.json").exists()
+            and read_json(checkpoint) == {"schema_version": 1, "recipe_sha256": identity(recipe)})
+
+
+def _restore_original(checkpoint, output, original_id, order, count):
+    saved = read_json(checkpoint)
+    if saved.pop("checksum", None) != identity(saved):
+        raise ValueError("Resumable evaluation audio group checksum changed")
+    entries = saved["entries"]
+    if (saved["original_id"] != original_id or len(entries) != count
+            or len({entry["sample_id"] for entry in entries}) != count):
+        raise ValueError("Resumable evaluation audio group does not match the planned original")
+    for entry in entries:
+        path = output / "audio" / (entry["sample_id"] + ".wav")
+        if (entry["original_id"] != original_id or entry["original_order"] != order
+                or not entry["sample_id"].startswith(f"original_{order:04d}_")
+                or path.parent != output / "audio" or Path(entry["path"]) != path
+                or digest(path) != entry["sha256"]):
+            raise ValueError("Checkpoint evaluation WAV or lineage changed: " + str(path))
+    return entries, saved["noise_selections"], saved["rir_selections"]
+
+
 @project_storage
-def prepare_evaluation(project, output, split="validation", originals=100, noise_sections=5, snrs=(20, 15, 10, 5, 0), noise_selection="legacy", reverb_originals=0, reverb_selection="legacy", *, progress=None):
+def prepare_evaluation(project, output, split="validation", originals=100, noise_sections=5, snrs=(20, 15, 10, 5, 0),
+                       noise_selection="legacy", reverb_originals=0, reverb_selection="legacy", *, progress=None,
+                       resume=False, pause_requested=None):
+    output = Path(output).resolve()
+    with ExitStack() as resources:
+        return _prepare_evaluation(project, output, split, originals, noise_sections, snrs, noise_selection,
+                                   reverb_originals, reverb_selection, progress, resume, pause_requested, resources)
+
+
+def _prepare_evaluation(project, output, split, originals, noise_sections, snrs, noise_selection,
+                        reverb_originals, reverb_selection, progress, resume, pause_requested, resources):
     from .task_progress import emit
     if progress is not None and not callable(progress):
         raise ValueError("Evaluation preparation progress must be callable or None")
@@ -462,16 +503,37 @@ def prepare_evaluation(project, output, split="validation", originals=100, noise
     chosen_reverb = reverb_subset(positives[:originals], reverb_originals, config["augmentation"]["seed"], selection=reverb_selection)
     reverb_order = {row["sample_id"]: index for index, row in enumerate(chosen_reverb)}
     reverb_pools = _reverb_pool(root, read_rows(resolved(root, config["manifests"]["rir_" + split])), split) if reverb_originals else None
-    output = Path(output).resolve()
-    if output.exists() and any(output.iterdir()):
+    resources.enter_context(writer_lock(output))
+    checkpoint = output / "_preparation"
+    if resume:
+        if not paired_preparation_pending(output, recipe) or read_json(output / "recipe.json") != recipe:
+            raise ValueError("Evaluation preparation checkpoint does not match the current recipe")
+    elif any(path.name != ".writer.lock" for path in output.iterdir()):
         raise ValueError("Evaluation audio versions are immutable")
-    (output / "audio").mkdir(parents=True, exist_ok=True)
-    write_json(output / "recipe.json", recipe)
+    else:
+        (output / "audio").mkdir(parents=True, exist_ok=True)
+        write_json(output / "recipe.json", recipe)
+        write_json(checkpoint / "binding.json", {"schema_version": 1, "recipe_sha256": identity(recipe)})
     entries, selections, peak_cache, rir_cache, rir_selections = [], [], {}, {}, []
     condition_count = 1 + len(CATEGORIES) * noise_sections * len(snrs)
     expected_files = (min(originals, len(positives)) + 2 * len(chosen_reverb)) * condition_count
-    report("preparation_generation", "평가 자료 음원 생성", 0, expected_files)
+    completed_groups = sorted(checkpoint.glob("original_*.json"))
+    if (len(completed_groups) > min(originals, len(positives))
+            or any(path.name != f"original_{index:06d}.json" for index, path in enumerate(completed_groups, 1))):
+        raise ValueError("Resumable evaluation audio requires a contiguous original prefix")
+    for order, (row, saved) in enumerate(zip(positives, completed_groups), 1):
+        count = condition_count * (3 if row["sample_id"] in reverb_order else 1)
+        saved_entries, saved_noise, saved_rirs = _restore_original(saved, output, row["sample_id"], order, count)
+        entries.extend(saved_entries)
+        selections.extend(saved_noise)
+        rir_selections.extend(saved_rirs)
+    report("preparation_generation", "평가 자료 음원 생성", len(entries), expected_files)
     for order, row in enumerate(positives[:originals]):
+        if order < len(completed_groups):
+            continue
+        if pause_requested and pause_requested():
+            raise PairedPreparationPaused()
+        start, noise_start, rir_start = len(entries), len(selections), len(rir_selections)
         source, _ = seek_audio(root, {**row, "start_s": row["call_start_s"], "end_s": row["call_end_s"]}, row["call_end_s"] - row["call_start_s"])
         # An explicit, recorded test construction gain; the same WAV is listened to and scored.
         mask0 = active_speech_mask(source, 0, len(source) / 16000)
@@ -623,11 +685,13 @@ def prepare_evaluation(project, output, split="validation", originals=100, noise
                 rir_selections.append({"original_id": row["sample_id"], "group": group,
                     "source_id": source_key(rir), "sha256": rir["sha256"], "room_id": rir["canonical_room_id"],
                     "acoustic_source_type": rir.get("acoustic_source_type", "unspecified"), "rt60_s": rir["rt60_s"]})
-        # Report completed, hash-bound WAVs, never an in-progress write.
+        group = {"original_id": row["sample_id"], "entries": entries[start:],
+                 "noise_selections": selections[noise_start:], "rir_selections": rir_selections[rir_start:]}
+        write_checkpoint_json(checkpoint / f"original_{order+1:06d}.json", dict(group, checksum=identity(group)))
         report("preparation_generation", "평가 자료 음원 생성", len(entries), expected_files)
     report("preparation_finalizing", "평가 자료 목록·커버리지 확인", len(entries), expected_files)
     manifest = output / "manifest.jsonl"
-    manifest.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in entries), encoding="utf-8")
+    write_immutable_rows(manifest, entries)
     result = {"originals": min(originals, len(positives)), "audio_files": len(entries), "manifest": str(manifest),
               "manifest_sha256": digest(manifest), "recipe": {"path": str(output / "recipe.json"), "sha256": digest(output / "recipe.json")},
               "noise_selection_policy": recipe["noise_selection"],
@@ -649,4 +713,10 @@ def prepare_evaluation(project, output, split="validation", originals=100, noise
         write_json(output / "independent_source_audit.json", final_audit)
         result["independent_source_audit"] = {"path": str(output / "independent_source_audit.json"),
                                                "sha256": digest(output / "independent_source_audit.json")}
+    write_json(output / "preparation_complete.json", {key: result[key] for key in (
+        "manifest_sha256", "recipe", "noise_coverage", "independent_source_audit") if key in result})
+    for path in checkpoint.iterdir():
+        if path.is_file():
+            path.unlink()
+    checkpoint.rmdir()
     return result

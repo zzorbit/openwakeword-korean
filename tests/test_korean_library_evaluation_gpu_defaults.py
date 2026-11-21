@@ -38,7 +38,10 @@ def _reference_gpu_seam(calls):
                       "batch_size": kwargs["batch_size"],
                       "qualification": kwargs["qualification"]})
         kwargs["stats"]["fixture_reference_scores"] = True
-        yield from evaluation_workers.score_sessions(bundle, model_ids, recorded(), 1)
+        for value in evaluation_workers.score_sessions(bundle, model_ids, recorded(), 1):
+            if value[0] >= kwargs["emit_from"]:
+                yield value
+        kwargs["on_group_complete"]()
     return score
 
 
@@ -138,6 +141,43 @@ def test_scoring_start_is_reported_before_first_long_batch_yields(monkeypatch, t
     assert report["execution"]["resumed_sessions"] == expected_start
 
 
+@pytest.mark.parametrize("backend", ["cpu", "cuda"])
+def test_pause_and_resume_preserve_durable_scoring_boundaries(monkeypatch, tmp_path, backend):
+    from korean_openwakeword import gpu_evaluation
+
+    project, root, bundle, manifest, _ = _evaluation_inputs(tmp_path)
+    monkeypatch.setattr(evaluation_backend, "resolve_evaluation_backend", lambda requested, **kw:
+                        _selection(requested, requested, kw["resume_backend"]))
+    groups = []
+
+    class IsolatedGpuScorer:
+        def __init__(self, bundle, model_ids, stats):
+            self.runtime = read_json(bundle / "manifest.json")["runtime"]
+
+        def score_batch(self, pcms):
+            groups.append(len(pcms))
+            return [np.zeros((len(pcm) // 1280, 4), np.float32) for pcm in pcms]
+
+    monkeypatch.setattr(gpu_evaluation, "_GpuBatchScorer", IsolatedGpuScorer)
+    monkeypatch.setattr(evaluate, "_gpu_sessions_with_environment",
+                        lambda _, *args, **kwargs: gpu_evaluation.score_gpu_sessions(*args, **kwargs))
+    pause_checks = iter((False, True))
+    settings = dict(manifest=manifest, smoke=True, workers=1, backend=backend, gpu_batch_size=1)
+    baseline = root / "reports/uninterrupted"
+    output = root / "reports/paused"
+    evaluate.evaluate(project, bundle, baseline, **settings)
+    with pytest.raises(evaluate.EvaluationPaused):
+        evaluate.evaluate(project, bundle, output, pause_requested=lambda: next(pause_checks), **settings)
+    state = read_json(output / "_evaluation_work/checkpoint.json")
+    assert state["schema_version"] == 1 and state["committed_sessions"] == 1
+    assert not (output / "receipt.json").exists()
+    report = evaluate.evaluate(project, bundle, output, resume=True, **settings)
+    assert report["execution"]["resumed_sessions"] == 1
+    assert groups == ([1, 1, 1, 1] if backend == "cuda" else [])
+    _assert_score_bits_equal(baseline, output)
+    assert read_json(baseline / "clips.json") == read_json(output / "clips.json")
+
+
 def test_cpu_prefix_is_preserved_until_cpu_resume_is_explicitly_chosen(monkeypatch, tmp_path):
     project, root, bundle, manifest, rows = _evaluation_inputs(tmp_path)
     output, prefix = _seed_reference_prefix(project, root, bundle, manifest, rows, "cpu")
@@ -178,7 +218,7 @@ def test_auto_resume_keeps_existing_cuda_contract_and_committed_score_bits(monke
     report = evaluate.evaluate(project, bundle, output, manifest=manifest, smoke=True, workers=1, resume=True)
     assert resolutions == [("auto", "cuda")]
     assert report["execution"]["backend"] == "cuda" and report["execution"]["resumed_sessions"] == 1
-    assert gpu_calls[0]["indices"] == [1]
+    assert gpu_calls[0]["indices"] == [0, 1]
     with np.load(output / "scores.npz") as published:
         assert np.array_equal(published["scores"][:len(prefix)].view(np.uint32), prefix.view(np.uint32))
 

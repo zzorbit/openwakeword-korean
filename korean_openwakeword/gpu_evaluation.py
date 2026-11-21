@@ -7,7 +7,6 @@ CUDA FP32 is a separately qualified backend, not bitwise CPU arithmetic.
 from contextlib import contextmanager
 from copy import deepcopy
 import hashlib
-import io
 import os
 from pathlib import Path
 import sys
@@ -19,12 +18,14 @@ import soundfile as sf
 
 from .common import bound_file, digest
 from .evaluation_backend import CUDA_SCORING_PROTOCOL
-from .evaluation_workers import score_session
+from .evaluation_workers import replay_session_scores
 from .frontend import PINNED_ASSETS
 from .runtime import bundle_candidates, verify_bundle
 from .task_progress import activity as report_activity
 
 _RUNTIME_ENVIRONMENT_LOCK = threading.RLock()
+GPU_MAX_PCM_BYTES = 512 * 1024 ** 2
+_PCM_FRAME_BYTES = 1280 * 2
 
 
 @contextmanager
@@ -241,23 +242,26 @@ class _GpuBatchScorer:
         return [np.asarray(values, dtype=np.float32).reshape(-1, 4) for values in results]
 
 
-class _ReplayDetector:
-    def __init__(self, runtime, scores):
-        self.runtime, self.scores = runtime, scores
-
-    def reset(self):
-        self.index = 0
-
-    def score_members(self, frame):
-        values = self.scores[self.index, :3]
-        self.index += 1
-        return values
+def _fits_group(count, cached_bytes, pcm_bytes, batch_size, max_audio_bytes):
+    return count < batch_size and cached_bytes + pcm_bytes <= max_audio_bytes
 
 
-def _wav_bytes(pcm):
-    stream = io.BytesIO()
-    sf.write(stream, pcm, 16000, format="WAV", subtype="PCM_16")
-    return stream.getvalue()
+def gpu_scoring_group_start(offsets, start, batch_size, max_audio_bytes=GPU_MAX_PCM_BYTES):
+    """Recover the uninterrupted batch boundary for a legacy partial checkpoint."""
+    if start in (0, len(offsets) - 1):
+        return start
+    group_start = count = cached_bytes = 0
+    for index in range(start + 1):
+        pcm_bytes = (offsets[index + 1] - offsets[index]) * _PCM_FRAME_BYTES
+        if pcm_bytes > max_audio_bytes:
+            # Over-limit files always score alone, including when preceded by a cached group.
+            group_start, count, cached_bytes = index, 0, 0
+            continue
+        if not count or not _fits_group(count, cached_bytes, pcm_bytes, batch_size, max_audio_bytes):
+            group_start, count, cached_bytes = index, 0, 0
+        count += 1
+        cached_bytes += pcm_bytes
+    return group_start
 
 
 class _StreamPcm:
@@ -277,8 +281,8 @@ class _StreamPcm:
 
 
 def score_gpu_sessions(bundle, model_ids, items, *, batch_size=128, qualification=None,
-                       stats=None, max_audio_bytes=512 * 1024 ** 2):
-    """Yield ordered CUDA scores, streaming files above the PCM cache limit."""
+                       stats=None, max_audio_bytes=GPU_MAX_PCM_BYTES, emit_from=0, on_group_complete=None):
+    """Yield ordered CUDA scores, calling the checkpoint hook after each group."""
     if type(batch_size) is not int or not 1 <= batch_size <= 128:
         raise ValueError("GPU evaluation batch_size must be an integer from 1 to 128")
     if type(max_audio_bytes) is not int or max_audio_bytes < 1:
@@ -304,13 +308,17 @@ def score_gpu_sessions(bundle, model_ids, items, *, batch_size=128, qualificatio
             if (scores.dtype != np.float32 or scores.shape != (len(pcm) // 1280, len(model_ids))
                     or not np.isfinite(scores).all() or (scores < 0).any() or (scores > 1).any()):
                 raise ValueError("GPU evaluation scores have invalid shape, precision or values")
+            if index < emit_from:
+                continue
             before = time.perf_counter()
-            audio = path if isinstance(pcm, _StreamPcm) else io.BytesIO(_wav_bytes(pcm))
-            clip, replay = score_session(_ReplayDetector(scorer.runtime, scores), row, audio, model_ids)
-            if not np.array_equal(replay.view("u4"), scores.view("u4")):
+            mean = ((scores[:, 0].astype(np.float64) + scores[:, 1].astype(np.float64)
+                     + scores[:, 2].astype(np.float64)) / 3).astype(np.float32)
+            if not np.array_equal(mean.view("u4"), scores[:, 3].view("u4")):
                 raise ValueError("GPU ordered mean differs from reference score replay")
+            # Preserve the former replay boundary: cached PCM excludes the partial last frame.
+            audio_samples = pcm.audio.frames if isinstance(pcm, _StreamPcm) else len(pcm)
+            clip = replay_session_scores(row, path, model_ids, scorer.runtime, audio_samples, scores)
             stats["metric_replay_wall_seconds"] += time.perf_counter() - before
-            clip["path"] = str(path)
             clip["evaluation_compute"] = {"backend": "cuda_batch_fp32"}
             stats["gpu_sessions"] += 1
             stats["gpu_frames"] += len(scores)
@@ -328,9 +336,11 @@ def score_gpu_sessions(bundle, model_ids, items, *, batch_size=128, qualificatio
             if info.samplerate != 16000 or info.channels != 1 or info.subtype != "PCM_16":
                 raise ValueError("GPU evaluation inputs must already be mono16kHz PCM16")
             frames = info.frames // 1280
-            pcm_bytes = frames * 1280 * 2
-            if batch and (len(batch) >= batch_size or cached_bytes + pcm_bytes > max_audio_bytes):
+            pcm_bytes = frames * _PCM_FRAME_BYTES
+            if batch and not _fits_group(len(batch), cached_bytes, pcm_bytes, batch_size, max_audio_bytes):
                 yield from flush(batch)
+                if on_group_complete is not None:
+                    on_group_complete()
                 batch, cached_bytes = [], 0
             if pcm_bytes > max_audio_bytes:
                 # Check a streamed input again before its scores can be committed.
@@ -340,11 +350,13 @@ def score_gpu_sessions(bundle, model_ids, items, *, batch_size=128, qualificatio
                                                value.st_mtime_ns, value.st_ctime_ns)
                 bound_file(path.parent, {"path": str(path), "sha256": row["sha256"]})
                 with sf.SoundFile(path) as audio:
-                    result, = flush([(index, row, path, _StreamPcm(audio, frames))])
+                    group_scores = list(flush([(index, row, path, _StreamPcm(audio, frames))]))
                 if file_identity(path.stat()) != file_identity(before_stat):
                     raise ValueError("GPU evaluation streamed input changed during scoring")
                 stats["gpu_streamed_sessions"] += 1
-                yield result
+                yield from group_scores
+                if on_group_complete is not None:
+                    on_group_complete()
                 continue
             before = time.perf_counter()
             pcm, rate = sf.read(path, frames=frames * 1280, dtype="int16")
@@ -356,5 +368,7 @@ def score_gpu_sessions(bundle, model_ids, items, *, batch_size=128, qualificatio
             stats["maximum_cached_pcm_bytes"] = max(stats["maximum_cached_pcm_bytes"], cached_bytes)
         if batch:
             yield from flush(batch)
+            if on_group_complete is not None:
+                on_group_complete()
     finally:
         stats["elapsed_wall_seconds"] = time.perf_counter() - began

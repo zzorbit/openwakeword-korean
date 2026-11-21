@@ -81,14 +81,15 @@ def test_studio_selected_cuda_is_used_in_every_new_extracted_pool(tmp_path, monk
         assert installations == ([root] if runtime == "missing" else [])
         yield frontend
 
-    def extract(path, role, *, resume, frontend):
+    def extract(path, role, *, resume, frontend, pause_requested):
+        assert pause_requested is None
         assert path == project and frontend is not None
         calls.append((role, resume, frontend))
         return {"feature_rows": settings["originals"] if role == "positive" else 3}
 
     monkeypatch.setattr(gpu_features, "cuda_feature_frontend", resource)
     monkeypatch.setattr(features, "build_features", extract)
-    monkeypatch.setattr(features, "verify_cache", lambda directory: {"feature_rows": 5625000})
+    monkeypatch.setattr(features, "verify_cache", lambda directory, **kwargs: {"feature_rows": 5625000})
     monkeypatch.delenv("KOWW_GPU_RUNTIME_PATH", raising=False)
     if runtime == "explicit":
         monkeypatch.setenv("KOWW_GPU_RUNTIME_PATH", str(tmp_path / "runtime"))

@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "source_commit": "2c6b67d4a4d90015665b580211d6539163ce4578",
+  "changed_computational_files": [
+    "calibration.py",
+    "checkpoint_io.py",
+    "evaluate.py",
+    "evaluation_workers.py",
+    "features.py",
+    "gpu_evaluation.py",
+    "paired.py",
+    "pilot.py",
+    "reference_attempt.py",
+    "reference_candidates.py",
+    "studio_steps.py"
+  ],
+  "contracts": {
+    "archive_install": {
+      "source_computation_sha256": "fc8f6535b70620c9e30ab69d6f151aed8dc4b430382fbf49bffc1a6fbe8ef54e",
+      "source_stages_sha256": "f3c26d66ed2cc86289042f4e9db409201252a75e1f7c00faf59f67ce30a322f0",
+      "target_computation_sha256": "6eff1f3cbcef4f8209623de9eab1abeb5b058b4f8cf4bd82895506df1df7343d",
+      "target_stages_sha256": "3b85487d8010c66f8e936c93c2fb5c6fb5e81e2a8aeffd2f8e81e475f538e56d"
+    },
+    "local_mirror": {
+      "source_computation_sha256": "67fed88c37d16b596c136f4146c9fc9f2cc5c57c28308eacfa28f4e4bdc86b2e",
+      "source_stages_sha256": "c184388ec90a3a74c02761855d0fda62c440ca059bcd4bc3e0eb8c4421d0edc9",
+      "target_computation_sha256": "72f64306915b5806a3ac16b269b5bbee06441510a2e997f0eb9d3a11bed6d433",
+      "target_stages_sha256": "f14f752fc3fb81f36ad21f4cabcd2a03fdaa407798a4154b8fe088eacfb3a087"
+    },
+    "linux_lf": {
+      "source_computation_sha256": "59d22e4b989411e1475ab437d3122c4578be28c780b1fb82d42fa1720302b53a",
+      "source_stages_sha256": "7281936d3b90aaec6f6215cbd008648c5e20da56e958fe77760808f3221c0088",
+      "target_computation_sha256": "ae346401a8c2296490f882929f63b25e548a0098fa6dfcc62ac1968612d11802",
+      "target_stages_sha256": "f12c75816ea2c253ba8a7a676cb9fea7aaf7ec119610893e6648e6ec0c2e67cf"
+    },
+    "windows_crlf": {
+      "source_computation_sha256": "5e45e23221acaaeb22e5922918b621adcc0861d8d7aeada4234c05e1d0e65317",
+      "source_stages_sha256": "d08a6bfc67a9d1ee11d5254d6891430c871aa709ef769c13b51f4a8c4b9147a9",
+      "target_computation_sha256": "aa70d676ed56d85ea8f03bd6d89a0756b937a6cfa9d4d45bc8a1fc47083eb644",
+      "target_stages_sha256": "e30f516dfe3aa53824b6b2791c4ab2d534cc0865d13b755ade912ba72276867a"
+    }
+  },
+  "verification": {
+    "device": "NVIDIA GeForce RTX 4090",
+    "paired_audio": "The interrupted and uninterrupted WAV hashes, manifest rows and coverage match. A changed checkpoint WAV is rejected. Committed WAVs are reused.",
+    "evaluation": {
+      "short_sessions": 66,
+      "short_score_values_bitwise_equal": 14092,
+      "streamed_score_values_bitwise_equal": 3008,
+      "resumed_frames_bitwise_equal": 1708,
+      "score_and_event_results_match": true,
+      "replay_median_ms": {
+        "cached_256": [
+          575,
+          113
+        ],
+        "streamed_3": [
+          521,
+          57
+        ]
+      },
+      "scoring_kernel_unchanged": true
+    },
+    "feature_extraction": {
+      "clips": 192,
+      "repetitions_per_arm": 2,
+      "warm_mean_ms": [
+        888,
+        547
+      ],
+      "feature_and_augmentation_hashes_match": true
+    },
+    "training": {
+      "batch_rows": 1224,
+      "updates": 32,
+      "mmap_pool_rows": 32768,
+      "warm_serial_ms": 383,
+      "warm_prefetch_ms": [
+        379,
+        284
+      ],
+      "exact_resumed_model_optimizer_sampler_and_rng": true,
+      "onnx_hash_and_exposure_match": true
+    },
+    "synthesis": {
+      "voice_design_count_per_arm": 5,
+      "repetitions_per_arm": 2,
+      "voice_design_wav_qc_and_reopen_mean_ms": [
+        78060,
+        31509
+      ],
+      "preflight_clips_per_arm": 4,
+      "preflight_wav_qc_and_reopen_mean_ms": [
+        24338,
+        6083
+      ],
+      "same_device_eager_batch_ms": 8523,
+      "all_benchmark_wav_eos_and_technical_checks_pass": true,
+      "per_item_retry_and_pause_covered_by_regression_tests": true,
+      "human_candidate_review_required": true
+    },
+    "benchmark_scope": "Warm bounded samples on one GPU. Listening review determines acceptability of reference candidates."
+  },
+  "preserved": [
+    "Existing project, evaluation settings and selected devices",
+    "Existing WAVs, reference approvals, review decisions and immutable completed artifacts",
+    "Exact legacy scorer batch shape at the next uncommitted group",
+    "Existing compatible feature, training and production synthesis contracts",
+    "Bound CUDA workflow migration from the previous audited release"
+  ]
+}

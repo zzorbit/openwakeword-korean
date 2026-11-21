@@ -15,7 +15,7 @@ import numpy as np
 
 from .common import append_row, digest, identity, now, read_json, write_json, writer_lock
 from .data import CATEGORIES
-from .evaluate import CALL_MATCHING_REVISION, _calls_need_sort, adoption, adoption_criteria
+from .evaluate import CALL_MATCHING_REVISION, EvaluationPaused, _calls_need_sort, adoption, adoption_criteria
 from .events import chronological_call_indices
 from .project import load_project
 from .storage import project_storage
@@ -469,7 +469,7 @@ def _comparison_rows(path):
 
 
 @project_storage
-def recommend(project, bundle, evaluation, output, progress_callback=None):
+def recommend(project, bundle, evaluation, output, progress_callback=None, *, pause_requested=None):
     """Recommend one jointly searched gate for every single and mean candidate.
 
     Interrupted searches resume only matching, completed comparison records.
@@ -493,6 +493,8 @@ def recommend(project, bundle, evaluation, output, progress_callback=None):
 
     if result := completed():
         return result
+    if pause_requested and pause_requested():
+        raise EvaluationPaused()
     verified, bindings = _verified_evaluation_snapshot(project, bundle, evaluation)
     root, config, package, report, clips, scores, offsets, candidates = verified
     prepared = PreparedScores(clips, offsets, package["runtime"])
@@ -536,6 +538,8 @@ def recommend(project, bundle, evaluation, output, progress_callback=None):
             rolling = {count: prepared.rolling_scores(values, count) for count in CONSECUTIVE_COUNTS}
             def compare(threshold, count):
                 nonlocal completed
+                if pause_requested and pause_requested():
+                    raise EvaluationPaused()
                 key = (threshold, count)
                 if key not in cache:
                     runtime = dict(package["runtime"], threshold=threshold, consecutive_frames=count)

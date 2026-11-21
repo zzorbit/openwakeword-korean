@@ -28,6 +28,8 @@ _SHORT_CLONE_UPDATE = "hard_short_clone_update_v1"
 _SHORT_CLONE_RECEIPT = "short_clone_update.json"
 _LENGTH_FAILURES = {"duration_outlier", "does_not_fit_full_call_feature_window"}
 _MIXED_VOICE_BATCH_POLICY = "mixed_voice_cuda4_v1"
+_MIXED_VOICE_NARROW_POLICY = "mixed_voice_cuda4_then2_v2"
+_MIXED_VOICE_POLICIES = (_MIXED_VOICE_BATCH_POLICY, _MIXED_VOICE_NARROW_POLICY)
 
 
 def hard_phrase_scope(base, revision):
@@ -82,10 +84,11 @@ def _seed(config, slot, attempt, phrase, reference):
                          phrase, reference["voice_family_id"], reference["sha256"]])[:8], 16)
 
 
-def _batch_slots(contract, first):
+def _batch_slots(contract, first, size=MIXED_VOICE_BATCH_SIZE):
     phrases = len(contract["texts"])
-    size = MIXED_VOICE_BATCH_SIZE
-    if (contract.get("hard_batch_policy") != _MIXED_VOICE_BATCH_POLICY
+    policy = contract.get("hard_batch_policy")
+    if (policy not in _MIXED_VOICE_POLICIES or size not in (2, MIXED_VOICE_BATCH_SIZE)
+            or size == 2 and policy != _MIXED_VOICE_NARROW_POLICY
             or len(contract["references"]) < size or first // phrases % size
             or first + (size - 1) * phrases >= contract["original_count"]):
         return None
@@ -95,16 +98,16 @@ def _batch_slots(contract, first):
 def _batch_identity(contract, contract_id, slots):
     seeds = [_seed(contract, slot, 0, *_combination(slot, contract["texts"], contract["references"]))
              for slot in slots]
-    return {"policy": _MIXED_VOICE_BATCH_POLICY, "slots": slots,
+    return {"policy": contract["hard_batch_policy"], "slots": slots,
             "seed": int(identity([contract_id, seeds, slots])[:8], 16)}
 
 
 def _validate_batch_attempt(row, contract, contract_id):
     batch = row.get("cuda_batch")
     slots = batch.get("slots") if isinstance(batch, dict) else None
-    if (row.get("attempt") != 0 or not isinstance(slots, list) or len(slots) != MIXED_VOICE_BATCH_SIZE
+    if (row.get("attempt") != 0 or not isinstance(slots, list) or len(slots) not in (2, MIXED_VOICE_BATCH_SIZE)
             or any(type(slot) is not int or slot < 0 for slot in slots)
-            or row.get("slot") not in slots or slots != _batch_slots(contract, slots[0])
+            or row.get("slot") not in slots or slots != _batch_slots(contract, slots[0], len(slots))
             or batch != _batch_identity(contract, contract_id, slots)):
         raise ValueError("Hard CUDA batch identity changed")
     ending = row.get("batch_termination")
@@ -125,7 +128,7 @@ def _recover_hard_batch(root, output, contract, contract_id, binding):
         return
     intent = read_json(pending)
     rows = intent.get("rows") if isinstance(intent, dict) else None
-    if (not isinstance(rows, list) or len(rows) != MIXED_VOICE_BATCH_SIZE or type(intent.get("offset")) is not int
+    if (not isinstance(rows, list) or len(rows) not in (2, MIXED_VOICE_BATCH_SIZE) or type(intent.get("offset")) is not int
             or intent.get("contract_id") != contract_id or any(not isinstance(row, dict) for row in rows)):
         raise ValueError("Pending Hard CUDA batch does not belong to this generation contract")
     for row in rows:
@@ -244,7 +247,7 @@ def hard_generation_recovery_available(output, *, pilot=False):
 
 def short_clone_admission_context(root, output, contract, *, pilot=False):
     """Verify the immutable update once and index its exact appended attempts."""
-    if "hard_batch_policy" in contract and (pilot or contract["hard_batch_policy"] != _MIXED_VOICE_BATCH_POLICY):
+    if "hard_batch_policy" in contract and (pilot or contract["hard_batch_policy"] not in _MIXED_VOICE_POLICIES):
         raise ValueError("Invalid Hard CUDA batch policy")
     if "short_clone_policy" in contract:
         if contract["short_clone_policy"] != tts.SHORT_CLONE_POLICY or (output / _SHORT_CLONE_RECEIPT).exists():
@@ -346,9 +349,9 @@ def _synthesise(model, phrase, prompt, settings, *, retry, expected_reuses):
     return qc, converted, token_limit
 
 
-def _mixed_voice_waveforms(result):
+def _mixed_voice_waveforms(result, size=MIXED_VOICE_BATCH_SIZE):
     wavs, rate, limit, endings = result
-    if (len(wavs) != MIXED_VOICE_BATCH_SIZE or len(endings) != MIXED_VOICE_BATCH_SIZE
+    if (len(wavs) != size or len(endings) != size
             or type(rate) not in (int, float) or not np.isfinite(rate) or not 8000 <= rate <= 192000 or int(rate) != rate
             or type(limit) is not int or limit < 1
             or any(not isinstance(ending, dict) or ending.get("token_limit") != limit for ending in endings)):
@@ -512,7 +515,7 @@ def generate_hard(project, phrases, count=None, model=None, *, samples_per_phras
                         phrase_count=len(phrases),
                         allocation="every_phrase_cycles_train_references_v1")
         if min(samples_per_phrase, len(references)) >= MIXED_VOICE_BATCH_SIZE:
-            contract["hard_batch_policy"] = _MIXED_VOICE_BATCH_POLICY
+            contract["hard_batch_policy"] = _MIXED_VOICE_NARROW_POLICY
     with writer_lock(output):
         expected = contract
         contract_path = output / "contract.json"
@@ -522,6 +525,9 @@ def generate_hard(project, phrases, count=None, model=None, *, samples_per_phras
             # An earlier frozen scope must keep its original scalar schedule.
             if isinstance(saved, dict) and "hard_batch_policy" not in saved:
                 expected = {key: value for key, value in expected.items() if key != "hard_batch_policy"}
+            elif (expected.get("hard_batch_policy") == _MIXED_VOICE_NARROW_POLICY
+                    and isinstance(saved, dict) and saved.get("hard_batch_policy") == _MIXED_VOICE_BATCH_POLICY):
+                expected = {**expected, "hard_batch_policy": _MIXED_VOICE_BATCH_POLICY}
             if not compatible_hard_contract(saved, expected):
                 raise ValueError("Hard settings/reference/code/count changed; use a versioned output/project")
             contract = saved
@@ -549,6 +555,7 @@ def generate_hard(project, phrases, count=None, model=None, *, samples_per_phras
                             for phrase, reference in (_combination(slot, phrases, references) for slot in pending))
         generate_batch = getattr(model, "generate_short_clone_mixed_voice_batch", None)
         batch_available = getattr(model, "mixed_voice_batch_available", None)
+        pair_available = getattr(model, "mixed_voice_pair_available", None)
         synthesis_settings = config["tts"]["generation"]
 
         def prepare_prompt(reference):
@@ -613,7 +620,7 @@ def generate_hard(project, phrases, count=None, model=None, *, samples_per_phras
                     **synthesis_settings)
             if result is None:
                 return False
-            wavs, rate, token_limit, endings = _mixed_voice_waveforms(result)
+            wavs, rate, token_limit, endings = _mixed_voice_waveforms(result, len(slots))
             synthesis_share = (time.perf_counter() - started) / len(slots)
             batch_rows = []
             candidates = zip(slots, voices, prepared, wavs, endings, strict=True)
@@ -641,6 +648,9 @@ def generate_hard(project, phrases, count=None, model=None, *, samples_per_phras
             slots = _batch_slots(contract, slot) if attempt == 0 and callable(generate_batch) else None
             if (slots and not any(attempts[current] for current in slots)
                     and (not callable(batch_available) or batch_available()) and run_batch(slots, phrase)):
+                continue
+            pair = _batch_slots(contract, slot, 2) if attempt == 0 and callable(pair_available) else None
+            if pair and not any(attempts[current] for current in pair) and pair_available() and run_batch(pair, phrase):
                 continue
             prompt, preparation = prepare_prompt(reference)
             check_generation_pause(pause_requested)

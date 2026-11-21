@@ -588,7 +588,7 @@ def _generation_complete(summary):
     return None
 
 
-def _next_directory(base, marker, accept=None):
+def _next_directory(base, marker, accept=None, *, pending=None):
     """Retain an interrupted immutable output and use a new attempt directory."""
     base = Path(base)
     candidate = base
@@ -596,6 +596,8 @@ def _next_directory(base, marker, accept=None):
     while candidate.exists() and any(candidate.iterdir()):
         if (candidate / marker).is_file() and (accept is None or accept(candidate)):
             return candidate, True
+        if pending is not None and pending(candidate):
+            return candidate, False
         index += 1
         candidate = base.with_name(base.name + f"_attempt{index + 1}")
     return candidate, False
@@ -920,7 +922,8 @@ def run_stage(project, workspace, settings, stage_id, context=None, *, pause_req
             prior_rounds = inputs.get("call_pilot_reviews", [])
             retry_rounds = preflight_quality_retry_rounds(inputs)
             retry = {"quality_retry_rounds": retry_rounds} if retry_rounds else {}
-            summary = prepare_prepost_pilot(project, settings, prior_rounds=prior_rounds, **retry)
+            summary = prepare_prepost_pilot(project, settings, prior_rounds=prior_rounds,
+                                            pause_requested=pause_requested, **retry)
             incomplete = _generation_complete(summary)
             if incomplete:
                 return incomplete
@@ -931,14 +934,14 @@ def run_stage(project, workspace, settings, stage_id, context=None, *, pause_req
             counts = {"train_count": settings["train_references"]}
             if policy == COMBINED_PILOT_POLICY:
                 counts["validation_count"] = settings["validation_references"]
-            summary = prepare_pilot(project, **counts)
+            summary = prepare_pilot(project, pause_requested=pause_requested, **counts)
             incomplete = _generation_complete(summary)
             if incomplete:
                 return incomplete
             queue = Path(summary["review_queue"])
             return _completed({**summary, "queue": str(queue)}, [queue])
         from .tts_runtime import generate_with_runtime
-        summary = generate_with_runtime(project, "train", 24, True, "clone")
+        summary = generate_with_runtime(project, "train", 24, True, "clone", pause_requested=pause_requested)
         incomplete = _generation_complete(summary)
         if incomplete:
             return incomplete
@@ -1229,10 +1232,10 @@ def run_stage(project, workspace, settings, stage_id, context=None, *, pause_req
                               "positive": "호출어", "hard_negative": "유사어"}[role]
                 report_task_progress("feature_preparation", role_label + " 특징 자료·원본 확인", eta_eligible=False)
                 if role == "generic_negative" and (directory / "metadata.json").is_file():
-                    outputs[role] = verify_cache(directory)
+                    outputs[role] = verify_cache(directory, pause_requested=pause_requested)
                 else:
                     outputs[role] = build_features(project, role, resume=(directory / "contract.json").exists(),
-                                                   frontend=frontend)
+                                                   frontend=frontend, pause_requested=pause_requested)
             qualification = frontend.qualification if frontend else None
         positive = outputs["positive"]
         expected = settings["originals"] * settings["rounds"]
@@ -1247,7 +1250,7 @@ def run_stage(project, workspace, settings, stage_id, context=None, *, pause_req
         from .train import train
         directory = root / "runs" / "studio_run"
         resume = any(directory.glob("member*/contract.json"))
-        result = train(project, directory, resume=resume)
+        result = train(project, directory, resume=resume, pause_requested=pause_requested)
         return _completed(result, [p for p in directory.glob("member*/receipt.json")])
 
     if stage_id == "package":
@@ -1261,7 +1264,7 @@ def run_stage(project, workspace, settings, stage_id, context=None, *, pause_req
 
     if stage_id == "development":
         report_task_progress("preparation_validation", "평가 자료 원본·분리 기준 확인", eta_eligible=False)
-        from .paired import prepare_evaluation, evaluation_recipe
+        from .paired import prepare_evaluation, evaluation_recipe, paired_preparation_pending
         connected = _result(context, "data_connect")
         negatives = connected.get("negative_validation_manifest")
         if not negatives:
@@ -1293,7 +1296,10 @@ def run_stage(project, workspace, settings, stage_id, context=None, *, pause_req
         def matches(directory):
             return ((directory / "recipe.json").is_file() and read_json(directory / "recipe.json") == recipe
                     and (selection == "legacy" or (directory / "noise_coverage.json").is_file()))
-        directory, existing = _next_directory(root / "reports/studio_paired", "manifest.jsonl", matches)
+        def pending(directory):
+            return paired_preparation_pending(directory, recipe)
+
+        directory, existing = _next_directory(root / "reports/studio_paired", "manifest.jsonl", matches, pending=pending)
         if existing:
             report_task_progress("preparation_validation", "기존 평가 자료 목록·커버리지 확인", eta_eligible=False)
             paired = {"manifest": str(directory / "manifest.jsonl"), "noise_selection_policy": recipe["noise_selection"],
@@ -1301,7 +1307,8 @@ def run_stage(project, workspace, settings, stage_id, context=None, *, pause_req
             if selection != "legacy":
                 paired["noise_coverage"] = {"path": str(directory / "noise_coverage.json"), "sha256": digest(directory / "noise_coverage.json")}
         else:
-            paired = prepare_evaluation(project, directory, **pair_settings)
+            paired = prepare_evaluation(project, directory, resume=pending(directory),
+                                         pause_requested=pause_requested, **pair_settings)
         rows = read_rows(paired["manifest"]) + negative_rows
         report_task_progress("preparation_finalizing", "평가 자료 목록·완료 근거 저장", eta_eligible=False)
         manifest = _publish_rows(workspace / ("development_" + identity([recipe, digest(negatives), digest(paired["manifest"])])[:16] + ".jsonl"), rows)
@@ -1354,7 +1361,8 @@ def run_stage(project, workspace, settings, stage_id, context=None, *, pause_req
             report = evaluate(project, bundle, directory, manifest=manifest,
                               smoke=scoring_smoke, workers="auto", resume=resume, backend=backend,
                               gpu_batch_size=gpu_batch_size,
-                              numerical_differences_approved=settings.get("gpu_numerical_differences_approved"))
+                              numerical_differences_approved=settings.get("gpu_numerical_differences_approved"),
+                              pause_requested=pause_requested)
         assessment = None
         artifacts = [directory / "receipt.json", directory / "report.json", directory / "clips.json"]
         recommendation = None
@@ -1365,7 +1373,7 @@ def run_stage(project, workspace, settings, stage_id, context=None, *, pause_req
                     "phase": "runtime_recommendation", **record})
             recommendation = recommend(project, bundle, directory,
                 root / "reports" / ("studio_runtime_recommendations_" + digest(directory / "report.json")[:16] + "_" + identity(SEARCH_POLICY)[:12]),
-                progress_callback=recommendation_progress)
+                progress_callback=recommendation_progress, pause_requested=pause_requested)
             artifacts.extend([Path(recommendation["recommendation"]), Path(recommendation["receipt"])])
         if settings.get("evaluation_policy"):
             from .evaluation_coverage import assess_common_evaluation

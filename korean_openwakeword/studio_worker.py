@@ -15,6 +15,7 @@ import traceback
 from .common import bound_file, digest, identity, now, read_json, write_json, writer_lock
 from .storage import storage_environment
 from .project import load_project
+from .studio_jobs import STAGE_PAUSE_MESSAGES
 
 
 _TORCH_STAGES = {"references", "pilot", "positives", "positive_review", "hard_pilot", "hard_generation", "training"}
@@ -83,25 +84,44 @@ def _training_torch_backend(root, config, backend):
     return backend
 
 
-def _speech_generation_stage(request, request_path, run_stage):
-    from .hard_tts import HardGenerationPaused
-    from .tts import CallGenerationPaused
-
+def _run_pausable_stage(request, request_path, run_stage):
     pause_path = request_path.parent / "pause.json"
+    stage = request["stage"]
+    last_poll = float("-inf")
 
     def pause_requested():
+        nonlocal last_poll
+        # Training can finish many updates between writes to pause.json.
+        if stage == "training":
+            stamp = time.monotonic()
+            if stamp - last_poll < 0.1:
+                return False
+            last_poll = stamp
         try:
             return read_json(pause_path).get("task_id") == request["task_id"] if pause_path.exists() else False
         except FileNotFoundError:
             return False
 
+    if pause_requested():
+        return {"state": "paused"}
+
+    exceptions = {
+        "pilot": (".tts", "CallGenerationPaused"),
+        "positives": (".tts", "CallGenerationPaused"),
+        "hard_pilot": (".hard_tts", "HardGenerationPaused"),
+        "hard_generation": (".hard_tts", "HardGenerationPaused"),
+        "features": (".features", "FeatureGenerationPaused"),
+        "training": (".train", "TrainingPaused"),
+        "development": (".paired", "PairedPreparationPaused"),
+        "evaluation": (".evaluate", "EvaluationPaused"),
+    }
+    module, exception = exceptions[stage]
+    paused = getattr(importlib.import_module(module, __package__), exception)
     try:
-        if not pause_requested():
-            return run_stage(request["project"], request["workspace"], request["settings"], request["stage"],
-                             request.get("context", {}), pause_requested=pause_requested)
-    except (CallGenerationPaused, HardGenerationPaused):
-        pass
-    return {"state": "paused"}
+        return run_stage(request["project"], request["workspace"], request["settings"], stage,
+                         request.get("context", {}), pause_requested=pause_requested)
+    except paused:
+        return {"state": "paused"}
 
 
 def _task_progress_writer(request, directory, request_sha256):
@@ -353,14 +373,14 @@ def _execute(request_path):
                 if stage == "training":
                     backend = _training_torch_backend(Path(request["project"]).parent, before, backend)
                 _prepare_selected_torch(Path(request["project"]).parent, backend)
-            if stage in ("positives", "hard_pilot", "hard_generation"):
-                result["result"] = _speech_generation_stage(request, request_path, run_stage)
+            context = request.get("context", {})
+            settings = request["settings"]
+            if stage in ("frontend", "evaluation"):
+                settings = _stage_evaluation_settings(stage, settings, context.get("inputs", {}),
+                                                      Path(request["project"]).parent)
+            if stage in STAGE_PAUSE_MESSAGES:
+                result["result"] = _run_pausable_stage(dict(request, settings=settings), request_path, run_stage)
             else:
-                context = request.get("context", {})
-                settings = request["settings"]
-                if stage in ("frontend", "evaluation"):
-                    settings = _stage_evaluation_settings(stage, settings, context.get("inputs", {}),
-                                                          Path(request["project"]).parent)
                 result["result"] = run_stage(request["project"], request["workspace"], settings, stage, context)
                 if stage == "frontend" and result["result"]["state"] == "completed":
                     _verify_selected_torch(os.environ.get("KOWW_STUDIO_TORCH_BACKEND"))

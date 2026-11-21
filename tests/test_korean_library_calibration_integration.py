@@ -245,7 +245,8 @@ def test_studio_recommends_after_scoring_only_for_the_versioned_policy(tmp_path,
         source_bytes.update({p: p.read_bytes() for p in output.iterdir()})
         return read_json(output / "report.json")
 
-    def recommend(project, bundle, evaluation, output, *, progress_callback):
+    def recommend(project, bundle, evaluation, output, *, progress_callback, pause_requested):
+        assert pause_requested is None
         order.append("recommend")
         assert order == ["score", "recommend"]
         assert {p: p.read_bytes() for p in source_bytes} == source_bytes

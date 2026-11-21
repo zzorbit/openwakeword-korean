@@ -39,6 +39,8 @@ STYLE_OPTIONS = (
 LEGACY_CALL_IMPLEMENTATION = "a8a62455fee84260915d489aa2bccb0249ad874c9bfb2496678a5c725292473e"
 CALL_RECOVERY_POLICY = "prepared_clone_bounded_recovery_v1"
 VOICE_FILL_SCHEDULE = "same_voice_fill_cuda4_v1"
+PREFLIGHT_BATCH_POLICY = "preflight_mixed_voice_cuda4_v1"
+EAGER_VOICE_FILL_POLICY = "same_voice_cuda_graph_or_eager_v1"
 CALL_BATCH_SIZE = 4
 ORIGINAL_ATTEMPTS = 3
 CLONE_ATTEMPTS = 6
@@ -591,21 +593,39 @@ def _attempt_seed(config, split, slot, attempt, scope_id):
     return int(identity(parts)[:8], 16)
 
 
-def _batch_identity(config, split, slots, scope_id, contract_id):
+def _call_batch_policy(scope):
+    if not scope:
+        return None
+    policy = scope.get("batch_policy")
+    same_voice = scope.get("schedule") == VOICE_FILL_SCHEDULE
+    if policy == PREFLIGHT_BATCH_POLICY and scope.get("kind") == "preflight" and not same_voice:
+        return policy
+    if same_voice and policy in (None, EAGER_VOICE_FILL_POLICY):
+        return policy or VOICE_FILL_SCHEDULE
+    return None
+
+
+def _batch_identity(config, split, slots, scope_id, contract_id, policy=VOICE_FILL_SCHEDULE):
     seeds = [_attempt_seed(config, split, slot, 0, scope_id) for slot in slots]
-    return {"policy": VOICE_FILL_SCHEDULE, "slots": slots,
+    return {"policy": policy, "slots": slots,
             "seed": int(identity([contract_id, seeds, slots])[:8], 16)}
 
 
 def _validate_batch_entry(config, split, row, reference_count, scope, scope_id, contract_id):
     batch = row["cuda_batch"]
     slots = batch.get("slots") if isinstance(batch, dict) else None
-    if (not scope or scope.get("schedule") != VOICE_FILL_SCHEDULE or row.get("attempt") != 0
+    policy = _call_batch_policy(scope)
+    if (not policy or row.get("attempt") != 0
             or not isinstance(slots, list) or len(slots) != CALL_BATCH_SIZE
-            or any(type(slot) is not int or slot < 0 for slot in slots) or row.get("slot") not in slots
-            or slots[0] // reference_count % CALL_BATCH_SIZE
-            or slots != [slots[0] + index * reference_count for index in range(CALL_BATCH_SIZE)]
-            or batch != _batch_identity(config, split, slots, scope_id, contract_id)):
+            or any(type(slot) is not int or slot < 0 for slot in slots) or row.get("slot") not in slots):
+        raise ValueError("CUDA clone batch identity changed")
+    if policy == PREFLIGHT_BATCH_POLICY:
+        aligned = (slots[0] % CALL_BATCH_SIZE == 0 and slots[-1] < reference_count
+                   and slots == list(range(slots[0], slots[0] + CALL_BATCH_SIZE)))
+    else:
+        aligned = (slots[0] // reference_count % CALL_BATCH_SIZE == 0
+                   and slots == [slots[0] + index * reference_count for index in range(CALL_BATCH_SIZE)])
+    if not aligned or batch != _batch_identity(config, split, slots, scope_id, contract_id, policy):
         raise ValueError("CUDA clone batch identity changed")
     ending = row.get("ending_boundary_qc", {})
     limit, count, stop = ending.get("token_limit"), ending.get("generated_tokens"), ending.get("termination")
@@ -648,7 +668,7 @@ def _recover_call_batch(root, output, config, split, references, scope, scope_id
     contract_id = identity(settings)
     rows = intent.get("rows") if isinstance(intent, dict) else None
     if (not isinstance(rows, list) or len(rows) != CALL_BATCH_SIZE or intent.get("contract_id") != contract_id
-            or read_json(output / "contract.json") != settings or scope.get("schedule") != VOICE_FILL_SCHEDULE):
+            or read_json(output / "contract.json") != settings or not _call_batch_policy(scope)):
         raise ValueError("Pending CUDA clone batch does not belong to this generation contract")
     for row in rows:
         _validate_batch_entry(config, split, row, len(references), scope, scope_id, contract_id)
@@ -889,6 +909,11 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
     scope_kind = staged_scope.get("kind") if isinstance(staged_scope, dict) else None
     production = scope_kind == "production"
     same_voice_fill = staged_scope is not None and staged_scope.get("schedule") == VOICE_FILL_SCHEDULE
+    batch_policy = _call_batch_policy(staged_scope)
+    mixed_preflight = batch_policy == PREFLIGHT_BATCH_POLICY
+    if staged_scope and "batch_policy" in staged_scope and not (
+            mixed_preflight or same_voice_fill and batch_policy == EAGER_VOICE_FILL_POLICY):
+        raise ValueError("Invalid staged call batch policy")
     if same_voice_fill and (scope_kind not in ("production", "postgeneration_repair") or attempt_ceiling is not None):
         raise ValueError("Voice-fill scheduling requires a complete production or repair call target")
     if attempt_ceiling is not None or excluded_sha256:
@@ -928,6 +953,8 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
     target = min(config["targets"][target_key], limit) if limit is not None else config["targets"][target_key]
     if pilot and limit is None:
         target = min(12, len(references))
+    if mixed_preflight and target > len(references):
+        raise ValueError("Call preflight generates at most one sample per reference voice")
     output = root / "data" / ("pilot" if pilot else "generated") / split
     scope_id = ""
     if staged_scope is not None:
@@ -935,7 +962,7 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
     settings = call_generation_contract(config, split, references, pilot, method, staged_scope)
     with writer_lock(output):
         if method == "clone":
-            if same_voice_fill:
+            if batch_policy:
                 _recover_call_batch(root, output, config, split, references, staged_scope, scope_id, settings)
             rows, context = call_journal_context(root, output, settings)
             by_slot, attempts_by_slot = validate_call_rows(root, config, split, references, rows, context, scope=staged_scope)
@@ -1039,7 +1066,7 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
                         qc["passed"] = False
                         qc["reasons"].append("waveform_cuts_active_ending")
                 path = output / (sample_id + ".wav")
-                if (production or same_voice_fill) and path.exists():
+                if (production or batch_policy) and path.exists():
                     # An interruption can leave a WAV without its journal row.
                     # Keep that uncommitted output before retrying its exact seed.
                     orphan = output / "interrupted_audio" / f"{sample_id}_{digest(path)}.wav"
@@ -1157,14 +1184,22 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
 
         def run_batch(slots, batches_left, generate_batch):
             check_pause()
-            index = slots[0] % len(references)
-            reference = references[index]
-            batch = _batch_identity(config, split, slots, scope_id, generation_contract_id)
+            indexes = [slot % len(references) for slot in slots]
+            reference = references[indexes[0]]
+            batch = _batch_identity(config, split, slots, scope_id, generation_contract_id, batch_policy)
             _seed(_attempt_seed(config, split, slots[0], 0, scope_id))
             generation = clone_options(reference)
+            if mixed_preflight:
+                generation["voice_clone_prompts"] = [clone_options(references[index])["voice_clone_prompt"]
+                                                        for index in indexes]
+                del generation["voice_clone_prompt"]
+            else:
+                generation["expected_reuses"] = batches_left
+                if batch_policy == EAGER_VOICE_FILL_POLICY:
+                    generation["allow_eager"] = True
             started = time.perf_counter()
             with generation_attempt() as timing:
-                result = generate_batch(batch_seed=batch["seed"], expected_reuses=batches_left, **generation)
+                result = generate_batch(batch_seed=batch["seed"], **generation)
             if result is None:
                 return
             wavs, rate, token_limit, endings = result
@@ -1173,9 +1208,9 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
                     or any(ending.get("token_limit") != token_limit for ending in endings)):
                 raise ValueError("CUDA clone batch did not return one bounded result per slot")
             synthesis_share = (time.perf_counter() - started) / CALL_BATCH_SIZE
-            axes = clone_axes(reference)
             published = []
-            for slot, waveform, termination in zip(slots, wavs, endings, strict=True):
+            for slot, index, waveform, termination in zip(slots, indexes, wavs, endings, strict=True):
+                axes = clone_axes(references[index])
                 row = record_attempt(slot, 0, waveform, rate, token_limit, termination, axes,
                                      time.perf_counter() - synthesis_share, batch)
                 _validate_batch_entry(config, split, row, len(references), staged_scope, scope_id, generation_contract_id)
@@ -1186,7 +1221,8 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
                       "rows": published}
             write_json(output / "pending_cuda_batch.json", intent)
             _finish_call_batch(output, intent)
-            remaining[index] -= sum(row["qc"]["passed"] for row in published)
+            for index, row in zip(indexes, published, strict=True):
+                remaining[index] -= row["qc"]["passed"]
             if timing is not None:
                 timing.committed(sum(row["qc"]["passed"] for row in published))
             progress()
@@ -1214,6 +1250,18 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
                         break
                 if any(slot not in by_slot for slot in assigned):
                     break
+        elif mixed_preflight:
+            generate_batch = getattr(model, "generate_short_clone_mixed_voice_batch", None)
+            allowed = set(runnable)
+            for first in range(0, target, CALL_BATCH_SIZE):
+                slots = range(first, min(first + CALL_BATCH_SIZE, target))
+                if (generate_batch is not None and len(slots) == CALL_BATCH_SIZE and all(
+                        slot in allowed and attempts_by_slot[slot] == 0 and not requires_ending_check(
+                            staged_scope, references[slot]["voice_family_id"]) for slot in slots)):
+                    run_batch(list(slots), None, generate_batch)
+                for slot in slots:
+                    if slot in allowed and slot not in by_slot:
+                        run_single(slot)
         else:
             for slot in runnable:
                 run_single(slot)

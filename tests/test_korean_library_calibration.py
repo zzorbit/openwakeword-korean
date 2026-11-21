@@ -306,15 +306,21 @@ def test_recommendation_preserves_a_receipt_published_before_lock(experiment, tm
 
 
 def test_resume_partway_through_fixed_grid_reconstructs_the_same_search(experiment, tmp_path):
+    from korean_openwakeword.evaluate import EvaluationPaused
+
     project, bundle, evaluation, _ = experiment
     complete = tmp_path / "complete"
     expected = recommend(project, bundle, evaluation, complete)
     resumed = tmp_path / "partly_searched"
-    def interrupt(progress):
-        if progress["completed"] == 10:
-            raise InterruptedError("pause partway through the fixed grid")
-    with pytest.raises(InterruptedError):
-        recommend(project, bundle, evaluation, resumed, interrupt)
+    completed = 0
+
+    def update(progress):
+        nonlocal completed
+        completed = progress["completed"]
+
+    with pytest.raises(EvaluationPaused):
+        recommend(project, bundle, evaluation, resumed, update, pause_requested=lambda: completed == 10)
+    assert len(list(iter_rows(resumed / "comparisons.jsonl"))) == 10
     actual = recommend(project, bundle, evaluation, resumed)
     assert actual["candidates"] == expected["candidates"]
     assert list(iter_rows(resumed / "comparisons.jsonl")) == list(iter_rows(complete / "comparisons.jsonl"))

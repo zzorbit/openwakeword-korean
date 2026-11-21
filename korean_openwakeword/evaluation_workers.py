@@ -98,11 +98,9 @@ def _score_audio(path, expected_sha256):
             yield audio
 
 
-def score_session(detector, row, path, model_ids, *, expected_sha256=None):
-    """Score exactly one reset session with the original 80 ms reference path."""
+def replay_session_scores(row, path, model_ids, runtime, audio_samples, scores):
+    """Interpret the same ordered score rows for CPU scoring and GPU replay."""
     row = {**row, "calls": deepcopy(row.get("calls", []))}
-    runtime = detector.runtime
-    detector.reset()
     gates = {key: EventDetector(runtime["threshold"], runtime["consecutive_frames"], runtime["cooldown_s"])
              for key in model_ids}
     session = {"session_id": row["sample_id"], "source_id": source_key(row), "calls": row["calls"],
@@ -116,43 +114,36 @@ def score_session(detector, row, path, model_ids, *, expected_sha256=None):
     trackers = {key: PositiveTracker(session, runtime["call_postroll_s"]) for key in model_ids}
     events = {key: [] for key in model_ids}
     max_scores = dict.fromkeys(model_ids, 0.0)
+    total_frames = audio_samples // 1280
+    long_audio = total_frames >= 750
+    if long_audio:
+        report_activity("session_frames", "긴 음원 프레임·이벤트 확인 중", 0, total_frames,
+                        audio_seconds=0, batch_audio_seconds=total_frames * .08, batch_files=1)
+    for call in session["calls"]:
+        if not 0 <= call["start_s"] < call["end_s"] <= audio_samples / 16000:
+            raise ValueError("Call boundary exceeds evaluation file")
+        if call["start_s"] < runtime["warmup_s"]:
+            raise ValueError("Positive call starts during excluded warmup; fix the test audio")
     frames = 0
-    frame_scores = []
-    with _score_audio(path, expected_sha256) as audio:
-        if audio.samplerate != 16000 or audio.channels != 1 or audio.subtype != "PCM_16":
-            raise ValueError("Scored WAV must already be mono16kHz PCM16; no playback-only gain")
-        total_frames = audio.frames // 1280
-        long_audio = total_frames >= 750
-        if long_audio:
-            report_activity("session_frames", "긴 음원 프레임·이벤트 확인 중", 0, total_frames,
-                            audio_seconds=0, batch_audio_seconds=total_frames * .08, batch_files=1)
-        for call in session["calls"]:
-            if not 0 <= call["start_s"] < call["end_s"] <= audio.frames / 16000:
-                raise ValueError("Call boundary exceeds evaluation file")
-            if call["start_s"] < runtime["warmup_s"]:
-                raise ValueError("Positive call starts during excluded warmup; fix the test audio")
-        while True:
-            samples = audio.read(1280, dtype="int16")
-            if len(samples) < 1280:
-                break
-            scores = detector.score_members(samples)
-            if len(scores) == 3:
-                scores = np.r_[scores, np.float32((np.float64(scores[0]) + np.float64(scores[1])
-                                                   + np.float64(scores[2])) / 3)]
-            frame_scores.append(scores)
-            timestamp = (frames + 1) * .08
-            eligible = frames * .08 + 1e-9 >= runtime["warmup_s"]
-            for key, score in zip(model_ids, scores):
-                decision = gates[key].update(float(score), timestamp, eligible)
-                max_scores[key] = max(max_scores[key], float(score))
-                if decision["event"]:
-                    events[key].append(timestamp)
-                if eligible and row["kind"] == "positive":
-                    trackers[key].update(timestamp, float(score), decision)
-            frames += 1
-            if long_audio and (frames % 256 == 0 or frames == total_frames):
-                report_activity("session_frames", "긴 음원 프레임·이벤트 확인 중", frames, total_frames,
-                    audio_seconds=frames * .08, batch_audio_seconds=total_frames * .08, batch_files=1)
+    positive = row["kind"] == "positive"
+    warmup = runtime["warmup_s"]
+    for values in scores:
+        timestamp = (frames + 1) * .08
+        eligible = frames * .08 + 1e-9 >= warmup
+        for key, value in zip(model_ids, values):
+            score = float(value)
+            decision = gates[key].update(score, timestamp, eligible)
+            max_scores[key] = max(max_scores[key], score)
+            if decision["event"]:
+                events[key].append(timestamp)
+            if eligible and positive:
+                trackers[key].update(timestamp, score, decision)
+        frames += 1
+        if long_audio and (frames % 256 == 0 or frames == total_frames):
+            report_activity("session_frames", "긴 음원 프레임·이벤트 확인 중", frames, total_frames,
+                audio_seconds=frames * .08, batch_audio_seconds=total_frames * .08, batch_files=1)
+    if frames != total_frames:
+        raise ValueError("Evaluation audio frame count changed during scoring")
     results = {}
     for key in model_ids:
         calls = trackers[key].rows
@@ -162,8 +153,32 @@ def score_session(detector, row, path, model_ids, *, expected_sha256=None):
                         "max_score": max((call["max_wake_score"] or 0 for call in calls), default=max_scores[key]),
                         "latency_s": calls[0]["latency_s"] if len(calls) == 1 else None,
                         "activity": gates[key].activity_statistics()}
-    clip = {**row, "path": str(path), "duration_s": frames * .08,
-            "eligible_seconds": max(0, frames * .08 - runtime["warmup_s"]), "results": results}
+    clip = {**row, "path": str(path), "duration_s": total_frames * .08,
+            "eligible_seconds": max(0, total_frames * .08 - runtime["warmup_s"]), "results": results}
+    return clip
+
+
+def score_session(detector, row, path, model_ids, *, expected_sha256=None):
+    """Score exactly one reset session with the original 80 ms reference path."""
+    detector.reset()
+    frame_scores = []
+    with _score_audio(path, expected_sha256) as audio:
+        if audio.samplerate != 16000 or audio.channels != 1 or audio.subtype != "PCM_16":
+            raise ValueError("Scored WAV must already be mono16kHz PCM16; no playback-only gain")
+
+        def score_rows():
+            for _ in range(audio.frames // 1280):
+                samples = audio.read(1280, dtype="int16")
+                if len(samples) != 1280:
+                    break
+                scores = detector.score_members(samples)
+                if len(scores) == 3:
+                    scores = np.r_[scores, np.float32((np.float64(scores[0]) + np.float64(scores[1])
+                                                       + np.float64(scores[2])) / 3)]
+                frame_scores.append(scores)
+                yield scores
+
+        clip = replay_session_scores(row, path, model_ids, detector.runtime, audio.frames, score_rows())
     return clip, np.asarray(frame_scores, dtype=np.float32).reshape(-1, len(model_ids))
 
 
@@ -213,13 +228,13 @@ def score_sessions(bundle, model_ids, items, workers, detector_factory=WakeWordD
 
 
 class EvaluationJournal:
-    """Disk-backed scores plus a hash-checked ordered checkpoint every 32 clips.
+    """Disk-backed scores with hash-checked ordered checkpoints.
 
-    Only incomplete, explicitly resumed runs may reuse this directory. A crash
-    can lose at most 31 already calculated sessions; frozen input hashes must
-    still match. Successful scores.npz keeps the existing portable format.
+    CPU callers checkpoint every 32 clips by default. A caller that owns
+    scoring-group boundaries can disable that interval and commit explicitly.
+    Successful scores.npz keeps the existing portable format.
     """
-    def __init__(self, output, binding, offsets, model_ids, resume=False):
+    def __init__(self, output, binding, offsets, model_ids, resume=False, *, checkpoint_every=32):
         self.output = Path(output)
         self.work = self.output / "_evaluation_work"
         self.state_path = self.work / "checkpoint.json"
@@ -228,6 +243,7 @@ class EvaluationJournal:
         self.binding = binding
         self.offsets = offsets
         self.model_ids = model_ids
+        self.checkpoint_every = checkpoint_every
         self.shape = (int(offsets[-1]), len(model_ids))
         self.clips = []
         self.frame_hash = hashlib.sha256()
@@ -286,7 +302,7 @@ class EvaluationJournal:
         self.pending_lines.append(encoded)
         self.clip_hash.update(encoded)
         self.journal_bytes += len(encoded)
-        if len(self.pending_lines) >= 32:
+        if self.checkpoint_every and len(self.pending_lines) >= self.checkpoint_every:
             self.commit()
 
     def commit(self):

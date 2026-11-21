@@ -837,12 +837,14 @@ def test_restart_tracks_creation_identity_and_does_not_duplicate_live_worker(man
     recycled.close()
 
 
-def test_dead_worker_lock_is_archived_but_live_or_recycled_pid_lock_is_preserved(manager):
+@pytest.mark.parametrize("directory", ["features", "reports/studio_evaluation_attempt2", "reports/studio_paired",
+    "reports/studio_runtime_recommendations_0000000000000000_111111111111"])
+def test_dead_worker_lock_is_archived_but_live_or_recycled_pid_lock_is_preserved(manager, directory):
     project = create(manager)
     manager.start(project["id"])
     state = manager._load(project["id"])
     root = Path(state["project"]).parent
-    lock = root / "features" / ".writer.lock"
+    lock = root / directory / ".writer.lock"
     write_json(lock, {"pid": state["job"]["pid"], "marker": "actual-worker"})
     manager.workers.items[0].returncode = 9
     manager.workers.identities[state["job"]["pid"]] = "recycled"
@@ -1500,8 +1502,9 @@ def test_worker_applies_last_compute_choice_without_mutating_frozen_request(
     monkeypatch.setattr(gpu_runtime_install, "gpu_runtime_environment", lambda root: {})
     monkeypatch.setattr(studio_steps, "_prepare_evaluation_runtime", provisioned.append)
 
-    def run(project, workspace, effective, active_stage, context):
+    def run(project, workspace, effective, active_stage, context, *, pause_requested=None):
         assert active_stage == stage and context["inputs"] == inputs
+        assert callable(pause_requested) == (stage == "evaluation")
         chosen.append(effective)
         return {"state": "completed"}
 
@@ -1530,6 +1533,38 @@ def test_worker_uses_only_its_own_hard_generation_pause_request(tmp_path, monkey
         pytest.fail("A matching pause request must exit before another attempt")
 
     monkeypatch.setattr(studio_steps, "run_stage", generate)
+    assert studio_worker.execute(path) == 0 and calls == [stage]
+    assert read_json(request["result_path"])["result"] == {"state": "paused"}
+
+
+@pytest.mark.parametrize("stage,module,name", [
+    ("pilot", "tts", "CallGenerationPaused"),
+    ("features", "features", "FeatureGenerationPaused"),
+    ("training", "train", "TrainingPaused"),
+    ("development", "paired", "PairedPreparationPaused"),
+    ("evaluation", "evaluate", "EvaluationPaused"),
+])
+def test_worker_records_cooperative_pause_as_a_resumable_result(tmp_path, monkeypatch, stage, module, name):
+    from importlib import import_module
+    from korean_openwakeword import studio_steps, studio_worker
+
+    path, request = worker_request(tmp_path, stage)
+    exception = getattr(import_module("korean_openwakeword." + module), name)
+    marker = path.with_name("pause.json")
+    calls = []
+
+    def run(*args, pause_requested):
+        calls.append(args[3])
+        write_json(marker, {"task_id": request["task_id"]})
+        if stage == "training":
+            stamp[0] += 1.0
+        assert pause_requested()
+        raise exception()
+
+    stamp = [5.0]
+    monkeypatch.setattr(studio_worker.time, "monotonic", lambda: stamp[0])
+    monkeypatch.setattr(studio_worker, "_prepare_selected_torch", lambda *args: None)
+    monkeypatch.setattr(studio_steps, "run_stage", run)
     assert studio_worker.execute(path) == 0 and calls == [stage]
     assert read_json(request["result_path"])["result"] == {"state": "paused"}
 

@@ -118,9 +118,9 @@ def test_long_gpu_stream_changed_during_scoring_never_yields_a_committable_sessi
     values = {10: _scores([[.1, .2, .3]] * 8)}
     module, _ = _fake_scorer(monkeypatch, values)
     item = _wave(tmp_path, 10)
-    original = module.score_session
-    def changed(detector, row, path, model_ids):
-        result = original(detector, row, path, model_ids)
+    original = module.replay_session_scores
+    def changed(row, path, model_ids, runtime, audio_samples, scores):
+        result = original(row, path, model_ids, runtime, audio_samples, scores)
         before = Path(path).stat()
         with Path(path).open("r+b") as stream:
             stream.seek(-1, 2)
@@ -129,13 +129,61 @@ def test_long_gpu_stream_changed_during_scoring_never_yields_a_committable_sessi
             stream.write(bytes([value[0] ^ 1]))
         os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 1000000000))
         return result
-    monkeypatch.setattr(module, "score_session", changed)
+    monkeypatch.setattr(module, "replay_session_scores", changed)
     published = []
     with pytest.raises(ValueError, match="(?i)(changed|verification)"):
         for result in module.score_gpu_sessions(tmp_path, MODEL_IDS, [item], qualification=QUALIFICATION,
                       max_audio_bytes=1024):
             published.append(result)
     assert not published
+
+
+def test_resume_reuses_original_gpu_group_and_checkpoints_only_after_yield(monkeypatch, tmp_path):
+    values = {marker: _scores([[.4, .6, .8]] * 8) for marker in (10, 20, 30, 40, 50)}
+    module, batches = _fake_scorer(monkeypatch, values)
+    items = [_wave(tmp_path, marker, index=index) for index, marker in enumerate(values)]
+    offsets = np.arange(6) * 8
+    resumed = 1
+    start = module.gpu_scoring_group_start(offsets, resumed, 3)
+    checkpoints, consumed = [], []
+
+    for index, _, _ in module.score_gpu_sessions(tmp_path, MODEL_IDS, items[start:], batch_size=3,
+            qualification=QUALIFICATION, emit_from=resumed, on_group_complete=lambda: checkpoints.append(tuple(consumed))):
+        consumed.append(index)
+
+    assert batches == [[10, 20, 30], [40, 50]]
+    assert checkpoints == [(1, 2), (1, 2, 3, 4)]
+
+
+def test_resume_group_matches_pcm_budget_with_zero_frame_and_streamed_sessions():
+    from korean_openwakeword.gpu_evaluation import gpu_scoring_group_start
+
+    offsets = np.cumsum([0, 2, 0, 3, 1, 6, 0, 3, 2, 1])
+    expected_starts = [0, 0, 0, 3, 4, 5, 5, 5, 8, 9]
+    assert [gpu_scoring_group_start(offsets, i, 4, 5 * 1280 * 2)
+            for i in range(len(offsets))] == expected_starts
+
+
+def test_replay_does_not_serialize_cached_wav_or_read_streamed_wav_again(monkeypatch, tmp_path):
+    values = {10: _scores([[.1, .2, .3]] * 8)}
+    module, _ = _fake_scorer(monkeypatch, values)
+    item = _wave(tmp_path, 10, kind="positive")
+    normal_open = module.sf.SoundFile
+    opened = []
+
+    def track_open(file, *args, **kwargs):
+        opened.append(file)
+        return normal_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(module.sf, "write", lambda *args, **kwargs: pytest.fail("Score replay wrote a WAV"))
+    monkeypatch.setattr(module.sf, "SoundFile", track_open)
+    cached, = module.score_gpu_sessions(tmp_path, MODEL_IDS, [item], qualification=QUALIFICATION)
+    cached_opens = len(opened)
+    opened.clear()
+    streamed, = module.score_gpu_sessions(tmp_path, MODEL_IDS, [item], qualification=QUALIFICATION,
+                                          max_audio_bytes=1024)
+    assert cached_opens == 2 and len(opened) == 2  # header plus one scoring input
+    assert cached[1] == streamed[1]
 
 
 def test_gpu_requires_explicit_numerical_difference_approval_before_loading(monkeypatch, tmp_path):

@@ -35,7 +35,7 @@ from .common import bound_file, digest, identity, now, read_json, read_rows, res
 from .hard_pilot import HARD_SAMPLE_REVIEW_POLICY
 from .pilot import COMBINED_PILOT_POLICY, POSTGEN_PILOT_POLICY, PREPOST_PILOT_POLICY, TRAIN_PILOT_POLICY
 from .project import create_project, load_project
-from .studio_jobs import process_identity, request_stage_pause, worker_lock_paths as _lock_paths
+from .studio_jobs import STAGE_PAUSE_MESSAGES, process_identity, request_stage_pause, worker_lock_paths as _lock_paths
 from .studio_progress import estimate_progress_eta, prepared_download_groups, read_optional_progress
 from .web_page import render_page_config
 
@@ -299,7 +299,9 @@ def _execution_contract(*, legacy_reference_review=False):
                 "tts_cuda_predictor.py", "tts_cuda_sampling.py"},
         "hard_pilot": {"hard_pilot.py"},
         "postgeneration_repair": {"postgeneration_repair.py"},
-        "features": {"features.py", "gpu_features.py", "paired.py", "preparation.py"},
+        "features": {"features.py", "gpu_features.py", "preparation.py"},
+        "recovery": {"checkpoint_io.py"},
+        "evaluation_preparation": {"paired.py"},
         "training": {"train.py"},
         "models": {"bundle.py", "final_integrity.py", "runtime.py", "events.py"},
         "results": {"selection.py", "cache_analysis.py", "calibration.py"},
@@ -311,7 +313,7 @@ def _execution_contract(*, legacy_reference_review=False):
         "positives": {"tts"}, "positive_review": {"tts", "postgeneration_repair"}, "hard_phrases": {"tts"}, "hard_pilot": {"tts", "hard_pilot"},
         "hard_generation": {"tts", "hard_pilot"}, "hard_review": {"tts", "data", "hard_pilot"},
         "hard_connect": {"tts", "data", "hard_pilot"}, "features": {"features"}, "training": {"training"},
-        "package": {"models"}, "development": {"data", "evaluation", "models"},
+        "package": {"models"}, "development": {"data", "evaluation", "evaluation_preparation", "models"},
         "evaluation": {"evaluation", "models"}, "results": {"results", "evaluation", "models"}}
     tree = ast.parse((root / "studio_steps.py").read_text(encoding="utf-8-sig"))
     run = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "run_stage")
@@ -381,6 +383,12 @@ _COMPUTE_DISPATCH_COMPATIBLE_DIGESTS = {
             "c1ac1c6aa4b6cc37041c1bf800b2fa766a0d950f740b19dd85601976a1e26939",
         "865ca4c5b757cf64bf17fcbd549f91f8d4ebe2fc6adfb9b94bdaebd48a1542c3":
             "df61837471a4768378f96cf0c5fcab825292515e10c3aca678ec7510ec2a87da",
+        # Read-ahead keeps each sampler draw and update order. Extra recovery
+        # checkpoints bind the identical existing training contract.
+        "5c8a8026fc1af36caa468c888cf0c02354761b4a6b8d5f6d2977aabf7ab1834d":
+            "c1ac1c6aa4b6cc37041c1bf800b2fa766a0d950f740b19dd85601976a1e26939",
+        "f5579368a9f5de4b3913832a736c97196873057765f561e8857c0e9bb0eddee4":
+            "df61837471a4768378f96cf0c5fcab825292515e10c3aca678ec7510ec2a87da",
     },
     "tts.py": {
         "cf3359d89b53bf21531381658f3dabc0c5599d53170150fb0b61e2479c061d08":
@@ -411,6 +419,11 @@ _COMPUTE_DISPATCH_COMPATIBLE_DIGESTS = {
             "4b80f8a5561ba98454b8e6fd8b0449301b6bf3852d6eb78b8f3af043b52bb488",
         "7129dcad56dbbea4222c74e9b82e42c11d74863aea670a21b2c2b020e2d3d983":
             "35e797140ce4bc13235a0d9e259b129d63b7bbd66aac23fe2b1f8f624d9808bf",
+        # New preflight and eager scopes carry their own batch policies.
+        "3ab59510ca1b7d375ee29fb96fef4c62de46e99b0ebfea1fc27e44043c40b368":
+            "4b80f8a5561ba98454b8e6fd8b0449301b6bf3852d6eb78b8f3af043b52bb488",
+        "312eec7018bec5e99ecfc6bce4c4e819c235e1528173c6ab19aa5f2713671148":
+            "35e797140ce4bc13235a0d9e259b129d63b7bbd66aac23fe2b1f8f624d9808bf",
     },
     "hard_pilot.py": {
         "4ffa5d27c2ce746846c15e6eeb96767d786b3d533ba892a458c1269b45f25d77":
@@ -423,6 +436,11 @@ _COMPUTE_DISPATCH_COMPATIBLE_DIGESTS = {
         "6738dee705b18505bb00b25dd0053d3f41e00157a09a24ebec9c409d704ce44a":
             "bbe435b58a3e21e4f6d5e24d3c6f809c7d0c3d5df02610b4343e35021cc39c37",
         "36a9211815fbc13ff60850f065d1ce2d02681047e6c7ec8bdce097bfd53dffea":
+            "bd75d7e028246ac3da21722510b5250691461f968a14776d8511720439109350",
+        # Existing Hard contracts retain their four-item or serial policy.
+        "73529e64f16f8983e6e0824599155833b569037f9d0ad0dcba15710ebeaa771b":
+            "bbe435b58a3e21e4f6d5e24d3c6f809c7d0c3d5df02610b4343e35021cc39c37",
+        "925921850594886551b3de42c286cd747f625e067d5d11ef2da41068138d664b":
             "bd75d7e028246ac3da21722510b5250691461f968a14776d8511720439109350",
         "63fffbc8ebee268c1cc70e64f80fb0c2c49a563668f2c52af462ad855caba105":
             "43deed598cefa6503d105761ccb9fd7c9c2a5cb56ee700bfea402688c838bcc3",
@@ -439,6 +457,10 @@ _COMPUTE_DISPATCH_COMPATIBLE_DIGESTS = {
         "e002580fadb9e53131abc270eb19969212b517397d177491e71333394883401e":
             "fb494730e01c6076f5a0875bdd6f3262007e97e2ab072cc77ad42fae4c3df7b4",
         "fefd4627760768112d3e82cddd92caa820c0dd828f1449b8583f8994d41cac2e":
+            "0491525772c9e79f0aa31d940b98b7cb56cbe35a4ec158120524cdb69e3de973",
+        "bd88eaa63eac7d8aa521ef85ad682474bda5642c75793109cc23ec7bb39861d0":
+            "fb494730e01c6076f5a0875bdd6f3262007e97e2ab072cc77ad42fae4c3df7b4",
+        "f8c7549f13ba2e20f5d37bec97e22d2b85d91f10ab432c876c641e18019d346c":
             "0491525772c9e79f0aa31d940b98b7cb56cbe35a4ec158120524cdb69e3de973",
     },
     "call_generation_history.py": {
@@ -978,6 +1000,44 @@ _AUDITED_SYNTHESIS_QUALITY_UPDATES = {
 _CUDA_WORKFLOW_UPDATE_FILES = ("gpu_features.py", "pilot.py", "postgeneration_repair.py", "studio_steps.py",
                                "tts_cuda_graph.py", "tts_cuda_predictor.py", "tts_runtime.py")
 _CUDA_WORKFLOW_UPDATE_EVIDENCE = "a8bd1acfabc17c150333a8f42ef14376a7dcc3427dc1add5d9379758eddc799a"
+_GPU_PIPELINE_UPDATE_FILES = (
+    "calibration.py", "checkpoint_io.py", "evaluate.py", "evaluation_workers.py", "features.py",
+    "gpu_evaluation.py", "paired.py", "pilot.py", "reference_attempt.py", "reference_candidates.py", "studio_steps.py",
+)
+_GPU_PIPELINE_UPDATE_EVIDENCE = "a2e4b8ba8d47292b0b4bc49b1dc98be0bdd65b0dd083e31998a7e49022ecf705"
+_AUDITED_GPU_PIPELINE_UPDATES = {
+    source: {
+        "source_stages_sha256": source_stages, "target_computation_sha256": target,
+        "target_stages_sha256": target_stages, "changed_files": _GPU_PIPELINE_UPDATE_FILES,
+        "evidence_sha256": _GPU_PIPELINE_UPDATE_EVIDENCE,
+    }
+    for source, source_stages, target, target_stages in (
+        (
+            "fc8f6535b70620c9e30ab69d6f151aed8dc4b430382fbf49bffc1a6fbe8ef54e",
+            "f3c26d66ed2cc86289042f4e9db409201252a75e1f7c00faf59f67ce30a322f0",
+            "6eff1f3cbcef4f8209623de9eab1abeb5b058b4f8cf4bd82895506df1df7343d",
+            "3b85487d8010c66f8e936c93c2fb5c6fb5e81e2a8aeffd2f8e81e475f538e56d",
+        ),
+        (
+            "67fed88c37d16b596c136f4146c9fc9f2cc5c57c28308eacfa28f4e4bdc86b2e",
+            "c184388ec90a3a74c02761855d0fda62c440ca059bcd4bc3e0eb8c4421d0edc9",
+            "72f64306915b5806a3ac16b269b5bbee06441510a2e997f0eb9d3a11bed6d433",
+            "f14f752fc3fb81f36ad21f4cabcd2a03fdaa407798a4154b8fe088eacfb3a087",
+        ),
+        (
+            "59d22e4b989411e1475ab437d3122c4578be28c780b1fb82d42fa1720302b53a",
+            "7281936d3b90aaec6f6215cbd008648c5e20da56e958fe77760808f3221c0088",
+            "ae346401a8c2296490f882929f63b25e548a0098fa6dfcc62ac1968612d11802",
+            "f12c75816ea2c253ba8a7a676cb9fea7aaf7ec119610893e6648e6ec0c2e67cf",
+        ),
+        (
+            "5e45e23221acaaeb22e5922918b621adcc0861d8d7aeada4234c05e1d0e65317",
+            "d08a6bfc67a9d1ee11d5254d6891430c871aa709ef769c13b51f4a8c4b9147a9",
+            "aa70d676ed56d85ea8f03bd6d89a0756b937a6cfa9d4d45bc8a1fc47083eb644",
+            "e30f516dfe3aa53824b6b2791c4ab2d534cc0865d13b755ade912ba72276867a",
+        ),
+    )
+}
 # Verify both installed packages and the Unix/Windows checkout forms. New
 # call scopes bind the GPU batch policy; started scopes keep their original
 # journal, and feature caches retain their bound frontend.
@@ -1198,7 +1258,22 @@ def _audited_acquisition_update(previous, current):
     synthesis_quality = _AUDITED_SYNTHESIS_QUALITY_UPDATES.get(source)
     ending_repair = _AUDITED_ENDING_REPAIR_UPDATES.get(source)
     device_scoring = _AUDITED_DEVICE_SCORING_UPDATES.get(source)
-    if cuda_workflow:
+    pipeline = _AUDITED_GPU_PIPELINE_UPDATES.get(source)
+    pipeline_files = set(_GPU_PIPELINE_UPDATE_FILES)
+    if not pipeline and cuda_workflow:
+        source_stages, intermediate, intermediate_stages = cuda_workflow
+        next_audit = _AUDITED_GPU_PIPELINE_UPDATES.get(intermediate)
+        if (next_audit and next_audit["source_stages_sha256"] == intermediate_stages
+                and next_audit["target_computation_sha256"] == current.get("computation_sha256")):
+            pipeline = dict(next_audit, source_stages_sha256=source_stages,
+                            prior_evidence_sha256=_CUDA_WORKFLOW_UPDATE_EVIDENCE,
+                            changed_files=sorted(set(next_audit["changed_files"]) | set(_CUDA_WORKFLOW_UPDATE_FILES)))
+            pipeline_files = pipeline_files | set(_CUDA_WORKFLOW_UPDATE_FILES)
+    if pipeline:
+        audit = pipeline
+        allowed_files = pipeline_files
+        kind = "audited_gpu_pipeline_update"
+    elif cuda_workflow:
         old_stages, new_computation, new_stages = cuda_workflow
         allowed_files = _CUDA_WORKFLOW_UPDATE_FILES
         audit = dict(source_stages_sha256=old_stages, target_computation_sha256=new_computation,
@@ -1243,6 +1318,7 @@ def _audited_acquisition_update(previous, current):
             or not set(changed).issubset(allowed_files)):
         return None  # Catalogs, pins, and every unlisted module must be intact.
     return {"kind": kind, "source_computation_sha256": previous["computation_sha256"],
+            **({"prior_evidence_sha256": audit["prior_evidence_sha256"]} if "prior_evidence_sha256" in audit else {}),
             "target_computation_sha256": current["computation_sha256"], "changed_files": changed,
             "source_stages_sha256": audit["source_stages_sha256"], "target_stages_sha256": audit["target_stages_sha256"],
             "evidence_sha256": audit["evidence_sha256"]}
@@ -1910,6 +1986,8 @@ class StudioManager:
                            if audited_update and audited_update.get("kind") == "audited_synthesis_quality_update" else
                            "저장한 음원과 특징을 확인하고 새 합성 작업과 특징 추출에 CUDA 가속을 적용할 수 있습니다."
                            if audited_update and audited_update.get("kind") == "audited_cuda_workflow_update" else
+                           "저장한 자료와 검수 결과를 보존하고, 평가·특징 추출·학습을 완료 기록부터 재개할 수 있습니다."
+                           if audited_update and audited_update.get("kind") == "audited_gpu_pipeline_update" else
                            "GPU 평가에 실패하면 CPU로 전환하지 않고 멈춥니다. 기존 CPU 점수는 보존하고 별도의 GPU 평가로 진행합니다."
                            if audited_update and audited_update.get("changed_files") == ["evaluation_backend.py", "gpu_runtime_install.py", "studio_steps.py"] else
                            "다운로드 순서·진행 표시 변경의 자료 동일성을 확인한 업데이트입니다. 기존 설정과 완료 결과를 검증한 뒤 적용할 수 있습니다."
@@ -2506,6 +2584,9 @@ class StudioManager:
             elif phase == "paused" and stage in ("positives", "hard_pilot", "hard_generation"):
                 state.update(status="paused", auto_continue=False,
                              next_action="완료한 음성을 저장했습니다. 재개하면 남은 음성을 생성합니다.")
+            elif phase == "paused" and stage in STAGE_PAUSE_MESSAGES:
+                state.update(status="paused", auto_continue=False,
+                             next_action="완료한 작업을 저장했습니다. 이어서 진행을 누르면 남은 작업을 시작합니다.")
             else:
                 state.update(status="error", error="지원하지 않는 단계 종료 상태: " + str(phase))
         state.setdefault("history", []).append({"stage": job["stage"], "started_at": job["started_at"],

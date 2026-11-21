@@ -399,6 +399,10 @@ def validate_cpu_prefix_import(project, bundle, manifest, output, stage, candida
     return receipt
 
 
+class EvaluationPaused(RuntimeError):
+    """Scoring has stopped at a durable evaluation checkpoint."""
+
+
 def _verified_gpu_items(root, sources, paths, offsets, start):
     """Verify each remaining input immediately before consuming its PCM."""
     for index in range(start, len(sources)):
@@ -433,7 +437,7 @@ def _gpu_sessions_with_environment(environment, *args, **kwargs):
 @project_storage
 def evaluate(project, bundle, output, stage="development", manifest=None, smoke=False, candidate=None, workers="auto", resume=False,
              *, backend="auto", gpu_batch_size=128, cpu_prefix_import=None,
-             numerical_differences_approved=None):
+             numerical_differences_approved=None, pause_requested=None):
     project_sha256 = digest(project)
     root, config = load_project(project)
     directory = Path(bundle).resolve()
@@ -554,7 +558,8 @@ def evaluate(project, bundle, output, stage="development", manifest=None, smoke=
         if ((output / "receipt.json").exists()
                 or (not resume and any(path.name != ".writer.lock" for path in output.iterdir()))):
             raise ValueError("Evaluation outputs are immutable; choose a new directory (or resume an incomplete run explicitly)")
-        journal = EvaluationJournal(output, binding, offsets, model_ids, resume=resume)
+        journal = EvaluationJournal(output, binding, offsets, model_ids, resume=resume,
+                                   checkpoint_every=None if backend == "cuda" else 32)
         try:
             execution["resumed_sessions"] = journal.resumed_sessions
             # Enter scoring before computing a potentially long first batch.
@@ -562,24 +567,46 @@ def evaluate(project, bundle, output, stage="development", manifest=None, smoke=
             label = (f"CUDA batch={gpu_batch_size}" if backend == "cuda"
                      else f"CPU workers={execution['workers']}")
             print(f"Evaluate {stage}: {journal.resumed_sessions}/{len(sources)} ({label})", flush=True)
-            items = ((index, sources[index], paths[index]) for index in range(journal.resumed_sessions, len(sources)))
+            def check_pause():
+                if len(journal.clips) < len(sources) and pause_requested is not None and pause_requested():
+                    if backend == "cpu" and journal.pending_lines:
+                        journal.commit()
+                    raise EvaluationPaused("평가를 일시정지했습니다.")
+
+            def finish_gpu_group():
+                journal.commit()
+                check_pause()
+
+            check_pause()
             if backend == "cuda":
-                items = _verified_gpu_items(root, sources, paths, offsets, journal.resumed_sessions)
-                scored = _gpu_sessions_with_environment(selection["runtime_environment"], directory, model_ids, items, batch_size=gpu_batch_size,
-                    qualification={"user_approved_numerical_differences": True},
-                    stats=execution["gpu"])
+                from .gpu_evaluation import gpu_scoring_group_start
+                scoring_start = gpu_scoring_group_start(offsets, journal.resumed_sessions, gpu_batch_size)
+                execution["gpu"]["resume_group_start"] = scoring_start
+                items = _verified_gpu_items(root, sources, paths, offsets, scoring_start)
+                scored = _gpu_sessions_with_environment(selection["runtime_environment"], directory, model_ids,
+                    items, batch_size=gpu_batch_size, qualification={"user_approved_numerical_differences": True},
+                    stats=execution["gpu"], emit_from=journal.resumed_sessions, on_group_complete=finish_gpu_group)
             else:
+                items = ((index, sources[index], paths[index])
+                         for index in range(journal.resumed_sessions, len(sources)))
                 scored = score_sessions(directory, model_ids, items, execution["workers"], detector_factory=WakeWordDetector)
-            for index, clip, scores in scored:
-                journal.add(index, clip, scores)
-                if index < 9 or (index + 1) % 100 == 0 or index + 1 == len(sources):
-                    print(f"Evaluate {stage}: {index + 1}/{len(sources)} ({label})", flush=True)
+            try:
+                for index, clip, scores in scored:
+                    journal.add(index, clip, scores)
+                    if index < 9 or (index + 1) % 100 == 0 or index + 1 == len(sources):
+                        print(f"Evaluate {stage}: {index + 1}/{len(sources)} ({label})", flush=True)
+                    if backend == "cpu":
+                        check_pause()
+            finally:
+                scored.close()
             journal.publish_scores()
             clips = journal.clips
         finally:
             journal.close()
         execution["scoring_and_cache_seconds"] = time.perf_counter() - started
-        execution["frame_scores_storage"] = "project-owned disk memmap; ordered resumable checkpoints every 32 sessions"
+        execution["frame_scores_storage"] = (
+            "project-owned disk memmap; ordered resumable checkpoints at CUDA scoring-group boundaries" if backend == "cuda"
+            else "project-owned disk memmap; ordered resumable checkpoints every 32 sessions")
         annotate_clean_score_drops(clips)
         summaries = summarize(clips, config, candidates)
         report = {"schema_version": 1, "wakeword": config["wakeword"], "stage": stage, "created_at": now(),

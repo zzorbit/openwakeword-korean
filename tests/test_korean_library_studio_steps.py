@@ -327,7 +327,8 @@ def test_pilot_queue_contains_only_actual_technical_passes(project, monkeypatch)
     rows.append(fake_audio(project.parent, "failed", slot=0, qc={"passed": False}))
     candidates = steps._publish_rows(project.parent / "candidates.jsonl", rows)
     calls = []
-    def generate(*args):
+    def generate(*args, pause_requested):
+        assert pause_requested is None
         calls.append(args)
         return {"full_target_reached": True, "review_queue": str(candidates), "technical_pass": 24}
     monkeypatch.setattr(tts_runtime, "generate_with_runtime", generate)
@@ -344,7 +345,7 @@ def test_incomplete_generation_stops_without_approving_failed_slots(project, mon
     settings = steps.preset_settings()
     settings.pop("pilot_review_policy")
     from korean_openwakeword import tts_runtime
-    monkeypatch.setattr(tts_runtime, "generate_with_runtime", lambda *a: {"full_target_reached": False, "technical_pass": 23})
+    monkeypatch.setattr(tts_runtime, "generate_with_runtime", lambda *a, **k: {"full_target_reached": False, "technical_pass": 23})
     result = run(project, "pilot", settings=settings)
     assert result["state"] == "waiting_input"
     assert not (project.parent / ".studio/pilot_queue.jsonl").exists()
@@ -391,7 +392,7 @@ def test_features_reuse_generic_and_resume_actual_contracts_without_reducing_n(p
     generic = project.parent / config["pool_features"]["generic_negative"]
     write_json(generic / "metadata.json", {"feature_rows": 5625000})
     calls = []
-    monkeypatch.setattr(features, "verify_cache", lambda p: {"feature_rows": 5625000})
+    monkeypatch.setattr(features, "verify_cache", lambda p, **kwargs: {"feature_rows": 5625000})
     def build(path, role, **kwargs):
         calls.append((role, kwargs["resume"]))
         destination = path.parent / config["pool_features"][role]
@@ -421,10 +422,10 @@ def test_training_resume_only_with_member_contracts(project, monkeypatch):
         return {"directory": str(directory), "formal_training": True}
     monkeypatch.setattr(train, "train", train_run)
     assert run(project, "training")["state"] == "completed"
-    assert calls[-1] == {"resume": False}
+    assert calls[-1] == {"resume": False, "pause_requested": None}
     write_json(project.parent / "runs/studio_run/member1_seed1/contract.json", {})
     run(project, "training")
-    assert calls[-1] == {"resume": True}
+    assert calls[-1] == {"resume": True, "pause_requested": None}
 
 
 def test_partial_immutable_outputs_are_retained_instead_of_overwritten(tmp_path):
@@ -474,7 +475,8 @@ def test_studio_development_selects_balanced_policy_and_preserves_old_pair_outpu
     old.mkdir()
     (old / "manifest.jsonl").write_text("old completed pair evidence\n")
     calls = []
-    def prepare(path, output, **kwargs):
+    def prepare(path, output, *, resume, pause_requested, **kwargs):
+        assert not resume and pause_requested is None
         calls.append(kwargs)
         output.mkdir()
         recipe = paired.evaluation_recipe(path, **kwargs)
