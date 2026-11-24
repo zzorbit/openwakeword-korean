@@ -1940,7 +1940,7 @@
       if (title.textContent !== label) title.textContent = label;
       amount.textContent = row.preparing ? "" : totalKnown ? `${doneKnown ? row.unit === "bytes" ? quantity(row.done, row.unit) : count(row.done) : "—"} / ${quantity(row.total, row.unit)}` : doneKnown ? quantity(row.done, row.unit) : "수량 기록 없음";
       const byBytes = Number.isFinite(row.bytes) && Number.isFinite(row.totalBytes) && row.totalBytes > 0;
-      const transferComplete = row.preparing && row.completed;
+      const transferComplete = row.preparing && (row.transferComplete || row.completed);
       const fraction = transferComplete ? 1 : row.verification ? Number.isFinite(row.verificationPercent) ? row.verificationPercent / 100 : null
         : byBytes ? row.bytes / row.totalBytes : totalKnown && doneKnown ? row.done / row.total : null;
       const percentage = Math.min(100, fraction * 100);
@@ -2138,7 +2138,7 @@
       const preparation = saved || progress.stage && progress.stage !== stage ? null : downloadPreparationWork(progress, files);
       const groups = new Map();
       const fileActive = file => activeDownload && ["downloading", "verifying", "retrying"].includes(file.state);
-      const sum = (files, key) => files.every(file => Number.isFinite(file[key])) ? files.reduce((value, file) => value + file[key], 0) : null;
+      const sum = values => values.every(Number.isFinite) ? values.reduce((total, value) => total + value, 0) : null;
       const rank = key => downloadGroupOrder.includes(key) ? downloadGroupOrder.indexOf(key) : downloadGroupOrder.length;
       for (const file of files) {
         const key = file.group || file.id;
@@ -2152,11 +2152,19 @@
             failed: file.state === "failed" }));
         }
         const verifying = group.filter(file => file.state === "verifying");
+        const cached = file => file.cache_candidate === true && (file.state === "waiting"
+          || file.state === "downloading" && file.done === 0 && file.network_bytes === 0);
+        // The cache receipt and size are known before the worker starts checking the file.
+        const available = group.map(file => cached(file) ? file.total : file.done);
+        const transferComplete = group.every((file, index) => downloadFileComplete(file)
+          || ["waiting", "downloading", "verifying"].includes(file.state)
+            && Number.isFinite(file.total) && file.total > 0 && available[index] >= file.total);
         return [{ key, label: group[0].group_label || group[0].label || "자료", done: group.filter(downloadFileComplete).length,
-          total: group.length, unit: "files", bytes: sum(group, "done"), totalBytes: sum(group, "total"),
+          total: group.length, unit: "files", bytes: sum(available), totalBytes: sum(group.map(file => file.total)),
           failed: group.some(file => file.state === "failed"),
           active: group.some(fileActive),
           completed: group.every(downloadFileComplete),
+          transferComplete,
           verifying: verifying.length > 0,
           hashPercent: verifying.length === 1 ? verification?.get(verifying[0].id)?.percent : null,
           reused: group.filter(file => file.state === "reused").length,
@@ -2184,12 +2192,13 @@
         const inspectionActive = activeDownload && inspection?.state === "checking";
         const work = !sourcePrepared && group === preparation?.group ? preparation : null;
         const preparing = row.key !== "compute-tools" && (Boolean(work) || inspectionActive
-          || waitingForPreparation && row.completed && !sourcePrepared && inspection?.state !== "complete");
+          || waitingForPreparation && (row.completed || row.transferComplete) && !sourcePrepared && inspection?.state !== "complete");
         const preparationActive = active && preparing && Boolean(work || inspectionActive);
         const rowActive = (row.active || preparationActive) && !row.failed;
         const verifying = row.verifying || row.state === "verifying";
+        const bytesMeasured = Number.isFinite(row.bytes) && Number.isFinite(row.totalBytes) && row.totalBytes > 0;
         updateHistoryRow(view, { ...row, preparing, active: rowActive,
-          verification: verifying, verificationPercent: row.hashPercent });
+          verification: verifying && !bytesMeasured, verificationPercent: row.hashPercent });
         view.item.dataset.failed = String(Boolean(row.failed));
         if (view.titleIndicator.parentElement !== view.title) view.title.append(view.titleIndicator);
         updateProgressIndicator(view.titleIndicator, progressStatus(rowActive, row.completed && !preparing));
@@ -2200,23 +2209,22 @@
               : "";
         const transfer = row.archive_transfer;
         const archiveSize = Number.isFinite(transfer?.total) && transfer.total > 0
-          ? Number.isFinite(transfer.done) ? `현재 묶음 ${progressAmount(transfer.done, transfer.total, "bytes")}`
-            : `현재 묶음 ${quantity(transfer.total, "bytes")}` : "";
+          ? progressAmount(transfer.done, transfer.total, "bytes")
+          : Number.isFinite(row.verified_archive_bytes) && row.verified_archive_bytes > 0
+            ? progressAmount(row.verified_archive_bytes, row.completed ? row.verified_archive_bytes : null, "bytes") : "";
         const archiveStatus = !rowActive ? "" : {
-          checking: "묶음 확인 중", downloading: "다운로드 중", retrying: "연결 재시도 중", preparing: "검증·전처리 중",
+          checking: "파일 확인 중", retrying: "연결 재시도 중", preparing: "검증·전처리 중",
         }[transfer?.status] || "";
         const archiveRate = rowActive && transfer?.status === "downloading" && Number.isFinite(transfer.bytes_per_second)
           && transfer.bytes_per_second > 0 ? `${quantity(transfer.bytes_per_second, "bytes")}/초` : "";
-        const archiveVerified = Number.isFinite(row.verified_archive_bytes) && row.verified_archive_bytes > 0
-          ? `확보한 원본 ${quantity(row.verified_archive_bytes, "bytes")}` : "";
         const checkPercent = Number.isFinite(row.hashPercent) ? ` · ${row.hashPercent}%` : "";
         const reuseNote = verifying ? "파일 무결성 확인 중" + checkPercent
           : row.state === "reused" || (row.reused > 0 && row.reused === row.total) ? "기존 자료 재사용"
           : row.reused > 0 ? `기존 자료 ${count(row.reused)}개 재사용` : row.cacheCandidate ? "기존 파일 확인 대기" : "";
         const workPercent = Number.isFinite(work?.percent) ? ` · ${work.percent}%` : "";
         const preparationNote = work ? preparationActive ? work.label + workPercent
-          : project.status === "paused" ? "자료 준비 일시정지" : "자료 준비 미완료" : preparing && !inspection ? "자료 준비 대기" : "";
-        const detail = row.detail || [sizeNote, archiveVerified, archiveSize, archiveStatus, archiveRate, preparationNote || reuseNote].filter(Boolean).join(" · ");
+          : project.status === "paused" ? "자료 준비 일시정지" : "자료 준비 미완료" : preparing && !inspection && !verifying ? "자료 준비 대기" : "";
+        const detail = row.detail || [sizeNote || archiveSize, archiveStatus, archiveRate, preparationNote || reuseNote].filter(Boolean).join(" · ");
         view.noteDetail.textContent = detail && inspection ? detail + " · " : detail;
         view.inspectionStatus.hidden = !inspection;
         updateProgressIndicator(view.inspectionIndicator, progressStatus(inspectionActive && !preparationActive, inspection?.state === "complete"));

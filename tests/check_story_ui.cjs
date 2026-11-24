@@ -1679,23 +1679,71 @@ async function main() {
     assert.equal(p.calls.filter(call => call === "start").length, 1);
     assert.equal(p.calls.some(call => ["resume", "pause"].includes(call)), false);
   });
-  await test("cached download verification uses its own measured gauge without displaying transferred bytes as completion", () => {
+  await test("cached download verification retains full transfer bars and shows its measured progress in the note", () => {
     const project=checkpointProject("running","running");project.stage_id="data_download";
     project.download_files=[{id:"asset-a",group:"group-a",label:"자료 A",state:"verifying",done:1000,total:1000,unit:"bytes"},
       {id:"asset-b",group:"group-b",label:"자료 B",state:"verifying",done:2000,total:2000,unit:"bytes"}];
     project.progress={stage:"data_download",current_asset:"asset-a",phase:"hash",label:"원본 파일 검증",current_event:{phase:"hash",done:7,total:100},files:project.download_files};
     const p=page(project),rows=["자료 A", "자료 B"].map(label => historyRowByLabel(p.shell, label));
-    assert.match(textOf(rows[0]),/0 \/ 1개/);assert.match(textOf(rows[0]),/7%/);assert.doesNotMatch(textOf(rows[0]),/100%/);
-    assert.equal(rows[0].querySelector("progress").max,100);assert.equal(rows[0].querySelector("progress").value,7);
-    assert.equal(rows[1].querySelector("progress").hidden,false);assert.equal(rows[1].querySelector("progress").getAttribute("value"),null);
+    assert.match(textOf(rows[0]),/파일 무결성 확인 중 · 7%/);
+    assert.doesNotMatch(textOf(rows[0]),/100%/);
+    assertFullDownloadBar(rows[0].querySelector("progress"));
+    assertFullDownloadBar(rows[1].querySelector("progress"));
     assert.equal(rows[1].querySelector(".story-history-percent").textContent,"");
-    assert.match(rows[0].querySelector("progress").getAttribute("aria-label"),/무결성 검사/);
+    assert.match(rows[0].querySelector("progress").getAttribute("aria-label"),/다운로드 진행률/);
     project.download_files[0].state="reused";p.ui.render();
     assert.match(textOf(rows[0]),/자료 준비 대기/);
     assertFullDownloadBar(rows[0].querySelector("progress"));
     assert.equal(rows[0].querySelector(".story-history-percent").textContent,"");
     assert.notEqual(rows[0].querySelector(".story-progress-indicator").dataset.status,"complete");
     assert.equal(hasActiveDownloadSpinner(rows[0]),false);
+  });
+
+  await test("preflight and queue transitions preserve cached bytes without completing a partial group", () => {
+    const project = checkpointProject("running", "running");
+    project.stage_id = "data_download";
+    const asset = (id, group, cache_candidate) => ({ id, group, label: group,
+      state: "waiting", done: 0, total: 100, network_bytes: 0, cache_candidate, unit: "bytes" });
+    const cached = asset("cached", "기존 자료", true);
+    const splitFirst = asset("split-first", "분할 자료", true);
+    const splitSecond = asset("split-second", "분할 자료", false);
+    const missing = asset("missing", "미확보 자료", false);
+    project.download_files = [cached, splitFirst, splitSecond, missing];
+
+    const p = page(project), full = historyRowByLabel(p.shell, "기존 자료");
+    const split = historyRowByLabel(p.shell, "분할 자료"), empty = historyRowByLabel(p.shell, "미확보 자료");
+    const bar = row => row.querySelector("progress");
+    const indicator = row => row.querySelector(".story-progress-indicator").dataset.status;
+    assertFullDownloadBar(bar(full));
+    assert.match(textOf(full), /자료 준비 대기/);
+    assert.notEqual(indicator(full), "complete");
+    assert.equal(bar(split).value / bar(split).max, 0.5);
+    assert.equal(bar(split).dataset.preparing, "false");
+    assert.equal(bar(empty).value, 0);
+
+    cached.state = "downloading";
+    splitFirst.state = "verifying";
+    splitFirst.done = 100;
+    splitSecond.state = "downloading";
+    splitSecond.done = 25;
+    splitSecond.network_bytes = 25;
+    project.progress = { stage: "data_download", task_id: "resumed", current_asset: "split-first",
+      current_event: { phase: "hash", done: 7, total: 100 } };
+    p.ui.render();
+    assertFullDownloadBar(bar(full));
+    assert.equal(bar(split).value / bar(split).max, 0.625);
+    assert.notEqual(indicator(split), "complete");
+    assert.match(textOf(split), /파일 무결성 확인 중 · 7%/);
+
+    cached.state = "reused";
+    cached.done = 100;
+    p.ui.render();
+    assertFullDownloadBar(bar(full));
+    assert.notEqual(indicator(full), "complete");
+    project.download_prepared_groups = ["기존 자료"];
+    p.ui.render();
+    assertFullDownloadBar(bar(full), false);
+    assert.equal(indicator(full), "complete");
   });
   await test("Korean web audio shows the current archive bytes next to the prepared hours", () => {
     const project = checkpointProject("running", "running");
@@ -1707,19 +1755,27 @@ async function main() {
     project.download_files = [yodas];
     const p = page(project), row = historyRowByLabel(p.shell, "한국어 웹 음성"), bar = row.querySelector("progress");
     assert.equal(bar.value / bar.max, 0.01);
-    assert.match(textOf(row), /5 \/ 500시간.*확보한 원본 512 MiB · 현재 묶음 64 MiB \/ 256 MiB · 다운로드 중 · 4 MiB\/초/);
+    assert.match(textOf(row), /5 \/ 500시간.*64 MiB \/ 256 MiB · 4 MiB\/초/);
+    assert.doesNotMatch(textOf(row), /확보한 원본|현재 묶음|512 MiB/);
+    yodas.archive_transfer = { status: "checking", done: null, total: 256 * mib };
+    p.ui.render();
+    assert.match(textOf(row), /— \/ 256 MiB · 파일 확인 중/);
     yodas.archive_transfer = { status: "preparing", done: 256 * mib, total: 256 * mib };
     p.ui.render();
-    assert.match(textOf(row), /현재 묶음 256 MiB \/ 256 MiB · 검증·전처리 중/);
+    assert.match(textOf(row), /256 MiB \/ 256 MiB · 검증·전처리 중/);
     assert.doesNotMatch(textOf(row), /MiB\/초/);
     assert.equal(bar.value / bar.max, 0.01);
     assert.equal(hasActiveDownloadSpinner(row), true);
     yodas.archive_transfer = null; yodas.verified_archive_bytes = 768 * mib;
     yodas.done = 9; p.ui.render();
-    assert.match(textOf(row), /9 \/ 500시간.*확보한 원본 768 MiB/);
-    assert.doesNotMatch(textOf(row), /현재 묶음|검증·전처리 중/);
+    assert.match(textOf(row), /9 \/ 500시간.*768 MiB \/ —/);
+    assert.doesNotMatch(textOf(row), /확보한 원본|현재 묶음|검증·전처리 중/);
+    yodas.done = 500; yodas.state = "complete";
+    project.download_prepared_groups = ["automatic:yodas2"];
+    p.ui.render();
+    assert.match(textOf(row), /768 MiB \/ 768 MiB/);
   });
-  await test("parallel downloads retain each active file hash gauge until verification or the attempt changes", () => {
+  await test("parallel downloads retain each active file hash note until verification or the attempt changes", () => {
     const project = checkpointProject("running", "running");
     project.stage_id = "data_download";
     const zeroth = { id: "base:zeroth", group: "zeroth", label: "Zeroth", state: "verifying", done: 100, total: 100, unit: "bytes" };
@@ -1732,36 +1788,39 @@ async function main() {
     project.progress = hashEvent(18);
     const p = page(project);
     const row = historyRowByLabel(p.shell, "Zeroth");
-    const bar = row.querySelector("progress"), percent = row.querySelector(".story-history-percent");
-    assert.equal(percent.textContent, "18%");
-    assert.equal(bar.value, 18);
+    const bar = row.querySelector("progress"), note = row.querySelector(".story-history-note-detail");
+    assert.match(note.textContent, /무결성 확인 중 · 18%/);
+    assertFullDownloadBar(bar);
 
     musan.done = 32; project.progress = downloadEvent(); p.ui.render();
     assert.equal(historyRowByLabel(p.shell, "Zeroth"), row);
-    assert.equal(percent.textContent, "18%");
-    assert.equal(bar.value, 18);
+    assert.match(note.textContent, /무결성 확인 중 · 18%/);
+    assertFullDownloadBar(bar);
     assert.equal(historyRowByLabel(p.shell, "MUSAN").querySelector(".story-history-percent").textContent, "32%");
 
     project.progress = hashEvent(22); p.ui.render();
-    assert.equal(percent.textContent, "22%");
-    assert.equal(bar.value, 22);
+    assert.match(note.textContent, /무결성 확인 중 · 22%/);
+    assertFullDownloadBar(bar);
     zeroth.state = "retrying"; project.progress = downloadEvent(); p.ui.render();
     zeroth.state = "verifying"; p.ui.render();
-    assert.equal(percent.textContent, "");
-    assert.equal(bar.getAttribute("value"), null);
+    assert.match(note.textContent, /무결성 확인 중$/);
+    assertFullDownloadBar(bar);
 
     project.progress = hashEvent(24); p.ui.render();
-    assert.equal(bar.value, 24);
+    assert.match(note.textContent, /무결성 확인 중 · 24%/);
+    assertFullDownloadBar(bar);
     project.progress = downloadEvent("attempt-two"); p.ui.render();
-    assert.equal(percent.textContent, "");
-    assert.equal(bar.getAttribute("value"), null);
+    assert.match(note.textContent, /무결성 확인 중$/);
+    assertFullDownloadBar(bar);
   });
   await test("parallel verification in one group never borrows another file's hash percentage",()=>{
     const project=checkpointProject("running","running");project.stage_id="data_download";
     project.progress={current_asset:"one",current_event:{phase:"hash",done:80,total:100},files:["one","two"].map(id=>({id,group:"shared",label:"묶음",state:"verifying",done:100,total:100,unit:"bytes"}))};
     const p=page(project),row=historyRowByLabel(p.shell, "묶음");
-    assert.equal(row.querySelector(".story-history-percent").textContent,"");assert.equal(row.querySelector("progress").getAttribute("value"),null);
-    assert.match(textOf(row),/0 \/ 2개/);assert.equal(p.calls.includes("resume"),false);
+    assertFullDownloadBar(row.querySelector("progress"));
+    assert.equal(row.querySelector(".story-history-percent").textContent,"");
+    assert.match(textOf(row),/파일 무결성 확인 중/);
+    assert.doesNotMatch(textOf(row),/80%/);assert.equal(p.calls.includes("resume"),false);
   });
   await test("live transfers show per-asset progress without a redundant download caption", () => {
     const project = checkpointProject("running", "running");
