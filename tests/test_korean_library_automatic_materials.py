@@ -29,7 +29,9 @@ def test_new_acquisition_has_explicit_offline_plan_and_keeps_legacy_recipe(prese
     elif preset == "trial":
         assert "generic" in ids and "zeroth" not in ids
         assert {row["provider"] for row in components} == {"yodas2"}
-        assert components[0]["target_hours"] == pytest.approx(2000 / 3)
+        assert components[0]["target_hours"] == 500
+        if policy == "automatic_v3":
+            assert current["automatic_space_plan"]["estimated_download_bytes"] == 70_000_000_000
         assert legacy["shortages"]
     else:
         assert "generic" not in ids and "zeroth" not in ids
@@ -57,6 +59,30 @@ def test_worker_preserves_saved_acquisition_policy(tmp_path, monkeypatch, policy
     steps.run_stage(project, tmp_path, settings, "data_download")
     assert captured[0].get("material_acquisition_policy") == policy
     assert ("material_acquisition_policy" in captured[0]) is (policy is not None)
+
+
+def test_trial_lowered_budget_preserves_original_frozen_request(tmp_path):
+    from korean_openwakeword.automatic_sources import (_freeze_source_request, _space_plan,
+                                                       automatic_source_policy)
+    config = {"targets": {"korean_hours": 500, "positive_originals": 20000}, "augmentation_rounds": 3}
+
+    def request(hours):
+        policy = automatic_source_policy(2000, hours, "trial", material_acquisition_policy="automatic_v3")
+        return {"kind": "automatic_negative_supply_v3", "policy": policy,
+                "space_plan": _space_plan(policy, config), "seed": 1234}
+
+    path = tmp_path / "request.json"
+    old = request(2000 / 3)
+    write_json(path, old)
+    original_hash = digest(path)
+    new = request(500)
+    effective = _freeze_source_request(path, old, new, config)
+    assert effective != path
+    assert read_json(effective) == {**new, "previous_request": {"path": str(path), "sha256": original_hash}}
+    assert digest(path) == original_hash
+    assert _freeze_source_request(path, old, new, config) == effective
+    with pytest.raises(ValueError, match="Automatic source request changed"):
+        _freeze_source_request(path, old, {**new, "seed": 0}, config)
 
 
 def _write_index(directory, dataset, category, language, seed, seconds=2):

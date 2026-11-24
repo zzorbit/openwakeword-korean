@@ -78,6 +78,38 @@ def put_state(manager, project_id, **changes):
     return state
 
 
+@pytest.mark.parametrize("index,expected_hours", [(1, 500), (2, 2000 / 3)])
+def test_trial_material_budget_updates_only_before_download_completion(manager, index, expected_hours):
+    view = create(manager, preset="trial")
+    state = manager._load(view["id"])
+    project = Path(state["project"])
+    config = read_json(project)
+    config["targets"]["korean_hours"] = state["settings"]["korean_hours"] = 2000 / 3
+    write_json(project, config)
+    previous_sha256 = digest(project)
+    automatic = project.parent / ".studio/materials/automatic_sources_v3/request.json"
+    write_json(automatic, {"policy": {"component_targets": {"yodas2": 2000 / 3}}})
+    request_sha256 = digest(automatic)
+    state["execution_contract"]["settings_sha256"] = identity(state["settings"])
+    state.update(index=index, status="paused", implementation_id="previous", config_sha256=previous_sha256)
+    manager._save(state)
+
+    manager.migrate(view["id"])
+    migrated = manager._load(view["id"])
+    assert migrated["settings"]["korean_hours"] == expected_hours
+    assert read_json(project)["targets"]["korean_hours"] == expected_hours
+    assert migrated["config_sha256"] == digest(project)
+    assert digest(automatic) == request_sha256
+    assert "pending_trial_material_budget_change" not in migrated
+    evidence = read_json(migrated["migrations"][-1]["path"])
+    if index == 1:
+        change = evidence["trial_material_budget_change"]
+        assert digest(change["previous_config"]["path"]) == previous_sha256
+        assert digest(change["updated_config"]["path"]) == digest(project)
+    else:
+        assert "trial_material_budget_change" not in evidence and digest(project) == previous_sha256
+
+
 def reference_queue(manager, project_id, *, kind="references"):
     state = manager._load(project_id)
     root, config = load_project(state["project"])
@@ -100,7 +132,7 @@ def reference_queue(manager, project_id, *, kind="references"):
 
 
 @pytest.mark.parametrize("preset,originals,rounds,updates,korean", [
-    ("check", 1000, 1, 10000, 1), ("trial", 20000, 3, 50000, 2000 / 3),
+    ("check", 1000, 1, 10000, 1), ("trial", 20000, 3, 50000, 500),
     ("production", 100000, 5, 100000, 1500)])
 def test_create_presets_only_configure_without_work(manager, preset, originals, rounds, updates, korean):
     view = create(manager, preset=preset)

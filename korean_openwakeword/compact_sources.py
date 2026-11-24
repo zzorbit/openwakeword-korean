@@ -64,7 +64,7 @@ def _inside(root, relative):
     return _archive_target(root, relative)
 
 
-def _asset_file(asset, directory, progress=None):
+def _asset_file(asset, directory, progress=None, *, report_archive=False):
     """Use existing pinned/resumable downloaders; preserve completed bytes."""
     from .commercial_sources import _verify_cached_original
     from .downloads import download_checked
@@ -76,7 +76,17 @@ def _asset_file(asset, directory, progress=None):
             raise ValueError("Existing compact asset has changed size")
         checksum = _verify_cached_original(target, asset)
     elif asset["checksum_algorithm"] == "sha256":
-        record = download_checked(asset["source_url"], target, asset["sha256"], asset["size_bytes"])
+        def report(event):
+            phase = event["phase"]
+            status = ("failed" if event.get("failed") else "retrying" if phase == "retry"
+                      else "downloading" if event.get("network_active") else "preparing")
+            done = event["total"] if phase == "hash" else event["done"]
+            progress({"phase": "automatic_archive", "label": "한국어 웹 음성 묶음 준비",
+                      "archive_transfer": {"done": done, "total": event["total"], "status": status,
+                                           "bytes_per_second": event.get("bytes_per_second") if status == "downloading" else None}})
+
+        record = download_checked(asset["source_url"], target, asset["sha256"], asset["size_bytes"],
+                                  **({"progress": report} if report_archive and progress else {}))
         checksum = record["sha256"]
         acquisition = "downloaded_here"
     else:
@@ -358,7 +368,8 @@ def prepare_compact_source(resolution, directory, *, max_download_bytes,
                     if claim["retire_eligible"] and _file_identity(archive) != claim["file_identity"]:
                         raise ValueError("Compact acquired archive was replaced; original is preserved")
                 else:
-                    archive_record = _asset_file(asset, originals, progress)
+                    archive_record = _asset_file(asset, originals, progress,
+                        **({"report_archive": True} if progress and resolution["source_id"] == "yodas2" else {}))
                     retire = (request["owned_archives"][asset["path"]]
                               and archive_record["acquisition"] == "downloaded_here"
                               and archive.stat().st_nlink == 1)

@@ -19,7 +19,7 @@ import requests
 import soundfile as sf
 
 from .common import digest, identity, now, read_json, read_rows, write_immutable_rows, write_json, writer_lock
-from .budgets import DEFAULT_GENERIC_HOURS, DEFAULT_KOREAN_HOURS, generic_source_hours
+from .budgets import DEFAULT_GENERIC_HOURS, DEFAULT_KOREAN_HOURS, TRIAL_KOREAN_HOURS, generic_source_hours
 from .project import load_project
 
 
@@ -165,6 +165,23 @@ def _frozen(path, record):
     else:
         write_json(path, record)
     return record
+
+
+def _freeze_source_request(path, existing, requested, config):
+    """Preserve the original request when the trial budget alone is reduced."""
+    policy = requested["policy"]
+    if (existing and requested["kind"] == "automatic_negative_supply_v3"
+            and policy["preset"] == "test" and policy["component_targets"] == {"yodas2": TRIAL_KOREAN_HOURS}
+            and config["targets"]["korean_hours"] == TRIAL_KOREAN_HOURS):
+        previous_policy = {**policy, "component_targets": {"yodas2": 2000 / 3}}
+        previous_request = {**requested, "policy": previous_policy,
+                            "space_plan": _space_plan(previous_policy, config)}
+        if existing == previous_request:
+            effective = path.with_name("request_trial_500.json")
+            _frozen(effective, {**requested, "previous_request": _binding(path)})
+            return effective
+    _frozen(path, requested)
+    return path
 
 
 def _rows(path, rows):
@@ -563,13 +580,14 @@ def prepare_automatic_sources(project, workspace, *, generic_hours, korean_hours
                 raise ValueError(f"자동 자료 준비를 시작할 공간이 부족합니다. {'feature·여유 공간' if canonical else '정규화 음원·feature'}만 최소 {minimum:,}바이트가 필요하지만 "
                     f"선택 드라이브 여유는 {free:,}바이트, 설정한 저장 한도는 {requested['limits']['max_workspace_bytes']:,}바이트입니다. "
                     f"원본·압축 자료 예상 {space['estimated_original_archive_bytes']:,}바이트는 별도입니다. 목표량을 줄이지 않고 중단했습니다.")
-        _frozen(request_path, requested)
+        effective_request = _freeze_source_request(request_path, existing, requested, config)
         backend = backend or PublicSourceBackend(default_backend,
             **({"storage_policy": policy["storage_policy"]} if compact else {}),
             **({"fma_acquisition_policy": policy["fma_acquisition_policy"]}
                if policy.get("fma_acquisition_policy") else {}))
-        sources, receipts, artifacts, shortages = [], [], [str(request_path)], []
+        sources, receipts, artifacts, shortages = [], [], list(dict.fromkeys(map(str, (request_path, effective_request)))), []
         actual = {component: 0.0 for component in policy["component_targets"]}
+        verified_archive_bytes = {"yodas2": 0} if "yodas2" in actual else {}
         seen_hashes, seen_sources, seen_tracks = set(), set(), set()
         reserved_bytes, source_storage_bytes = 0, 0
         retired_archive_bytes, temporary_archive_peak_bytes = 0, 0
@@ -592,9 +610,13 @@ def prepare_automatic_sources(project, workspace, *, generic_hours, korean_hours
                 part.mkdir(parents=True, exist_ok=True)
                 record_path = part / "source.json"
                 remaining_budget = requested["limits"]["max_download_bytes"] - reserved_bytes
+                archive_bytes = candidate.get("archive_bytes")
+                tracks_transfer = component in verified_archive_bytes and type(archive_bytes) is int and archive_bytes > 0
                 if progress:
                     progress({"label": "학습용 비호출 자료 자동 준비: " + component,
-                              "done": actual[component], "total": target, "unit": "hours", "part": key})
+                              "done": actual[component], "total": target, "unit": "hours", "part": key,
+                              **({"archive_transfer": {"done": None, "total": archive_bytes, "status": "checking"},
+                                  "verified_archive_bytes": verified_archive_bytes[component]} if tracks_transfer else {})})
                 if record_path.exists():
                     record = read_json(record_path)
                     if record.get("candidate") != candidate:
@@ -632,7 +654,6 @@ def prepare_automatic_sources(project, workspace, *, generic_hours, korean_hours
                     part_bytes = record["reserved_download_bytes"]
                     part_storage = record["original_storage_bytes"]
                 else:
-                    archive_bytes = candidate.get("archive_bytes")
                     if (remaining_budget <= 0 or type(archive_bytes) is int and archive_bytes > remaining_budget):
                         shortages.append(f"{component}: automatic source byte budget is exhausted before the next part")
                         break
@@ -650,10 +671,20 @@ def prepare_automatic_sources(project, workspace, *, generic_hours, korean_hours
                     if source_room <= 0 or (not compact and type(archive_bytes) is int and archive_bytes * 2 > source_room):
                         shortages.append(f"{component}: 자동 자료 누적 저장 한도 부족. 원본·압축·추출 자료에 남은 {max(0, source_room):,}바이트로 다음 묶음을 준비할 수 없습니다.")
                         break
-                    prepared = backend.prepare(candidate, default_backend / "parts" / key,
-                        target_hours=target-actual[component], max_download_bytes=remaining_budget,
+                    def report_part(event):
+                        progress({**event, "automatic_component": component})
+
+                    shared_part = default_backend / "parts" / key
+                    part_target = target - actual[component]
+                    if effective_request != request_path and (shared_part / "canonical_request.json").is_file():
+                        # A previous run may have stopped before the pinned resolution was
+                        # written. Resume its exact shard request; the new target only
+                        # controls the outer loop since YODAS2 always uses a whole shard.
+                        part_target = existing["policy"]["component_targets"][component] - actual[component]
+                    prepared = backend.prepare(candidate, shared_part,
+                        target_hours=part_target, max_download_bytes=remaining_budget,
                         max_extract_bytes=min(source_room, max(1, free-_RESERVE)),
-                        excluded_track_ids=sorted(seen_tracks), progress=progress)
+                        excluded_track_ids=sorted(seen_tracks), progress=report_part if progress and tracks_transfer else progress)
                     source = dict(prepared["source"])
                     diagnostics = []
                     copy_storage = {"bytes": 0}
@@ -707,6 +738,8 @@ def prepare_automatic_sources(project, workspace, *, generic_hours, korean_hours
                     raise ValueError("Persisted automatic sources exceed their cumulative workspace cap")
                 receipts.extend(part_receipts)
                 artifacts.extend([str(record_path), source["source_index"], *part_artifacts])
+                if tracks_transfer:
+                    verified_archive_bytes[component] += archive_bytes
                 if not rows:
                     continue
                 try:
@@ -741,12 +774,15 @@ def prepare_automatic_sources(project, workspace, *, generic_hours, korean_hours
                     "content_approved": False, "updated_at": now()})
                 if progress:
                     progress({"label": "학습용 비호출 자료 기술 검사 완료: " + component,
-                              "done": actual[component], "total": target, "unit": "hours", "part": key})
+                              "done": actual[component], "total": target, "unit": "hours", "part": key,
+                              **({"archive_transfer": None, "verified_archive_bytes": verified_archive_bytes[component]}
+                                 if tracks_transfer else {})})
             if actual[component] + 1e-9 < target:
                 shortages.append(f"{component}: {actual[component]:g} unique {'post-QC Train' if qualify_source else 'header'} hours prepared, {target:g} required")
-        result = {"sources": sources, "plan": {**policy, "request": _binding(request_path)},
+        result = {"sources": sources, "plan": {**policy, "request": _binding(effective_request)},
             "receipts": receipts, "artifacts": list(dict.fromkeys(artifacts)),
-            "component_actual_hours": actual, "shortages": list(dict.fromkeys(shortages)),
+            "component_actual_hours": actual, "component_verified_archive_bytes": verified_archive_bytes,
+            "shortages": list(dict.fromkeys(shortages)),
             "actual_download_bytes": reserved_bytes, "download_byte_scope": "Conservative pinned source byte reservation, not a network-retry traffic measurement",
             "source_storage_bytes": source_storage_bytes, "space_plan": space,
             "hours_scope": "post_technical_QC_Train" if qualify_source else "provider_index_and_audio_headers_only",

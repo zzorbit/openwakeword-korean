@@ -75,8 +75,7 @@ class MaterialDownloads:
         event = dict(event)
         for entry in event.get("files", []):
             self.files.setdefault(entry["id"], {}).update(entry)
-        # Automatic acquisition already reports component hours around each
-        # bounded part; do not invent a file list or a completed download.
+        # Accepted hours and the current archive transfer have different units.
         if event.get("unit") == "hours":
             component = event.get("label", "").rsplit(": ", 1)[-1]
             key = "automatic:" + component
@@ -84,6 +83,16 @@ class MaterialDownloads:
                 done, target = event.get("done", 0), event.get("total")
                 self.files[key].update(done=done, total=target, unit="hours", prepared_hours=done,
                     state="complete" if target is not None and done >= target else "downloading")
+                for field in ("archive_transfer", "verified_archive_bytes"):
+                    if field in event:
+                        self.files[key][field] = event[field]
+        if event.get("phase") == "automatic_archive":
+            row = self.files.get("automatic:" + event.get("automatic_component", ""))
+            if row is not None:
+                transfer = event["archive_transfer"]
+                row.update(archive_transfer=transfer)
+                if transfer["status"] == "failed":
+                    row["state"] = "failed"
         if self.files:
             event["files"] = [dict(row) for row in self.files.values()]
         if self.progress:
@@ -95,6 +104,9 @@ class MaterialDownloads:
             if row:
                 row.update(done=actual, total=row["target_hours"], unit="hours", prepared_hours=actual,
                            state="complete" if actual >= row["target_hours"] else "failed")
+                archive_bytes = result.get("component_verified_archive_bytes", {}).get(component)
+                if archive_bytes is not None:
+                    row.update(archive_transfer=None, verified_archive_bytes=archive_bytes)
         self.report({"phase": "automatic_materials", "label": "대용량 비호출 자료 준비 결과 확인"})
 
     def _remember(self, path, item):

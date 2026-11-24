@@ -38,7 +38,7 @@ def approve(project, queue, kind):
 
 
 @pytest.mark.parametrize("name, counts", [("check", (1000, 1, 10000, 2000, 1)),
-                                          ("trial", (20000, 3, 50000, 2000, 2000 / 3)),
+                                          ("trial", (20000, 3, 50000, 2000, 500)),
                                           ("production", (100000, 5, 100000, 3500, 1500))])
 def test_presets_are_explicit_not_changes_to_global_defaults(name, counts):
     settings = steps.preset_settings(name)

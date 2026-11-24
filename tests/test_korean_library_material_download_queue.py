@@ -19,6 +19,24 @@ def checksum(data, algorithm="sha256"):
     return getattr(hashlib, algorithm)(data).hexdigest()
 
 
+def test_automatic_archive_progress_preserves_qualified_hours(tmp_path):
+    events = []
+    owner = module.MaterialDownloads(tmp_path, events.append)
+    source_id = "automatic:yodas2"
+    owner.files[source_id] = {"id": source_id, "target_hours": 500}
+    owner.report({"label": "학습용 비호출 자료 자동 준비: yodas2", "unit": "hours", "done": 5, "total": 500,
+                  "archive_transfer": {"done": None, "total": 2000, "status": "checking"}, "verified_archive_bytes": 1000})
+    transfer = {"done": 750, "total": 2000, "status": "downloading", "bytes_per_second": 250}
+    owner.report({"phase": "automatic_archive", "automatic_component": "yodas2", "archive_transfer": transfer})
+    row = events[-1]["files"][0]
+    assert (row["unit"], row["done"], row["total"], row["state"]) == ("hours", 5, 500, "downloading")
+    assert row["archive_transfer"] == transfer
+    assert row["verified_archive_bytes"] == 1000
+    owner.finish_automatic({"component_actual_hours": {"yodas2": 501}, "component_verified_archive_bytes": {"yodas2": 3000}})
+    row = events[-1]["files"][0]
+    assert (row["state"], row["archive_transfer"], row["verified_archive_bytes"]) == ("complete", None, 3000)
+
+
 def test_reentering_an_owner_cannot_reuse_a_previous_calls_verification(tmp_path):
     path = tmp_path / "original.bin"
     data = b"same bytes must be verified again for another call"

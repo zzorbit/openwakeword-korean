@@ -20,12 +20,12 @@ def test_studio_api_exposes_commercial_plan_and_preserves_smaller_presets(tmp_pa
     assert [row["target_hours"] for row in plan["components"]] == [1500, 1500, 500, 1500]
     assert [row["sources"][0]["id"] for row in plan["components"]] == ["audioset_unbalanced", "mls", "fma_full", "yodas2"]
     assert (recipes["check"]["generic_hours"], recipes["check"]["korean_hours"]) == (2000, 1)
-    assert (recipes["trial"]["generic_hours"], recipes["trial"]["korean_hours"]) == (2000, 2000 / 3)
+    assert (recipes["trial"]["generic_hours"], recipes["trial"]["korean_hours"]) == (2000, 500)
     assert all(record["batch"] == BATCH for record in recipes.values())
     assert all("training_negative_plan" not in recipes[key] for key in ("check", "trial"))
     assert production["material_acquisition_policy"] == "automatic_v3"
     assert production["automatic_target_hours"] == {"generic_raw": 3500, "korean_train": 1500}
-    assert recipes["trial"]["automatic_target_hours"] == {"generic_nominal": 2000, "korean_train": 2000 / 3}
+    assert recipes["trial"]["automatic_target_hours"] == {"generic_nominal": 2000, "korean_train": 500}
     assert recipes["check"]["automatic_target_hours"] == {"generic_nominal": 2000, "korean_train": 1}
     assert not plan["content_approved"]
 

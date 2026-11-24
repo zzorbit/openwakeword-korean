@@ -25,7 +25,7 @@ from .common import (bound_file, digest, identity, iter_rows, now, read_json, re
 from .downloads import (VerificationCache, _file_identity, _stat_identity, dataset_catalog,
                         download_checked, download_many, verified_asset)
 from .project import load_project, require_standard_common_download
-from .budgets import DEFAULT_GENERIC_HOURS, DEFAULT_KOREAN_HOURS
+from .budgets import DEFAULT_GENERIC_HOURS, DEFAULT_KOREAN_HOURS, TRIAL_KOREAN_HOURS
 
 AS_REV = "5a2fa42a1506470d275a47ff8e1fdac5b364e6ef"
 MIT_REV = "b824a1ef2821f112fda0b9cb26e4278c62b425bb"
@@ -100,7 +100,7 @@ def _automatic_source_plan(preset, generic_hours=DEFAULT_GENERIC_HOURS, korean_h
         components = []
     elif preset == "test":
         components = [{"id": "yodas2", "provider": "yodas2", "pool": "korean_negative",
-                       "name": "한국어 웹 음성", "target_hours": 2000 / 3 if korean_hours is None else korean_hours}]
+                       "name": "한국어 웹 음성", "target_hours": TRIAL_KOREAN_HOURS if korean_hours is None else korean_hours}]
     else:
         from .commercial_sources import commercial_negative_plan
         plan = commercial_negative_plan(generic_hours, DEFAULT_KOREAN_HOURS if korean_hours is None else korean_hours)
@@ -116,7 +116,7 @@ def _automatic_space_plan(preset, config=None, material_acquisition_policy="auto
     from .automatic_sources import automatic_storage_plan
     preset = _preset(preset)
     default_generic, default_korean, originals, rounds = {
-        "check": (2000, 1, 1000, 1), "test": (2000, 2000 / 3, 20000, 3),
+        "check": (2000, 1, 1000, 1), "test": (2000, TRIAL_KOREAN_HOURS, 20000, 3),
         "full": (DEFAULT_GENERIC_HOURS, DEFAULT_KOREAN_HOURS, 100000, 5)}[preset]
     selected = config or {"targets": {"positive_originals": originals, "generic_hours": default_generic,
                                      "korean_hours": default_korean}, "augmentation_rounds": rounds}
@@ -220,7 +220,7 @@ def material_recipe(preset="check", workspace=None, evaluation_policy=None, nois
         result["automatic_source_plan"] = _automatic_source_plan(preset)
         result["known_download_bytes_scope"] = "Pinned base and common-evaluation archives only; automatic provider shards/tracks are resolved and preflighted separately."
         result["automatic_target_hours"] = ({"generic_raw": DEFAULT_GENERIC_HOURS, "korean_train": DEFAULT_KOREAN_HOURS} if preset == "full"
-            else {"generic_nominal": 2000, "korean_train": 2000 / 3 if preset == "test" else 1})
+            else {"generic_nominal": 2000, "korean_train": TRIAL_KOREAN_HOURS if preset == "test" else 1})
         result["shortages"] = []
         if preset != "check":
             result["limitations"] = [text for text in result["limitations"] if not text.startswith((

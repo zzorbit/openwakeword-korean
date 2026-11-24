@@ -2198,6 +2198,17 @@
             : row.unit === "files" && Object.hasOwn(row, "totalBytes")
               ? Number.isFinite(row.bytes) && row.bytes > 0 ? `${quantity(row.bytes, "bytes")} / —` : "전체 용량 확인 전"
               : "";
+        const transfer = row.archive_transfer;
+        const archiveSize = Number.isFinite(transfer?.total) && transfer.total > 0
+          ? Number.isFinite(transfer.done) ? `현재 묶음 ${progressAmount(transfer.done, transfer.total, "bytes")}`
+            : `현재 묶음 ${quantity(transfer.total, "bytes")}` : "";
+        const archiveStatus = !rowActive ? "" : {
+          checking: "묶음 확인 중", downloading: "다운로드 중", retrying: "연결 재시도 중", preparing: "검증·전처리 중",
+        }[transfer?.status] || "";
+        const archiveRate = rowActive && transfer?.status === "downloading" && Number.isFinite(transfer.bytes_per_second)
+          && transfer.bytes_per_second > 0 ? `${quantity(transfer.bytes_per_second, "bytes")}/초` : "";
+        const archiveVerified = Number.isFinite(row.verified_archive_bytes) && row.verified_archive_bytes > 0
+          ? `확보한 원본 ${quantity(row.verified_archive_bytes, "bytes")}` : "";
         const checkPercent = Number.isFinite(row.hashPercent) ? ` · ${row.hashPercent}%` : "";
         const reuseNote = verifying ? "파일 무결성 확인 중" + checkPercent
           : row.state === "reused" || (row.reused > 0 && row.reused === row.total) ? "기존 자료 재사용"
@@ -2205,7 +2216,7 @@
         const workPercent = Number.isFinite(work?.percent) ? ` · ${work.percent}%` : "";
         const preparationNote = work ? preparationActive ? work.label + workPercent
           : project.status === "paused" ? "자료 준비 일시정지" : "자료 준비 미완료" : preparing && !inspection ? "자료 준비 대기" : "";
-        const detail = row.detail || [sizeNote, preparationNote || reuseNote].filter(Boolean).join(" · ");
+        const detail = row.detail || [sizeNote, archiveVerified, archiveSize, archiveStatus, archiveRate, preparationNote || reuseNote].filter(Boolean).join(" · ");
         view.noteDetail.textContent = detail && inspection ? detail + " · " : detail;
         view.inspectionStatus.hidden = !inspection;
         updateProgressIndicator(view.inspectionIndicator, progressStatus(inspectionActive && !preparationActive, inspection?.state === "complete"));
@@ -2701,15 +2712,24 @@
       for (const unit of [entry, savedEntry, toolPicker, scale, savedScale, materials, live, voiceListening]) unit.hidden = unit !== wanted;
       if (showToolPicker) updateComputePicker(tools, pickerBackend, Boolean(state.busy || project && !toolChoiceEditable));
       if (project && savedWord.value !== (project.wakeword || "")) savedWord.value = project.wakeword || "";
+      const trialKoreanHours = project?.preset === "trial" ? project.settings?.korean_hours
+        : state.recipes.find(recipe => recipe.id === "trial")?.korean_hours;
+      const trialDescription = Number.isFinite(trialKoreanHours)
+        ? `${shortDescriptions.trial} · 한국어 비호출 ${count(trialKoreanHours)}시간` : shortDescriptions.trial;
       if (project) for (const card of savedPresets.children) {
         const radio = card.querySelector("input"); radio.checked = radio.value === project.preset;
         card.setAttribute("data-selected", String(radio.checked));
+        if (radio.value === "trial") card.querySelector(".preset-description").textContent = trialDescription;
       }
       if (!project) {
         for (const preset of $("presets").children) {
-          const radio = preset.querySelector('input[name="preset"]');
+          const radio = preset.querySelector("input");
           const description = preset.querySelector(".preset-description");
-          if (radio) { preset.setAttribute("data-selected", String(radio.checked)); if (description) description.textContent = shortDescriptions[radio.value] || description.textContent; }
+          if (radio) {
+            preset.setAttribute("data-selected", String(radio.checked));
+            if (description) description.textContent = radio.value === "trial" ? trialDescription
+              : shortDescriptions[radio.value] || description.textContent;
+          }
         }
       } else {
         referencePreview.open = current === "voice-listening" && Boolean(project.reference_preview?.url);

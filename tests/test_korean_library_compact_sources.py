@@ -87,6 +87,20 @@ def prepare(setup, **overrides):
         max_extract_bytes=overrides.get("retained", 1024**2))
 
 
+def test_archive_transfer_reports_the_pinned_size_and_network_progress(setup):
+    directory, resolution, _, transport = setup
+    asset = resolution["assets"][0]
+    transport.interrupt_once = asset["source_url"]
+    events = []
+    module._asset_file(asset, directory, events.append, report_archive=True)
+    transfers = [event["archive_transfer"] for event in events]
+    assert all(row["total"] == asset["size_bytes"] for row in transfers)
+    assert any(row["status"] == "retrying" and 0 < row["done"] < row["total"] for row in transfers)
+    assert transfers[-1]["status"] == "preparing"
+    assert transfers[-1]["done"] == asset["size_bytes"]
+    assert transfers[-1]["bytes_per_second"] is None
+
+
 def test_exact_members_and_stable_resume_without_archives_or_network(setup, monkeypatch):
     directory, resolution, raw, transport = setup
     result = prepare(setup)

@@ -1,11 +1,12 @@
 """New-project preparation budgets, separate from saved experiment settings.
 
 These are user-selected starting budgets, not measured optimal data quantities.
-Changing them must never migrate a previously saved project's targets.
+Changing a default alone never changes a saved project's targets.
 """
 
 DEFAULT_GENERIC_HOURS = 3500
 DEFAULT_KOREAN_HOURS = 1500
+TRIAL_KOREAN_HOURS = 500
 GENERIC_SOURCE_WEIGHTS = (
     ("audioset_unbalanced", 3),
     ("mls", 3),

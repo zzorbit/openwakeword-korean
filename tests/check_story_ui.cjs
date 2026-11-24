@@ -1697,6 +1697,28 @@ async function main() {
     assert.notEqual(rows[0].querySelector(".story-progress-indicator").dataset.status,"complete");
     assert.equal(hasActiveDownloadSpinner(rows[0]),false);
   });
+  await test("Korean web audio shows the current archive bytes next to the prepared hours", () => {
+    const project = checkpointProject("running", "running");
+    project.stage_id = "data_download";
+    const mib = 1024 ** 2;
+    const yodas = { id: "automatic:yodas2", label: "한국어 웹 음성", group: "automatic:yodas2",
+      state: "downloading", unit: "hours", done: 5, total: 500, verified_archive_bytes: 512 * mib,
+      archive_transfer: { status: "downloading", done: 64 * mib, total: 256 * mib, bytes_per_second: 4 * mib } };
+    project.download_files = [yodas];
+    const p = page(project), row = historyRowByLabel(p.shell, "한국어 웹 음성"), bar = row.querySelector("progress");
+    assert.equal(bar.value / bar.max, 0.01);
+    assert.match(textOf(row), /5 \/ 500시간.*확보한 원본 512 MiB · 현재 묶음 64 MiB \/ 256 MiB · 다운로드 중 · 4 MiB\/초/);
+    yodas.archive_transfer = { status: "preparing", done: 256 * mib, total: 256 * mib };
+    p.ui.render();
+    assert.match(textOf(row), /현재 묶음 256 MiB \/ 256 MiB · 검증·전처리 중/);
+    assert.doesNotMatch(textOf(row), /MiB\/초/);
+    assert.equal(bar.value / bar.max, 0.01);
+    assert.equal(hasActiveDownloadSpinner(row), true);
+    yodas.archive_transfer = null; yodas.verified_archive_bytes = 768 * mib;
+    yodas.done = 9; p.ui.render();
+    assert.match(textOf(row), /9 \/ 500시간.*확보한 원본 768 MiB/);
+    assert.doesNotMatch(textOf(row), /현재 묶음|검증·전처리 중/);
+  });
   await test("parallel downloads retain each active file hash gauge until verification or the attempt changes", () => {
     const project = checkpointProject("running", "running");
     project.stage_id = "data_download";
@@ -2009,6 +2031,20 @@ async function main() {
     p.state.project = null; p.ui.render(); await advanceSetup(p, "tools", "scale");
     assert.equal(p.shell.dataset.step, "scale"); assert.equal(group.parentElement.hidden, true);
     assert.equal(p.state.selectedPreset, "trial");
+  });
+  await test("trial scale shows the recipe hours for a new model and the actual hours for a saved one", async () => {
+    const draft = page(), card = draft.element("label"), trial = draft.element("input"), detail = draft.element("p");
+    draft.state.recipes = [{ id: "trial", korean_hours: 500 }];
+    trial.setAttribute("name", "preset"); trial.value = "trial";
+    detail.className = "preset-description"; card.append(trial, detail); draft.get("presets").append(card);
+    await advanceSetup(draft, "tools", "scale");
+    assert.match(detail.textContent, /한국어 비호출 500시간/);
+
+    const saved = page({ ...historyModel({}), preset: "trial", settings: { korean_hours: 450 } });
+    saved.state.recipes = draft.state.recipes;
+    await visit(saved, "scale");
+    const selected = saved.get("story-saved-presets").children.find(row => row.querySelector("input").checked);
+    assert.match(selected.querySelector(".preset-description").textContent, /한국어 비호출 450시간/);
   });
   await test("work chapters use the same rows and preserve recorded quantities", async () => {
     const p = page(historyModel({ "positive-generation": { completed: true, rows: [

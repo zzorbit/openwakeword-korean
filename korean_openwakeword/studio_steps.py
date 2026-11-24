@@ -19,7 +19,7 @@ from .hard_phrase_policy import validate_noncall_text
 from .hard_pilot import HARD_SAMPLE_REVIEW_POLICY
 from .pilot import COMBINED_PILOT_POLICY, POSTGEN_PILOT_POLICY, PREPOST_PILOT_POLICY, TRAIN_PILOT_POLICY
 from .project import BATCH, MAX_TRAIN_VOICE_FAMILIES, load_project, require_standard_common_download
-from .budgets import DEFAULT_GENERIC_HOURS, DEFAULT_KOREAN_HOURS
+from .budgets import DEFAULT_GENERIC_HOURS, DEFAULT_KOREAN_HOURS, TRIAL_KOREAN_HOURS
 
 
 _PRESETS = {
@@ -27,7 +27,7 @@ _PRESETS = {
               "generic_hours": 2000, "korean_hours": 1, "train_references": 20,
               "hard_samples_per_phrase": 20, "functional_check_only": True, "noise_material_policy": "official_example"},
     "trial": {"title": "시험 모델용", "originals": 20000, "rounds": 3, "updates": 50000,
-              "generic_hours": 2000, "korean_hours": 2000 / 3, "train_references": 100,
+              "generic_hours": 2000, "korean_hours": TRIAL_KOREAN_HOURS, "train_references": 100,
               "hard_samples_per_phrase": 100, "functional_check_only": False, "noise_material_policy": "official_example"},
     "production": {"title": "상용 모델용", "originals": 100000, "rounds": 5, "updates": 100000,
               "generic_hours": DEFAULT_GENERIC_HOURS, "korean_hours": DEFAULT_KOREAN_HOURS, "train_references": 500,

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from korean_openwakeword import automatic_sources as module
-from korean_openwakeword.common import digest, read_json
+from korean_openwakeword.common import digest, read_json, write_json
 
 
 class Backend:
@@ -75,6 +75,41 @@ def test_check_keeps_existing_bounded_recipe_without_provider_access(setup):
     result = supply(setup, backend, preset="check", korean=1)
     assert not result["sources"] and not result["shortages"]
     assert backend.inventories == backend.prepared == []
+
+
+def test_trial_reduction_reuses_verified_parts_and_resumes_frozen_partial_shard(setup, monkeypatch):
+    project, workspace, config = setup
+    config["targets"]["korean_hours"] = 2000 / 3
+    monkeypatch.setattr(module.sf, "info", lambda path: SimpleNamespace(
+        frames=100 * 3600 * 16000, samplerate=16000, channels=1))
+    old_backend = Backend(counts=8)
+    prepare = old_backend.prepare
+
+    def interrupt(candidate, directory, **kwargs):
+        if candidate["selection"]["part"] == 2:
+            write_json(directory / "canonical_request.json", {"target_hours": kwargs["target_hours"]})
+            raise RuntimeError("paused fixture")
+        return prepare(candidate, directory, **kwargs)
+
+    old_backend.prepare = interrupt
+    with pytest.raises(RuntimeError, match="paused fixture"):
+        module.prepare_automatic_sources(project, workspace, preset="trial", generic_hours=2000,
+            korean_hours=2000 / 3, backend=old_backend, material_acquisition_policy="automatic_v3")
+    state = project.parent / ".studio/materials/automatic_sources_v3"
+    frozen = state / "request.json"
+    frozen_hash = digest(frozen)
+    saved_part = state / "parts/yodas2_1/source.json"
+    part_hash = digest(saved_part)
+
+    config["targets"]["korean_hours"] = 500
+    new_backend = Backend(counts=8)
+    result = module.prepare_automatic_sources(project, workspace, preset="trial", generic_hours=2000,
+        korean_hours=500, backend=new_backend, material_acquisition_policy="automatic_v3")
+    assert result["component_actual_hours"] == {"yodas2": 500}
+    assert [candidate["selection"]["part"] for candidate, _ in new_backend.prepared] == [2, 3, 4]
+    assert [options["target_hours"] for _, options in new_backend.prepared] == [2000 / 3 - 200, 200, 100]
+    assert digest(frozen) == frozen_hash and digest(saved_part) == part_hash
+    assert read_json(result["plan"]["request"]["path"])["previous_request"]["sha256"] == frozen_hash
 
 
 def test_compact_storage_forecast_keeps_identical_data_targets_and_known_payload():

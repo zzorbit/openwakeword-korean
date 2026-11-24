@@ -26,7 +26,7 @@ def test_new_project_and_studio_share_the_5000_hour_plan(tmp_path):
     assert config["batch"] == {"generic_negative": 768, "korean_negative": 256,
                                "positive": 100, "hard_negative": 100}
     assert preset_settings("check")["korean_hours"] == 1
-    assert preset_settings("trial")["korean_hours"] == pytest.approx(2000 / 3)
+    assert preset_settings("trial")["korean_hours"] == 500
 
 
 def test_half_hours_reduce_variable_storage_without_halving_fixed_costs():

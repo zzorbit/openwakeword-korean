@@ -1,7 +1,10 @@
 """Download rows remain visible while the same stage extracts and converts."""
+from types import SimpleNamespace
+
 from korean_openwakeword import studio_data, studio_steps
 from korean_openwakeword.common import read_json
 from korean_openwakeword.project import create_project
+from korean_openwakeword.studio import StudioManager
 
 
 def test_stage_retains_all_download_rows_during_processing_without_changing_inputs(tmp_path, monkeypatch):
@@ -31,3 +34,16 @@ def test_stage_retains_all_download_rows_during_processing_without_changing_inpu
     assert [row["state"] for row in record["files"]] == ["reused", "complete"]
     assert "bytes_per_second" not in record
     assert all(path.read_bytes() == data for path, data in before.items())
+
+
+def test_paused_download_uses_current_hours_target_before_worker_reports_again():
+    row = {"id": "automatic:yodas2", "label": "한국어 웹 음성", "group_label": "한국어 웹 음성",
+           "unit": "hours", "total": 500}
+    manager = SimpleNamespace(_history_download_files=lambda *args, **kwargs: [row])
+    saved = {**row, "done": 7, "total": 2000 / 3, "target_hours": 2000 / 3, "state": "downloading"}
+    record = {"stage": "data_download", "files": [saved]}
+
+    result, = StudioManager._live_download_files(manager, {}, record, running=False)
+
+    assert (result["done"], result["total"], result["target_hours"]) == (7, 500, 500)
+    assert saved["total"] == 2000 / 3

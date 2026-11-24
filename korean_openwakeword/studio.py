@@ -1126,6 +1126,27 @@ _ACQUISITION_UPDATE_FILES = {
     "material_policy.py", "evaluation_backend.py", "gpu_runtime_install.py",
 }
 
+# These release pairs keep the pinned YODAS2 inventory, source identity and
+# completed admission intact. The changed budget applies only before admission.
+_TRIAL_MATERIAL_UPDATE_FILES = {"automatic_sources.py", "budgets.py", "compact_sources.py",
+                                "material_downloads.py", "studio_data.py", "studio_steps.py"}
+_AUDITED_TRIAL_MATERIAL_UPDATES = {
+    # Installed Windows package with only changed files overlaid.
+    "6eff1f3cbcef4f8209623de9eab1abeb5b058b4f8cf4bd82895506df1df7343d": (
+        "3b85487d8010c66f8e936c93c2fb5c6fb5e81e2a8aeffd2f8e81e475f538e56d",
+        "35279fa5ef67a2ddf667587b9b570d1204537a6101970940228c6d0360c490af",
+        "833089a46ffd924fa733a7f9b1240822cdcb6c033054037490a95942bd069cbe",
+    ),
+    # Git checkout with repository line endings.
+    "7d2d35807769088ccdd713a2bad08ba4be8d5a2ddee942d69b0cc443c02f139b": (
+        "c9f9769014258590c091ef5427e0bf2ec50c4b63dac993c52ea8ef41b5f62625",
+        "fe253b4faff3792214f898a3bedab4b52ff06febc914f4606b633e0572f8d081",
+        "87649ee8a0b8d5a0f5f821505dfacb6fa5d3ef90022833abcc08be4689f44604",
+    ),
+}
+# AST identity of the focused stage, request and shard-resume regression tests.
+_TRIAL_MATERIAL_UPDATE_EVIDENCE = "ea309eaf93387e304d918053dac02a8240cef424f9672bf4b89142a7e6f518ac"
+
 # Only the audited reference-bank expansion can rebind this release. Existing
 # generation code, reference waveforms and evaluation families stay unchanged.
 _AUDITED_REFERENCE_UPDATES = {
@@ -1315,6 +1336,7 @@ def _audited_acquisition_update(previous, current):
     synthesis_quality = _AUDITED_SYNTHESIS_QUALITY_UPDATES.get(source)
     ending_repair = _AUDITED_ENDING_REPAIR_UPDATES.get(source)
     device_scoring = _AUDITED_DEVICE_SCORING_UPDATES.get(source)
+    trial_material = _AUDITED_TRIAL_MATERIAL_UPDATES.get(source)
     pipeline = _AUDITED_GPU_PIPELINE_UPDATES.get(source)
     pipeline_files = set(_GPU_PIPELINE_UPDATE_FILES)
     if not pipeline and cuda_workflow:
@@ -1326,7 +1348,14 @@ def _audited_acquisition_update(previous, current):
                             prior_evidence_sha256=_CUDA_WORKFLOW_UPDATE_EVIDENCE,
                             changed_files=sorted(set(next_audit["changed_files"]) | set(_CUDA_WORKFLOW_UPDATE_FILES)))
             pipeline_files = pipeline_files | set(_CUDA_WORKFLOW_UPDATE_FILES)
-    if pipeline:
+    if trial_material:
+        old_stages, new_computation, new_stages = trial_material
+        allowed_files = _TRIAL_MATERIAL_UPDATE_FILES
+        audit = dict(source_stages_sha256=old_stages, target_computation_sha256=new_computation,
+                     target_stages_sha256=new_stages, changed_files=sorted(allowed_files),
+                     evidence_sha256=_TRIAL_MATERIAL_UPDATE_EVIDENCE)
+        kind = "audited_trial_material_update"
+    elif pipeline:
         audit = pipeline
         allowed_files = pipeline_files
         kind = "audited_gpu_pipeline_update"
@@ -1679,6 +1708,7 @@ class StudioManager:
     def _recover(self):
         for project_id in self.registry["projects"]:
             state = self._load(project_id)
+            self._finish_trial_material_budget_change(state)
             if state["status"] in ("running", "pausing"):
                 job = state.get("job") or {}
                 if not self._job_alive(job):
@@ -1939,6 +1969,42 @@ class StudioManager:
                 "resume_index": min(state["index"], positions["references"]),
                 "preserves_existing_bank": True}
 
+    def _trial_material_budget_change(self, state):
+        from .budgets import TRIAL_KOREAN_HOURS
+        settings = state["settings"]
+        index = state["index"]
+        if (state.get("preset") != "trial" or settings.get("material_acquisition_policy") != "automatic_v3"
+                or settings.get("korean_hours") != 2000 / 3
+                or index >= len(state["plan"]) or state["plan"][index]["id"] not in ("frontend", "data_download")
+                or (state.get("results", {}).get("data_download") or {}).get("state") == "completed"):
+            return None
+        root, config = load_project(state["project"])
+        if (root / "final_lock.json").exists() or config["targets"]["korean_hours"] != settings["korean_hours"]:
+            return None
+        job = state.get("job") or {}
+        if job.get("stage") == "data_download" and job.get("directory"):
+            completed = Path(job["directory"]) / "result.json"
+            if completed.exists() and (read_json(completed).get("result") or {}).get("state") == "completed":
+                return None
+        return {"old_korean_hours": settings["korean_hours"], "korean_hours": TRIAL_KOREAN_HOURS}
+
+    def _finish_trial_material_budget_change(self, state):
+        pending = state.get("pending_trial_material_budget_change")
+        if not pending:
+            return
+        project = Path(state["project"])
+        receipt = read_json(bound_file(project.parent, pending))
+        updated = bound_file(project.parent, receipt["trial_material_budget_change"]["updated_config"])
+        if digest(updated) != state["config_sha256"]:
+            raise ValueError("자료 목표 변경의 새 설정 기록이 올바르지 않습니다.")
+        current = digest(project)
+        if current != state["config_sha256"]:
+            if current != receipt["config_sha256"]:
+                raise ValueError("자료 목표를 변경하는 동안 학습 설정 파일이 바뀌었습니다.")
+            write_json(project, read_json(updated))
+        state.pop("pending_trial_material_budget_change")
+        self._save(state)
+
     def _migration_view(self, state):
         if state.get("implementation_id") == self._implementation_id or state.get("status") == "completed":
             return None
@@ -2012,8 +2078,11 @@ class StudioManager:
               != self._execution_contract["computation_sha256"]):
             return blocked("이 구버전에는 검증된 단계 계약이 없습니다. 기존 자료를 보존하고 별도 호환 검증이 필요합니다.")
         budget_change = self._reference_budget_change(state) if reference_update else None
+        trial_change = self._trial_material_budget_change(state)
         return {"state": "available", "action": "migrate",
-                "reason": (call_recovery_update.get("reason") or "기존 기준 목소리와 통과한 호출어를 보존하고, 긴 앞뒤 무음을 정리한 입력으로 실패한 호출어만 제한된 횟수 안에서 자동 복구합니다. 검사 기준과 실제 검수 기록은 유지합니다."
+                "reason": ("받은 한국어 자료를 재사용하고 시험 모델용 한국어 비호출 목표를 500시간으로 조정합니다."
+                           if trial_change else
+                           call_recovery_update.get("reason") or "기존 기준 목소리와 통과한 호출어를 보존하고, 긴 앞뒤 무음을 정리한 입력으로 실패한 호출어만 제한된 횟수 안에서 자동 복구합니다. 검사 기준과 실제 검수 기록은 유지합니다."
                            if call_recovery_update else
                            "기존 후보와 선택·청취·확정 기록을 보존하고, 기준 목소리의 청취 필수 조건을 해제합니다. 기존 확정 기록은 변경하지 않습니다."
                            if candidate_update and candidate_update.get("kind") == "audited_reference_optional_listening_update" else
@@ -2060,7 +2129,9 @@ class StudioManager:
                 **({"audited_reference_candidate_update": candidate_update} if candidate_update else {}),
                 **({"audited_call_generation_recovery_update": call_recovery_update} if call_recovery_update else {}),
                 **({"reference_budget_change": budget_change} if budget_change else {}),
-                "preserves": ["project_settings", "completed_artifacts", "review_answers", "history"]}
+                **({"trial_material_budget_change": trial_change} if trial_change else {}),
+                "preserves": ["completed_artifacts", "review_answers", "history"] if trial_change else
+                             ["project_settings", "completed_artifacts", "review_answers", "history"]}
 
     def _can_update_call_generation_recovery(self, state):
         positions = {stage["id"]: i for i, stage in enumerate(state["plan"])}
@@ -2248,6 +2319,7 @@ class StudioManager:
         """Explicit, audited compatibility rebind; never an implicit resume."""
         with self._lock:
             state = self._load(project_id)
+            self._finish_trial_material_budget_change(state)
             if state.get("status") == "completed":
                 return self.describe(state)  # Historical workflows are never rewritten for a UI update.
             if state.get("implementation_id") == self._implementation_id:
@@ -2271,6 +2343,18 @@ class StudioManager:
             before.write_bytes(self._path(project_id).read_bytes())
             receipt = directory / "receipt.json"
             prior_cuda_failure = self._legacy_cuda_failure(state)
+            trial_change = compatibility.get("trial_material_budget_change")
+            if trial_change:
+                project = Path(state["project"])
+                before_config = directory / "project_before.json"
+                before_config.write_bytes(project.read_bytes())
+                config = read_json(before_config)
+                config["targets"]["korean_hours"] = trial_change["korean_hours"]
+                after_config = directory / "project_after.json"
+                write_json(after_config, config)
+                trial_change = {**trial_change,
+                                "previous_config": {"path": str(before_config), "sha256": digest(before_config)},
+                                "updated_config": {"path": str(after_config), "sha256": digest(after_config)}}
             write_json(receipt, {"schema_version": 1, "kind": "compatible_workflow_update",
                 "migrated_at": now(), "old_implementation_id": state.get("implementation_id"),
                 "new_implementation_id": self._implementation_id, "config_sha256": state["config_sha256"],
@@ -2299,6 +2383,7 @@ class StudioManager:
                    if compatibility.get("audited_call_generation_recovery_update") else {}),
                 **({"reference_budget_change": compatibility["reference_budget_change"]}
                    if compatibility.get("reference_budget_change") else {}),
+                **({"trial_material_budget_change": trial_change} if trial_change else {}),
                 **({"previous_cuda_loader_failure": prior_cuda_failure} if prior_cuda_failure else {}),
                 "preserved": compatibility["preserves"]})
             budget_change = compatibility.get("reference_budget_change")
@@ -2355,6 +2440,14 @@ class StudioManager:
                 state["settings"]["train_references"] = budget_change["train_references"]
                 state.update(index=budget_change["resume_index"], status="paused", auto_continue=False,
                              error=None, next_action="이어서 진행하면 기존 음원은 유지하고 부족한 학습용 목소리만 추가합니다.")
+            if trial_change:
+                state["settings"]["korean_hours"] = trial_change["korean_hours"]
+                state["config_sha256"] = trial_change["updated_config"]["sha256"]
+                state["pending_trial_material_budget_change"] = {"path": str(receipt), "sha256": digest(receipt)}
+                if state.get("job"):
+                    state["last_job"], state["job"] = state["job"], None
+                state.update(status="paused", auto_continue=False, error=None,
+                             next_action="받은 자료를 재사용합니다. 이어서 진행하면 500시간 목표로 준비합니다.")
             state["implementation_id"] = self._implementation_id
             state["execution_contract"] = {**self._execution_contract,
                 "settings_sha256": identity(state["settings"]), "plan_sha256": identity(state["plan"])}
@@ -2366,6 +2459,7 @@ class StudioManager:
             if state.get("status") in ("running", "pausing"):
                 state.update(status="interrupted", auto_continue=False)
             self._save(state)
+            self._finish_trial_material_budget_change(state)
             return self.describe(state)
 
     def _verify_history(self, state):
@@ -2729,6 +2823,7 @@ class StudioManager:
               expected_evaluation_backend=None, expected_start_step=None):
         with self._lock:
             state = self._load(project_id)
+            self._finish_trial_material_budget_change(state)
             if expected_dependency_backend is not None or expected_evaluation_backend is not None:
                 index = state["index"]
                 stage = state["plan"][index]["id"] if index < len(state["plan"]) else None
@@ -4782,8 +4877,13 @@ class StudioManager:
         targets = {row["id"]: row["target_hours"] for row in result.get("automatic_source_plan", {}).get("components", [])}
         for component, actual in automatic.get("component_actual_hours", {}).items():
             target = targets.get(component)
-            files_out.append(item("automatic:" + component, component, "automatic:" + component,
-                "학습용 비호출 · " + component, actual, target, unit="hours", complete=target is not None and actual >= target))
+            label = "한국어 웹 음성" if component == "yodas2" else component
+            row = item("automatic:" + component, label, "automatic:" + component,
+                "학습용 비호출 · " + label, actual, target, unit="hours", complete=target is not None and actual >= target)
+            archive_bytes = automatic.get("component_verified_archive_bytes", {}).get(component)
+            if type(archive_bytes) is int and archive_bytes >= 0:
+                row["verified_archive_bytes"] = archive_bytes
+            files_out.append(row)
         return files_out
 
     def _live_download_files(self, state, record, *, running):
@@ -4812,6 +4912,8 @@ class StudioManager:
             live = current.pop(row["id"], {})
             if live.get("deferred") and live.get("unit") is None:
                 live = {}
+            if row.get("unit") == "hours" and live.get("unit") == "hours":
+                live = {**live, "total": row["total"], "target_hours": row["total"]}
             merged.append({**row, **live, "label": row["label"], "group_label": row["group_label"]})
         merged.extend(current.values())
         if not running:
