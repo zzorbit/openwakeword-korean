@@ -1937,6 +1937,75 @@ def test_canonical_shared_locks_preserve_live_recycled_and_other_worker_owners(m
     assert not (root / ".studio/recovered_locks").exists()
 
 
+@pytest.mark.parametrize("obstruction", [None, "recycled_pid", "foreign_workspace", "lock_after_recovery"])
+def test_automatic_source_resume_recovers_nested_locks_from_original_attempt(manager, monkeypatch, obstruction):
+    from korean_openwakeword.commercial_sources import _PROVIDERS, _resolve_url
+
+    project = create(manager, preset="trial")
+    manager.start(project["id"])
+    manager.workers.items[-1].finish()
+    manager.tick()
+    state = manager._load(project["id"])
+    assert state["job"]["stage"] == "data_download"
+    worker = manager.workers.items[-1]
+    if obstruction == "foreign_workspace":
+        request = read_json(worker.request_path)
+        request["workspace"] = str(manager.workspace.parent / "other_workspace")
+        write_json(worker.request_path, request)
+        state["job"]["request_sha256"] = digest(worker.request_path)
+        manager._save(state)
+    _, owner = publish_actual_owner(manager, project["id"])
+    root = Path(state["project"]).parent
+    part = manager.workspace / "shared/automatic_sources_v3/parts/example_yodas_part"
+    archive = "data/ko102/audio/00000128.tar.gz"
+    provider = _PROVIDERS["yodas2"]
+    resolved = {"kind": "commercial_source_resolution_v1", "source_id": "yodas2", "provider": provider,
+                "assets": [{"path": archive, "source_url": _resolve_url(provider, archive),
+                            "upstream_revision": provider["revision"], "size_bytes": 1040,
+                            "checksum_algorithm": "sha256", "sha256": "a" * 64}],
+                "metadata_assets": [], "total_bytes": 1040}
+    resolved["resolution_sha256"] = identity(resolved)
+    write_json(part / "originals/source_resolution.json", resolved)
+    write_json(part / ".canonical_lock/.writer.lock", {"pid": owner["pid"], "started_at": now()})
+    download_lock = part / "originals/data/ko102/audio/.00000128.tar.gz.download/.writer.lock"
+    extraction_lock = part / "audio/part_0000/.writer.lock"
+    unrelated_lock = download_lock.parent.with_name(".unlisted.tar.gz.download") / ".writer.lock"
+    for lock in (download_lock, extraction_lock, unrelated_lock):
+        write_json(lock, {"pid": owner["pid"], "started_at": now()})
+    partial = download_lock.parent.parent / "00000128.tar.gz.part"
+    partial.write_bytes(b"already downloaded")
+    worker.returncode = 9
+    manager.workers.identities.pop(worker.pid)
+    manager.tick()
+
+    # The previous release recovered the outer shard lock but missed the nested locks.
+    with monkeypatch.context() as old_release:
+        old_release.setattr(manager, "_automatic_download_locks", lambda shared: {})
+        manager.start(project["id"])
+    manager.workers.items[-1].finish(error={"type": "RuntimeError", "message": "Writer lock exists"})
+    manager.tick()
+    assert manager._load(project["id"])["status"] == "error"
+    if obstruction == "recycled_pid":
+        manager.workers.identities[owner["pid"]] = "recycled-process-birth"
+    if obstruction == "lock_after_recovery":
+        write_json(download_lock, {"pid": owner["pid"], "started_at": "2099-01-01T00:00:00+00:00"})
+
+    if obstruction:
+        with pytest.raises(ValueError, match="다른 작업|재사용"):
+            manager.start(project["id"])
+        assert len(manager.workers.items) == 3
+        assert download_lock.is_file() and extraction_lock.is_file()
+    else:
+        resumed = manager.start(project["id"])
+        assert resumed["status"] == "running" and len(manager.workers.items) == 4
+        assert not download_lock.exists() and not extraction_lock.exists()
+        records = [read_json(path) for path in (root / ".studio/recovered_locks").glob("*.json")]
+        recovered = {row["original"]: row["job"]["task_id"] for row in records}
+        assert recovered[str(download_lock)] == recovered[str(extraction_lock)] == state["job"]["task_id"]
+    assert unrelated_lock.is_file()
+    assert partial.read_bytes() == b"already downloaded"
+
+
 def test_real_worker_subprocess_records_actual_python_identity_and_error_receipt(tmp_path):
     from korean_openwakeword.studio_steps import preset_settings
     path, request = worker_request(tmp_path, stage="fixture-unknown-no-download")

@@ -2945,24 +2945,93 @@ class StudioManager:
         previous = state.get("job") or state.get("last_job")
         if not previous or self._job_alive(previous):
             return
-        # Only the exact identified previous worker may own recoverable locks.
         root = Path(state["project"]).parent
-        shared = Path(state.get("storage_workspace", self.workspace)) / "shared"
+        workspace = Path(state.get("storage_workspace", self.workspace))
+        shared = workspace / "shared"
         paths = _lock_paths(root)
         for pattern in ("*/.writer.lock", "downloads/*/.writer.lock", "downloads/common_rir/*/.writer.lock", "mit_rir/16khz/*/.writer.lock",
                         "automatic_sources_v3/parts/*/.writer.lock",
                         "automatic_sources_v3/parts/*/.canonical_lock/.writer.lock"):
             paths.extend(shared.glob(pattern))
-        for path in paths:
+        nested = self._automatic_download_locks(shared) if previous.get("stage") == "data_download" else {}
+        owners = {previous.get("pid"), self._worker_owner(previous).get("pid")} - {None}
+        for path in dict.fromkeys([*paths, *nested]):
             record = read_json(path)
-            owners = {previous.get("pid"), self._worker_owner(previous).get("pid")}
-            if record.get("pid") not in owners:
+            pid = record.get("pid")
+            job = previous if type(pid) is int and pid in owners else None
+            if job is None and path in nested:
+                job = self._archived_download_lock_job(root, workspace, nested[path], record)
+            if job is None:
                 raise ValueError("다른 작업의 자료 잠금이 남아 있습니다: " + str(path))
-            if process_identity(record["pid"]) is not None:
+            if process_identity(pid) is not None:
                 raise ValueError("잠금 소유 PID가 현재 살아 있습니다. 재사용된 PID라도 임의 해제하지 않습니다.")
             archive = root / ".studio" / "recovered_locks" / (identity(str(path)) + "_" + uuid.uuid4().hex + ".json")
-            write_json(archive, {"original": str(path), "record": record, "job": previous, "recovered_at": now()})
+            write_json(archive, {"original": str(path), "record": record, "job": job, "recovered_at": now()})
             path.unlink()
+
+    @staticmethod
+    def _automatic_download_locks(shared):
+        """Derive nested file locks from the pinned provider inventory, without walking audio."""
+        from .commercial_sources import _validate_resolution
+
+        locks = {}
+        for namespace in ("automatic_sources_v1", "automatic_sources_v2", "automatic_sources_v3"):
+            for resolution in shared.glob(namespace + "/parts/*/originals/source_resolution.json"):
+                if resolution.resolve() != resolution:
+                    continue
+                try:
+                    saved = read_json(resolution)
+                    _validate_resolution(saved)
+                except (OSError, ValueError, TypeError, KeyError):
+                    continue  # The acquisition step reports invalid provider data.
+                part = resolution.parent.parent
+                for asset in saved.get("assets", []) + saved.get("metadata_assets", []):
+                    output = resolution.parent / asset["path"]
+                    lock = output.parent / ("." + output.name + ".download") / ".writer.lock"
+                    if lock.is_file() and lock.resolve() == lock:
+                        locks[lock] = part
+                if namespace in ("automatic_sources_v2", "automatic_sources_v3"):
+                    for index in range(len(saved.get("assets", []))):
+                        lock = part / "audio" / f"part_{index:04d}" / ".writer.lock"
+                        if lock.is_file() and lock.resolve() == lock:
+                            locks[lock] = part
+        return locks
+
+    def _archived_download_lock_job(self, root, workspace, part, record):
+        """Use the recovered outer lock when a newer failure replaced last_job."""
+        pid, began = record.get("pid"), _timestamp(record.get("started_at"))
+        if type(pid) is not int or pid < 1 or began is None:
+            return None
+        outer_locks = {str(part / ".writer.lock"), str(part / ".canonical_lock" / ".writer.lock")}
+        for path in (root / ".studio" / "recovered_locks").glob("*.json"):
+            try:
+                evidence = read_json(path)
+                if evidence.get("original") not in outer_locks or evidence["record"]["pid"] != pid:
+                    continue
+                lower = _timestamp(evidence["record"].get("started_at"))
+                upper = _timestamp(evidence.get("recovered_at"))
+                if lower is None or upper is None or not lower <= began <= upper:
+                    continue
+                job = evidence["job"]
+                task_id = job["task_id"]
+                if job.get("stage") != "data_download" or not re.fullmatch(r"[0-9a-f]{32}", task_id):
+                    continue
+                directory = root / ".studio" / "jobs" / task_id
+                if directory != Path(job["directory"]) or directory.resolve() != directory:
+                    continue
+                request_path = directory / "request.json"
+                request = read_json(bound_file(root, {"path": request_path, "sha256": job["request_sha256"]}))
+                if (request.get("task_id") != task_id or request.get("stage") != "data_download"
+                        or Path(request["project"]) != root / "project.json" or Path(request["workspace"]) != workspace):
+                    continue
+                owner = self._worker_owner(job)
+                started = _timestamp(owner.get("started_at"))
+                if (owner.get("pid") == pid and owner.get("creation_identity")
+                        and started is not None and started <= lower and not self._job_alive(job)):
+                    return job
+            except (OSError, ValueError, TypeError, KeyError):
+                continue  # Insufficient evidence cannot authorize recovery.
+        return None
 
     def tick(self):
         with self._lock:
