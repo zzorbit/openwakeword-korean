@@ -4793,7 +4793,7 @@ class StudioManager:
             # become browser error details.
             raise ValueError("결과 음원 참조를 확인할 수 없습니다. 원본 음원과 완료 기록을 확인하세요.") from None
 
-    def _history_download_files(self, state, result, *, planned=False):
+    def _history_download_files(self, state, result, *, planned=False, recover_groups=()):
         """List planned or verified files without opening the downloads.
 
         Byte counts describe the verified material, including cache reuse. They
@@ -4898,8 +4898,11 @@ class StudioManager:
                          directory / "common_rir" / asset["filename"])
         music = result.get("official_music_preparation", {}).get("receipt")
         if planned and recipe.get("official_music_bytes"):
-            files_out.append(item("official_music", "소음 증강 음악 · FMA", "official_music",
-                "소음 증강 음악 · FMA", total=recipe["official_music_bytes"]))
+            size = recipe["official_music_bytes"]
+            row = item("official_music", "소음 증강 음악 · FMA", "official_music", "소음 증강 음악 · FMA", total=size)
+            if "official_music" in recover_groups and self._official_music_is_cached(state, shared):
+                row.update(done=size, cache_candidate=True)
+            files_out.append(row)
         elif music:
             size = None
             try:
@@ -4920,19 +4923,23 @@ class StudioManager:
             if inventory.get("source_url") != expected_url or len(entries) != recipe["additional_download"]["files"]:
                 raise ValueError("저장된 공간 울림 자료 목록이 다릅니다.")
             size, completed = 0, 0
-            for row in () if planned else entries:
+            for row in entries if not planned or "mit_rir" in recover_groups else ():
                 target = shared / "mit_rir" / row["path"]
                 try:
                     record = self._history_read(state, target.with_name(target.name + ".receipt.json"))
-                    if (record.get("completed_at") and record.get("bytes") == row["size"]
-                            and record.get("sha256") == row.get("lfs", {}).get("oid")):
+                    if (isinstance(record, dict) and record.get("completed_at") and record.get("bytes") == row["size"]
+                            and record.get("sha256") == row.get("lfs", {}).get("oid")
+                            and (not planned or target.is_file() and target.stat().st_size == row["size"])):
                         completed += 1
                         size += record["bytes"]
                 except (ValueError, KeyError, OSError):
                     continue
             total = sum(row["size"] for row in entries)
-            files_out.append(item("mit_rir", "학습용 공간 울림 · MIT RIR", "mit_rir", "학습용 공간 울림 · MIT RIR",
-                size if completed else None, total, complete=completed == len(entries)))
+            row = item("mit_rir", "학습용 공간 울림 · MIT RIR", "mit_rir", "학습용 공간 울림 · MIT RIR",
+                       size if completed else None, total, complete=completed == len(entries))
+            if planned and completed:
+                row.update(done=size, cache_candidate=completed == len(entries))
+            files_out.append(row)
         except (ValueError, KeyError, OSError):
             files_out.append(item("mit_rir", "학습용 공간 울림 · MIT RIR", "mit_rir", "학습용 공간 울림 · MIT RIR"))
         automatic = result.get("automatic_source_preparation", {})
@@ -4955,12 +4962,54 @@ class StudioManager:
             files_out.append(row)
         return files_out
 
+    def _official_music_is_cached(self, state, shared):
+        """Use pinned receipts and file sizes as transfer evidence for the display."""
+        from .official_music import POLICY, _destination, official_music_catalog
+
+        directory = shared / "official_music_selective_v1"
+        receipts = sorted(directory.glob("receipt_*.json"), key=lambda path: path.name)
+        if not receipts:
+            return False
+        catalog = official_music_catalog()
+        request = {"policy": POLICY, "catalog_sha256": identity(catalog)}
+        members = [(row, _destination(shared, key, row)) for key, source in catalog["archives"].items()
+                   for row in source["members"]]
+        expected = {str(path): row for row, path in members}
+        for path in receipts:
+            try:
+                receipt = self._history_read(state, path)
+                entries = receipt.get("files") if isinstance(receipt, dict) else None
+                if not isinstance(entries, list):
+                    continue
+                if (receipt.get("kind") == POLICY and receipt.get("request") == request and receipt.get("completed_at")
+                        and path.stem == "receipt_" + identity(receipt) and len(entries) == len(expected)
+                        and {entry["path"]: {key: value for key, value in entry.items() if key != "path"}
+                             for entry in entries} == expected):
+                    return all(file.is_file() and file.stat().st_size == row["size_bytes"] for row, file in members)
+            except (OSError, ValueError, TypeError, KeyError):
+                continue
+        return False
+
+    def _saved_automatic_download_hours(self, state):
+        policy = state["settings"].get("material_acquisition_policy")
+        if policy not in ("automatic_v1", "automatic_v2", "automatic_v3"):
+            return {}
+        path = Path(state["project"]).parent / ".studio" / "materials" / (
+            "automatic_sources_" + policy.removeprefix("automatic_")) / "progress.json"
+        try:
+            checkpoint = self._history_read(state, path)
+        except (OSError, ValueError):
+            return {}
+        hours = checkpoint.get("component_actual_hours", {}) if isinstance(checkpoint, dict) else {}
+        if not isinstance(hours, dict):
+            return {}
+        return {key: value for key, value in hours.items()
+                if type(value) in (int, float) and math.isfinite(value) and value >= 0}
+
     def _live_download_files(self, state, record, *, running):
         """Keep planned rows visible through preflight, transfer and pause."""
-        planned = self._history_download_files(state, {}, planned=True)
         files = record.get("files") if record.get("stage") == "data_download" else None
-        if not isinstance(files, list) or not files:
-            return planned
+        files = files if isinstance(files, list) else []
         current = {row["id"]: row for row in files if isinstance(row, dict) and isinstance(row.get("id"), str)}
         mit = [current.pop(identifier) for identifier, row in list(current.items()) if row.get("group") == "mit_rir"]
         if mit:
@@ -4976,6 +5025,10 @@ class StudioManager:
                 return sum(amounts) if all(type(value) is int and value >= 0 for value in amounts) else None
             current["mit_rir"] = {"id": "mit_rir", "state": status, "unit": "bytes",
                 "done": total_for("done"), "total": total_for("total")}
+        recover_groups = {key for key in ("official_music", "mit_rir")
+                          if current.get(key, {}).get("state") not in ("reused", "complete", "failed")}
+        planned = self._history_download_files(state, {}, planned=True, recover_groups=recover_groups)
+        saved_hours = self._saved_automatic_download_hours(state) if any(row.get("unit") == "hours" for row in planned) else {}
         merged = []
         for row in planned:
             live = current.pop(row["id"], {})
@@ -4983,7 +5036,13 @@ class StudioManager:
                 live = {}
             if row.get("unit") == "hours" and live.get("unit") == "hours":
                 live = {**live, "total": row["total"], "target_hours": row["total"]}
-            merged.append({**row, **live, "label": row["label"], "group_label": row["group_label"]})
+            combined = {**row, **live, "label": row["label"], "group_label": row["group_label"]}
+            if row["id"] in recover_groups and row["done"] > (combined.get("done") or 0):
+                combined.update(done=row["done"], total=row["total"])
+            hours = saved_hours.get(row["id"].removeprefix("automatic:")) if row.get("unit") == "hours" else None
+            if hours is not None and hours > (combined.get("done") or 0):
+                combined.update(done=hours, prepared_hours=hours)
+            merged.append(combined)
         merged.extend(current.values())
         if not running:
             merged = [{**row, "network_bytes": 0, "bytes_per_second": None, "eta_seconds": None} for row in merged]
@@ -5460,8 +5519,29 @@ class StudioManager:
             return self._read_optional_progress(path, progress_scope, view)
 
         material_progress = Path(state["project"]).parent / ".studio" / "progress.json"
-        download_record = (read_progress(material_progress)
-                           if "data_download" in (stage["id"], job.get("stage")) else {})
+        download_record = {}
+        if "data_download" in (stage["id"], job.get("stage")):
+            previous_scope, previous = self._progress_snapshots.get(material_progress, (None, {}))
+            download_record = read_progress(material_progress)
+            started = _timestamp(job.get("started_at")) if job.get("stage") == "data_download" else None
+
+            def from_download_attempt(record):
+                updated = _timestamp(record.get("updated_at"))
+                return (record.get("stage") == "data_download" and (started is None or updated is not None and updated >= started)
+                        and record.get("task_id") in (None, progress_scope[1]))
+
+            def has_download_files(record):
+                return from_download_attempt(record) and isinstance(record.get("files"), list) and bool(record["files"])
+
+            if not has_download_files(download_record) and previous_scope == progress_scope and has_download_files(previous):
+                # A display poll can land between progress writes, or see a hint with only a phase.
+                self._progress_snapshots[material_progress] = progress_scope, previous
+                if from_download_attempt(download_record):
+                    download_record = {**download_record, "files": previous["files"]}
+                else:
+                    download_record = previous
+            elif not from_download_attempt(download_record):
+                download_record = {}
         owned_progress = self._owned_task_progress(state, view) if job else {}
         if state.get("status") != "running":
             self._rates.pop(state["id"], None)
