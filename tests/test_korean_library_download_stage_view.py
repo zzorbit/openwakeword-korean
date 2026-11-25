@@ -2,8 +2,10 @@
 from types import SimpleNamespace
 
 from korean_openwakeword import official_music, studio_data, studio_steps
-from korean_openwakeword.common import identity, read_json, write_json
+from korean_openwakeword.common import identity, now, read_json, write_json
 from korean_openwakeword.project import create_project
+from korean_openwakeword.material_downloads import MaterialDownloads
+from korean_openwakeword import studio
 from korean_openwakeword.studio import StudioManager
 
 
@@ -114,3 +116,51 @@ def test_download_poll_retains_file_rows_when_material_snapshot_has_only_a_phase
     assert manager._describe_progress(state, {"id": "data_download"}, {}, {})[1]["files"] == rows
     state["last_job"] = {"task_id": "another-task"}
     assert manager._describe_progress(state, {"id": "data_download"}, {}, {})[1] == {}
+
+
+def test_archive_batch_telemetry_is_scoped_to_a_fresh_current_download(tmp_path):
+    manager = StudioManager(tmp_path)
+    state = {"project": str(tmp_path / "model/project.json")}
+    task = "a" * 32
+    job = {"task_id": task, "stage": "data_download", "request_sha256": "b" * 64}
+    path = tmp_path / "model/.studio/jobs" / task / "archive_batch_progress.json"
+    fields = {"completed": 20, "total": 63, "done_bytes": 32_000_000_000, "total_bytes": 92_000_000_000}
+    record = {**fields, "kind": "studio_archive_batch_progress_v1", "task_id": task,
+              "request_sha256": job["request_sha256"], "updated_at": now()}
+    write_json(path, record)
+    assert manager._archive_batch_progress(state, job) == fields
+    assert manager._archive_batch_progress(state, {**job, "task_id": "c" * 32}) is None
+    assert manager._archive_batch_progress(state, {**job, "request_sha256": "c" * 64}) is None
+    for change in ({"updated_at": "2000-01-01T00:00:00+00:00"}, {"completed": 64}, {"done_bytes": -1}):
+        write_json(path, {**record, **change})
+        assert manager._archive_batch_progress(state, job) is None
+
+
+def test_live_preparation_hint_requires_its_original_controller(tmp_path, monkeypatch):
+    manager = StudioManager(tmp_path)
+    state = {"project": str(tmp_path / "model/project.json")}
+    task = "a" * 32
+    job = {"task_id": task, "stage": "data_download", "request_sha256": "b" * 64}
+    path = tmp_path / "model/.studio/jobs" / task / "archive_prep_progress.json"
+    write_json(path, {"kind": "studio_archive_prep_progress_v1", "task_id": task, "request_sha256": job["request_sha256"],
+                     "status": "converting", "controller": 10, "controller_identity": "bound"})
+    monkeypatch.setattr(studio, "process_identity", lambda pid: "bound" if pid == 10 else None)
+    assert manager._archive_prep_progress(state, job) == "converting"
+    monkeypatch.setattr(studio, "process_identity", lambda pid: "different")
+    assert manager._archive_prep_progress(state, job) is None
+
+
+def test_total_hours_and_downloaded_bytes_survive_preparation_labels(tmp_path):
+    downloads = MaterialDownloads(tmp_path)
+    row = downloads.files["automatic:yodas2"] = {"done": 50, "total": 500, "target_hours": 500,
+                                                  "verified_archive_bytes": 100}
+    transfer = {"done": 100, "total": 100, "status": "preparing"}
+    meta = {"automatic_component": "yodas2"}
+    downloads.report({**meta, "phase": "automatic_archive", "archive_transfer": transfer})
+    assert row["archive_preparation_status"] == "checking_archive"
+    for status in ("extracting", "checking_extracted", "converting", "checking_audio"):
+        downloads.report({**meta, "phase": "automatic_preparation", "status": status})
+        assert row["archive_preparation_status"] == status
+        assert row["archive_transfer"] == transfer and row["done"] == 50
+    downloads.finish_automatic({"component_actual_hours": {"yodas2": 500}, "component_verified_archive_bytes": {"yodas2": 1250}})
+    assert row["archive_preparation_status"] is None and row["state"] == "complete"

@@ -2147,9 +2147,18 @@
       }
       const rows = [...groups].sort(([a], [b]) => rank(a) - rank(b)).flatMap(([key, group]) => {
         if (group.some(file => (file.unit || "bytes") !== "bytes")) {
-          return group.map(file => ({ ...file, key: file.id, label: file.label || file.group_label || "자료",
-            active: fileActive(file), completed: downloadFileComplete(file),
-            failed: file.state === "failed" }));
+          return group.map(file => {
+            const label = file.label || file.group_label || "자료";
+            const batch = file.archive_batch;
+            if (activeDownload && batch) {
+              return { key: file.id, label, archiveBatch: true, active: true,
+                done: batch.completed, total: batch.total, unit: "묶음",
+                bytes: batch.done_bytes, totalBytes: batch.total_bytes,
+                detail: `일괄 다운로드 중 · ${progressAmount(batch.done_bytes, batch.total_bytes, "bytes")}` };
+            }
+            return { ...file, key: file.id, label, active: fileActive(file),
+              completed: downloadFileComplete(file), failed: file.state === "failed" };
+          });
         }
         const verifying = group.filter(file => file.state === "verifying");
         const cached = file => file.cache_candidate === true && (file.state === "waiting"
@@ -2190,7 +2199,7 @@
         const sourcePrepared = preparedGroups.has(group);
         const inspection = group === "generic_negative" && row.completed ? quality : null;
         const inspectionActive = activeDownload && inspection?.state === "checking";
-        const work = !sourcePrepared && group === preparation?.group ? preparation : null;
+        const work = !row.archiveBatch && !sourcePrepared && group === preparation?.group ? preparation : null;
         const preparing = row.key !== "compute-tools" && (Boolean(work) || inspectionActive
           || waitingForPreparation && (row.completed || row.transferComplete) && !sourcePrepared && inspection?.state !== "complete");
         const preparationActive = active && preparing && Boolean(work || inspectionActive);
@@ -2211,14 +2220,19 @@
         const verifiedBytes = row.verified_archive_bytes;
         const receivedBytes = Number.isFinite(verifiedBytes) && verifiedBytes >= 0
           ? verifiedBytes + (!row.completed && Number.isFinite(transfer?.done) && transfer.done >= 0 ? transfer.done : 0) : null;
-        const estimate = row.estimated_download_bytes;
+        const observedEstimate = Number.isFinite(verifiedBytes) && verifiedBytes > 0 && row.done > 0 && row.total > 0
+          ? verifiedBytes * row.total / row.done : 0;
+        const estimate = Math.max(row.estimated_download_bytes || 0, observedEstimate, receivedBytes || 0);
         const estimatedSize = Number.isFinite(estimate) && estimate > 0 ? `약 ${quantity(estimate, "bytes")}` : "";
         const archiveSize = row.completed && receivedBytes > 0 ? progressAmount(receivedBytes, receivedBytes, "bytes")
           : receivedBytes !== null || estimatedSize ? `${quantity(receivedBytes, "bytes")} / ${estimatedSize || "—"}` : "";
-        const archiveStatus = !rowActive ? "" : {
-          checking: "파일 확인 중", retrying: "연결 재시도 중", preparing: "검증·전처리 중",
-        }[transfer?.status] || "";
-        const archiveRate = rowActive && transfer?.status === "downloading" && Number.isFinite(transfer.bytes_per_second)
+        const archiveStatus = !rowActive ? "" : ({
+          checking_archive: "압축 파일 검증 중", extracting: "압축 해제 중", checking_extracted: "압축 해제 자료 검증 중",
+          converting: "음원 변환 중", checking_audio: "음원 품질 검사 중", preparing_ahead: "다음 묶음 준비 중",
+        }[row.archive_preparation_status] || {
+          checking: "파일 확인 중", retrying: "연결 재시도 중", preparing: "검증·전처리 중", downloading: "다운로드 중",
+        }[transfer?.status] || "");
+        const archiveRate = rowActive && !row.archive_preparation_status && transfer?.status === "downloading" && Number.isFinite(transfer.bytes_per_second)
           && transfer.bytes_per_second > 0 ? `${quantity(transfer.bytes_per_second, "bytes")}/초` : "";
         const checkPercent = Number.isFinite(row.hashPercent) ? ` · ${row.hashPercent}%` : "";
         const reuseNote = verifying ? "파일 무결성 확인 중" + checkPercent

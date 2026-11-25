@@ -375,7 +375,7 @@ def test_each_full_component_refills_after_real_callback_shortfall(setup):
         assert source["pools"] == (["korean_negative"] if source["provider"] == "yodas2" else ["generic_negative"])
     assert result["hours_scope"] == "post_technical_QC_Train"
     assert not result["content_approved"] and not result["training_admitted"] and not result["Final_accessed"]
-    post_qc = [p for p in progress if "기술 검사 완료" in p["label"]]
+    post_qc = [p for p in progress if "기술 검사 완료" in p.get("label", "")]
     assert len(post_qc) == len(qualified) and all(p["done"] <= p["total"] + 4/3600 for p in post_qc)
 
 

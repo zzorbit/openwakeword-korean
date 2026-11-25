@@ -1756,7 +1756,7 @@ async function main() {
     project.download_files = [yodas];
     const p = page(project), row = historyRowByLabel(p.shell, "한국어 웹 음성"), bar = row.querySelector("progress");
     assert.equal(bar.value / bar.max, 0.01);
-    assert.match(textOf(row), /5 \/ 500시간.*576 MiB \/ 약 65\.2 GiB · 4 MiB\/초/);
+    assert.match(textOf(row), /5 \/ 500시간.*576 MiB \/ 약 65\.2 GiB · 다운로드 중 · 4 MiB\/초/);
     assert.doesNotMatch(textOf(row), /확보한 원본|현재 묶음|256 MiB/);
     yodas.archive_transfer = { status: "checking", done: null, total: 256 * mib };
     p.ui.render();
@@ -1776,6 +1776,55 @@ async function main() {
     project.download_prepared_groups = ["automatic:yodas2"];
     p.ui.render();
     assert.match(textOf(row), /768 MiB \/ 768 MiB/);
+  });
+  await test("a live Korean archive batch shows archive count and byte progress instead of old preparation", () => {
+    const project = checkpointProject("running", "running");
+    project.stage_id = "data_download";
+    const gib = 1024 ** 3;
+    const yodas = { id: "automatic:yodas2", label: "한국어 웹 음성", group: "automatic:yodas2",
+      state: "downloading", unit: "hours", done: 184, total: 500, verified_archive_bytes: 50 * gib,
+      archive_transfer: { status: "preparing", done: gib, total: gib },
+      archive_batch: { completed: 30, total: 63, done_bytes: 46 * gib, total_bytes: 86 * gib } };
+    project.download_files = [yodas];
+    const p = page(project), row = historyRowByLabel(p.shell, "한국어 웹 음성"), bar = row.querySelector("progress");
+    assert.match(textOf(row), /30 \/ 63묶음.*일괄 다운로드 중 · 46 GiB \/ 86 GiB/);
+    assert.doesNotMatch(textOf(row), /검증·전처리 중|500시간/);
+    assert.equal(bar.value / bar.max, 46 / 86);
+    assert.equal(hasActiveDownloadSpinner(row), true);
+    yodas.archive_batch = { ...yodas.archive_batch, completed: 31, done_bytes: 47 * gib };
+    p.ui.render();
+    assert.match(textOf(row), /31 \/ 63묶음.*47 GiB \/ 86 GiB/);
+    delete yodas.archive_batch;
+    p.ui.render();
+    assert.match(textOf(row), /184 \/ 500시간.*검증·전처리 중/);
+  });
+  await test("Korean archive phases retain accepted hours and a plausible total", () => {
+    const project = checkpointProject("running", "running");
+    project.stage_id = "data_download";
+    const gib = 1024 ** 3;
+    const yodas = { id: "automatic:yodas2", label: "한국어 웹 음성", group: "automatic:yodas2",
+      state: "downloading", unit: "hours", done: 400, total: 500, verified_archive_bytes: 100 * gib,
+      estimated_download_bytes: 65 * gib, archive_transfer: { status: "preparing", done: gib, total: gib } };
+    project.download_files = [yodas];
+    const p = page(project), row = historyRowByLabel(p.shell, "한국어 웹 음성");
+    for (const [status, label] of [["checking_archive", "압축 파일 검증 중"], ["extracting", "압축 해제 중"],
+      ["checking_extracted", "압축 해제 자료 검증 중"], ["converting", "음원 변환 중"],
+      ["checking_audio", "음원 품질 검사 중"]]) {
+      yodas.archive_preparation_status = status;
+      p.ui.render();
+      assert.ok(textOf(row).includes(label));
+      assert.match(textOf(row), /400 \/ 500시간.*101 GiB \/ 약 125 GiB/);
+      assert.equal(hasActiveDownloadSpinner(row), true);
+    }
+    yodas.archive_preparation_status = null;
+    yodas.archive_transfer = null;
+    yodas.verified_archive_bytes = 125 * gib;
+    yodas.done = 500;
+    yodas.state = "complete";
+    project.download_prepared_groups = ["automatic:yodas2"];
+    p.ui.render();
+    assert.match(textOf(row), /125 GiB \/ 125 GiB/);
+    assert.equal(hasActiveDownloadSpinner(row), false);
   });
   await test("parallel downloads retain each active file hash note until verification or the attempt changes", () => {
     const project = checkpointProject("running", "running");

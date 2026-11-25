@@ -334,11 +334,16 @@ class PublicSourceBackend:
             request = {"candidate": candidate, "target_hours": target_hours,
                        "excluded_track_ids": sorted(set(excluded_track_ids)), "seed": SEED,
                        "storage_policy": self.storage_policy}
+            def convert(prepared, output):
+                if progress:
+                    progress({"phase": "automatic_preparation", "status": "converting"})
+                return canonicalize_prepared_source(prepared, output)
+
             return prepare_canonical_source(directory, request=request,
                 acquire=lambda: self._prepare(candidate, directory, target_hours=target_hours,
                     max_download_bytes=max_download_bytes, max_extract_bytes=max_extract_bytes,
                     excluded_track_ids=excluded_track_ids, progress=progress),
-                canonicalize=canonicalize_prepared_source,
+                canonicalize=convert,
                 max_retained_bytes=max_extract_bytes, progress=progress,
                 reuse_raw_shard=candidate["component"] in ("audioset_unbalanced", "mls", "yodas2"))
         return self._prepare(candidate, directory, target_hours=target_hours,
@@ -613,9 +618,12 @@ def prepare_automatic_sources(project, workspace, *, generic_hours, korean_hours
                 archive_bytes = candidate.get("archive_bytes")
                 tracks_transfer = component in verified_archive_bytes and type(archive_bytes) is int and archive_bytes > 0
                 if progress:
+                    saved_part = record_path.is_file()
                     progress({"label": "학습용 비호출 자료 자동 준비: " + component,
                               "done": actual[component], "total": target, "unit": "hours", "part": key,
-                              **({"archive_transfer": {"done": None, "total": archive_bytes, "status": "checking"},
+                              "archive_preparation_status": "checking_extracted" if saved_part else None,
+                              **({"archive_transfer": {"done": archive_bytes if saved_part else None,
+                                                        "total": archive_bytes, "status": "checking"},
                                   "verified_archive_bytes": verified_archive_bytes[component]} if tracks_transfer else {})})
                 if record_path.exists():
                     record = read_json(record_path)
@@ -684,7 +692,7 @@ def prepare_automatic_sources(project, workspace, *, generic_hours, korean_hours
                     prepared = backend.prepare(candidate, shared_part,
                         target_hours=part_target, max_download_bytes=remaining_budget,
                         max_extract_bytes=min(source_room, max(1, free-_RESERVE)),
-                        excluded_track_ids=sorted(seen_tracks), progress=report_part if progress and tracks_transfer else progress)
+                        excluded_track_ids=sorted(seen_tracks), progress=report_part if progress else None)
                     source = dict(prepared["source"])
                     diagnostics = []
                     copy_storage = {"bytes": 0}
@@ -743,6 +751,9 @@ def prepare_automatic_sources(project, workspace, *, generic_hours, korean_hours
                 if not rows:
                     continue
                 try:
+                    if progress and qualify_source:
+                        progress({"phase": "automatic_preparation", "status": "checking_audio",
+                                  "automatic_component": component})
                     qualification = qualify_source(source) if qualify_source else None
                 except ValueError as error:
                     # Only the preparation API's explicit all-technical-rejects
@@ -775,6 +786,7 @@ def prepare_automatic_sources(project, workspace, *, generic_hours, korean_hours
                 if progress:
                     progress({"label": "학습용 비호출 자료 기술 검사 완료: " + component,
                               "done": actual[component], "total": target, "unit": "hours", "part": key,
+                              "archive_preparation_status": None,
                               **({"archive_transfer": None, "verified_archive_bytes": verified_archive_bytes[component]}
                                  if tracks_transfer else {})})
             if actual[component] + 1e-9 < target:

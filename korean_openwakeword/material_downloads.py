@@ -83,16 +83,21 @@ class MaterialDownloads:
                 done, target = event.get("done", 0), event.get("total")
                 self.files[key].update(done=done, total=target, unit="hours", prepared_hours=done,
                     state="complete" if target is not None and done >= target else "downloading")
-                for field in ("archive_transfer", "verified_archive_bytes"):
+                for field in ("archive_transfer", "verified_archive_bytes", "archive_preparation_status"):
                     if field in event:
                         self.files[key][field] = event[field]
         if event.get("phase") == "automatic_archive":
             row = self.files.get("automatic:" + event.get("automatic_component", ""))
             if row is not None:
                 transfer = event["archive_transfer"]
-                row.update(archive_transfer=transfer)
+                row.update(archive_transfer=transfer, archive_preparation_status=(
+                    "checking_archive" if transfer["status"] == "preparing" else None))
                 if transfer["status"] == "failed":
                     row["state"] = "failed"
+        if event.get("phase") == "automatic_preparation":
+            row = self.files.get("automatic:" + event.get("automatic_component", ""))
+            if row is not None:
+                row["archive_preparation_status"] = event["status"]
         if self.files:
             event["files"] = [dict(row) for row in self.files.values()]
         if self.progress:
@@ -102,7 +107,7 @@ class MaterialDownloads:
         for component, actual in result.get("component_actual_hours", {}).items():
             row = self.files.get("automatic:" + component)
             if row:
-                row.update(done=actual, total=row["target_hours"], unit="hours", prepared_hours=actual,
+                row.update(done=actual, total=row["target_hours"], unit="hours", prepared_hours=actual, archive_preparation_status=None,
                            state="complete" if actual >= row["target_hours"] else "failed")
                 archive_bytes = result.get("component_verified_archive_bytes", {}).get(component)
                 if archive_bytes is not None:

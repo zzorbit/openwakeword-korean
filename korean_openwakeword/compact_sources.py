@@ -74,6 +74,10 @@ def _asset_file(asset, directory, progress=None, *, report_archive=False, verifi
     if target.exists():
         if not target.is_file() or target.stat().st_size != asset["size_bytes"]:
             raise ValueError("Existing compact asset has changed size")
+        if report_archive and progress:
+            progress({"phase": "automatic_archive", "label": "한국어 웹 음성 압축 파일 검증",
+                      "archive_transfer": {"done": asset["size_bytes"], "total": asset["size_bytes"],
+                                           "status": "preparing", "bytes_per_second": None}})
         checksum = _verify_cached_original(target, asset, verification_cache=verification_cache)
     elif asset["checksum_algorithm"] == "sha256":
         def report(event):
@@ -388,8 +392,18 @@ def prepare_compact_source(resolution, directory, *, max_download_bytes,
                     allowance = max_extract_bytes - retained - (0 if claim["retire_eligible"] else asset["size_bytes"])
                 if allowance <= 0:
                     raise ValueError("Compact retained originals exceed the storage byte cap")
+                def report_extraction(event):
+                    phase = event.get("phase")
+                    status = {"extract_hash": "checking_archive", "extract": "extracting",
+                              "extract_verify": "checking_extracted"}.get(phase)
+                    if status:
+                        progress({"phase": "automatic_preparation", "status": status})
+
                 extraction = extract_archive(archive, destination, max_bytes=allowance,
-                                             verification_cache=verification_cache)
+                                             verification_cache=verification_cache,
+                                             progress=report_extraction if progress else None)
+                if progress:
+                    progress({"phase": "automatic_preparation", "status": "checking_extracted"})
                 raw_bytes = _verify_raw(destination, extraction, max_extract_bytes - retained, sync=True)
                 retire = claim["retire_eligible"]
                 part = {"kind": "compact_source_part_v1", "asset": asset, "archive": archive_record,

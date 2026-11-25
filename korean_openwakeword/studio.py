@@ -362,6 +362,10 @@ def _execution_contract(*, legacy_reference_review=False):
 # These exact LF and CRLF source pairs preserve archive member and normalized
 # audio identities. The worker still binds requests to the actual code bytes.
 _MATERIAL_PREPARATION_COMPATIBLE_DIGESTS = {
+    "automatic_sources.py": {
+        "a932e3db29f259d0cd202fcf071cbe64cc036e592b32cc7ecf14bbb079312ef0": "1c81857c4a3a856d1c1359cdb693c71cc980126d58dc35a2cbbf40290cee2e09",
+        "21ab69a22cc48d5b92bd6306e40cfdcd94d8dfdf99b56c82b59cb52a4519a490": "23d62fdff43aefe0473c836b213f0f77aa7d3e085357682416d063712e5bead3",
+    },
     "canonical_audio.py": {
         "2c7554f722fdb7189c00ee522ec9bb9e38b0e82769a05407b7b0d32fbd7e3ebc": "2e8977fa15a15f831ab676b1a6df8ed6f2e7a059cd85db22825f02cbbd1ff85a",
         "08f337e16b9ff0b116c8942549731aa32ee1ad1db73118f96111e7c5b296e51a": "cb32fe5e5324c7a5ec90b5e2950b04f560c547ecfba1156576b8d7d9eb9f6f25",
@@ -373,6 +377,12 @@ _MATERIAL_PREPARATION_COMPATIBLE_DIGESTS = {
     "compact_sources.py": {
         "4d03add90403544d7626e8c834f6774024161c0b7ce359c28e6971679a6bd4c2": "dead3f8185e9361656d7b0b1432d7f4e734d6a52aa4497b0803aaf8120a2259e",
         "d411f1b86244c70f0cda190b8d73f71164ebb1f7b7bd2b9267743ee826c1a0cd": "254fc67a01bb93779169ee90dd82012c62d38d7465286fede80a2e0063b94774",
+        "a9f32af0e32c98b325d676ce3e5e1dcf454c590c1a7e938dab1fb352a23be8e2": "dead3f8185e9361656d7b0b1432d7f4e734d6a52aa4497b0803aaf8120a2259e",
+        "e656aa356399ba5ee0dc55c68ada0e82aa754536dd854834aec2fde46fcc3bd4": "254fc67a01bb93779169ee90dd82012c62d38d7465286fede80a2e0063b94774",
+    },
+    "material_downloads.py": {
+        "dce07ad93956f367dd3ed1c00096a9d563d8f8b7bba0c43f6dc646e757f5a4ea": "761503ca48de070e2a3e00e574dd261aba4dcd4fe43e7bf6f2b2e79c8a006424",
+        "6e333374607bc5c796eaf5f0e9d00640e020ff07417bd40e601d375594dc71c7": "54e8f63cd38ef4a76c9ed35c9a504b2f4cae9610163610e4051031957e911146",
     },
     "preparation.py": {
         "6f5e7af47c6d729c9b2ff9fdffce0f92316a5c75adc5ef502e5a26b607a46066": "4d66d64f395e2a4e935430e0a27836c636e66e6193f3a9bf259ce9f619ccefa7",
@@ -5430,6 +5440,48 @@ class StudioManager:
         except (OSError, TypeError, ValueError):
             return {}
 
+    @staticmethod
+    def _archive_job_progress(state, job, filename, kind):
+        """Read display-only telemetry bound to the current download request."""
+        task = job.get("task_id")
+        if job.get("stage") != "data_download" or not isinstance(task, str) or not re.fullmatch(r"[0-9a-f]{32}", task):
+            return None
+        directory = Path(state["project"]).parent.resolve() / ".studio/jobs" / task
+        path = directory / filename
+        try:
+            if path.stat().st_size > 4096:
+                return None
+            record = read_json(path)
+            if (not isinstance(record, dict) or record.get("kind") != kind
+                    or record.get("task_id") != task or not job.get("request_sha256")
+                    or record.get("request_sha256") != job["request_sha256"]):
+                return None
+            return record
+        except (OSError, TypeError, ValueError):
+            return None
+
+    def _archive_batch_progress(self, state, job):
+        record = self._archive_job_progress(state, job, "archive_batch_progress.json", "studio_archive_batch_progress_v1") or {}
+        updated = _timestamp(record.get("updated_at"))
+        if updated is None or not -2 <= time.time() - updated <= 12:
+            return None
+        fields = {key: record.get(key) for key in ("completed", "total", "done_bytes", "total_bytes")}
+        if (not all(type(value) is int for value in fields.values())
+                or not 0 <= fields["completed"] <= fields["total"] <= 10000 or fields["total"] == 0
+                or not 0 <= fields["done_bytes"] <= fields["total_bytes"] or fields["total_bytes"] == 0):
+            return None
+        return fields
+
+    def _archive_prep_progress(self, state, job):
+        record = self._archive_job_progress(state, job, "archive_prep_progress.json", "studio_archive_prep_progress_v1") or {}
+        pid, identity_value = record.get("controller"), record.get("controller_identity")
+        status = record.get("status")
+        if (status not in ("checking_archive", "extracting", "checking_extracted", "converting", "checking_audio")
+                or type(pid) is not int or pid < 1 or not isinstance(identity_value, str)
+                or not identity_value or process_identity(pid) != identity_value):
+            return None
+        return "preparing_ahead" if status == "checking_archive" else status
+
     def _progress_eta(self, state, job, progress):
         return estimate_progress_eta(state, job, progress, self._rates)
 
@@ -5828,6 +5880,13 @@ class StudioManager:
         if stage["id"] in ("frontend", "data_download", "data_review", "data_connect"):
             view["download_files"] = completed_downloads.get("files") or self._live_download_files(
                 state, download_record, running=job.get("stage") == "data_download" and view.get("process_alive", False))
+            if stage["id"] == "data_download" and view.get("process_alive"):
+                batch = self._archive_batch_progress(state, job)
+                preparing = self._archive_prep_progress(state, job)
+                if batch or preparing:
+                    overrides = {"archive_batch": batch} if batch else {"archive_preparation_status": preparing}
+                    view["download_files"] = [{**row, **overrides} if row["id"] == "automatic:yodas2" else row
+                                              for row in view["download_files"]]
         download_files = view.get("download_files", completed_downloads.get("files", ()))
         if stage["id"] == "data_download" and download_files:
             view["download_prepared_groups"] = prepared_download_groups(
