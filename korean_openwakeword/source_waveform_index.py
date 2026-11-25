@@ -293,9 +293,12 @@ def _yodas2(directory, paths, resolution, files, bindings, dataset_id, source_ur
                         or not isinstance(text, str) or not text.strip()):
                     raise ValueError("YODAS2 utterance needs its actual provider ID and nonempty text")
                 start, end = int(fields[-2]) / 100, int(fields[-1]) / 100
-                if not 0 <= start < end or video not in durations:
+                if not 0 <= start <= end or video not in durations:
                     raise ValueError("YODAS2 supplied utterance has an invalid parent interval")
-                if end > durations[video] + .1:
+                if start == end:
+                    issues.append({"kind": "provider_annotation_zero_length",
+                        "utterance_id": utterance_id, "provider_start_s": start, "provider_end_s": end})
+                elif end > durations[video] + .1:
                     issues.append({"kind": "provider_annotation_outside_declared_video",
                         "utterance_id": utterance_id, "provider_start_s": start, "provider_end_s": end,
                         "provider_video_duration_s": durations[video], "overrun_s": end - durations[video]})
@@ -310,17 +313,25 @@ def _yodas2(directory, paths, resolution, files, bindings, dataset_id, source_ur
     for video, path in sorted(by_id.items()):
         row = _base_row(path, directory, resolution, metadata_by_video[video], dataset_id, source_url, license, language)
         row.update(_audio_facts(path, durations[video]))
+        # Retain all supplied text for wakeword exclusion, including captions without a usable interval.
+        supplied = captions[video]
+        timed = [utterance for utterance in supplied if utterance["start_s"] < utterance["end_s"]]
+        timing_status = ("zero_length_annotations" if len(timed) != len(supplied)
+                         else "timing_out_of_bounds" if annotation_issues[video] else "within_declared_video")
         row.update(canonical_source_id="yodas:provider-video:" + video,
             canonical_recording_id="yodas:provider-video:" + video, provider_video_id=video,
             provider_language_subset=subset, split="train", unknown_speaker_group="yodas:unverified-speakers",
-            text="\n".join(r["text"] for r in captions[video]), provider_utterances=captions[video],
-            provider_annotation_status="timing_out_of_bounds" if annotation_issues[video] else "within_declared_video",
+            text="\n".join(r["text"] for r in supplied), provider_utterances=timed,
+            provider_annotation_status=timing_status,
             provider_annotation_issues=annotation_issues[video],
             category_basis="YODAS2 supplied speech transcripts and language subset; not a per-frame speech or genre annotation",
             provider_identity_scope="Corpus video ID, not a YouTube video ID or speaker identity")
-        if not captions[video]:
+        if not supplied:
             row.update(excluded=True, exclusion_reason="YODAS2 original provider transcript is empty; speech content is unverified",
                 speech=None, speech_presence="unknown", provider_annotation_status="missing_provider_transcript")
+        elif not timed:
+            row.update(excluded=True, exclusion_reason="YODAS2 provider transcript contains only zero-length annotations",
+                speech=None, speech_presence="unknown")
         rows.append(row)
     return rows
 
@@ -346,10 +357,14 @@ def build_waveform_index(directory, *, dataset, metadata, dataset_id=None, sourc
             "Unknown speakers and unverified cross-version aliases cannot certify held-out independence; indexed YODAS2 is conservative Train-only.",
             "The declared language subset and supplied speech text do not certify every frame's language, speech presence or content genre.",
             "Provider annotation times are preserved unchanged; out-of-duration annotations are reported and are not waveform crop boundaries or corrected alignment.",
+            "Zero-length annotations are reported separately; their text is retained for filtering and their intervals do not enter the utterance list.",
             "Files without supplied transcripts remain explicitly excluded index rows; their speech content is not invented or transcribed automatically.",
         ])
-    annotations = {"videos_with_out_of_bounds_annotations": sum(bool(r.get("provider_annotation_issues")) for r in rows),
-        "out_of_bounds_utterances": sum(len(r.get("provider_annotation_issues", [])) for r in rows),
+    issues = [row.get("provider_annotation_issues", ()) for row in rows]
+    overruns = [sum(issue["kind"] == "provider_annotation_outside_declared_video" for issue in item) for item in issues]
+    annotations = {"videos_with_out_of_bounds_annotations": sum(count > 0 for count in overruns),
+        "out_of_bounds_utterances": sum(overruns),
+        "zero_length_utterances": sum(issue["kind"] == "provider_annotation_zero_length" for item in issues for issue in item),
         "sources_without_provider_transcripts": sum(r.get("provider_annotation_status") == "missing_provider_transcript" for r in rows),
         "timestamps_modified": False, "scope": "Provider reference annotations; not content approval or verified alignment"}
     return {"rows": rows, "provider": resolution["provider"], "provider_metadata_bindings": bindings,

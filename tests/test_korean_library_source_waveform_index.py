@@ -213,6 +213,30 @@ def test_yodas_original_out_of_bounds_annotations_are_preserved_and_reported(tmp
     assert result["content_approved"] is False
 
 
+@pytest.mark.parametrize("has_timed_caption", [True, False])
+def test_yodas_zero_length_annotation_retains_text_and_cannot_supply_a_timed_caption(tmp_path, has_timed_caption):
+    video = "YowNukCDSr4"
+    zero_length_id = f"{video}-00001-00000010-00000010"
+    captions = {zero_length_id: "가영아"}
+    if has_timed_caption:
+        captions[f"{video}-00000-00000000-00000008"] = "한국어 예제입니다."
+    audio, _, receipt = make_source(tmp_path, "yodas2", texts=[{"audio_id": video, "text": captions}])
+
+    result = build_waveform_index(audio, dataset="yodas2", metadata=receipt)
+    row, = result["rows"]
+    assert row["sha256"] == digest(audio / row["path"])
+    assert row["text"].splitlines()[-1] == "가영아"
+    assert len(row["provider_utterances"]) == int(has_timed_caption)
+    assert row.get("excluded", False) is not has_timed_caption
+    assert row["provider_annotation_status"] == "zero_length_annotations"
+    assert row["provider_annotation_issues"] == [{
+        "kind": "provider_annotation_zero_length", "utterance_id": zero_length_id,
+        "provider_start_s": 0.1, "provider_end_s": 0.1,
+    }]
+    assert result["annotation_quality"]["zero_length_utterances"] == 1
+    assert result["annotation_quality"]["out_of_bounds_utterances"] == 0
+
+
 def test_yodas_empty_provider_transcript_is_explicitly_excluded_without_stt(tmp_path):
     audio, _, receipt = make_source(tmp_path, "yodas2", texts=[{"audio_id": "YowNukCDSr4", "text": {}}])
     result = build_waveform_index(audio, dataset="yodas2", metadata=receipt)

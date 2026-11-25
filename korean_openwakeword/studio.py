@@ -359,8 +359,8 @@ def _execution_contract(*, legacy_reference_review=False):
     return deepcopy(result)
 
 
-# These exact LF and CRLF source pairs preserve archive member and normalized
-# audio identities. The worker still binds requests to the actual code bytes.
+# These exact LF and CRLF source pairs preserve previously valid material receipts.
+# The worker still binds requests to the actual code bytes.
 _MATERIAL_PREPARATION_COMPATIBLE_DIGESTS = {
     "automatic_sources.py": {
         "a932e3db29f259d0cd202fcf071cbe64cc036e592b32cc7ecf14bbb079312ef0": "1c81857c4a3a856d1c1359cdb693c71cc980126d58dc35a2cbbf40290cee2e09",
@@ -383,6 +383,10 @@ _MATERIAL_PREPARATION_COMPATIBLE_DIGESTS = {
     "material_downloads.py": {
         "dce07ad93956f367dd3ed1c00096a9d563d8f8b7bba0c43f6dc646e757f5a4ea": "761503ca48de070e2a3e00e574dd261aba4dcd4fe43e7bf6f2b2e79c8a006424",
         "6e333374607bc5c796eaf5f0e9d00640e020ff07417bd40e601d375594dc71c7": "54e8f63cd38ef4a76c9ed35c9a504b2f4cae9610163610e4051031957e911146",
+    },
+    "source_waveform_index.py": {
+        "3e2984727e4f1494c44f489b3260e35eec50c01a1878112ae8942a142f41d894": "1b9c4a676e3088aabbbfa4f7abe9efeff0c640822238aa814e1bbf50eea5ca56",
+        "e9f532d5d4f907a2c9bef523b9072ed8e1f914358b7c350686c98f1190555cbc": "d39e7aa8b6160b7f4c031fd3b064ff48ecf5bf642ec9c5db079cb676f1cccf9f",
     },
     "preparation.py": {
         "6f5e7af47c6d729c9b2ff9fdffce0f92316a5c75adc5ef502e5a26b607a46066": "4d66d64f395e2a4e935430e0a27836c636e66e6193f3a9bf259ce9f619ccefa7",
