@@ -340,8 +340,8 @@ def test_new_archive_becoming_shared_before_acquisition_is_preserved(setup, monk
     directory, resolution, _, _ = setup
     real = module._asset_file
     external = directory.parent / "external-original.tar"
-    def materialize(asset, originals, progress=None):
-        record = real(asset, originals, progress)
+    def materialize(asset, originals, progress=None, **options):
+        record = real(asset, originals, progress, **options)
         if asset in resolution["assets"]:
             os.link(record["path"], external)
         return record

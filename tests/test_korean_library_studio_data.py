@@ -398,6 +398,46 @@ def test_tar_bounded_extraction(tmp_path):
     assert receipt["content_approved"] is False
 
 
+def test_gzip_tar_streams_and_resumes_after_an_interrupted_publish(tmp_path, monkeypatch):
+    archive, output = tmp_path / "source.tar.gz", tmp_path / "out"
+    with tarfile.open(archive, "w:gz") as stream:
+        for name, payload in (("a.wav", b"first"), ("nested/b.wav", b"second")):
+            member = tarfile.TarInfo(name)
+            member.size = len(payload)
+            stream.addfile(member, io.BytesIO(payload))
+    monkeypatch.setattr(tarfile.TarFile, "getmembers", lambda self: pytest.fail("Rewound gzip tar inventory"))
+    replace = os.replace
+    with monkeypatch.context() as patch:
+        def interrupted(source, target):
+            if Path(target) == output / "nested/b.wav":
+                raise OSError("interrupted publication")
+            replace(source, target)
+        patch.setattr(module.os, "replace", interrupted)
+        with pytest.raises(OSError, match="interrupted publication"):
+            module.extract_archive(archive, output)
+    assert (output / "a.wav").read_bytes() == b"first"
+    assert not (output / "extraction_receipt.json").exists()
+    result = module.extract_archive(archive, output)
+    assert [item["sha256"] for item in result["files"]] == [digest(output / "a.wav"), digest(output / "nested/b.wav")]
+    assert module.extract_archive(archive, output)["resumed"] is True
+
+
+def test_gzip_tar_validates_unselected_late_members_before_publishing(tmp_path):
+    archive, output = tmp_path / "source.tar.gz", tmp_path / "out"
+    with tarfile.open(archive, "w:gz") as stream:
+        member = tarfile.TarInfo("selected.wav")
+        member.size = 5
+        stream.addfile(member, io.BytesIO(b"audio"))
+        unsafe = tarfile.TarInfo("unselected.link")
+        unsafe.type, unsafe.linkname = tarfile.SYMTYPE, "../outside"
+        stream.addfile(unsafe)
+    with pytest.raises(ValueError, match="links and special"):
+        module.extract_archive(archive, output, include_suffixes=(".wav",))
+    assert not (output / "selected.wav").exists()
+    assert not (output / "extraction_receipt.json").exists()
+    assert not list(tmp_path.glob(".koww-extract-*"))
+
+
 def test_extraction_progress_is_separate_from_download_and_preserves_exact_files(tmp_path):
     archive = tmp_path / "source.zip"
     _zip(archive, [("a.wav", b"original audio"), ("b.wav", b"other original")])

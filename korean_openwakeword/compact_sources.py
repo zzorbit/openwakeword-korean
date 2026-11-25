@@ -64,7 +64,7 @@ def _inside(root, relative):
     return _archive_target(root, relative)
 
 
-def _asset_file(asset, directory, progress=None, *, report_archive=False):
+def _asset_file(asset, directory, progress=None, *, report_archive=False, verification_cache=None):
     """Use existing pinned/resumable downloaders; preserve completed bytes."""
     from .commercial_sources import _verify_cached_original
     from .downloads import download_checked
@@ -74,7 +74,7 @@ def _asset_file(asset, directory, progress=None, *, report_archive=False):
     if target.exists():
         if not target.is_file() or target.stat().st_size != asset["size_bytes"]:
             raise ValueError("Existing compact asset has changed size")
-        checksum = _verify_cached_original(target, asset)
+        checksum = _verify_cached_original(target, asset, verification_cache=verification_cache)
     elif asset["checksum_algorithm"] == "sha256":
         def report(event):
             phase = event["phase"]
@@ -86,6 +86,7 @@ def _asset_file(asset, directory, progress=None, *, report_archive=False):
                                            "bytes_per_second": event.get("bytes_per_second") if status == "downloading" else None}})
 
         record = download_checked(asset["source_url"], target, asset["sha256"], asset["size_bytes"],
+                                  verification_cache=verification_cache,
                                   **({"progress": report} if report_archive and progress else {}))
         checksum = record["sha256"]
         acquisition = "downloaded_here"
@@ -284,6 +285,7 @@ def prepare_compact_source(resolution, directory, *, max_download_bytes,
     the source identity, so another project can reuse this exact cache.
     """
     from .commercial_sources import _validate_resolution
+    from .downloads import VerificationCache
     from .studio_data import extract_archive
     _validate_resolution(resolution)
     if resolution["source_id"] not in ("audioset_unbalanced", "mls", "yodas2"):
@@ -344,6 +346,7 @@ def prepare_compact_source(resolution, directory, *, max_download_bytes,
         if retained > max_extract_bytes:
             raise ValueError("Compact provider metadata exceeds the retained-byte cap")
         for index, asset in enumerate(resolution["assets"]):
+            verification_cache = VerificationCache()
             archive = _inside(originals, asset["path"])
             destination = audio / f"part_{index:04d}"
             part_path = directory / "parts" / f"part_{index:04d}.json"
@@ -362,13 +365,13 @@ def prepare_compact_source(resolution, directory, *, max_download_bytes,
                     archive_record = claim["archive"]
                     if not archive.is_file():
                         raise ValueError("Compact acquired archive is missing; preservation cannot continue")
-                    checked = _asset_file(asset, originals, progress)
+                    checked = _asset_file(asset, originals, progress, verification_cache=verification_cache)
                     if any(checked[key] != archive_record[key] for key in ("path", "sha256", "bytes")):
                         raise ValueError("Compact acquired archive changed")
                     if claim["retire_eligible"] and _file_identity(archive) != claim["file_identity"]:
                         raise ValueError("Compact acquired archive was replaced; original is preserved")
                 else:
-                    archive_record = _asset_file(asset, originals, progress,
+                    archive_record = _asset_file(asset, originals, progress, verification_cache=verification_cache,
                         **({"report_archive": True} if progress and resolution["source_id"] == "yodas2" else {}))
                     retire = (request["owned_archives"][asset["path"]]
                               and archive_record["acquisition"] == "downloaded_here"
@@ -385,7 +388,8 @@ def prepare_compact_source(resolution, directory, *, max_download_bytes,
                     allowance = max_extract_bytes - retained - (0 if claim["retire_eligible"] else asset["size_bytes"])
                 if allowance <= 0:
                     raise ValueError("Compact retained originals exceed the storage byte cap")
-                extraction = extract_archive(archive, destination, max_bytes=allowance)
+                extraction = extract_archive(archive, destination, max_bytes=allowance,
+                                             verification_cache=verification_cache)
                 raw_bytes = _verify_raw(destination, extraction, max_extract_bytes - retained, sync=True)
                 retire = claim["retire_eligible"]
                 part = {"kind": "compact_source_part_v1", "asset": asset, "archive": archive_record,

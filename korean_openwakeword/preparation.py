@@ -213,7 +213,7 @@ def _check_existing_partitions(project, rows):
     return held_hashes
 
 
-def _convert(source, output, block_frames=65536):
+def _converted_pcm(original, block_frames=65536):
     """Bounded, phase-aligned polyphase resampling with full FIR overlap.
 
     Each output block is evaluated with the neighbouring input support used by
@@ -221,30 +221,36 @@ def _convert(source, output, block_frames=65536):
     The only sample changes are channel averaging, resampling and PCM16 rounding;
     no per-recording gain, denoising or silence trimming is applied.
     """
+    rate, frames, channels = original.samplerate, original.frames, original.channels
+    if frames < 1 or rate < 1 or channels < 1:
+        raise ValueError("Empty source audio")
+    divisor = gcd(rate, 16000)
+    up, down = 16000 // divisor, rate // divisor
+    chunk = max(down, block_frames // down * down)
+    guard = ceil(10 * max(up, down) / up) + 2 * down
+    for start in range(0, frames, chunk):
+        end = min(frames, start + chunk)
+        left = max(0, (start - guard) // down * down)
+        right = min(frames, ceil((end + guard) / down) * down)
+        original.seek(left)
+        samples = original.read(right - left, dtype="float64", always_2d=True)
+        if not np.isfinite(samples).all() or np.max(np.abs(samples), initial=0) > 1:
+            raise ValueError("Nonfinite/out-of-range source samples")
+        mono = samples.mean(axis=1)
+        resampled = resample_poly(mono, up, down) if rate != 16000 else mono
+        a = start * up // down - left * up // down
+        b = ceil(end * up / down) - left * up // down
+        yield pcm16(resampled[a:b])
+
+
+def _convert(source, output, block_frames=65536):
     temporary = output.with_suffix(".partial.wav")
     try:
         with sf.SoundFile(source) as original:
             rate, frames, channels = original.samplerate, original.frames, original.channels
-            if frames < 1 or rate < 1 or channels < 1:
-                raise ValueError("Empty source audio")
-            divisor = gcd(rate, 16000)
-            up, down = 16000 // divisor, rate // divisor
-            chunk = max(down, block_frames // down * down)
-            guard = ceil(10 * max(up, down) / up) + 2 * down
             with sf.SoundFile(temporary, "w", samplerate=16000, channels=1, subtype="PCM_16") as target:
-                for start in range(0, frames, chunk):
-                    end = min(frames, start + chunk)
-                    left = max(0, (start - guard) // down * down)
-                    right = min(frames, ceil((end + guard) / down) * down)
-                    original.seek(left)
-                    samples = original.read(right - left, dtype="float64", always_2d=True)
-                    if not np.isfinite(samples).all() or np.max(np.abs(samples), initial=0) > 1:
-                        raise ValueError("Nonfinite/out-of-range source samples")
-                    mono = samples.mean(axis=1)
-                    resampled = resample_poly(mono, up, down) if rate != 16000 else mono
-                    a = start * up // down - left * up // down
-                    b = ceil(end * up / down) - left * up // down
-                    target.write(pcm16(resampled[a:b]))
+                for samples in _converted_pcm(original, block_frames):
+                    target.write(samples)
         os.replace(temporary, output)
         return {"input_sample_rate": rate, "input_channels": channels, "input_frames": frames}
     finally:

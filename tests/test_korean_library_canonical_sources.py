@@ -360,7 +360,7 @@ def test_real_codec_operational_failures_propagate_without_invalid_audio_approva
     error = OSError(errno.ENOSPC, "No space left on device") if error_kind == "disk_full" else sf.LibsndfileError(2)
     def fail(*args, **kwargs):
         raise error
-    monkeypatch.setattr(preparation, "_convert", fail)
+    monkeypatch.setattr(preparation, "_converted_pcm", fail)
     with pytest.raises(type(error)):
         source.run()
     assert source.raw.exists() and not (source.directory / "canonical_pending.json").exists()

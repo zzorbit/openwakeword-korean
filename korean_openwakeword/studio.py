@@ -274,6 +274,8 @@ def _execution_contract(*, legacy_reference_review=False):
     bindings["calibration.py"] = _CALIBRATION_REPORT_COMPATIBLE_DIGESTS.get(bindings["calibration.py"], bindings["calibration.py"])
     material_policy = bindings["material_policy.py"]
     bindings["material_policy.py"] = _MATERIAL_ARCHIVE_PATH_COMPATIBLE_DIGESTS.get(material_policy, material_policy)
+    for name, audited in _MATERIAL_PREPARATION_COMPATIBLE_DIGESTS.items():
+        bindings[name] = audited.get(bindings[name], bindings[name])
     evaluation_backend = bindings["evaluation_backend.py"]
     bindings["evaluation_backend.py"] = _EVALUATION_STARTUP_COMPATIBLE_DIGESTS.get(evaluation_backend, evaluation_backend)
     if legacy_reference_review:
@@ -355,6 +357,32 @@ def _execution_contract(*, legacy_reference_review=False):
         _EXECUTION_CONTRACT_CACHE.clear()
     _EXECUTION_CONTRACT_CACHE[cache_key] = result
     return deepcopy(result)
+
+
+# These exact LF and CRLF source pairs preserve archive member and normalized
+# audio identities. The worker still binds requests to the actual code bytes.
+_MATERIAL_PREPARATION_COMPATIBLE_DIGESTS = {
+    "canonical_audio.py": {
+        "2c7554f722fdb7189c00ee522ec9bb9e38b0e82769a05407b7b0d32fbd7e3ebc": "2e8977fa15a15f831ab676b1a6df8ed6f2e7a059cd85db22825f02cbbd1ff85a",
+        "08f337e16b9ff0b116c8942549731aa32ee1ad1db73118f96111e7c5b296e51a": "cb32fe5e5324c7a5ec90b5e2950b04f560c547ecfba1156576b8d7d9eb9f6f25",
+    },
+    "commercial_sources.py": {
+        "3a88e4edc1197d7f6da4c9dbd4bc89033430d25879029bbcc8f76a2edeb7114b": "66dd3ad2e415eb6043f6955573a698110e101f875147faeedc0fe357c87765df",
+        "b430bb2403a61c6f9dc29b387b8ced685ec3ce2c974f15923ac8e9148dbb9fbc": "1f6d24c60f0cb26ededcb13fd3ece10eeafc3c00efb7d0396930028104b163a9",
+    },
+    "compact_sources.py": {
+        "4d03add90403544d7626e8c834f6774024161c0b7ce359c28e6971679a6bd4c2": "dead3f8185e9361656d7b0b1432d7f4e734d6a52aa4497b0803aaf8120a2259e",
+        "d411f1b86244c70f0cda190b8d73f71164ebb1f7b7bd2b9267743ee826c1a0cd": "254fc67a01bb93779169ee90dd82012c62d38d7465286fede80a2e0063b94774",
+    },
+    "preparation.py": {
+        "6f5e7af47c6d729c9b2ff9fdffce0f92316a5c75adc5ef502e5a26b607a46066": "4d66d64f395e2a4e935430e0a27836c636e66e6193f3a9bf259ce9f619ccefa7",
+        "24592133c62c9ef7ba332cd8df02174851aeeeb784c0b5c213261d86e1b909ff": "09bf1e205f7046c6bc4aedd38d6732cb5eaa4eceb6bd207e10fa139a6fcb9922",
+    },
+    "studio_data.py": {
+        "b27ca1fb71213ef0158bf7197eca164b68a7dd087034a94e8e09d02f031ee1eb": "cb4b2fdeea712dee3ff652cd57f46054c31da9dc8194799f1f073fe5dde2b12d",
+        "2ef7fa6688bfb490de270eddb6c340971215e2b15cb9d6ce1236c93a750318e8": "3d82278faef2661ecc9f1e438b3e3eee4b97d38b2fc423b684872ba66381d61a",
+    },
+}
 
 
 _REFERENCE_REVIEW_COMPATIBLE_FILES = (

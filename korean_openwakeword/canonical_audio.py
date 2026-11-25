@@ -10,8 +10,8 @@ import hashlib
 import os
 from pathlib import Path
 import shutil
+import struct
 
-import numpy as np
 import soundfile as sf
 
 from .common import bound_file, digest, read_json, write_json
@@ -39,36 +39,49 @@ def pcm_identity(path):
     return {"sha256": hasher.hexdigest(), "frames": frames, "bytes": frames * 2}
 
 
-def canonicalize_audio(source, output):
-    """Normalize once with the existing algorithm; prove FLAC decodes identically."""
-    from .preparation import _convert
+def canonicalize_audio(source, output, *, expected_source_sha256=None):
+    """Write normalized samples directly to FLAC and verify the decoded output."""
+    from .preparation import _converted_pcm
     source, output = Path(source).resolve(), Path(output).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     receipt = output.with_suffix(output.suffix + ".json")
     source_sha = digest(source)
+    if expected_source_sha256 and expected_source_sha256 != source_sha:
+        raise ValueError("Provider waveform changed before canonical conversion")
     if receipt.exists():
         saved = read_json(receipt)
         if saved["original"]["sha256"] != source_sha:
             raise ValueError("Canonical source changed on resume")
         bound_file(output.parent, saved["canonical"])
         return saved
-    wav = output.with_suffix(output.suffix + ".reference.wav")
     temporary = output.with_suffix(output.suffix + ".partial.flac")
-    header = sf.info(source)
-    required = int(np.ceil(header.frames * 16000 / header.samplerate)) * 4 + 1024 * 1024
-    if shutil.disk_usage(output.parent).free < required:
-        raise ValueError("Insufficient space for one PCM reference and lossless FLAC")
     try:
-        original_info = _convert(source, wav)
-        logical_sha = digest(wav)
-        reference_pcm = pcm_identity(wav)
-        with sf.SoundFile(wav) as reader, sf.SoundFile(temporary, "w", samplerate=16000,
-                channels=1, subtype="PCM_16", format="FLAC") as writer:
-            while True:
-                block = reader.read(65536, dtype="int16")
-                if not len(block):
-                    break
-                writer.write(block)
+        pcm_hash, written = hashlib.sha256(), 0
+        with sf.SoundFile(source) as reader:
+            rate, frames, channels = reader.samplerate, reader.frames, reader.channels
+            if frames < 1 or rate < 1 or channels < 1:
+                raise ValueError("Empty source audio")
+            expected_frames = (frames * 16000 + rate - 1) // rate
+            pcm_bytes = expected_frames * 2
+            if pcm_bytes > 0xFFFFFFFF - 36:
+                raise ValueError("Normalized PCM16 exceeds the WAV identity size limit")
+            if shutil.disk_usage(output.parent).free < pcm_bytes + max(1024**2, pcm_bytes // 100):
+                raise ValueError("Insufficient space for lossless FLAC")
+            # Preserve the exact RIFF PCM16 WAV identity used in existing
+            # manifests and augmentation seeds without materializing that WAV.
+            logical_hash = hashlib.sha256(struct.pack("<4sI4s4sIHHIIHH4sI", b"RIFF", 36 + pcm_bytes,
+                b"WAVE", b"fmt ", 16, 1, 1, 16000, 32000, 2, 16, b"data", pcm_bytes))
+            with sf.SoundFile(temporary, "w", samplerate=16000, channels=1, subtype="PCM_16", format="FLAC") as writer:
+                for block in _converted_pcm(reader):
+                    data = block.astype("<i2", copy=False).tobytes()
+                    logical_hash.update(data)
+                    pcm_hash.update(data)
+                    written += len(block)
+                    writer.write(block)
+        original_info = {"input_sample_rate": rate, "input_channels": channels, "input_frames": frames}
+        reference_pcm = {"sha256": pcm_hash.hexdigest(), "frames": written, "bytes": written * 2}
+        if written != expected_frames:
+            raise ValueError("Canonical conversion duration differs from the expected sample count")
         if pcm_identity(temporary) != reference_pcm:
             raise ValueError("Lossless FLAC PCM verification failed; original preserved")
         if digest(source) != source_sha:
@@ -82,13 +95,12 @@ def canonicalize_audio(source, output):
             os.replace(temporary, output)
         saved = {"kind": POLICY, "original": {"path": str(source), "sha256": source_sha,
                  "bytes": source.stat().st_size}, "original_info": original_info,
-                 "logical_audio_sha256": logical_sha, "pcm": reference_pcm,
+                 "logical_audio_sha256": logical_hash.hexdigest(), "pcm": reference_pcm,
                  "canonical": _binding(output), "pcm_equal": True,
                  "conversion": "bounded_polyphase_mono16k_pcm16_v1"}
         write_json(receipt, saved)
         return saved
     finally:
-        wav.unlink(missing_ok=True)
         temporary.unlink(missing_ok=True)
 
 
@@ -130,11 +142,9 @@ def canonicalize_prepared_source(prepared, output):
         source = (directory / relative).resolve()
         if relative.is_absolute() or not source.is_relative_to(directory):
             raise ValueError("Canonical input escapes its provider directory")
-        if row.get("sha256") and row["sha256"] != digest(source):
-            raise ValueError("Provider waveform changed before canonical conversion")
         target = audio / (relative.as_posix() + ".flac")
         try:
-            saved = canonicalize_audio(source, target)
+            saved = canonicalize_audio(source, target, expected_source_sha256=row.get("sha256"))
         except (ValueError, RuntimeError) as error:
             # Only known malformed source audio is a QC rejection. Disk,
             # permissions, verification and unknown codec failures must stop.

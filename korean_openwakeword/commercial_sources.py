@@ -418,10 +418,11 @@ def download_commercial_source(record, output, *, max_download_bytes, progress=N
     return receipt
 
 
-def _verify_cached_original(path, asset):
+def _verify_cached_original(path, asset, *, verification_cache=None):
     """Check receipt SHA256 and the publisher checksum with one sequential read."""
     algorithm = asset["checksum_algorithm"]
     try:
-        return verify_checksum(path, algorithm, asset[algorithm], return_sha256=True)
+        return verify_checksum(path, algorithm, asset[algorithm], return_sha256=True,
+                               verification_cache=verification_cache)
     except ValueError as error:
         raise ValueError("Cached original differs from the publisher checksum") from error
