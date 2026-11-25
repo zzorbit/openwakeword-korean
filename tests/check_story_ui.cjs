@@ -1989,6 +1989,54 @@ async function main() {
       assert.equal(hasActiveDownloadSpinner(row), false);
     }
   });
+  await test("finished transfers show material connection until the download checkpoint actually releases Next", () => {
+    const project = checkpointProject("running", "running");
+    project.stage_id = "data_connect";
+    project.process_alive = true;
+    project.download_files = [{ id: "base:zeroth", label: "Zeroth", state: "complete", done: 500, total: 500, unit: "bytes" }];
+    for (const record of project.stages.slice(0, 3)) record.status = "completed";
+    project.progress = { stage: "data_connect", phase: "material_admission", done: 102, total: 103 };
+    const p = page(project);
+    const title = "학습·평가 자료 연결";
+    const row = historyRowByLabel(p.shell, title);
+    const gauge = row.querySelector("progress");
+    assert.match(textOf(row), /102 \/ 103묶음/);
+    assert.match(textOf(row), /확인·연결 중/);
+    assert.equal(gauge.value, 102);
+    assert.equal(gauge.max, 103);
+    assert.equal(hasActiveDownloadSpinner(row), true);
+    assert.equal(historyRowByLabel(p.shell, "Zeroth").querySelector(".story-progress-indicator").dataset.status, "complete");
+    assert.equal(p.next.disabled, true);
+    assert.match(p.operation.textContent, /일시정지/);
+
+    project.progress = { ...project.progress, done: 103 };
+    p.ui.render();
+    assert.equal(historyRowByLabel(p.shell, title), row);
+    assert.equal(gauge.getAttribute("value"), null);
+    assert.equal(row.querySelector(".story-history-percent").textContent, "");
+    assert.equal(p.next.disabled, true);
+
+    project.progress = { stage: "data_download", phase: "material_admission", done: 17, total: 20 };
+    p.ui.render();
+    assert.equal(gauge.hidden, false);
+    assert.doesNotMatch(textOf(row), /17|20|수량 기록 없음/);
+    assert.match(textOf(row), /학습·평가 자료 등록 중/);
+
+    project.status = "error"; project.error = { stage: "data_connect" }; project.process_alive = false;
+    p.ui.render();
+    assert.equal(hasActiveDownloadSpinner(row), false);
+    assert.match(textOf(row), /자료 연결 실패/);
+    assert.equal(p.next.disabled, true);
+
+    delete project.error;
+    project.status = "paused"; project.stage_id = "references";
+    project.stages.find(stage => stage.id === "data_connect").status = "completed";
+    project.download_checkpoint.state = "awaiting_next";
+    p.ui.render();
+    assert.equal(historyRowByLabel(p.shell, title), undefined);
+    assert.equal(p.operation.hidden, true);
+    assert.equal(p.next.disabled, false);
+  });
   await test("recorded preparation completes each download row during the running stage", () => {
     const project = checkpointProject("running", "running");
     project.stage_id = "data_download";

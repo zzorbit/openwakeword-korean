@@ -1938,7 +1938,7 @@
       const totalKnown = Number.isFinite(row.total) && row.total > 0, doneKnown = Number.isFinite(row.done) && row.done >= 0;
       const label = row.label || "자료";
       if (title.textContent !== label) title.textContent = label;
-      amount.textContent = row.preparing ? "" : totalKnown ? `${doneKnown ? row.unit === "bytes" ? quantity(row.done, row.unit) : count(row.done) : "—"} / ${quantity(row.total, row.unit)}` : doneKnown ? quantity(row.done, row.unit) : "수량 기록 없음";
+      amount.textContent = row.preparing || row.indeterminate && !totalKnown && !doneKnown ? "" : totalKnown ? `${doneKnown ? row.unit === "bytes" ? quantity(row.done, row.unit) : count(row.done) : "—"} / ${quantity(row.total, row.unit)}` : doneKnown ? quantity(row.done, row.unit) : "수량 기록 없음";
       const byBytes = Number.isFinite(row.bytes) && Number.isFinite(row.totalBytes) && row.totalBytes > 0;
       const transferComplete = row.preparing && (row.transferComplete || row.completed);
       const fraction = transferComplete ? 1 : row.verification ? Number.isFinite(row.verificationPercent) ? row.verificationPercent / 100 : null
@@ -1946,11 +1946,11 @@
       const percentage = Math.min(100, fraction * 100);
       percent.textContent = fraction === null || row.indeterminate || row.preparing ? ""
         : `${percentage.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}%`;
-      bar.hidden = fraction === null && !row.verification;
+      bar.hidden = fraction === null && !row.verification && !row.indeterminate;
       bar.dataset.active = String(Boolean(row.active));
       bar.dataset.preparing = String(Boolean(row.preparing));
-      if (fraction !== null || row.verification) {
-        bar.max = transferComplete || row.verification ? 100 : byBytes ? row.totalBytes : row.total;
+      if (!bar.hidden) {
+        bar.max = transferComplete || row.verification ? 100 : byBytes ? row.totalBytes : totalKnown ? row.total : 100;
         if (transferComplete) bar.value = bar.max;
         else if (fraction === null || row.indeterminate) bar.removeAttribute("value");
         else bar.value = Math.min(bar.max, row.verification ? row.verificationPercent : byBytes ? row.bytes : row.done);
@@ -2181,6 +2181,18 @@
       });
       const compute = computeDownloadRow(project, active && stage === "frontend", legacy);
       if (compute) rows.push(compute);
+      if (!saved && stage === "data_connect") {
+        const admission = progress.stage === stage && progress.phase === "material_admission";
+        const counted = admission && Number.isSafeInteger(progress.done) && Number.isSafeInteger(progress.total)
+          && progress.total > 0 && progress.done >= 0 && progress.done <= progress.total;
+        const failed = project.status === "error" || Boolean(project.error);
+        const measured = counted && progress.done < progress.total;
+        const detail = failed ? "자료 연결 실패" : active ? admission ? "검수 자료 확인·연결 중" : "학습·평가 자료 등록 중"
+          : project.status === "paused" ? "자료 연결 일시정지" : "자료 연결 대기";
+        rows.push({ key: "material-connection", label: "학습·평가 자료 연결", active, detail, failed,
+          done: counted ? progress.done : null, total: counted ? progress.total : null, unit: "묶음",
+          indeterminate: active && !measured });
+      }
       const nextViews = new Map(), items = rows.map(row => {
         let view = downloadList.dataset.project === project.id ? downloadRowViews.get(row.key) : null;
         if (!view) {
