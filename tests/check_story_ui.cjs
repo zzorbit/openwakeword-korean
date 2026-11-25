@@ -1745,32 +1745,34 @@ async function main() {
     assertFullDownloadBar(bar(full), false);
     assert.equal(indicator(full), "complete");
   });
-  await test("Korean web audio shows the current archive bytes next to the prepared hours", () => {
+  await test("Korean web audio shows accumulated bytes and the full estimated download next to prepared hours", () => {
     const project = checkpointProject("running", "running");
     project.stage_id = "data_download";
     const mib = 1024 ** 2;
     const yodas = { id: "automatic:yodas2", label: "한국어 웹 음성", group: "automatic:yodas2",
       state: "downloading", unit: "hours", done: 5, total: 500, verified_archive_bytes: 512 * mib,
+      estimated_download_bytes: 70_000_000_000,
       archive_transfer: { status: "downloading", done: 64 * mib, total: 256 * mib, bytes_per_second: 4 * mib } };
     project.download_files = [yodas];
     const p = page(project), row = historyRowByLabel(p.shell, "한국어 웹 음성"), bar = row.querySelector("progress");
     assert.equal(bar.value / bar.max, 0.01);
-    assert.match(textOf(row), /5 \/ 500시간.*64 MiB \/ 256 MiB · 4 MiB\/초/);
-    assert.doesNotMatch(textOf(row), /확보한 원본|현재 묶음|512 MiB/);
+    assert.match(textOf(row), /5 \/ 500시간.*576 MiB \/ 약 65\.2 GiB · 4 MiB\/초/);
+    assert.doesNotMatch(textOf(row), /확보한 원본|현재 묶음|256 MiB/);
     yodas.archive_transfer = { status: "checking", done: null, total: 256 * mib };
     p.ui.render();
-    assert.match(textOf(row), /— \/ 256 MiB · 파일 확인 중/);
+    assert.match(textOf(row), /512 MiB \/ 약 65\.2 GiB · 파일 확인 중/);
     yodas.archive_transfer = { status: "preparing", done: 256 * mib, total: 256 * mib };
     p.ui.render();
-    assert.match(textOf(row), /256 MiB \/ 256 MiB · 검증·전처리 중/);
+    assert.match(textOf(row), /768 MiB \/ 약 65\.2 GiB · 검증·전처리 중/);
     assert.doesNotMatch(textOf(row), /MiB\/초/);
     assert.equal(bar.value / bar.max, 0.01);
     assert.equal(hasActiveDownloadSpinner(row), true);
     yodas.archive_transfer = null; yodas.verified_archive_bytes = 768 * mib;
     yodas.done = 9; p.ui.render();
-    assert.match(textOf(row), /9 \/ 500시간.*768 MiB \/ —/);
+    assert.match(textOf(row), /9 \/ 500시간.*768 MiB \/ 약 65\.2 GiB/);
     assert.doesNotMatch(textOf(row), /확보한 원본|현재 묶음|검증·전처리 중/);
     yodas.done = 500; yodas.state = "complete";
+    yodas.archive_transfer = { status: "preparing", done: 256 * mib, total: 256 * mib };
     project.download_prepared_groups = ["automatic:yodas2"];
     p.ui.render();
     assert.match(textOf(row), /768 MiB \/ 768 MiB/);

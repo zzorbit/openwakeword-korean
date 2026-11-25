@@ -4825,6 +4825,11 @@ class StudioManager:
             if policy["official_noise_acquisition_policy"]:
                 from .official_music import official_music_preview
                 recipe["official_music_bytes"] = official_music_preview()["selected_payload_bytes"]
+            if state["preset"] != "check" and policy["material_acquisition_policy"] in ("automatic_v2", "automatic_v3"):
+                from .studio_data import _automatic_space_plan
+                space = _automatic_space_plan(state["preset"], material_acquisition_policy=policy["material_acquisition_policy"],
+                                              fma_acquisition_policy=policy["fma_acquisition_policy"])
+                recipe["yodas2_download_bytes_per_hour"] = space["download_forecast_bytes_per_hour"]["yodas2"]
             self._history_download_plans[key] = recipe
         recipe = self._history_download_plans[key]
         shared = Path(state.get("storage_workspace", self.workspace)) / "shared"
@@ -4948,8 +4953,12 @@ class StudioManager:
             components = _automatic_source_plan(state["preset"], settings["generic_hours"], settings["korean_hours"])["components"]
             for component in components:
                 identifier = "automatic:" + component["id"]
-                files_out.append(item(identifier, component["name"], identifier, component["name"],
-                    total=component["target_hours"], unit="hours"))
+                target = component["target_hours"]
+                row = item(identifier, component["name"], identifier, component["name"], total=target, unit="hours")
+                rate = recipe.get("yodas2_download_bytes_per_hour")
+                if component["id"] == "yodas2" and rate is not None and target > 0:
+                    row["estimated_download_bytes"] = math.ceil(target * rate)
+                files_out.append(row)
         targets = {row["id"]: row["target_hours"] for row in result.get("automatic_source_plan", {}).get("components", [])}
         for component, actual in automatic.get("component_actual_hours", {}).items():
             target = targets.get(component)

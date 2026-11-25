@@ -2208,10 +2208,13 @@
               ? Number.isFinite(row.bytes) && row.bytes > 0 ? `${quantity(row.bytes, "bytes")} / —` : "전체 용량 확인 전"
               : "";
         const transfer = row.archive_transfer;
-        const archiveSize = Number.isFinite(transfer?.total) && transfer.total > 0
-          ? progressAmount(transfer.done, transfer.total, "bytes")
-          : Number.isFinite(row.verified_archive_bytes) && row.verified_archive_bytes > 0
-            ? progressAmount(row.verified_archive_bytes, row.completed ? row.verified_archive_bytes : null, "bytes") : "";
+        const verifiedBytes = row.verified_archive_bytes;
+        const receivedBytes = Number.isFinite(verifiedBytes) && verifiedBytes >= 0
+          ? verifiedBytes + (!row.completed && Number.isFinite(transfer?.done) && transfer.done >= 0 ? transfer.done : 0) : null;
+        const estimate = row.estimated_download_bytes;
+        const estimatedSize = Number.isFinite(estimate) && estimate > 0 ? `약 ${quantity(estimate, "bytes")}` : "";
+        const archiveSize = row.completed && receivedBytes > 0 ? progressAmount(receivedBytes, receivedBytes, "bytes")
+          : receivedBytes !== null || estimatedSize ? `${quantity(receivedBytes, "bytes")} / ${estimatedSize || "—"}` : "";
         const archiveStatus = !rowActive ? "" : {
           checking: "파일 확인 중", retrying: "연결 재시도 중", preparing: "검증·전처리 중",
         }[transfer?.status] || "";

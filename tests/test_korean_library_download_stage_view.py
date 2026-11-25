@@ -83,6 +83,7 @@ def test_missing_download_snapshot_restores_fixed_caches_and_saved_korean_hours(
     assert all(rows[key]["state"] == "waiting" for key in ("official_music", "mit_rir", "automatic:yodas2"))
     assert all(rows[key]["cache_candidate"] for key in ("official_music", "mit_rir"))
     assert rows["automatic:yodas2"]["total"] == 500
+    assert rows["automatic:yodas2"]["estimated_download_bytes"] == 70_000_000_000
 
     latest = {"stage": "data_download", "files": [
         {"id": "official_music", "done": 0, "state": "failed"},
@@ -95,6 +96,8 @@ def test_missing_download_snapshot_restores_fixed_caches_and_saved_korean_hours(
     rir.unlink()
     rows = visible({})
     assert rows["official_music"]["done"] == rows["mit_rir"]["done"] == 0
+    state["settings"]["korean_hours"] = 250
+    assert visible({})["automatic:yodas2"]["estimated_download_bytes"] == 35_000_000_000
 
 
 def test_download_poll_retains_file_rows_when_material_snapshot_has_only_a_phase(tmp_path):
