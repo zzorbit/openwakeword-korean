@@ -1137,14 +1137,14 @@ async function main() {
     ]) {
       const project = checkpointProject("running", "running"); project.stage_id = "data_download";
       project.progress = { done: 17, total: 100, files: Array.from({ length: 9 }, (_, i) => ({
-        id: `asset-${i}`, group: `group-${i}`, label: `자료 ${i + 1}`, state: "downloading", done: 17, total: 100, unit: "bytes",
+        id: `${i % 2 ? "common" : "base"}:asset-${i}`, group: `group-${i}`, label: `자료 ${i + 1}`, state: "downloading", done: 17, total: 100, unit: "bytes",
       })) };
       const p = page(project, { width, height, getComputedStyle: () => ({ rowGap: "0px" }) });
       const history = p.shell.querySelector(".story-history"), list = history.querySelector(".story-history-rows");
       p.shell.querySelector(".story-stage").getBoundingClientRect = () => ({ height: available });
       p.shell.querySelector(".story-panel-heading").getBoundingClientRect = () => ({ height: 0 });
       p.shell.querySelector(".story-actions").getBoundingClientRect = () => ({ height: 0 });
-      const rows = [...list.children];
+      const rows = historyRows(list);
       rows.forEach(row => { row.getBoundingClientRect = () => ({ height: rowHeights[list.dataset.density] }); });
       project.progress.files[0].done = 18; p.ui.render();
       assert.equal(p.get("story-download-activity").hidden, true);
@@ -1155,12 +1155,49 @@ async function main() {
       assert.ok(rows.every(row => !row.hidden));
       assert.equal(history.querySelector(".story-pagination").hidden, true);
       assert.equal(p.next.disabled, true); assert.equal(p.operation.textContent, "일시정지");
-      p.ui.render(); assert.deepEqual(list.children, rows, "polling preserves every displayed download row");
+      p.ui.render(); assert.deepEqual(historyRows(list), rows, "polling preserves every displayed download row");
       assert.equal(project.progress.done, 17); assert.equal(project.progress.files[0].done, 18);
       assert.equal(p.calls.some(call => ["start", "pause", "resume"].includes(call)), false);
       p.state.project = null; p.ui.render();
       assert.equal(p.shell.querySelector(".story-live").hidden, true, "new setup does not expose the retained download contents");
     }
+  });
+  await test("download layout follows preparation purpose and order without duplicating a shared provider", () => {
+    const project = checkpointProject("running", "running");
+    project.stage_id = "data_connect";
+    project.stages[0].status = "completed";
+    project.dependency_packages = ["torch==2.8.0", "torchaudio==2.8.0"];
+    const file = (id, group, label) => ({ id, group, label, state: "complete", done: 100, total: 100, unit: "bytes" });
+    project.download_files = [
+      file("common:zeroth", "zeroth", "한국어 낭독 · Zeroth"), file("common:rir_archive", "common_rir", "OpenSLR RIR"),
+      file("mit_rir", "mit_rir", "MIT RIR"), file("common:seoul", "seoul", "Seoul"),
+      file("base:audioset", "audioset", "AudioSet"), file("common:musan", "musan", "MUSAN"),
+      file("common:fsd_eval", "fsd50k", "FSD50K"), file("official_music", "official_music", "FMA"),
+      { ...file("automatic:yodas2", "automatic:yodas2", "한국어 웹 음성"), unit: "hours" },
+      file("base:generic", "generic_negative", "openWakeWord"),
+    ];
+    const p = page(project), list = p.shell.querySelector(".story-download-list");
+    const [training, evaluation, tools, connection] = list.children;
+    assert.equal(training.querySelector("h2").textContent, "학습용 자료");
+    assert.equal(evaluation.querySelector("h2").textContent, "성능 평가용 자료");
+    assert.deepEqual(historyRows(training).map(historyRowLabel), ["openWakeWord", "한국어 웹 음성", "FMA", "AudioSet", "MIT RIR"]);
+    assert.deepEqual(historyRows(evaluation).map(historyRowLabel), ["MUSAN", "FSD50K", "Seoul", "한국어 낭독 · Zeroth", "OpenSLR RIR"]);
+    assert.equal(historyRowLabel(tools), "연산 도구 · PyTorch · TorchAudio");
+    assert.equal(historyRowLabel(connection), "학습·평가 자료 연결");
+    assert.equal(p.next.disabled, true);
+
+    const zeroth = historyRowByLabel(evaluation, "한국어 낭독 · Zeroth");
+    project.download_files.push(file("base:zeroth", "zeroth", "한국어 낭독 · Zeroth"));
+    p.ui.render();
+    assert.equal(historyRowByLabel(training, "한국어 낭독 · Zeroth"), zeroth);
+    assert.equal(historyRowByLabel(evaluation, "한국어 낭독 · Zeroth"), undefined);
+    assert.match(textOf(zeroth), /학습·평가 공용/);
+    assert.match(textOf(zeroth), /100 B \/ 100 B/);
+
+    project.evaluation_policy = { negative_hours_by_bucket: { korean_read: 3 } };
+    project.download_files = project.download_files.filter(file => file.id !== "common:zeroth");
+    p.ui.render();
+    assert.match(textOf(zeroth), /학습·평가 공용/);
   });
   await test("parallel download gauges retain one completed compute-tools row", () => {
     const project = checkpointProject("running", "running");

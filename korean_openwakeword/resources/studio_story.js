@@ -162,6 +162,7 @@
   }
   const titles = { check: "동작 확인용", trial: "시험 모델용", production: "상용 모델용" };
   const shortDescriptions = { check: "라이브러리 동작 확인", trial: "호출 성능 비교·시험", production: "많은 자료로 본격 학습" };
+  const materialPurposeLabels = { training: "학습용 자료", evaluation: "성능 평가용 자료" };
   const toolBackends = { cpu: ["CPU", "NVIDIA GPU 없이 실행"], cu128: ["NVIDIA GPU", "CUDA 12.8 사용"] };
   const count = value => Number.isFinite(value) ? value.toLocaleString("ko-KR") : "—";
   function pageCapacity(items, available, rowHeight, columns = 1, gap = 12, pagerSpace = 44) {
@@ -1639,7 +1640,7 @@
       if (!materialData) return;
       const small = matchMedia("(max-width:760px)").matches;
       const sections = [];
-      for (const [key, label] of [["training", "학습용 자료"], ["evaluation", "성능 평가용 자료"]]) {
+      for (const [key, label] of Object.entries(materialPurposeLabels)) {
         const section = node("section", undefined, "story-material-section"); section.hidden = small && key !== materialTab;
         const head = node("div", undefined, "story-material-heading");
         const total = materialData.downloadTotals?.[key];
@@ -1958,7 +1959,23 @@
         bar.setAttribute("aria-label", label + progressLabel + (row.active && !row.preparing ? " · 진행 중" : ""));
       }
     }
-    const downloadGroupOrder = ["generic_negative", "zeroth", "audioset", "musan", "seoul", "fsd50k", "common_rir", "official_music", "mit_rir"];
+    const trainingDownloadOrder = ["generic_negative", "automatic:audioset_unbalanced", "automatic:mls",
+      "automatic:fma_full", "automatic:yodas2", "zeroth", "official_music", "audioset", "mit_rir"];
+    const evaluationDownloadOrder = ["musan", "fsd50k", "seoul", "zeroth", "evaluation_legacy", "common_rir"];
+    const downloadOrder = { training: trainingDownloadOrder, evaluation: evaluationDownloadOrder };
+    const automaticDownloadLabels = {
+      "automatic:audioset_unbalanced": "일반 비호출 · AudioSet",
+      "automatic:mls": "일반 비호출 · MLS",
+      "automatic:fma_full": "일반 비호출 · FMA",
+      "automatic:yodas2": "한국어 웹 음성",
+    };
+    function downloadPurpose(group, files) {
+      const ids = files.map(file => file.id);
+      if (group === "zeroth") return ids.includes("common:zeroth") && !ids.includes("base:zeroth") ? "evaluation" : "training";
+      if (evaluationDownloadOrder.includes(group) || ids.some(id => /^(?:common|evaluation):/.test(id))) return "evaluation";
+      if (trainingDownloadOrder.includes(group) || ids.some(id => /^(?:base|automatic|mit):/.test(id))) return "training";
+      return "other";
+    }
     const downloadFileComplete = file => ["complete", "reused"].includes(file.state);
     const archivePreparationLabels = {
       extract_hash: "압축파일 검증 중",
@@ -2011,7 +2028,17 @@
       return null;
     }
     let downloadRowViews = new Map();
-    const downloadList = node("div", undefined, "story-history-rows");
+    const downloadList = node("div", undefined, "story-history-rows story-download-list");
+    const downloadSections = Object.entries(materialPurposeLabels).map(([purpose, label]) => {
+      const section = node("section", undefined, "story-download-section");
+      const heading = node("div", undefined, "story-material-heading");
+      const title = node("h2", label);
+      title.id = `story-download-${purpose}-title`;
+      section.dataset.purpose = purpose;
+      section.setAttribute("aria-labelledby", title.id);
+      heading.append(title);
+      return { purpose, section, heading };
+    });
     let verificationProject = null, verificationTask = null;
     const verificationByFile = new Map();
     function trackDownloadVerification(project, files) {
@@ -2139,24 +2166,34 @@
       const groups = new Map();
       const fileActive = file => activeDownload && ["downloading", "verifying", "retrying"].includes(file.state);
       const sum = values => values.every(Number.isFinite) ? values.reduce((total, value) => total + value, 0) : null;
-      const rank = key => downloadGroupOrder.includes(key) ? downloadGroupOrder.indexOf(key) : downloadGroupOrder.length;
       for (const file of files) {
         const key = file.group || file.id;
         if (!groups.has(key)) groups.set(key, []);
         groups.get(key).push(file);
       }
-      const rows = [...groups].sort(([a], [b]) => rank(a) - rank(b)).flatMap(([key, group]) => {
+      const grouped = [...groups].map(([key, files]) => {
+        const purpose = downloadPurpose(key, files);
+        const position = downloadOrder[purpose]?.indexOf(key) ?? -1;
+        return { key, files, purpose, rank: position < 0 ? Infinity : position };
+      });
+      const rows = grouped.sort((a, b) => a.rank - b.rank).flatMap(({ key, files: sourceFiles, purpose }) => {
+        // The pinned base and common Zeroth entries describe the same archive.
+        // The downloader schedules the base entry first for projects that use both.
+        const shared = key === "zeroth" && sourceFiles.some(file => file.id === "base:zeroth")
+          && (sourceFiles.some(file => file.id === "common:zeroth")
+            || project.evaluation_policy?.negative_hours_by_bucket?.korean_read > 0);
+        const group = shared ? sourceFiles.filter(file => file.id !== "common:zeroth") : sourceFiles;
         if (group.some(file => (file.unit || "bytes") !== "bytes")) {
           return group.map(file => {
-            const label = file.label || file.group_label || "자료";
+            const label = (key === file.id && automaticDownloadLabels[key]) || file.label || file.group_label || "자료";
             const batch = file.archive_batch;
             if (activeDownload && batch) {
-              return { key: file.id, label, archiveBatch: true, active: true,
+              return { key: file.id, label, purpose, archiveBatch: true, active: true,
                 done: batch.completed, total: batch.total, unit: "묶음",
                 bytes: batch.done_bytes, totalBytes: batch.total_bytes,
                 detail: `일괄 다운로드 중 · ${progressAmount(batch.done_bytes, batch.total_bytes, "bytes")}` };
             }
-            return { ...file, key: file.id, label, active: fileActive(file),
+            return { ...file, key: file.id, label, purpose, active: fileActive(file),
               completed: downloadFileComplete(file), failed: file.state === "failed" };
           });
         }
@@ -2168,7 +2205,7 @@
         const transferComplete = group.every((file, index) => downloadFileComplete(file)
           || ["waiting", "downloading", "verifying"].includes(file.state)
             && Number.isFinite(file.total) && file.total > 0 && available[index] >= file.total);
-        return [{ key, label: group[0].group_label || group[0].label || "자료", done: group.filter(downloadFileComplete).length,
+        return [{ key, label: group[0].group_label || group[0].label || "자료", purpose, shared, done: group.filter(downloadFileComplete).length,
           total: group.length, unit: "files", bytes: sum(available), totalBytes: sum(group.map(file => file.total)),
           failed: group.some(file => file.state === "failed"),
           active: group.some(fileActive),
@@ -2253,7 +2290,8 @@
         const workPercent = Number.isFinite(work?.percent) ? ` · ${work.percent}%` : "";
         const preparationNote = work ? preparationActive ? work.label + workPercent
           : project.status === "paused" ? "자료 준비 일시정지" : "자료 준비 미완료" : preparing && !inspection && !verifying ? "자료 준비 대기" : "";
-        const detail = row.detail || [sizeNote || archiveSize, archiveStatus, archiveRate, preparationNote || reuseNote].filter(Boolean).join(" · ");
+        const detail = row.detail || [sizeNote || archiveSize, archiveStatus, archiveRate, preparationNote || reuseNote,
+          row.shared ? "학습·평가 공용" : ""].filter(Boolean).join(" · ");
         view.noteDetail.textContent = detail && inspection ? detail + " · " : detail;
         view.inspectionStatus.hidden = !inspection;
         updateProgressIndicator(view.inspectionIndicator, progressStatus(inspectionActive && !preparationActive, inspection?.state === "complete"));
@@ -2270,11 +2308,24 @@
       });
       downloadRowViews = nextViews;
       downloadList.dataset.project = project.id;
-      if (historyContent.firstElementChild !== downloadList) historyContent.replaceChildren(downloadList);
-      if (downloadList.children.length !== items.length || items.some((item, i) => downloadList.children[i] !== item)) {
-        downloadList.replaceChildren(...items);
+      const itemsByPurpose = { training: [], evaluation: [], other: [] };
+      rows.forEach((row, i) => itemsByPurpose[row.purpose || "other"].push(items[i]));
+      const elements = [];
+      for (const { purpose, section, heading } of downloadSections) {
+        const members = itemsByPurpose[purpose];
+        if (!members.length) continue;
+        const children = [heading, ...members];
+        if (children.length !== section.children.length || children.some((child, i) => section.children[i] !== child))
+          section.replaceChildren(...children);
+        elements.push(section);
       }
-      paginateHistoryRows(downloadList, items, innerWidth > 600 ? 2 : 1);
+      elements.push(...itemsByPurpose.other);
+      if (historyContent.firstElementChild !== downloadList) historyContent.replaceChildren(downloadList);
+      if (downloadList.children.length !== elements.length || elements.some((item, i) => downloadList.children[i] !== item))
+        downloadList.replaceChildren(...elements);
+      const trainingCount = itemsByPurpose.training.length, evaluationCount = itemsByPurpose.evaluation.length;
+      const lines = innerWidth > 760 ? Math.max(trainingCount, evaluationCount) : trainingCount + evaluationCount;
+      fitDownloadRows(downloadList, items, lines + itemsByPurpose.other.length);
     }
     function historyPlayerActive() {
       return !savedReview.hidden && !historic.hidden && !live.hidden && !transitioning
@@ -2435,7 +2486,7 @@
       const downloadState = current === "downloads"
         ? [project.status, stageId(project), project.stages, project.error, project.download_setup_items, progress?.setup_items,
           downloadCheckpoint(project)?.state, project.dependency_download_bytes, project.dependency_packages, legacy,
-          project.download_prepared_groups,
+          project.download_prepared_groups, project.evaluation_policy?.negative_hours_by_bucket?.korean_read,
           progress?.phase, progress?.label, progress?.done, progress?.total, progress?.unit, progress?.verification_reused,
           stageId(project) === "frontend" ? phaseElapsed(progress) : ""]
         : null;
@@ -2523,26 +2574,25 @@
       list.append(...allItems); historyContent.replaceChildren(list);
       paginateHistoryRows(list, allItems);
     }
-    function paginateHistoryRows(list, allItems, columns = 1) {
-      if (current === "downloads") {
-        const available = historyHeight(), rowCount = Math.ceil(allItems.length / columns);
-        const budget = rowCount ? available / rowCount : available;
-        const densities = budget >= 82 ? ["normal", "compact", "tight"] : budget >= 64 ? ["compact", "tight"] : ["tight"];
-        historyPage = 0; historyPages.hidden = true;
-        allItems.forEach(item => { item.hidden = false; });
-        list.style.setProperty("--download-list-height", `${Math.floor(available)}px`);
-        let required = 0;
-        for (const density of densities) {
-          list.dataset.density = density;
-          const style = typeof getComputedStyle === "function" ? getComputedStyle(list) : null;
-          const gap = style ? parseFloat(style.rowGap) || 0 : 4;
-          const rowHeight = Math.max(0, ...allItems.map(item => item.getBoundingClientRect?.().height || 70));
-          required = list.scrollHeight || rowCount * rowHeight + Math.max(0, rowCount - 1) * gap;
-          if (required <= available) break;
-        }
-        list.dataset.overflow = String(required > available);
-        return;
+    function fitDownloadRows(list, allItems, rowCount) {
+      const available = historyHeight();
+      const budget = rowCount ? available / rowCount : available;
+      const densities = budget >= 82 ? ["normal", "compact", "tight"] : budget >= 64 ? ["compact", "tight"] : ["tight"];
+      historyPage = 0; historyPages.hidden = true;
+      allItems.forEach(item => { item.hidden = false; });
+      list.style.setProperty("--download-list-height", `${Math.floor(available)}px`);
+      let required = 0;
+      for (const density of densities) {
+        list.dataset.density = density;
+        const style = typeof getComputedStyle === "function" ? getComputedStyle(list) : null;
+        const gap = style ? parseFloat(style.rowGap) || 0 : 4;
+        const rowHeight = Math.max(0, ...allItems.map(item => item.getBoundingClientRect?.().height || 70));
+        required = list.scrollHeight || rowCount * rowHeight + Math.max(0, rowCount - 1) * gap;
+        if (required <= available) break;
       }
+      list.dataset.overflow = String(required > available);
+    }
+    function paginateHistoryRows(list, allItems, columns = 1) {
       const style = typeof getComputedStyle === "function" ? getComputedStyle(list) : null;
       const gap = style ? parseFloat(style.rowGap) || 0 : 18;
       const rowHeight = Math.max(...allItems.map(item => item.getBoundingClientRect?.().height || 70));

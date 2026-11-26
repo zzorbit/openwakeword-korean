@@ -132,7 +132,11 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-history p{margin:0}
 .story-history-content{width:100%;min-width:0}
 .story-history-rows{display:grid;gap:18px;width:100%}
-.story-history[data-kind="downloads"] .story-history-rows{grid-template-columns:1fr 1fr;gap:4px 40px}
+.story-history[data-kind="downloads"] .story-download-list{grid-template-columns:repeat(2,minmax(0,1fr));align-items:start;gap:12px 36px}
+.story-download-section{min-width:0}
+.story-download-section[data-purpose="training"]{grid-column:1}
+.story-download-section[data-purpose="evaluation"]{grid-column:2}
+.story-download-list>.story-history-row{grid-column:1/-1}
 .story-history-row{display:flex;flex-direction:column;gap:9px;width:100%;min-width:0;padding:12px 0;border-bottom:1px solid #343c47;text-align:left}
 :where(.story-history:not([data-kind="downloads"])) .story-history-row:last-child{border-bottom:0}
 .story-history-line{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:baseline;gap:8px 16px;width:100%;font-size:16px;line-height:24px}
@@ -309,6 +313,8 @@ html[data-studio-boot="ready"] #studio-boot>.story-atmosphere{display:none}
   .story-material-columns{display:block}
   .story-material-section .story-material-heading{justify-content:flex-end;border-bottom:0;padding-bottom:4px}
   .story-material-section .story-material-heading h2{display:none}
+  .story-history[data-kind="downloads"] .story-download-list{grid-template-columns:minmax(0,1fr);gap:12px}
+  .story-download-section[data-purpose]{grid-column:1}
 }
 @media(max-width:600px){
   .story-stage{padding-top:58px;padding-bottom:18px}
@@ -329,7 +335,6 @@ html[data-studio-boot="ready"] #studio-boot>.story-atmosphere{display:none}
   .story-live #counts{gap:4px 14px}
   .story-live #counts>span{font-size:13px;line-height:20px}
   .story-live #input-form .hard-phrase-fields,.story-phrase-grid{grid-template-columns:1fr}
-  .story-history[data-kind="downloads"] .story-history-rows{grid-template-columns:1fr;gap:12px}
   .story-history-line{grid-template-columns:minmax(0,1fr) auto;font-size:15px;line-height:22px;gap:4px 10px}
   .story-history-line>strong{grid-column:1/-1}
   .story-history-line>.story-history-percent{font-size:13px;line-height:20px}
@@ -390,7 +395,7 @@ html[data-studio-boot="ready"] #studio-boot>.story-atmosphere{display:none}
 }
 @media(pointer:coarse){.story-shell .story-index-step{height:min(44px,calc((100dvh - 24px)/var(--story-index-count,16)));min-height:0}}
 @media(pointer:coarse) and (max-height:760px){.story-shell .story-index-step{height:min(24px,calc((100dvh - 24px)/var(--story-index-count,16)))}}
-.story-history[data-kind="downloads"] .story-history-rows{max-height:var(--download-list-height,none);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;gap:4px 28px}
+.story-history[data-kind="downloads"] .story-history-rows{max-height:var(--download-list-height,none);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin}
 .story-history[data-kind="downloads"] .story-history-rows[data-overflow="true"]{padding-right:4px}
 .story-history[data-kind="downloads"] .story-history-rows[data-density="compact"] .story-history-row{padding:7px 0;gap:6px}
 .story-history[data-kind="downloads"] .story-history-rows[data-density="compact"] .story-history-line{font-size:15px;line-height:22px;gap:5px 10px}
@@ -400,6 +405,6 @@ html[data-studio-boot="ready"] #studio-boot>.story-atmosphere{display:none}
 .story-history[data-kind="downloads"] .story-history-rows[data-density="tight"] .story-history-note{font-size:12px;line-height:17px}
 .story-history[data-kind="downloads"] .story-history-rows[data-density="tight"] .story-history-percent{font-size:12px;line-height:18px}
 .story-history[data-kind="downloads"] .story-history-rows[data-density="tight"] progress{height:4px}
-@media(max-width:600px){.story-history[data-kind="downloads"] .story-history-line{grid-template-columns:minmax(0,1fr) auto auto}.story-history[data-kind="downloads"] .story-history-line>strong{grid-column:auto}.story-history[data-kind="downloads"] .story-history-rows{gap:2px}.story-history[data-kind="downloads"] .story-history-line>span{font-size:12px}}
+@media(max-width:600px){.story-history[data-kind="downloads"] .story-history-line{grid-template-columns:minmax(0,1fr) auto auto}.story-history[data-kind="downloads"] .story-history-line>strong{grid-column:auto}.story-history[data-kind="downloads"] .story-history-line>span{font-size:12px}}
 @media(prefers-reduced-motion:reduce){.story-panel,.story-index,.story-index-tick,.story-shell .story-index-step,:is(.story-shell,#input-form) .story-choice-card,.story-shell .story-button,html[data-studio-boot="ready"] #studio-boot{transition:none}.story-loader:not([hidden]){animation-duration:0s}.story-loading-dots i{animation:none;opacity:.7}}
 @media(prefers-reduced-motion:reduce){.story-progress-indicator[data-status="active"],.story-live #progress-label[data-status="active"]::after{animation:none}}
