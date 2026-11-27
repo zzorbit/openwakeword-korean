@@ -238,6 +238,8 @@ h1{font-size:28px}
 
 .source-name{display:block;color:var(--fg);font-size:14px;font-weight:650;line-height:1.5;min-width:0;overflow-wrap:anywhere;text-decoration:none}
 
+.source-copy>.source-name:only-child{grid-column:1/-1}
+
 a.source-name:hover{text-decoration:underline}
 
 .source-content{display:block;margin:0;min-width:0;color:var(--muted);font-size:14px;line-height:1.65;word-break:keep-all;overflow-wrap:anywhere}

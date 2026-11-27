@@ -1188,7 +1188,7 @@ async function main() {
     assert.equal(evaluation.querySelector("h2").textContent, "성능 평가용 자료");
     assert.deepEqual(historyRows(training).map(historyRowLabel), ["openWakeWord", "한국어 웹 음성", "FMA", "AudioSet", "MIT RIR"]);
     assert.deepEqual(historyRows(evaluation).map(historyRowLabel), ["MUSAN", "FSD50K", "Seoul", "한국어 낭독 · Zeroth", "OpenSLR RIR"]);
-    assert.deepEqual(historyRows(training).map(downloadScale), ["약 2,000시간", "500시간", "공식 예제", "공식 예제", "학습용 전체"]);
+    assert.deepEqual(historyRows(training).map(downloadScale), ["약 2,000시간", "500시간", "음악 1시간", "균형 학습용 일부", "학습용 전체"]);
     assert.deepEqual(historyRows(evaluation).map(downloadScale), ["7시간", "5시간", "15시간", "3시간", "공간 20개"]);
     assert.doesNotMatch(textOf(list), /1 \/ 1개/);
     assert.equal(historyRowLabel(tools), "연산 도구 · PyTorch · TorchAudio");
@@ -2234,6 +2234,8 @@ async function main() {
     assert.ok(group.children.every(card => card.classList.contains("story-choice-card") && card.children[0].type === "radio"));
     assert.equal(radios.filter(radio => radio.checked).length, 1);
     assert.equal(radios.find(radio => radio.checked).value, "production");
+    assert.match(group.children[0].querySelector(".preset-description").textContent, /AudioSet 일부 \+ FMA 음악 1시간/);
+    assert.match(group.children[2].querySelector(".preset-description").textContent, /비호출 자료 재사용/);
     assert.ok(radios.every(radio => radio.disabled)); assert.equal(p.state.selectedPreset, "trial");
     p.ui.render(); assert.equal(p.state.selectedPreset, "trial");
     p.state.project = null; p.ui.render(); await advanceSetup(p, "tools", "scale");
@@ -2247,6 +2249,7 @@ async function main() {
     detail.className = "preset-description"; card.append(trial, detail); draft.get("presets").append(card);
     await advanceSetup(draft, "tools", "scale");
     assert.match(detail.textContent, /한국어 비호출 500시간/);
+    assert.match(detail.textContent, /AudioSet 일부 \+ FMA 음악 1시간/);
 
     const saved = page({ ...historyModel({}), preset: "trial", settings: { korean_hours: 450 } });
     saved.state.recipes = draft.state.recipes;

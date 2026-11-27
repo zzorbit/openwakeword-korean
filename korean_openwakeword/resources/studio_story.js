@@ -162,6 +162,14 @@
   }
   const titles = { check: "동작 확인용", trial: "시험 모델용", production: "상용 모델용" };
   const shortDescriptions = { check: "라이브러리 동작 확인", trial: "호출 성능 비교·시험", production: "많은 자료로 본격 학습" };
+  const officialNoiseScales = { audioset: "균형 학습용 일부", official_music: "음악 1시간" };
+  function scaleDescription(preset, koreanHours, noisePolicy) {
+    if (!Object.hasOwn(shortDescriptions, preset)) return "";
+    const korean = preset === "trial" && Number.isFinite(koreanHours) ? `한국어 비호출 ${count(koreanHours)}시간` : "";
+    const reuse = noisePolicy ? noisePolicy === "reuse_negative_waveforms" : preset === "production";
+    const noise = reuse ? "비호출 자료 재사용" : `AudioSet 일부 + FMA ${officialNoiseScales.official_music}`;
+    return [shortDescriptions[preset], korean, noise].filter(Boolean).join(" · ");
+  }
   const materialPurposeLabels = { training: "학습용 자료", evaluation: "성능 평가용 자료" };
   const toolBackends = { cpu: ["CPU", "NVIDIA GPU 없이 실행"], cu128: ["NVIDIA GPU", "CUDA 12.8 사용"] };
   const count = value => Number.isFinite(value) ? value.toLocaleString("ko-KR") : "—";
@@ -286,7 +294,7 @@
     for (const [id, title] of Object.entries(titles)) {
       const card = node("label", undefined, "preset story-choice-card"), radio = node("input");
       radio.type = "radio"; radio.name = "saved-preset"; radio.value = id; radio.disabled = true;
-      card.append(radio, node("strong", title, "preset-title"), node("p", shortDescriptions[id], "preset-description"));
+      card.append(radio, node("strong", title, "preset-title"), node("p", scaleDescription(id), "preset-description"));
       savedPresets.append(card);
     }
     const materials = node("div", undefined, "story-materials");
@@ -1650,12 +1658,13 @@
         head.append(node("h2", label), totalLabel);
         const list = node("dl", undefined, "story-material-list"), rows = materialData[key] || [];
         for (const item of rows) {
-          const row = node("div", undefined, "story-material-row"), amount = node("dd");
+          const reusedNoise = key === "evaluation" && item.id === "noise" && item.downloadBytes === 0;
+          const row = node("div", undefined, reusedNoise ? "story-material-row story-material-reused-noise" : "story-material-row"), amount = node("dd");
           const names = [...new Set((item.sources || []).map(source => (source.name === "RIRS_NOISES" ? "OpenSLR RIR" : source.name) + (source.downloadReuse === "학습용 자료와 공유" ? "(공유)" : "")))];
           const title = node("dt");
           title.append(node("span", item.name, "story-material-name"), node("span", names.join(" · ") || item.description, "story-material-source"));
           row.append(title);
-          const capacity = node("span", item.downloadLabel || "다운로드 용량 미확정", "story-material-capacity");
+          const capacity = node("span", reusedNoise ? "재사용" : item.downloadLabel || "다운로드 용량 미확정", "story-material-capacity");
           capacity.title = (item.sources || []).map(source => `${source.name}: ${source.downloadReuse || (Number.isFinite(source.downloadBytes) ? `${source.downloadEstimated ? "약 " : ""}${bridge.formatBytes(source.downloadBytes)}` : "용량 미확정")}`).join("\n");
           amount.append(node("strong", item.amount), capacity); row.append(amount); list.append(row);
         }
@@ -1991,7 +2000,7 @@
         return hours(nominal) ? `약 ${hours(nominal)}` : "";
       }
       if (group === "zeroth" && row.purpose === "training") return hours(project.settings?.korean_hours);
-      if (group === "official_music" || group === "audioset") return "공식 예제";
+      if (Object.hasOwn(officialNoiseScales, group)) return officialNoiseScales[group];
       if (group === "mit_rir") return "학습용 전체";
       if (row.purpose !== "evaluation") return "";
       if (group === "common_rir") {
@@ -2832,14 +2841,15 @@
       for (const unit of [entry, savedEntry, toolPicker, scale, savedScale, materials, live, voiceListening]) unit.hidden = unit !== wanted;
       if (showToolPicker) updateComputePicker(tools, pickerBackend, Boolean(state.busy || project && !toolChoiceEditable));
       if (project && savedWord.value !== (project.wakeword || "")) savedWord.value = project.wakeword || "";
-      const trialKoreanHours = project?.preset === "trial" ? project.settings?.korean_hours
-        : state.recipes.find(recipe => recipe.id === "trial")?.korean_hours;
-      const trialDescription = Number.isFinite(trialKoreanHours)
-        ? `${shortDescriptions.trial} · 한국어 비호출 ${count(trialKoreanHours)}시간` : shortDescriptions.trial;
+      const presetDescription = preset => {
+        const recipe = state.recipes.find(recipe => recipe.id === preset);
+        const selected = preset === project?.preset ? project.settings : recipe;
+        return scaleDescription(preset, selected?.korean_hours, selected?.noise_material_policy);
+      };
       if (project) for (const card of savedPresets.children) {
         const radio = card.querySelector("input"); radio.checked = radio.value === project.preset;
         card.setAttribute("data-selected", String(radio.checked));
-        if (radio.value === "trial") card.querySelector(".preset-description").textContent = trialDescription;
+        card.querySelector(".preset-description").textContent = presetDescription(radio.value);
       }
       if (!project) {
         for (const preset of $("presets").children) {
@@ -2847,8 +2857,7 @@
           const description = preset.querySelector(".preset-description");
           if (radio) {
             preset.setAttribute("data-selected", String(radio.checked));
-            if (description) description.textContent = radio.value === "trial" ? trialDescription
-              : shortDescriptions[radio.value] || description.textContent;
+            if (description) description.textContent = presetDescription(radio.value) || description.textContent;
           }
         }
       } else {

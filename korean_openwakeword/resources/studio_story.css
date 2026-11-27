@@ -91,6 +91,7 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-material-heading span{font-size:14px;line-height:20px;color:#bdc5d1;white-space:nowrap}
 .story-material-list{margin:0}
 .story-material-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:start;min-height:0;padding:clamp(5px,calc(1.25dvh - 2.5px),8px) 0;border-bottom:1px solid #343c47}
+.story-material-reused-noise{grid-template-columns:minmax(0,1fr) auto}
 .story-material-row:last-child{border-bottom:0}
 .story-material-row dt{display:grid;gap:2px;min-width:0;font:500 16px/24px system-ui,"Malgun Gothic",sans-serif;margin:0;word-break:keep-all;overflow-wrap:break-word}
 .story-material-source{font-size:14px;line-height:20px;font-weight:400;color:#bdc5d1}

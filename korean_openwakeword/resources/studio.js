@@ -640,11 +640,13 @@
     if (Object.keys(buckets).length) {
       const general = [groupSource("MUSAN", ["other_speech", "music"]), groupSource("FSD50K", ["environment", "electronic"])].filter(item => item.rank > 0);
       const speech = [groupSource("Seoul Corpus", ["korean_conversation", "korean_interview"]), groupSource("Zeroth Korean", ["korean_read"], "한국어 낭독 음성")].filter(item => item.rank > 0);
+      const generalName = "일반 비호출 자료", koreanName = "한국어 비호출 자료";
+      const noiseSource = [general.length && generalName, speech.length && koreanName].filter(Boolean).join(", ");
       const totalHours = Object.values(buckets).reduce((sum, value) => sum + value, 0);
       evaluation.push(
-        { id: "generic", name: "일반 비호출 자료", description: content(generalKeys), amount: hours(generalKeys.reduce((sum, key) => sum + bucketHours(key), 0)), sources: general },
-        { id: "korean", name: "한국어 비호출 자료", description: content(koreanKeys), amount: hours(koreanKeys.reduce((sum, key) => sum + bucketHours(key), 0)), sources: speech },
-        { id: "noise", name: "소음 증강 음원", description: "위 평가용 비호출 음원을 호출어에 섞어 사용", amount: hours(totalHours), sources: [...general, ...speech].map(item => reused(item)) }
+        { id: "generic", name: generalName, description: content(generalKeys), amount: hours(generalKeys.reduce((sum, key) => sum + bucketHours(key), 0)), sources: general },
+        { id: "korean", name: koreanName, description: content(koreanKeys), amount: hours(koreanKeys.reduce((sum, key) => sum + bucketHours(key), 0)), sources: speech },
+        { id: "noise", name: "소음 증강 음원", description: "위 평가용 비호출 음원을 호출어에 섞어 사용", amount: hours(totalHours), sources: noiseSource ? [reused(source(noiseSource, "", "재사용", null))] : [] }
       );
     }
     // Older policies retain their supplemental sources; v4/v5 filter them above.
@@ -722,7 +724,8 @@
           const row = element("li", undefined, "source-item"), text = element("span", undefined, "source-copy"), quantity = element("span", source.amount, "source-quantity");
           const href = webUrl(source.url), name = element(href ? "a" : "span", source.name, "source-name");
           if (href) { name.href = href; name.target = "_blank"; name.rel = "noopener"; }
-          text.append(name, element("span", source.content, "source-content"));
+          text.append(name);
+          if (source.content) text.append(element("span", source.content, "source-content"));
           const size = originalSize(source.bytes);
           if (size) quantity.append(element("span", `${source.bytesLabel || "원본"} ${size}`, "file-size"));
           row.append(text, quantity); sources.append(row);

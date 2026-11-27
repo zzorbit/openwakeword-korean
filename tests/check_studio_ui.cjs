@@ -829,7 +829,8 @@ function pendingHardStorageRecipe() {
       assert.equal(withClass(row, "source-panel")[0].hidden, true);
       for (const source of sourceEntries(row)) {
         assert.ok(withClass(source, "source-name")[0].textContent.trim());
-        assert.ok(withClass(source, "source-content")[0].textContent.trim());
+        if (row === material(groups[1], "소음 증강 음원")) assert.equal(withClass(source, "source-content").length, 0);
+        else assert.ok(withClass(source, "source-content")[0].textContent.trim());
       }
     }
     const all = textOf(preview);
@@ -1364,12 +1365,11 @@ function pendingHardStorageRecipe() {
     const generic = material(group, "일반 비호출 자료"), korean = material(group, "한국어 비호출 자료"), noise = material(group, "소음 증강 음원");
     assert.equal(sourceEntries(generic).length, 2);
     assert.equal(sourceEntries(korean).length, 2);
-    assert.equal(sourceEntries(noise).length, 4);
-    const names = sourceEntries(noise).map(row => withClass(row, "source-name")[0].textContent);
-    assert.equal(new Set(names).size, 4);
-    const quantities = sourceEntries(noise).map(row => withClass(row, "source-quantity")[0]);
-    assert.deepEqual(quantities.map(node => node.textContent), ["15시간", "7시간", "5시간", "3시간"]);
-    for (const quantity of quantities) assert.equal(withClass(quantity, "file-size").length, 1);
+    assert.equal(sourceEntries(noise).length, 1);
+    assert.equal(withClass(noise, "source-name")[0].textContent, "일반 비호출 자료, 한국어 비호출 자료");
+    assert.equal(withClass(noise, "source-quantity")[0].textContent, "재사용");
+    assert.equal(withClass(noise, "file-size").length, 0);
+    assert.equal(withClass(noise, "material-amount")[0].textContent, "30시간");
     assert.match(textOf(korean), /대화 10시간.*인터뷰 5시간|인터뷰 5시간.*대화 10시간/);
     assert.match(textOf(korean), /낭독 3시간/);
     assert.equal(withClass(korean, "file-size").filter(node => node.textContent.includes("2.59 GB")).length, 1);
