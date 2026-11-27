@@ -337,7 +337,7 @@ def _candidate_path(root, output, row, sample_id):
     return path
 
 
-def _synthesise(model, phrase, prompt, settings, *, retry, expected_reuses):
+def _synthesise(model, phrase, prompt, settings, *, retry, expected_reuses, **limits):
     termination = {}
     wavs, rate, token_limit = tts.generate_short_clone(model, text=phrase, language="Korean",
         voice_clone_prompt=prompt, retry=retry, expected_reuses=expected_reuses, termination=termination, **settings)
@@ -345,7 +345,7 @@ def _synthesise(model, phrase, prompt, settings, *, retry, expected_reuses):
             not 8000 <= rate <= 192000 or int(rate) != rate):
         raise ValueError("Qwen must return exactly one waveform and a valid sample rate")
     waveform = wavs[0] if wavs is not None and len(wavs) else []
-    _, qc, converted = tts.check_short_clone_audio(waveform, int(rate), token_limit, termination)
+    _, qc, converted = tts.check_short_clone_audio(waveform, int(rate), token_limit, termination, **limits)
     return qc, converted, token_limit
 
 
@@ -359,10 +359,10 @@ def _mixed_voice_waveforms(result, size=MIXED_VOICE_BATCH_SIZE):
     return wavs, int(rate), limit, endings
 
 
-def _store_candidate(root, output, sample_id, converted, qc, hashes):
+def _store_candidate(root, output, sample_id, converted, qc, hashes, **limits):
     if converted is None:
         return None, None, None
-    samples, bounds = tts.encode_candidate_pcm16(converted, qc)
+    samples, bounds = tts.encode_candidate_pcm16(converted, qc, **limits)
     path = output / (sample_id + ".wav")
     if path.exists():
         # Only an attempt without a journal row may reach this path.
@@ -379,15 +379,16 @@ def _store_candidate(root, output, sample_id, converted, qc, hashes):
     return path.relative_to(root).as_posix(), sha, bounds
 
 
-def _validate_saved_candidate(path, row):
+def _validate_saved_candidate(path, row, **limits):
     """Keep original rows and require the stored samples to pass before resuming."""
     with sf.SoundFile(path) as audio:
         start, end = row.get("start_s"), row.get("end_s")
         if (audio.samplerate != 16000 or audio.channels != 1 or audio.subtype != "PCM_16"
                 or type(start) not in (int, float) or type(end) not in (int, float)
-                or not 0 <= start < end <= audio.frames / audio.samplerate + 1e-6 or end - start > 1.840001):
+                or not 0 <= start < end <= audio.frames / audio.samplerate + 1e-6
+                or end - start > limits.get("max_length", 1.84) + 1e-6):
             raise ValueError("Hard candidate has invalid saved PCM or an incomplete phrase interval")
-        persisted_qc, converted = tts.technical_qc(audio.read(dtype="float64"), audio.samplerate)
+        persisted_qc, converted = tts.technical_qc(audio.read(dtype="float64"), audio.samplerate, **limits)
     if not persisted_qc["passed"]:
         raise ValueError("Stored Hard candidate no longer passes technical QC")
     if row.get("candidate_pcm_qc") == tts.CANDIDATE_PCM_QC and converted[1] != [start, end]:
@@ -395,6 +396,8 @@ def _validate_saved_candidate(path, row):
 
 
 def _validate_existing(root, output, rows, contract, config, phrases, references, count, pause_requested, update, boundary, recovery):
+    from .training_context import pronunciation_limits
+    limits = pronunciation_limits(config)
     passed, hashes, prepared = {}, set(), set()
     batches = {}
     contract_id, settings_id = identity(contract), identity(config["tts"])
@@ -438,7 +441,7 @@ def _validate_existing(root, output, rows, contract, config, phrases, references
         if qc.get("passed") is True:
             if row["sha256"] in hashes:
                 raise ValueError("Hard attempt passed duplicate audio")
-            _validate_saved_candidate(path, row)
+            _validate_saved_candidate(path, row, **limits)
             passed[slot] = row
         if path is not None:
             hashes.add(row["sha256"])
@@ -468,6 +471,8 @@ def generate_hard(project, phrases, count=None, model=None, *, samples_per_phras
     """
     check_generation_pause(pause_requested)
     root, config = load_project(project)
+    from .training_context import pronunciation_limits
+    limits = pronunciation_limits(config)
     if samples_per_phrase is not None:
         if count is not None:
             raise ValueError("Choose samples_per_phrase or a legacy total count, not both")
@@ -499,6 +504,7 @@ def generate_hard(project, phrases, count=None, model=None, *, samples_per_phras
     output = hard_phrase_scope(root / "data/generated", revision) / "hard"
     dataset_id = "qwen_" + config["project_id"] + "_hard_v1"
     contract = {"kind": "qwen_hard_negative_generation_contract_v1", "word": config["wakeword"],
+        **({"pronunciation_limits": limits} if limits else {}),
         "split": "train", "human_reference_used": False, "method": "clone", "tts": config["tts"],
         "texts": phrases, "references": references, "original_count": count,
         "max_attempts_per_slot": MAX_ATTEMPTS, "text_profile": "standalone_nonwake_phrase",
@@ -572,7 +578,7 @@ def generate_hard(project, phrases, count=None, model=None, *, samples_per_phras
         def record_attempt(slot, attempt, phrase, reference, preparation, qc, converted, token_limit, started):
             family = reference["voice_family_id"]
             sample_id = f"hard_train_{slot:06d}_attempt{attempt}"
-            path, sha, bounds = _store_candidate(root, output, sample_id, converted, qc, hashes)
+            path, sha, bounds = _store_candidate(root, output, sample_id, converted, qc, hashes, **limits)
             row = {"sample_id": sample_id, "slot": slot, "attempt": attempt,
                     "source_id": "qwen:" + config["project_id"] + ":" + sample_id,
                     "canonical_source_id": "qwen:" + config["project_id"] + ":" + sample_id,
@@ -626,7 +632,7 @@ def generate_hard(project, phrases, count=None, model=None, *, samples_per_phras
             candidates = zip(slots, voices, prepared, wavs, endings, strict=True)
             for slot, reference, (_, preparation), waveform, ending in candidates:
                 started = time.perf_counter() - synthesis_share
-                _, qc, converted = tts.check_short_clone_audio(waveform, rate, token_limit, ending)
+                _, qc, converted = tts.check_short_clone_audio(waveform, rate, token_limit, ending, **limits)
                 row = record_attempt(slot, 0, phrase, reference, preparation, qc, converted, token_limit, started)
                 row.update(cuda_batch=batch, batch_termination=ending)
                 _validate_batch_attempt(row, contract, contract_id)
@@ -658,7 +664,7 @@ def generate_hard(project, phrases, count=None, model=None, *, samples_per_phras
             started = time.perf_counter()
             with generation_attempt() as timing:
                 qc, converted, token_limit = _synthesise(model, phrase, prompt, synthesis_settings,
-                    retry=attempt > 0, expected_reuses=remaining[phrase, reference["voice_family_id"]])
+                    retry=attempt > 0, expected_reuses=remaining[phrase, reference["voice_family_id"]], **limits)
             row = record_attempt(slot, attempt, phrase, reference, preparation, qc, converted, token_limit, started)
             append_row(journal, row)
             if timing is not None:

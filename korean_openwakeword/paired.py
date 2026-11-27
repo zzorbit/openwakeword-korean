@@ -36,6 +36,8 @@ def evaluation_recipe(project, split="validation", originals=100, noise_sections
             "seed": config["augmentation"]["seed"],
             "positive_manifest_sha256": digest(resolved(root, config["manifests"]["positive_" + split])),
             "noise_manifest_sha256": digest(resolved(root, config["manifests"]["noise_" + split]))}
+    if config["runtime"].get("feature_frames", 16) != 16:
+        result["extended_context_lead_s"] = max(2.4, config["runtime"]["warmup_s"] + .4)
     if reverb_originals:
         manifest = config["manifests"].get("rir_" + split)
         if not manifest:
@@ -571,7 +573,7 @@ def _prepare_evaluation(project, output, split, originals, noise_sections, snrs,
         mask0 = active_speech_mask(source, 0, len(source) / 16000)
         gain = min(.98 / max(np.max(np.abs(source)), 1e-9), 10 ** (-20 / 20) / max(rms(source, mask0), 1e-9))
         source = source * gain
-        lead, tail = 2.4, 1.0
+        lead, tail = recipe.get("extended_context_lead_s", 2.4), 1.0
         speech = np.r_[np.zeros(round(lead * 16000)), source, np.zeros(round(tail * 16000))]
         mask = active_speech_mask(speech, lead, lead + len(source) / 16000)
         common = {"split": split, "kind": "positive", "provenance": "qwen_tts", "text": config["wakeword"],

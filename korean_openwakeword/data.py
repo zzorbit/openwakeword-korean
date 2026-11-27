@@ -168,8 +168,10 @@ def validate_admission(root, rows, config, role, smoke=False):
 
 
 def prepare_windows(project, pool, output):
-    """Expand admitted public recordings into fixed 2s windows without copying WAVs."""
+    """Expand admitted public recordings into the project's windows without copying WAVs."""
     root, config = load_project(project)
+    from .training_context import clip_seconds, feature_frames
+    seconds = clip_seconds(feature_frames(config["runtime"]))
     if pool not in ("generic_negative", "korean_negative", "hard_negative"):
         raise ValueError("Only training Negative pools use fixed windows")
     source_manifest = resolved(root, config["manifests"][pool])
@@ -187,10 +189,10 @@ def prepare_windows(project, pool, output):
         for row in iter_rows(source_manifest):
             info = sf.info(resolved(root, row["path"]))
             a, b = float(row.get("start_s", 0)), float(row.get("end_s", info.duration))
-            for index in range(int(math.ceil((b - a) / 2))):
-                start = a + index * 2
+            for index in range(int(math.ceil((b - a) / seconds))):
+                start = a + index * seconds
                 entry = {**row, "sample_id": f"{row['sample_id']}_window{index:06d}",
-                         "start_s": start, "end_s": min(b, start + 2), "window_policy": "fixed_2s_no_audio_copy"}
+                         "start_s": start, "end_s": min(b, start + seconds), "window_policy": f"fixed_{seconds:g}s_no_audio_copy"}
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
                 count += 1
     return {"rows": count, "path": str(output), "sha256": digest(output),

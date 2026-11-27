@@ -595,29 +595,29 @@ def _window_metadata(row, source_manifest=None):
     return compact
 
 
-def _fixed_windows(rows, source_manifest=None):
+def _fixed_windows(rows, source_manifest=None, seconds=2):
     for row in rows:
         start, end = _source_interval(row)
         compact = _window_metadata(row, source_manifest)
-        for index in range(ceil((end - start) / 2)):
-            a = start + index * 2
+        for index in range(ceil((end - start) / seconds)):
+            a = start + index * seconds
             yield {**compact, "sample_id": row["sample_id"] + f"_window{index:06d}",
-                   "start_s": a, "end_s": min(end, a + 2),
-                   "window_policy": "fixed_2s_no_audio_copy"}
+                   "start_s": a, "end_s": min(end, a + seconds),
+                   "window_policy": f"fixed_{seconds:g}s_no_audio_copy"}
 
 
-def _manifest_rows(pool, rows, source_manifest=None):
-    return _fixed_windows(rows, source_manifest) if pool in ("generic_negative", "korean_negative") else iter(rows)
+def _manifest_rows(pool, rows, source_manifest=None, seconds=2):
+    return _fixed_windows(rows, source_manifest, seconds) if pool in ("generic_negative", "korean_negative") else iter(rows)
 
 
-def _manifest_bytes(pool, rows):
+def _manifest_bytes(pool, rows, seconds=2):
     import json
     windowed = pool in ("generic_negative", "korean_negative")
     total = 0
     for row in rows:
         size = len(json.dumps(_window_metadata(row) if windowed else row,
                               ensure_ascii=False, allow_nan=False).encode("utf-8")) + 512
-        total += size * (ceil((_source_interval(row)[1] - _source_interval(row)[0]) / 2) if windowed else 1)
+        total += size * (ceil((_source_interval(row)[1] - _source_interval(row)[0]) / seconds) if windowed else 1)
         if windowed and row.get("provider_index_adapter") in ("mls", "yodas2"):
             total += len(json.dumps(row, ensure_ascii=False, allow_nan=False).encode("utf-8")) + 1
     return total
@@ -919,6 +919,8 @@ def apply_prepared_review(project, *, preparation, answers=None, output=None,
     sources; it cannot be combined with or override saved human answers.
     """
     root, config = load_project(project)
+    from .training_context import clip_seconds, feature_frames
+    seconds = clip_seconds(feature_frames(config["runtime"]))
     if (root / "final_lock.json").exists():
         raise ValueError("Final is frozen; material admission cannot alter training inputs")
     if isinstance(preparation, dict):
@@ -1026,7 +1028,7 @@ def apply_prepared_review(project, *, preparation, answers=None, output=None,
                                     excluded_source_ids=excluded)
             admission = approval["admission"]
         outputs, source_outputs = {}, {}
-        required_manifest_bytes = sum(_manifest_bytes(pool, selected) for pool, selected in selected_pools.items())
+        required_manifest_bytes = sum(_manifest_bytes(pool, selected, seconds) for pool, selected in selected_pools.items())
         if shutil.disk_usage(output).free < required_manifest_bytes * 2:
             raise ValueError(f"Insufficient project disk space for material manifests: estimated {required_manifest_bytes * 2} bytes")
         for pool, selected in selected_pools.items():
@@ -1035,7 +1037,7 @@ def apply_prepared_review(project, *, preparation, answers=None, output=None,
             original_manifest = output / (pool + "_sources.jsonl")
             _publish_rows(original_manifest, admitted)
             source_outputs[pool] = _binding(original_manifest)
-            _publish_rows(path, _manifest_rows(pool, admitted, source_outputs[pool]))
+            _publish_rows(path, _manifest_rows(pool, admitted, source_outputs[pool], seconds))
             outputs[pool] = _binding(path)
         result = {"kind": "prepared_public_audio_admission_v1", "state": "accepted", "request": request,
                   "admission": admission, "manifests": outputs, "source_manifests": source_outputs, "connected": False,
@@ -1055,6 +1057,8 @@ def connect_materials(project, *, admissions, pools, output=None):
     staged bytes; different existing material is left untouched.
     """
     root, config = load_project(project)
+    from .training_context import clip_seconds, feature_frames
+    seconds = clip_seconds(feature_frames(config["runtime"]))
     if (root / "final_lock.json").exists():
         raise ValueError("Final is frozen; material connection cannot change inputs")
     if (isinstance(admissions, (str, bytes)) or not admissions
@@ -1116,7 +1120,7 @@ def connect_materials(project, *, admissions, pools, output=None):
     if not audit["passed"]:
         raise ValueError("Merged source/speaker/room split audit failed: " + str(audit["errors"][:5]))
     directory.mkdir(parents=True, exist_ok=True)
-    estimated_manifest_bytes = sum(_manifest_bytes(pool, rows) for pool, rows in merged.items())
+    estimated_manifest_bytes = sum(_manifest_bytes(pool, rows, seconds) for pool, rows in merged.items())
     if shutil.disk_usage(directory).free < estimated_manifest_bytes * 3:
         raise ValueError(f"Insufficient project disk space for merged manifests: estimated {estimated_manifest_bytes * 3} bytes")
     staged = {}
@@ -1129,7 +1133,7 @@ def connect_materials(project, *, admissions, pools, output=None):
                 sources_path = directory / (pool + "_sources.jsonl")
                 _publish_rows(sources_path, rows)
                 source_binding = _binding(sources_path)
-            _publish_rows(path, _manifest_rows(pool, rows, source_binding))
+            _publish_rows(path, _manifest_rows(pool, rows, source_binding, seconds))
             staged[pool] = _binding(path)
     receipt_path = directory / "connection.json"
     with writer_lock(root / "data"):
@@ -1165,7 +1169,7 @@ def connect_materials(project, *, admissions, pools, output=None):
                 temporary.unlink(missing_ok=True)
         for binding in destinations.values():
             bound_file(root, binding)
-        transaction.update(state="connected", pool_rows={pool: sum(ceil((_source_interval(r)[1] - _source_interval(r)[0]) / 2) for r in rows)
+        transaction.update(state="connected", pool_rows={pool: sum(ceil((_source_interval(r)[1] - _source_interval(r)[0]) / seconds) for r in rows)
                             if pool in ("generic_negative", "korean_negative") else len(rows) for pool, rows in merged.items()},
                            estimated_manifest_bytes=estimated_manifest_bytes)
         write_json(receipt_path, transaction)

@@ -88,6 +88,7 @@ def _model_choice(word, preset, settings):
             "voice_design_policy": settings.get("voice_design_policy"),
             "pilot_review_policy": settings.get("pilot_review_policy"),
             "hard_review_policy": settings.get("hard_review_policy"),
+            **({"call_duration_s": settings["call_duration_s"]} if "call_duration_s" in settings else {}),
             **{key: settings[key] for key in ("originals", "rounds", "updates")},
             **{key: float(settings[key]) for key in ("generic_hours", "korean_hours")}}
 
@@ -261,6 +262,9 @@ def _execution_contract(*, legacy_reference_review=False):
     paths = [p for p in sorted(root.glob("*.py")) if p.name not in presentation]
     paths += sorted((root / "resources").glob("*.json"))
     bindings = {p.relative_to(root).as_posix(): digest(p) for p in paths}
+    if bindings.get("training_context.py") in _CONTEXT_PROFILE_AUDITED_HELPER_DIGESTS:
+        bindings.pop("training_context.py")
+        bindings = {name: _context_profile_compatible_digest(value) for name, value in bindings.items()}
     if bindings.get("reference_voice_review.py") == _REFERENCE_REVIEW_REUSABLE_LOADER_SHA256:
         # This exact version only allows the worker to reuse an already loaded model.
         bindings["reference_voice_review.py"] = _REFERENCE_REVIEW_COMPATIBLE_FILES[1]
@@ -612,7 +616,87 @@ _EVALUATION_STARTUP_COMPATIBLE_DIGESTS = {
 
 
 def _compute_dispatch_compatible_digest(name, sha256):
+    sha256 = _context_profile_compatible_digest(sha256)
     return _COMPUTE_DISPATCH_COMPATIBLE_DIGESTS[name].get(sha256, sha256)
+
+
+# The longer-context code branches are opt-in. These exact byte-pairs preserve
+# the 2-second computation and existing frozen Studio workflows.
+_CONTEXT_PROFILE_AUDITED_HELPER_DIGESTS = {
+    "112c74a81e9e0ce95c45dbf0691ce75a236e36888bf4915a9f451d35237c16f3",
+    "13389d54bd4b4bf21d41a92fc3a8d515be78693d6eb0eca70341b16c8afbc5f1",
+}
+_CONTEXT_PROFILE_EQUIVALENT_SOURCE_DIGESTS = {
+    "f00b798d2b7687093ec3a35ee7d75b60a517de413233fec6126fe9e7ea868f9c":
+        "a932e3db29f259d0cd202fcf071cbe64cc036e592b32cc7ecf14bbb079312ef0",  # automatic_sources.py
+    "3b35b6738aca0f7195c2e453c39b7a28576d3f37dfe4e09c778665b6e4051b5f":
+        "21ab69a22cc48d5b92bd6306e40cfdcd94d8dfdf99b56c82b59cb52a4519a490",  # automatic_sources.py
+    "620cda4e05aa48591a1101e303f957fb24c4c9fffdb71cb7dfa08f28348e46f6":
+        "fd682280423c33951f620d9fa50dffb1bae01f7bac60db65b33a683f40b426f0",  # data.py
+    "78c83c7f91233bb9ef11b13c8db70ecc8d0b98e5b1f87b1ef593c6aaf40f571e":
+        "3eac1477b11c8040558f1183f137f6b1b02371cf7af9c048719a03bc6cc7aaf1",  # data.py
+    "8add34a93580ca1c89b88099138d4b7189265ece60ba636ffb8113d28d3840b9":
+        "e08d1825508bc50be8b4c2593aa99e362307bcaf3ffcaebe90b09f9a4a2dab7c",  # features.py
+    "4c8bf598d8031e3b0e231006772c7963f27befe77702329c3426235501cf77eb":
+        "aaee1ffdd833a881ee2379e4547b015a0423af5cb34faf72634b23e6e69a5627",  # features.py
+    "4a8a52d10e6cadbfdebdeab284cce32ba0b49489bb96031d060eb47fb2c934fb":
+        "80dbd4e00b3bfc28b33602b97a7013fcf5b1eff8ec8c0e1babda01bca6433835",  # frontend.py
+    "b2dcc404b1ca8113d892a4de46e40f2d5a4308d6ce5f3c64bcf51ed32f1eb415":
+        "8ea5f7001e97b5a374705409f09d9ce413d156fe056eb1c49d06abec559fe8fb",  # frontend.py
+    "94c5e40ca410e93be57d49b61093e424b7123980a59f51dfc085b57414292e94":
+        "e41f4c8dcee83ca3fd326f7bced00596546a8f1f6e5478d9dd2add2cc0a44b52",  # frontend.py
+    "c7f0ddcd41b8f609b47304aae7fe59f0e73fde465db4d788db6a49746bca1fca":
+        "84ac04458ff04d38e97eae1e2bab8c773a2bc1348c288a34758d858c19fdb30e",  # gpu_evaluation.py
+    "8e96c5f8e639d421c1c6db653e0de688a4d3bc6c0abd56e6cd352f43dc7a8c33":
+        "192c007cac9e2d7bf067f6eb0d69d0609a0a96ea9f86ec0a71a05cfc62f780a8",  # gpu_evaluation.py
+    "200ca34fc56bc26b172cd49a31575e0198aaddee5b81d37bda22ffb19c1a3479":
+        "daca8435b943e6efad8d877f232b5a0d408276a3e09191dbff03a7d992790eb8",  # gpu_features.py
+    "5a261dffc345449060a1851d2a8a107ef435fc4967229dd3cab9634e281cec2a":
+        "e0522cbd08adea4fcbaccdef5dd5b1fa25e4fe876fc4fa2766e03a3818c09ce4",  # gpu_features.py
+    "2575d6bba0755726e88580699bdb889e87e1a8673d6a6f54f30dba0905fd4d83":
+        "cf2eb014dcc70277492221d41e99e633aab0a9b8c2ae3960d76444fa41e8ece5",  # hard_pilot.py
+    "58530286968a920c14429ccbbe268547cdd30d89c03da928ca17408607541c99":
+        "8a0a0f170a8cd2a170d48c8c2a0683430941ebfdc15193cd47392fc6a67db6fe",  # hard_pilot.py
+    "39736295633a624646a7b504392bfe1ee53e4cdc316d980c9a513f33d590d704":
+        "73529e64f16f8983e6e0824599155833b569037f9d0ad0dcba15710ebeaa771b",  # hard_tts.py
+    "67e7b713c2f0ef016d90c220a38aa4653b0251d548847cf668f38ad5a38a20a4":
+        "925921850594886551b3de42c286cd747f625e067d5d11ef2da41068138d664b",  # hard_tts.py
+    "f5722e7ee75096427b765dc01b1acf1291d92329a060ab54af62b635fac3fe0e":
+        "86ec50d2d792371cd09c68c275295b73991784c6fccb5f678ae87bed5d3a87cf",  # paired.py
+    "ab42c21c7c90f64c381485b504677088a2f1a5022dcd3bbc1634e83be66e3c73":
+        "e51759e097977b3ac8bb7f612c6139aeb0128ae419dc8fe0a3637f75607e4fcb",  # paired.py
+    "82dba344de435807c53ac2cedb194903ae672875efecc8b751cc924f343e1b75":
+        "b343fc7ede8c05d4f5697b592eaab1ff00c7ac230e50a092cbbfa559d6c49488",  # pool_review.py
+    "2813c0cc62f6a1c2999c34260a3a2d5da7d9fc1a5fa3e2bbf5dba9c4e81c8356":
+        "cee89499c4139e3743e2442fa4d058c3a2eb85d5db22034cce6ecd5645204287",  # pool_review.py
+    "bd96ba76e746df4ba4b7c1f8ae31b3da6d4fc670f1a325cdc058be1e09e336f4":
+        "6f5e7af47c6d729c9b2ff9fdffce0f92316a5c75adc5ef502e5a26b607a46066",  # preparation.py
+    "acdfc31ed9ab890ac71be04aee1d99d9808c968b686d8d684db906e83cd84fd1":
+        "24592133c62c9ef7ba332cd8df02174851aeeeb784c0b5c213261d86e1b909ff",  # preparation.py
+    "c71948ca9423e4c9fe1b52f2736e95aeeacf60fcd6d11a1d0c3f95691a5f7ad8":
+        "b878b55cd36cc2a3b8a12dfd55c9f6773ad320f2ede4dfa27d414513cb613716",  # project.py
+    "26d4776cb49b09a572a5a371703ef9ce428bdb167f577efef6f48fd50ceb37ee":
+        "9137623aaa0d92a58b731329f032b96f48fade4d8bc4666e99b689ec38aa6334",  # project.py
+    "4d640aa56745a1490d669ab70a28e86914ba0f3e5e7c7eddd28e30749e812159":
+        "a62b3aff57b233b5ffbf27bc4a43b44b8458a615db9a32630ad59d3c21bd1cb0",  # runtime.py
+    "6d4257070dfda925139ea1f212cf275a5073030238f878ab1e3d1406075bc17c":
+        "a622130b8bcad74b43241f08d75751bf9e3646e0c1521a1aac7e8261c740557c",  # runtime.py
+    "7dfc0d8223d6dfaf8d7034c8a9b16882a08a4f2f0d0d0b1ceb0178d9496bf39f":
+        "5c8a8026fc1af36caa468c888cf0c02354761b4a6b8d5f6d2977aabf7ab1834d",  # train.py
+    "33b08e75791b6d557750161cf0314a21ffd35bc6c2975ffb9c3a22884627fb76":
+        "f5579368a9f5de4b3913832a736c97196873057765f561e8857c0e9bb0eddee4",  # train.py
+    "fdb4a1c1e35b24e9797e3a39e91d93d6a33c73032dfb3978ad2dc1b7d9ca1cfc":
+        "6e33adc9398ce01f460a32b98f58e425c4f9569af3747b5c0ecf6cbe64653487",  # tts.py
+    "f745c7b50e86f5268d5324e46bf6ff5adf12c54e431d5d81f494908465c831c0":
+        "4599627ef67f2495cbc6498a684291e159c44421b57ffefbfa485234c4c7baed",  # tts.py
+}
+
+
+def _context_profile_compatible_digest(sha256):
+    original = _CONTEXT_PROFILE_EQUIVALENT_SOURCE_DIGESTS.get(sha256)
+    if original and digest(Path(__file__).with_name("training_context.py")) in _CONTEXT_PROFILE_AUDITED_HELPER_DIGESTS:
+        return original
+    return sha256
 
 
 _REFERENCE_WORKER_IDLE_SECONDS = 120
@@ -1812,7 +1896,7 @@ class StudioManager:
         if payload.get("directory") not in (None, ""):
             raise ValueError("모델 저장 폴더는 자동으로 정해집니다. 저장 경로를 입력하지 마세요.")
         mapping = {"positive_originals": "originals", "augmentation_rounds": "rounds", "updates": "updates",
-                   "generic_hours": "generic_hours", "korean_hours": "korean_hours"}
+                   "generic_hours": "generic_hours", "korean_hours": "korean_hours", "call_duration_s": "call_duration_s"}
         if set(overrides) - set(mapping):
             raise ValueError("지원하지 않는 세부 설정입니다.")
         for key, value in overrides.items():
@@ -1820,6 +1904,10 @@ class StudioManager:
                 settings[mapping[key]] = value
         if type(settings["rounds"]) is not int:
             raise ValueError("증강 횟수는 정수 1 / 3 / 5로 입력하세요.")
+        if "call_duration_s" in settings:
+            from .training_context import DEFAULT_FEATURE_FRAMES, frames_for_call
+            if frames_for_call(settings["call_duration_s"]) == DEFAULT_FEATURE_FRAMES:
+                settings.pop("call_duration_s")
         word = payload["wakeword"].strip()
         if not re.fullmatch(r"[가-힣]+", word):
             raise ValueError("호출어는 한글로 입력하세요. 경로나 특수 문자는 사용할 수 없습니다.")
@@ -1881,7 +1969,8 @@ class StudioManager:
                            positive_originals=settings["originals"], augmentation_rounds=settings["rounds"],
                            updates=settings["updates"], generic_hours=settings["generic_hours"],
                            korean_hours=settings["korean_hours"],
-                           validation_voice_families=settings["validation_references"])
+                           validation_voice_families=settings["validation_references"],
+                           **({"call_duration_s": settings["call_duration_s"]} if "call_duration_s" in settings else {}))
             _, config = load_project(project)
             config["targets"]["validation_originals"] = settings["validation_originals"]
             config["audio_storage_policy"] = settings["audio_storage_policy"]

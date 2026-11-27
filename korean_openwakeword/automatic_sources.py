@@ -76,11 +76,13 @@ def automatic_source_policy(generic_hours=DEFAULT_GENERIC_HOURS, korean_hours=DE
 def _space_plan(policy, config):
     """Known downstream payload plus explicitly estimated original storage."""
     seconds = sum(policy["component_targets"].values()) * 3600
+    from .training_context import clip_seconds, feature_frames
+    frames = feature_frames(config.get("runtime", {}))
     normalized = math.ceil(seconds * 16000 * 2)
-    negative_features = math.ceil(seconds / 2) * 16 * 96 * 4
+    negative_features = math.ceil(seconds / clip_seconds(frames)) * frames * 96 * 4
     originals = config.get("targets", {}).get("positive_originals", 0)
     rounds = config.get("augmentation_rounds", 1)
-    positive_features = math.ceil(originals * rounds * 16 * 96 * 4)
+    positive_features = math.ceil(originals * rounds * frames * 96 * 4)
     # Raw codecs and compression vary. These are forecasts, not publisher
     # verified sizes or promises; resolved part sizes remain the hard gate.
     canonical = policy.get("storage_policy") == "canonical_flac_only_v1"

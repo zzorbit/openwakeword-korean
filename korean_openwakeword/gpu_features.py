@@ -57,15 +57,27 @@ def feature_backend(directories, selected):
 
 
 @contextmanager
-def cuda_feature_frontend(root, frontend_directory, device_id=0):
+def cuda_feature_frontend(root, frontend_directory, device_id=0, *, frames=None):
     """Use the installed project-owned ONNX CUDA runtime for the whole stage."""
+    if frames is None:
+        from .project import load_project
+        from .training_context import feature_frames
+        _, config = load_project(Path(root) / "project.json")
+        frames = feature_frames(config["runtime"])
     environment = {} if os.environ.get("KOWW_GPU_RUNTIME_PATH") else gpu_runtime_environment(root)
     with evaluation_runtime_environment(environment):
-        yield CudaFeatureFrontend(frontend_directory, device_id)
+        yield CudaFeatureFrontend(frontend_directory, device_id, frames=frames)
 
 
 class CudaFeatureFrontend:
-    def __init__(self, directory, device_id):
+    def __init__(self, directory, device_id, *, frames=16):
+        from .training_context import clip_samples
+        self.clip_samples = clip_samples(frames)
+        self.feature_shape = (frames, 96)
+        adapter_digest = digest(__file__)
+        if frames == FEATURE_SHAPE[0]:
+            from .studio import _context_profile_compatible_digest
+            adapter_digest = _context_profile_compatible_digest(adapter_digest)
         self.directory = Path(directory).resolve()
         mel_path = self.directory / "melspectrogram.onnx"
         embedding_path = self.directory / "embedding_model.onnx"
@@ -98,13 +110,16 @@ class CudaFeatureFrontend:
             "schema_version": 1, "algorithm": "independent_80ms_last16_cuda_fp32_v1",
             "model_sha256": {"melspectrogram": PINNED_ASSETS[mel_path.name],
                              "embedding": PINNED_ASSETS[embedding_path.name]},
-            "mel_derivation": lineage, "adapter_sha256": digest(__file__),
+            "mel_derivation": lineage, "adapter_sha256": adapter_digest,
             "provider": _CUDA, "device_id": device_id, "onnxruntime_version": self.ort.__version__,
             "onnxruntime_native_sha256": digest(onnxruntime_pybind11_state.__file__),
             "numpy_version": np.__version__, "clip_batch": _CLIP_BATCH,
             "input": "16kHz_PCM16", "clip_samples": CLIP_SAMPLES, "feature_shape": list(FEATURE_SHAPE),
             "hop_samples": HOP_SAMPLES, "precision": "FP32; TF32 disabled",
         }
+        if frames != FEATURE_SHAPE[0]:
+            self.identity.update(algorithm="independent_80ms_extended_cuda_fp32_v1",
+                                 clip_samples=self.clip_samples, feature_shape=list(self.feature_shape))
         self.qualification = None
 
     def _mel(self, windows):
@@ -114,25 +129,26 @@ class CudaFeatureFrontend:
     def _block(self, clips):
         count = len(clips)
         # Keep the same CUDA tensor geometry after a pause and for a short tail.
-        padded = np.zeros((_CLIP_BATCH, CLIP_SAMPLES), dtype=np.int16)
+        hops = self.clip_samples // HOP_SAMPLES
+        padded = np.zeros((_CLIP_BATCH, self.clip_samples), dtype=np.int16)
         padded[:count] = clips
         first = self._mel(padded[:, :HOP_SAMPLES])
         window_size = HOP_SAMPLES + _MEL_LOOKBACK
         windows = sliding_window_view(padded, window_size, axis=1)[:, HOP_SAMPLES-_MEL_LOOKBACK::HOP_SAMPLES, :]
         following = self._mel(windows.reshape(-1, window_size))
-        after_first = following.reshape(_CLIP_BATCH, _CLIP_HOPS-1, -1, _MEL_BANDS)
+        after_first = following.reshape(_CLIP_BATCH, hops-1, -1, _MEL_BANDS)
         mel_steps = after_first.shape[2]
-        if windows.shape[1] != _CLIP_HOPS-1:
+        if windows.shape[1] != hops-1:
             raise ValueError("CUDA 특징 추출 입력 프레임 수가 모델과 맞지 않습니다.")
         history = np.concatenate([
             np.ones((_CLIP_BATCH, _MEL_WINDOW, _MEL_BANDS), dtype=np.float32), first,
             after_first.reshape(_CLIP_BATCH, -1, _MEL_BANDS),
         ], axis=1)
-        starts = history.shape[1] - _MEL_WINDOW - np.arange(FEATURE_SHAPE[0]-1, -1, -1) * mel_steps
+        starts = history.shape[1] - _MEL_WINDOW - np.arange(self.feature_shape[0]-1, -1, -1) * mel_steps
         retained = sliding_window_view(history, _MEL_WINDOW, axis=1)[:, starts, :, :].swapaxes(-1, -2)
         inputs = np.ascontiguousarray(retained.reshape(-1, _MEL_WINDOW, _MEL_BANDS, 1))
         features = self.embedding.run(None, {self.embedding_input: inputs})[0]
-        values = np.asarray(features, dtype=np.float32).reshape(_CLIP_BATCH, *FEATURE_SHAPE)[:count].copy()
+        values = np.asarray(features, dtype=np.float32).reshape(_CLIP_BATCH, *self.feature_shape)[:count].copy()
         if not np.isfinite(values).all():
             raise ValueError("CUDA 특징 추출 결과에 유효하지 않은 값이 있습니다.")
         return values
@@ -141,13 +157,13 @@ class CudaFeatureFrontend:
         report_task_progress("feature_frontend", "CUDA 특징 추출 모델 실행·동일성 확인", eta_eligible=False)
         actual = clips[:8]
         rng = np.random.default_rng(20260928)
-        edges = np.zeros((4, CLIP_SAMPLES), dtype=np.int16)
-        edges[1] = rng.integers(-100, 101, CLIP_SAMPLES, dtype=np.int16)
-        edges[2, CLIP_SAMPLES//2:] = 32767
+        edges = np.zeros((4, self.clip_samples), dtype=np.int16)
+        edges[1] = rng.integers(-100, 101, self.clip_samples, dtype=np.int16)
+        edges[2, self.clip_samples//2:] = 32767
         edges[3, 10000] = -32768
         probes = np.concatenate((actual, edges))
         start = time.perf_counter()
-        expected = StreamingFrontend(self.directory).embed(probes)
+        expected = StreamingFrontend(self.directory, frames=self.feature_shape[0]).embed(probes)
         cpu_seconds = time.perf_counter() - start
         start = time.perf_counter()
         result = self._block(probes)
@@ -164,8 +180,8 @@ class CudaFeatureFrontend:
 
     def embed(self, clips):
         if (not isinstance(clips, np.ndarray) or clips.ndim != 2 or clips.dtype != np.int16
-                or not len(clips) or clips.shape[1] != CLIP_SAMPLES):
-            raise ValueError("CUDA 특징 추출은 비어 있지 않은 2초 16 kHz PCM16 음원이 필요합니다.")
+                or not len(clips) or clips.shape[1] != self.clip_samples):
+            raise ValueError("CUDA 특징 추출 입력은 설정한 길이의 16 kHz PCM16 음원이어야 합니다.")
         if self.qualification is None:
             self._qualify(clips)
         return np.concatenate([self._block(clips[start:start+_CLIP_BATCH])

@@ -118,11 +118,16 @@ def seed_for(seed, role, sample_id, round_id):
     return int(identity([seed, role, sample_id, round_id])[:16], 16)
 
 
-def prepare_noise_index(settings, noises):
+def prepare_noise_index(settings, noises, *, seconds=2):
     """Compile the unchanged sampling distribution once, rather than per draw."""
     available = {}
     for category in settings["category_weights"]:
         group = [n for n in noises if n["category"] == category]
+        if seconds > 2:
+            # Favor one uninterrupted recording in the selected category.
+            contiguous = [n for n in group if
+                          (n.get("end_s") or n.get("duration_s") or 0) - n.get("start_s", 0) >= seconds]
+            group = contiguous or group
         weights = np.asarray([settings["korean_speech_weight"]
             if category == "competing_speech" and n.get("language") in ("Korean", "ko", "kor") else 1
             for n in group], float)
@@ -130,7 +135,18 @@ def prepare_noise_index(settings, noises):
     return available
 
 
-def _non_silent_noise_window(root, noise, samples, offset, mask, seed):
+def _extend_background(samples, size):
+    overlap = min(160, len(samples) // 4) if size > 32000 else 0
+    if not overlap:
+        return np.tile(samples, int(np.ceil(size / len(samples))))[:size]
+    fade = np.linspace(0, 1, overlap)
+    seam = (1 - fade) * samples[-overlap:] + fade * samples[:overlap]
+    period = np.concatenate((seam, samples[overlap:-overlap]))
+    lead = samples[:-overlap]
+    return np.concatenate((lead, np.tile(period, int(np.ceil((size - len(lead)) / len(period))))))[:size]
+
+
+def _non_silent_noise_window(root, noise, samples, offset, mask, seed, size=32000):
     """Retry only offsets within the same selected source using a private RNG.
 
     The ordinary sampling RNG selected category/file/first offset already.
@@ -139,14 +155,14 @@ def _non_silent_noise_window(root, noise, samples, offset, mask, seed):
     does not imply a non-silent random 2s window or clean active region.
     """
     first_offset = offset
-    scope = "clean_active_region" if mask is not None else "whole_2s_clip"
+    scope = "clean_active_region" if mask is not None else (
+        "whole_2s_clip" if size == 32000 else "whole_context_clip")
     retry_rng = None
     first_rms = None
     for attempt in range(1, MAX_NOISE_OFFSET_ATTEMPTS + 1):
-        if len(samples) < 32000:
-            # Preserve the existing short-file tiling and sample positions.
-            samples = np.tile(samples, int(np.ceil(32000 / len(samples))))
-        samples = samples[:32000]
+        if len(samples) < size:
+            samples = _extend_background(samples, size)
+        samples = samples[:size]
         level = rms(samples, mask)
         if not np.isfinite(level):
             raise ValueError(f"Nonfinite noise RMS for source {source_key(noise)} in {scope}")
@@ -167,7 +183,7 @@ def _non_silent_noise_window(root, noise, samples, offset, mask, seed):
                 retry_rng = np.random.default_rng(retry_seed)
             # seek_audio propagates broken/missing/nonfinite input errors.
             # No category/file replacement and no clean fallback is allowed.
-            samples, offset = seek_audio(root, noise, 2, retry_rng)
+            samples, offset = seek_audio(root, noise, size / 16000, retry_rng)
     raise ValueError(
         f"No non-silent noise window for source {source_key(noise)} "
         f"(category={noise['category']}, scope={scope}) after "
@@ -176,25 +192,26 @@ def _non_silent_noise_window(root, noise, samples, offset, mask, seed):
     )
 
 
-def augment(root, row, role, round_id, settings, noises, rirs, noise_index=None):
+def augment(root, row, role, round_id, settings, noises, rirs, noise_index=None, *, size=32000):
     seed = seed_for(settings["seed"], role, row["sample_id"], round_id)
     rng = np.random.default_rng(seed)
-    clip = np.zeros(32000, dtype=np.float64)
+    clip = np.zeros(size, dtype=np.float64)
+    duration = size / 16000
     if role == "positive":
         a, b = row["call_start_s"], row["call_end_s"]
         source = {**row, "start_s": a, "end_s": b}
         audio, _ = seek_audio(root, source, b - a)
-        if len(audio) > 29440:
-            raise ValueError("Complete word must fit a 2s clip with 80ms head/tail; quarantine, do not cut syllables")
-        start = int(rng.integers(1280, 32000 - len(audio) - 1280 + 1))
+        if len(audio) > size - 2560:
+            raise ValueError(f"Complete word must fit a {duration:g}s clip with 80ms head/tail; quarantine, do not cut syllables")
+        start = int(rng.integers(1280, size - len(audio) - 1280 + 1))
         clip[start:start + len(audio)] = audio
         bounds = [start / 16000, (start + len(audio)) / 16000]
         mask = active_speech_mask(clip, *bounds)
     else:
-        audio, _ = seek_audio(root, row, 2)
-        clip[:min(len(audio), 32000)] = audio[:32000]
+        audio, _ = seek_audio(root, row, duration)
+        clip[:min(len(audio), size)] = audio[:size]
         bounds = None
-        mask = active_speech_mask(clip, 0, min(len(audio), 32000) / 16000) if row.get("speech") and rms(clip) > 1e-8 else None
+        mask = active_speech_mask(clip, 0, min(len(audio), size) / 16000) if row.get("speech") and rms(clip) > 1e-8 else None
     details = {"sample_id": row["sample_id"], "source_id": source_key(row), "round_id": round_id,
                "seed": seed, "call_bounds_in_clip": bounds, "noise_id": None, "rir_id": None,
                "snr_db": None, "measured_snr_db": None}
@@ -204,20 +221,20 @@ def augment(root, row, role, round_id, settings, noises, rirs, noise_index=None)
         norm = np.sqrt(np.sum(impulse ** 2))
         if norm <= 1e-8:
             raise ValueError("Silent RIR")
-        clip = fftconvolve(clip, impulse / norm)[:32000]
+        clip = fftconvolve(clip, impulse / norm)[:size]
         details["rir_id"] = source_key(rir)
     draw = rng.random()
     if noises and draw >= settings["clean_probability"]:
         categories = list(settings["category_weights"])
-        available = prepare_noise_index(settings, noises) if noise_index is None else noise_index
+        available = prepare_noise_index(settings, noises, seconds=duration) if noise_index is None else noise_index
         if any(not group for group, _ in available.values()):
             raise ValueError("All declared noise categories need admitted material; do not silently renormalize")
         weights = np.asarray([settings["category_weights"][k] for k in categories], float)
         category = categories[int(rng.choice(len(categories), p=weights / weights.sum()))]
         group, probabilities = available[category]
         noise = group[int(rng.choice(len(group), p=probabilities))]
-        samples, offset = seek_audio(root, noise, 2, rng)
-        samples, offset, offset_diagnostics = _non_silent_noise_window(root, noise, samples, offset, mask, seed)
+        samples, offset = seek_audio(root, noise, duration, rng)
+        samples, offset, offset_diagnostics = _non_silent_noise_window(root, noise, samples, offset, mask, seed, size)
         details.update(offset_diagnostics)
         details.update(noise_id=source_key(noise), noise_category=category, noise_offset_s=offset)
         if mask is not None:
@@ -247,6 +264,15 @@ def build_features(project, role, output=None, rounds=None, batch_size=32, smoke
     _check_feature_pause(pause_requested)
     report_task_progress("feature_admission", "특징 추출 원본·승인 자료 확인", eta_eligible=False)
     root, config = load_project(project)
+    from .training_context import clip_samples, clip_seconds, feature_frames
+    frames = feature_frames(config["runtime"])
+    shape = (frames, 96)
+    size = clip_samples(frames)
+    seconds = clip_seconds(frames)
+    writer_sha = digest(__file__)
+    if frames == 16:
+        from .studio import _context_profile_compatible_digest
+        writer_sha = _context_profile_compatible_digest(writer_sha)
     pool = "positive_train" if role == "positive" else role
     if pool not in ("positive_train", "generic_negative", "korean_negative", "hard_negative"):
         raise ValueError("Only declared training pools are supported")
@@ -288,7 +314,7 @@ def build_features(project, role, output=None, rounds=None, batch_size=32, smoke
         materials[material] = rows
     if not materials["noise"] and config["augmentation"]["clean_probability"] < 1:
         raise ValueError("Non-clean augmentation needs reviewed noise materials")
-    noise_index = prepare_noise_index(config["augmentation"], materials["noise"])
+    noise_index = prepare_noise_index(config["augmentation"], materials["noise"], seconds=seconds)
     if output:
         directory = Path(output).resolve()
     elif role == "positive" and rounds != config["augmentation_rounds"]:
@@ -301,19 +327,25 @@ def build_features(project, role, output=None, rounds=None, batch_size=32, smoke
             for row in iter_rows(manifest):
                 path = resolved(root, row["path"])
                 _, duration = index.file_info((str(path), row["sha256"]), lambda: sf.info(path))
-                if row.get("end_s", duration) - row.get("start_s", 0) > 2.0001:
-                    raise ValueError("Formal Negative requires fixed 2s windows; run koww windows first")
+                if row.get("end_s", duration) - row.get("start_s", 0) > seconds + .0001:
+                    raise ValueError(f"Formal Negative requires fixed {seconds:g}s windows; run koww windows first")
+    def prepare_audio(row, round_id):
+        args = (root, row, role, round_id, config["augmentation"], materials["noise"], materials["rir"], noise_index)
+        return augment(*args) if frames == 16 else augment(*args, size=size)
+
     qualification = None
     if frontend is None:
         report_task_progress("feature_frontend", "특징 추출 모델 준비·동일성 확인", eta_eligible=False)
         from .frontend import qualified_fast_frontend
-        probes = [augment(root, row, role, 0, config["augmentation"], materials["noise"], materials["rir"], noise_index)[0]
-                  for row in islice(iter_rows(manifest), 8)]
-        frontend, qualification = qualified_fast_frontend(resolved(root, config["frontend_dir"]), probes)
+        probes = [prepare_audio(row, 0)[0] for row in islice(iter_rows(manifest), 8)]
+        frontend, qualification = qualified_fast_frontend(resolved(root, config["frontend_dir"]), probes,
+                                                         **({"frames": frames} if frames != 16 else {}))
+    if frames != 16 and frontend.identity.get("feature_shape") != list(shape):
+        raise ValueError("Selected frontend cannot extract the configured wake-word context")
     contract = {"schema_version": 2, "source_manifest_sha256": source_manifest_sha, "role": role,
         "rounds": rounds, "source_rows": source_count, "source_rows_identity_sha256": source_identity.hexdigest(),
         "materials": materials, "augmentation": config["augmentation"],
-        "frontend": frontend.identity, "implementation_sha256": digest(__file__), "smoke": smoke}
+        "frontend": frontend.identity, "implementation_sha256": writer_sha, "smoke": smoke}
     expected = source_count * rounds
     if expected < 1 or batch_size < 1:
         raise ValueError("Positive cache and batch sizes required")
@@ -340,8 +372,8 @@ def build_features(project, role, output=None, rounds=None, batch_size=32, smoke
                 raise ValueError("Missing resumable feature artifacts")
             array = np.lib.format.open_memmap(path, mode="r+")
         else:
-            array = np.lib.format.open_memmap(path, mode="w+", dtype=np.float32, shape=(expected, 16, 96))
-        if array.shape != (expected, 16, 96) or array.dtype != np.float32:
+            array = np.lib.format.open_memmap(path, mode="w+", dtype=np.float32, shape=(expected, *shape))
+        if array.shape != (expected, *shape) or array.dtype != np.float32:
             raise ValueError("Resume cache shape mismatch")
         start, journal_bytes, journal_hash = _resume_feature_journal(journal, checkpoint, array, contract_sha, pause_requested)
         started = time.perf_counter()
@@ -357,8 +389,7 @@ def build_features(project, role, output=None, rounds=None, batch_size=32, smoke
 
         def prepare(item):
             index, source, round_id = item
-            samples, info = augment(root, source, role, round_id, config["augmentation"],
-                                    materials["noise"], materials["rir"], noise_index)
+            samples, info = prepare_audio(source, round_id)
             return samples, {"feature_row": index, **info}
 
         workers = 2 if frontend.identity.get("provider") == "CUDAExecutionProvider" else 1
@@ -371,7 +402,7 @@ def build_features(project, role, output=None, rounds=None, batch_size=32, smoke
                 timings["audio_wait"] += stamp - ready_at
                 samples, rows = zip(*batch)
                 values = frontend.embed(np.asarray(samples, dtype=np.int16))
-                if values.shape != (len(rows), 16, 96) or values.dtype != np.float32 or not np.isfinite(values).all():
+                if values.shape != (len(rows), *shape) or values.dtype != np.float32 or not np.isfinite(values).all():
                     raise ValueError("Invalid frontend output")
                 checkpoint_started = time.perf_counter()
                 timings["frontend"] += checkpoint_started - stamp
@@ -417,7 +448,7 @@ def build_features(project, role, output=None, rounds=None, batch_size=32, smoke
         return verify_cache(directory, pause_requested=pause_requested) if pause_requested else verify_cache(directory)
 
 
-def _verify_feature_payload(feature_path, expected_sha256, feature_rows, pause_requested=None):
+def _verify_feature_payload(feature_path, expected_sha256, feature_rows, pause_requested=None, *, frames=16):
     """Verify every file byte and every stored float in one sequential read.
 
     NumPy's public NPY reader validates v1/v2/v3 headers, payload bounds and
@@ -436,7 +467,7 @@ def _verify_feature_payload(feature_path, expected_sha256, feature_rows, pause_r
         raise
     shape, dtype, data_offset, payload_bytes = header.shape, header.dtype, int(header.offset), int(header.nbytes)
     del header
-    if shape != (feature_rows, 16, 96) or not np.issubdtype(dtype, np.floating):
+    if shape != (feature_rows, frames, 96) or not np.issubdtype(dtype, np.floating):
         if _feature_digest(feature_path, pause_requested) != expected_sha256:
             raise ValueError("Feature payload hash changed")
         raise ValueError("Invalid feature shape/dtype")
@@ -558,7 +589,11 @@ def verify_cache(directory, *, pause_requested=None):
     directory = Path(directory)
     meta = read_json(directory / "metadata.json")
     feature_path = resolved(directory, meta.get("feature_path", "features.npy"))
-    shape, dtype = _verify_feature_payload(feature_path, meta["feature_sha256"], meta["feature_rows"], pause_requested)
+    from .training_context import feature_frames
+    feature_shape = meta.get("frontend", {}).get("feature_shape", [16, 96])
+    frames = 16 if meta.get("imported_precomputed") else feature_frames({"feature_frames": feature_shape[0]})
+    shape, dtype = _verify_feature_payload(feature_path, meta["feature_sha256"], meta["feature_rows"], pause_requested,
+                                           **({"frames": frames} if frames != 16 else {}))
     if meta.get("imported_precomputed"):
         from .assets import GENERIC_SHA
         if meta.get("role") != "generic_negative" or meta["feature_sha256"] != GENERIC_SHA or meta["feature_rows"] != 5625000 or dtype != np.float16:
@@ -577,7 +612,9 @@ def compare_rounds(first, second):
     ma, mb = verify_cache(a), verify_cache(b)
     ca, cb = read_json(a / "contract.json"), read_json(b / "contract.json")
     ca.pop("rounds"); cb.pop("rounds")
-    known_writers = _PRIOR_FEATURE_WRITERS | {digest(__file__)}
+    from .studio import _context_profile_compatible_digest
+    writer = digest(__file__)
+    known_writers = _PRIOR_FEATURE_WRITERS | {writer, _context_profile_compatible_digest(writer)}
     if ca.get("implementation_sha256") in known_writers and cb.get("implementation_sha256") in known_writers:
         ca.pop("implementation_sha256")
         cb.pop("implementation_sha256")

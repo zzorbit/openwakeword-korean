@@ -77,12 +77,12 @@ def _clone_reference_evidence_sha256():
     return CONDITIONING_ONLY_REFERENCE_DIGESTS.get(current, current)
 
 
-def technical_qc(samples, rate):
-    qc, converted, _ = _technical_qc(samples, rate)
+def technical_qc(samples, rate, *, max_length=1.84):
+    qc, converted, _ = _technical_qc(samples, rate, max_length=max_length)
     return qc, converted
 
 
-def _technical_qc(samples, rate):
+def _technical_qc(samples, rate, *, max_length=1.84):
     samples = np.asarray(samples, dtype=np.float64)
     reasons = []
     if samples.ndim != 1 or not len(samples) or not np.isfinite(samples).all():
@@ -106,7 +106,7 @@ def _technical_qc(samples, rate):
             mask = active_speech_mask(mono, 0, len(mono) / 16000)
             ranges = mask_intervals(mask)
             bounds = [max(0, ranges[0][0] - .04), min(len(mono) / 16000, ranges[-1][1] + .04)]
-            if bounds[1] - bounds[0] > 1.84:
+            if bounds[1] - bounds[0] > max_length:
                 reasons.append("does_not_fit_full_call_feature_window")
         except ValueError:
             reasons.append("no_active_audio")
@@ -114,12 +114,12 @@ def _technical_qc(samples, rate):
             "boundary_method": "energy_envelope_candidate_no_semantic_STT", "pronunciation_listened": False}, (mono, bounds), ranges
 
 
-def encode_candidate_pcm16(converted, qc):
+def encode_candidate_pcm16(converted, qc, **limits):
     """Check the waveform that will be persisted before accepting an attempt."""
     samples, bounds = converted
     encoded = pcm16(np.clip(samples, -1, 1))
     if qc["passed"]:
-        saved_qc, (_, bounds) = technical_qc(encoded.astype(np.float64) / 32768.0, 16000)
+        saved_qc, (_, bounds) = technical_qc(encoded.astype(np.float64) / 32768.0, 16000, **limits)
         if not saved_qc["passed"]:
             qc["passed"] = False
             qc["reasons"].extend(saved_qc["reasons"])
@@ -240,7 +240,7 @@ def short_clone_hit_limit(waveform, rate, token_limit):
             and np.size(waveform) >= (token_limit - 1) * _QWEN_CODEC_FRAME_SAMPLES - 1)
 
 
-def check_short_clone_audio(waveform, rate, token_limit, termination):
+def check_short_clone_audio(waveform, rate, token_limit, termination, **limits):
     """Reject incomplete inference and excessive inside pauses, preserving quiet syllables."""
     stop = termination.get("termination", "unobserved")
     failure = None
@@ -262,7 +262,7 @@ def check_short_clone_audio(waveform, rate, token_limit, termination):
                 if start or end < len(samples):
                     trim = {"leading_samples": start, "trailing_samples": len(samples) - end, "sample_rate": rate}
                     waveform = samples[start:end]
-    qc, converted, intervals = _technical_qc(waveform, rate)
+    qc, converted, intervals = _technical_qc(waveform, rate, **limits)
     if converted is None:
         return waveform, qc, converted
     if trim is not None:
@@ -578,8 +578,10 @@ def call_generation_location(root, split, staged_scope):
 
 
 def call_generation_contract(config, split, references, pilot, method, staged_scope=None):
+    from .training_context import pronunciation_limits
     contract = {"word": config["wakeword"], "split": split, "tts": config["tts"], "method": method,
-                "references": references, "pilot": pilot, "implementation_sha256": _generation_evidence_sha256()}
+                "references": references, "pilot": pilot, "implementation_sha256": _generation_evidence_sha256(),
+                **({"pronunciation_limits": limits} if (limits := pronunciation_limits(config)) else {})}
     if staged_scope is not None:
         contract["staged_scope"] = staged_scope
     if method == "clone":
@@ -895,6 +897,8 @@ class CallGenerationPaused(Exception):
 def generate(project, split="train", limit=None, pilot=False, method="clone", model=None, *,
              staged_scope=None, attempt_ceiling=None, excluded_sha256=(), pause_requested=None):
     root, config = load_project(project)
+    from .training_context import pronunciation_limits
+    limits = pronunciation_limits(config)
     if split not in ("train", "validation", "final") or method not in ("clone", "design") or limit is not None and (type(limit) is not int or limit < 1):
         raise ValueError("Use a valid split/method and a positive generation limit")
     if split == "final" and not (root / "final_lock.json").exists():
@@ -1042,7 +1046,7 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
             seed = _attempt_seed(config, split, slot, attempt, scope_id)
             if check_ending:
                 # Keep the existing waveform rules for already-frozen plans.
-                qc, converted = technical_qc(waveform, rate)
+                qc, converted = technical_qc(waveform, rate, **limits)
                 stop = termination["termination"]
                 if converted is not None:
                     if stop == "token_limit" or stop == "unobserved" and short_clone_hit_limit(waveform, rate, token_limit):
@@ -1052,7 +1056,7 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
                         qc["passed"] = False
                         qc["reasons"].append("generation_stopped_without_eos")
             else:
-                waveform, qc, converted = check_short_clone_audio(waveform, rate, token_limit, termination)
+                waveform, qc, converted = check_short_clone_audio(waveform, rate, token_limit, termination, **limits)
             if converted is None and method != "clone":
                 raise ValueError("Nonfinite/empty TTS output; cannot persist or silently accept")
             path, sha, bounds = None, None, None
@@ -1063,7 +1067,7 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
             elif token_limit is not None:
                 ending = {"policy": CALL_BOUNDARY_POLICY, **termination, "synthesized": None, "stored_pcm": None}
             if converted is not None:
-                samples, bounds = encode_candidate_pcm16(converted, qc)
+                samples, bounds = encode_candidate_pcm16(converted, qc, **limits)
                 if ending:
                     ending["synthesized"] = _ending_signal(waveform, int(rate))
                     ending["stored_pcm"] = _ending_signal(samples, 16000, pcm=True)

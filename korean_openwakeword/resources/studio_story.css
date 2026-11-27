@@ -63,6 +63,8 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-shell .story-button:focus-visible,.story-shell .story-small:focus-visible,.story-shell .story-tool:focus-visible{outline:2px solid #a8afb7;outline-offset:3px}
 .story-scale{width:min(741px,100%)}
 .story-scale #presets,.story-scale #story-saved-presets{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:0}
+.story-scale #call-duration-setting{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:8px;margin-top:16px}
+.story-scale #adv-call-duration{width:6em}
 :is(.story-shell,#input-form) .story-choice-card{
   display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;
   min-width:0;min-height:114px;margin:0;padding:14px 8px;border:1px solid #424a56;border-radius:12px;

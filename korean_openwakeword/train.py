@@ -205,7 +205,7 @@ class InputDelivery:
 
     def batch(self, indices, prepared=None):
         import torch
-        xs, ys = [], []
+        groups = {}
         for role, count in self.batch_counts.items():
             if role in self.cached:
                 x = self.cached[role][torch.as_tensor(indices[role], device=self.device)].float()
@@ -213,9 +213,11 @@ class InputDelivery:
                 data = (prepared[role] if prepared is not None else
                         np.asarray(self.pools[role][indices[role]], dtype=np.float32))
                 x = torch.from_numpy(data).to(self.device)
+            xs, ys = groups.setdefault(x.shape[1:], ([], []))
             xs.append(x)
             ys.append(torch.full((count, 1), float(role == "positive"), device=self.device))
-        return torch.cat(xs), torch.cat(ys)
+        inputs = tuple(torch.cat(xs) for xs, _ in groups.values())
+        return (inputs[0] if len(inputs) == 1 else inputs), torch.cat([y for _, ys in groups.values() for y in ys])
 
 
     def validate_member(self, pools, device, batch):
@@ -419,7 +421,9 @@ def _train_member(config, root, metadata, pools, seed, output, smoke, resume,
                 for group in optimizer.param_groups:
                     group["lr"] = lr_at(step, settings)
                 optimizer.zero_grad(set_to_none=True)
-                logits = model(x)
+                # The audited publisher cache retains its real 16-frame input.
+                # CNN weights are shared across the original and longer contexts.
+                logits = torch.cat([model(chunk) for chunk in x]) if isinstance(x, tuple) else model(x)
                 elements = torch.nn.functional.binary_cross_entropy_with_logits(logits, y, reduction="none")
                 loss = elements.mean() if settings["positive_loss_weight"] == 1 else (elements * (1 + (settings["positive_loss_weight"] - 1) * y)).mean()
                 loss.backward(); optimizer.step()
@@ -455,11 +459,13 @@ def _train_member(config, root, metadata, pools, seed, output, smoke, resume,
         _report_training_progress("training_finalizing", "학습 모델 내보내기·검증", eta_eligible=False)
         model.eval().cpu()
         scoring = torch.nn.Sequential(model, torch.nn.Sigmoid()).eval()
-        torch.onnx.export(scoring, torch.zeros(1, 16, 96), str(output / "model.onnx"), input_names=["input"],
+        from .training_context import feature_frames
+        frames = feature_frames(config["runtime"])
+        torch.onnx.export(scoring, torch.zeros(1, frames, 96), str(output / "model.onnx"), input_names=["input"],
             output_names=["wake_score"], dynamic_axes={"input": {0: "batch"}, "wake_score": {0: "batch"}},
             opset_version=17, dynamo=False)
         import onnxruntime as ort
-        probe = np.random.default_rng(seed).normal(size=(8, 16, 96)).astype(np.float32)
+        probe = np.random.default_rng(seed).normal(size=(8, frames, 96)).astype(np.float32)
         actual = ort.InferenceSession(str(output / "model.onnx"), providers=["CPUExecutionProvider"]).run(None, {"input": probe})[0]
         with torch.no_grad():
             expected = scoring(torch.from_numpy(probe)).numpy()
@@ -490,6 +496,8 @@ def train(project, output=None, smoke=False, resume=False, *, pause_requested=No
     if workload["workload_kind"] != "reference_100k_R5_50k" or workload["model_count"] != 3:
         name += f"_N{workload['positive_tts_originals']}_U{workload['updates_per_model']}_M{workload['model_count']}"
     directory = Path(output).resolve() if output else root / "runs" / name
+    from .training_context import feature_frames
+    frames = feature_frames(config["runtime"])
     metadata, pools = {}, {}
     roles = training_batch(config)
     labels = {"generic_negative": "일반 비호출", "korean_negative": "한국어 비호출",
@@ -509,6 +517,9 @@ def train(project, output=None, smoke=False, resume=False, *, pause_requested=No
             raise ValueError("Formal training refuses smoke or unapproved feature inputs")
         metadata[role] = meta
         pools[role] = np.load(resolved(cache, meta.get("feature_path", "features.npy")), mmap_mode="r", allow_pickle=False)
+        expected_frames = 16 if role == "generic_negative" and meta.get("legacy_generic_bridge") else frames
+        if pools[role].shape[1:] != (expected_frames, 96):
+            raise ValueError("Training input does not match the declared model context")
         _report_training_progress("feature_validation", labels.get(role, role) + " 학습 자료 검증", index + 1, len(roles), "개 자료")
     ids = {m["frontend_id"] for m in metadata.values() if not m.get("legacy_generic_bridge")}
     if len(ids) != 1:

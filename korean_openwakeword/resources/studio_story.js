@@ -288,6 +288,8 @@
     });
     const toolPicker = tools.element;
     const scale = node("div", undefined, "story-scale"); scale.append($("presets"));
+    const callDurationSetting = $("call-duration-setting");
+    if (callDurationSetting) scale.append(callDurationSetting);
     const savedScale = node("div", undefined, "story-scale story-saved-scale");
     const savedPresets = node("div", undefined, "preset-grid"); savedPresets.id = "story-saved-presets";
     savedPresets.setAttribute("role", "group"); savedPresets.setAttribute("aria-label", "저장된 학습 규모"); savedScale.append(savedPresets);
@@ -2848,7 +2850,9 @@
       const presetDescription = preset => {
         const recipe = state.recipes.find(recipe => recipe.id === preset);
         const selected = preset === project?.preset ? project.settings : recipe;
-        return scaleDescription(preset, selected?.korean_hours, selected?.noise_material_policy);
+        const description = scaleDescription(preset, selected?.korean_hours, selected?.noise_material_policy);
+        return Number.isFinite(selected?.call_duration_s)
+          ? `${description} · 최대 발음 ${count(selected.call_duration_s)}초` : description;
       };
       if (project) for (const card of savedPresets.children) {
         const radio = card.querySelector("input"); radio.checked = radio.value === project.preset;

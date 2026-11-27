@@ -31,7 +31,7 @@ class StreamingFrontend:
     verification_scope = "pinned_assets_and_canonical_80ms_implementation_only"
     precomputed_generic_compatibility = "unverified_offline_provenance_and_semantics"
 
-    def __init__(self, directory: Path, ncpu: int = 2):
+    def __init__(self, directory: Path, ncpu: int = 2, *, frames=16):
         if not isinstance(ncpu, int) or ncpu < 1:
             raise ValueError("ncpu must be a positive integer")
         directory = Path(directory).resolve()
@@ -47,6 +47,13 @@ class StreamingFrontend:
         import openwakeword.utils
         from openwakeword.utils import AudioFeatures
         self.ncpu = ncpu
+        from .training_context import clip_samples
+        self.clip_samples = clip_samples(frames)
+        self.feature_shape = (frames, 96)
+        adapter_digest = sha256_file(Path(__file__))
+        if frames == FEATURE_SHAPE[0]:
+            from .studio import _context_profile_compatible_digest
+            adapter_digest = _context_profile_compatible_digest(adapter_digest)
         self.runtime_kwargs = dict(melspec_model_path=str(paths["melspectrogram.onnx"]),
                                    embedding_model_path=str(paths["embedding_model.onnx"]),
                                    device="cpu", ncpu=ncpu)
@@ -58,7 +65,7 @@ class StreamingFrontend:
                              "embedding": PINNED_ASSETS["embedding_model.onnx"]},
             "openwakeword_version": version,
             "openwakeword_utils_sha256": sha256_file(Path(openwakeword.utils.__file__)),
-            "adapter_sha256": sha256_file(Path(__file__)),
+            "adapter_sha256": adapter_digest,
             "onnxruntime_version": importlib.metadata.version("onnxruntime"),
             "numpy_version": np.__version__, "provider": "CPUExecutionProvider", "cpu_threads": ncpu,
             "input": "16kHz_PCM16", "clip_samples": CLIP_SAMPLES, "feature_shape": list(FEATURE_SHAPE),
@@ -73,20 +80,26 @@ class StreamingFrontend:
             "verification_scope": self.verification_scope,
             "precomputed_generic_compatibility": self.precomputed_generic_compatibility,
         }
+        if frames != FEATURE_SHAPE[0]:
+            self.identity.update(algorithm="AudioFeatures.streaming_80ms_independent_extended_v1",
+                clip_samples=self.clip_samples, feature_shape=list(self.feature_shape),
+                chunks_per_clip=self.clip_samples // HOP_SAMPLES, extraction_at_samples=self.clip_samples,
+                startup_embeddings="upstream startup buffers; none included in the returned window",
+                mel_window_starts_in_clip=list(range(1, 1 + frames * 8, 8)))
 
     def embed(self, clips: np.ndarray) -> np.ndarray:
-        if not isinstance(clips, np.ndarray) or clips.dtype != np.int16 or clips.ndim != 2 or clips.shape[1] != CLIP_SAMPLES or len(clips) == 0:
-            raise ValueError("StreamingFrontend expects nonempty (N,32000) signed PCM16")
-        features = np.empty((len(clips), *FEATURE_SHAPE), dtype=np.float32)
+        if not isinstance(clips, np.ndarray) or clips.dtype != np.int16 or clips.ndim != 2 or clips.shape[1] != self.clip_samples or len(clips) == 0:
+            raise ValueError("StreamingFrontend expects nonempty PCM16 with the configured context length")
+        features = np.empty((len(clips), *self.feature_shape), dtype=np.float32)
         for index, clip in enumerate(clips):
             with preserved_startup_rng():
                 self.extractor.reset()
-            for offset in range(0, CLIP_SAMPLES, HOP_SAMPLES):
+            for offset in range(0, self.clip_samples, HOP_SAMPLES):
                 processed = self.extractor(clip[offset:offset + HOP_SAMPLES])
                 if processed != HOP_SAMPLES:
                     raise ValueError("Upstream chunk consumption changed; repeat frontend alignment audit")
-            result = np.asarray(self.extractor.get_features(FEATURE_SHAPE[0]), dtype=np.float32)
-            if result.shape != (1, *FEATURE_SHAPE) or not np.isfinite(result).all():
+            result = np.asarray(self.extractor.get_features(self.feature_shape[0]), dtype=np.float32)
+            if result.shape != (1, *self.feature_shape) or not np.isfinite(result).all():
                 raise ValueError("Upstream streaming feature shape/finite-value validation failed")
             features[index] = result[0]
         return features
@@ -95,38 +108,41 @@ class StreamingFrontend:
 class FastStreamingFrontend(StreamingFrontend):
     """Same retained computations; omit startup/early embeddings never returned."""
     def embed(self, clips):
-        if clips.dtype != np.int16 or clips.ndim != 2 or clips.shape[1] != 32000:
-            raise ValueError("Independent 2s PCM16 feature input required")
-        features = np.empty((len(clips), 16, 96), np.float32)
+        if clips.dtype != np.int16 or clips.ndim != 2 or clips.shape[1] != self.clip_samples:
+            raise ValueError("Independent PCM16 with the configured context length required")
+        features = np.empty((len(clips), *self.feature_shape), np.float32)
         extractor = self.extractor
+        chunks = self.clip_samples // HOP_SAMPLES
+        first = chunks - self.feature_shape[0]
         for index, clip in enumerate(clips):
             extractor.raw_data_buffer.clear()
             extractor.melspectrogram_buffer = np.ones((76, 32))
-            for chunk in range(25):
+            for chunk in range(chunks):
                 offset = chunk * 1280
                 extractor._buffer_raw_data(clip[offset:offset + 1280])
                 extractor._streaming_melspectrogram(1280)
-                if chunk >= 9:
+                if chunk >= first:
                     mel = extractor.melspectrogram_buffer[-76:].astype(np.float32)[None, :, :, None]
                     feature = np.asarray(extractor.embedding_model_predict(mel), np.float32)
                     if feature.shape != (96,) or not np.isfinite(feature).all():
                         raise ValueError("Retained embedding shape/values changed")
-                    features[index, chunk - 9] = feature
+                    features[index, chunk - first] = feature
         return features
 
 
-def qualified_fast_frontend(directory, clips):
+def qualified_fast_frontend(directory, clips, *, frames=16):
     """Qualify representative actual inputs and edge cases on this environment."""
     import time
-    canonical = StreamingFrontend(directory, ncpu=2)
-    candidate = FastStreamingFrontend(directory, ncpu=2)
+    canonical = StreamingFrontend(directory, ncpu=2, frames=frames)
+    candidate = FastStreamingFrontend(directory, ncpu=2, frames=frames)
     probe = np.asarray(clips, np.int16)
     if len(probe) == 0:
         raise ValueError("Actual source probes are required before feature acceleration")
     rng = np.random.default_rng(20260928)
-    edges = np.zeros((4, 32000), np.int16)
-    edges[1] = rng.integers(-100, 101, 32000, dtype=np.int16)
-    edges[2, 16000:] = 32767
+    size = canonical.clip_samples
+    edges = np.zeros((4, size), np.int16)
+    edges[1] = rng.integers(-100, 101, size, dtype=np.int16)
+    edges[2, size // 2:] = 32767
     edges[3, 10000:10001] = -32768
     probe = np.concatenate([probe, edges])
     start = time.perf_counter(); expected = canonical.embed(probe); reference_s = time.perf_counter() - start
@@ -136,8 +152,9 @@ def qualified_fast_frontend(directory, clips):
     report = {"actual_source_clips": len(clips), "edge_clips": 4, "bitwise_equal": equal,
         "maximum_absolute_error": float(np.max(np.abs(expected - actual))),
         "canonical_elapsed_s": reference_s, "candidate_elapsed_s": candidate_s,
-        "adapter_sha256": sha256_file(__file__), "canonical_identity": canonical.identity,
-        "scope": "Independent2s CPU features only; does not change continuous inference or adopt GPU inference"}
+        "adapter_sha256": canonical.identity["adapter_sha256"], "canonical_identity": canonical.identity,
+        "scope": ("Independent2s CPU features only; does not change continuous inference or adopt GPU inference" if frames == 16
+                  else "Independent extended-context PCM16 CPU features")}
     chosen = candidate if equal and candidate_s < reference_s else canonical
     report["adopted"] = "qualified_fast_CPU" if chosen is candidate else "canonical_CPU"
     return chosen, report

@@ -28,9 +28,10 @@ class StubFrontend:
 
 
 @pytest.fixture
-def project(tmp_path):
+def project(tmp_path, request):
+    long_call = getattr(request, "param", False)
     path = create_project(tmp_path / "newword", "보라야", "bora",
-        positive_originals=3, augmentation_rounds=1, updates=4)
+        positive_originals=3, augmentation_rounds=1, updates=4, call_duration_s=3 if long_call else None)
     root, config = load_project(path)
     config["augmentation_rounds"] = 1
     config["augmentation"]["clean_probability"] = 1
@@ -39,22 +40,28 @@ def project(tmp_path):
     config["pool_features"]["positive"] = "features/positive_R1"
     config["training"].update(device="cpu", updates=4, schedule_horizon=4, checkpoints=[2, 4], log_every=2)
     write_json(path, config)
+    if long_call:
+        from korean_openwakeword.frontend import StreamingFrontend
+        frontend = StreamingFrontend(sample_bundle() / "frontend", frames=31)
+    else:
+        frontend = StubFrontend()
     for role, manifest in (("positive", "positive_train"), ("generic_negative", "generic_negative"), ("korean_negative", "korean_negative"), ("hard_negative", "hard_negative")):
         rows = []
         for i in range(3):
             audio = root / "data" / (role + str(i) + ".wav")
-            wave(audio, (1 if role == "positive" else 20 if role == "generic_negative" else 40) + i)
+            seconds = 3 if long_call and role == "positive" else 1
+            wave(audio, (1 if role == "positive" else 20 if role == "generic_negative" else 40) + i, seconds)
             row = {"sample_id": f"{role}_{i}", "source_id": f"{role}:{i}", "split": "train",
                 "path": str(audio.relative_to(root)), "sha256": digest(audio), "speech": role != "generic_negative"}
             if role == "positive":
-                row.update(provenance="qwen_tts", human_reference_used=False, text="보라야", voice_family_id=f"train_voice_{i}", call_start_s=0, call_end_s=1)
+                row.update(provenance="qwen_tts", human_reference_used=False, text="보라야", voice_family_id=f"train_voice_{i}", call_start_s=0, call_end_s=seconds)
             elif role == "hard_negative":
                 row.update(provenance="qwen_tts", human_reference_used=False, text="보람아", voice_family_id=f"hard_voice_{i}", category="competing_speech")
             else:
                 row.update(provenance="public_dataset", source_url="https://example.org/fixture", license="test-only", category="competing_speech" if role == "korean_negative" else "environment")
             rows.append(row)
         (root / config["manifests"][manifest]).write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
-        build_features(path, role, frontend=StubFrontend(), smoke=True)
+        build_features(path, role, frontend=frontend, smoke=True)
     return path
 
 
@@ -119,6 +126,7 @@ def test_formal_training_refuses_unreviewed(project):
         train(project)
 
 
+@pytest.mark.parametrize("project", [False, True], indirect=True, ids=["standard_context", "extended_context"])
 def test_actual_small_three_model_training_and_resume(project, monkeypatch):
     root, config = load_project(project)
     complete = train(project, root / "runs" / "complete", smoke=True)
@@ -135,6 +143,11 @@ def test_actual_small_three_model_training_and_resume(project, monkeypatch):
     package = package_run(project, root / "runs" / "complete", root / "bundle")
     assert package["wakeword"] == "보라야"
     assert package["members"][0]["smoke_test_only"] is True
+    detector = WakeWordDetector(root / "bundle")
+    warmup = config["runtime"]["warmup_s"]
+    for _ in range(round(warmup / .08)):
+        assert detector.process(np.zeros(1280, dtype=np.int16))["eligible"] is False
+    assert detector.process(np.zeros(1280, dtype=np.int16))["eligible"] is True
 
 
 def test_interrupted_resume_is_exact(project, monkeypatch):

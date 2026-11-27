@@ -9,13 +9,15 @@ from korean_openwakeword.common import write_json
 from korean_openwakeword.project import BATCH, create_project, load_project
 
 
-def test_batched_cuda_layout_matches_the_original_streaming_geometry():
+@pytest.mark.parametrize("frames", [16, 31, 93])
+def test_batched_cuda_layout_matches_the_original_streaming_geometry(frames):
     ort = pytest.importorskip("onnxruntime")
     pytest.importorskip("onnx")
     pytest.importorskip("openwakeword")
     from importlib.resources import files
     from korean_openwakeword.frontend import StreamingFrontend
     from korean_openwakeword.gpu_evaluation import _per_session_mel_model
+    from korean_openwakeword.training_context import clip_samples
 
     assets = files("korean_openwakeword") / "resources/sample_chunsik/frontend"
     options = ort.SessionOptions()
@@ -23,6 +25,8 @@ def test_batched_cuda_layout_matches_the_original_streaming_geometry():
     options.log_severity_level = 3
     # The same ONNX models/packing run on CPU here so geometry is tested on CI.
     adapter = gpu_features.CudaFeatureFrontend.__new__(gpu_features.CudaFeatureFrontend)
+    adapter.clip_samples = clip_samples(frames)
+    adapter.feature_shape = (frames, 96)
     adapter.mel = ort.InferenceSession(_per_session_mel_model(assets / "melspectrogram.onnx")[0],
                                       sess_options=options, providers=["CPUExecutionProvider"])
     adapter.embedding = ort.InferenceSession(str(assets / "embedding_model.onnx"), sess_options=options,
@@ -30,10 +34,10 @@ def test_batched_cuda_layout_matches_the_original_streaming_geometry():
     adapter.mel_input = adapter.mel.get_inputs()[0].name
     adapter.embedding_input = adapter.embedding.get_inputs()[0].name
     rng = np.random.default_rng(20260928)
-    clips = rng.integers(-3000, 3001, (4, 32000), dtype=np.int16)
+    clips = rng.integers(-3000, 3001, (4, adapter.clip_samples), dtype=np.int16)
     clips[0] = 0
     clips[1, 16000:] = 32767
-    expected = StreamingFrontend(assets).embed(clips)
+    expected = StreamingFrontend(assets, frames=frames).embed(clips)
     actual = adapter._block(clips)
     np.testing.assert_allclose(actual, expected, rtol=1e-4, atol=1e-3)
     np.testing.assert_array_equal(actual.view("u4"), adapter._block(clips[::-1])[::-1].view("u4"))

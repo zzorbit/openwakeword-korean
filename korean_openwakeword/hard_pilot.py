@@ -25,6 +25,8 @@ def generate_hard_pilot(project, phrases, samples_per_phrase, model, *, revision
 
     check_generation_pause(pause_requested)
     root, config = load_project(project)
+    from .training_context import pronunciation_limits
+    limits = pronunciation_limits(config)
     if (root / "final_lock.json").exists():
         raise ValueError("Final is frozen; create a separate project for new Hard candidates")
     phrases = _phrases(phrases, config["wakeword"])
@@ -48,6 +50,7 @@ def generate_hard_pilot(project, phrases, samples_per_phrase, model, *, revision
     contract_path = output / "contract.json"
     journal = output / "candidates.jsonl"
     contract = {"kind": HARD_SAMPLE_REVIEW_POLICY, "word": config["wakeword"], "phrases": phrases,
+                **({"pronunciation_limits": limits} if limits else {}),
                 "samples_per_phrase": samples_per_phrase, "references": references, "tts": config["tts"],
                 "implementation_sha256": _implementation_sha256(), "technical_qc_sha256": tts._technical_qc_sha256(),
                 "short_clone_policy": tts.SHORT_CLONE_POLICY,
@@ -95,7 +98,7 @@ def generate_hard_pilot(project, phrases, samples_per_phrase, model, *, revision
             if row["technical_pass"]:
                 if row["sha256"] in hashes:
                     raise ValueError("Hard pilot passed duplicate audio")
-                _validate_saved_candidate(path, row)
+                _validate_saved_candidate(path, row, **limits)
                 passed[slot] = row
             attempts[slot] += 1
             if path is not None:
@@ -123,8 +126,8 @@ def generate_hard_pilot(project, phrases, samples_per_phrase, model, *, revision
             tts._seed(seed)
             with generation_attempt() as timing:
                 qc, converted, token_limit = _synthesise(model, phrase, prompt, config["tts"]["generation"],
-                                                        retry=attempt > 0, expected_reuses=1)
-            path, sha, bounds = _store_candidate(root, output, sample_id, converted, qc, hashes)
+                                                        retry=attempt > 0, expected_reuses=1, **limits)
+            path, sha, bounds = _store_candidate(root, output, sample_id, converted, qc, hashes, **limits)
             source_id = "qwen:" + config["project_id"] + ":" + sample_id
             row = {"sample_id": sample_id, "slot": slot, "attempt": attempt, "text": phrase,
                        "source_id": source_id, "canonical_source_id": source_id, "dataset_id": dataset_id,

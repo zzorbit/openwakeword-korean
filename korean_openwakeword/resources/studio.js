@@ -461,7 +461,9 @@
     return "이전 평가가 중단됐습니다. 저장된 연산 장치로 다시 시작하려면 재개를 누르세요.";
   }
   function creationBody() {
-    return requestBody({ wakeword: $("wakeword").value, advanced: { positive_originals: $("adv-originals").value, augmentation_rounds: $("adv-rounds").value, updates: $("adv-updates").value, generic_hours: $("adv-generic").value, korean_hours: $("adv-korean").value } }, selectedPreset);
+    return requestBody({ wakeword: $("wakeword").value, advanced: { positive_originals: $("adv-originals").value,
+      augmentation_rounds: $("adv-rounds").value, updates: $("adv-updates").value, generic_hours: $("adv-generic").value,
+      korean_hours: $("adv-korean").value, call_duration_s: $("adv-call-duration").value } }, selectedPreset);
   }
   function locationReady(body) {
     try { return Boolean(modelLocation.directory) && modelLocation.key === JSON.stringify(body || creationBody()); }
@@ -1624,7 +1626,7 @@
       $("coverage-tab-" + view).addEventListener("keydown", event => navKeys(event, ["training", "evaluation"], "coverage-tab-", select));
     }
     $("create-form").addEventListener("submit", create);
-    for (const id of ["adv-originals", "adv-rounds", "adv-updates", "adv-generic", "adv-korean"]) $(id).addEventListener("input", () => { renderRecipe(); previewLocation(); });
+    for (const id of ["adv-originals", "adv-rounds", "adv-updates", "adv-generic", "adv-korean", "adv-call-duration"]) $(id).addEventListener("input", () => { renderRecipe(); previewLocation(); });
     $("wakeword").addEventListener("input", event => { if (!event?.isComposing) previewLocation(); });
     $("wakeword").addEventListener("compositionend", previewLocation);
     $("input-form").addEventListener("submit", submitInput);

@@ -45,6 +45,7 @@ def verify_bundle(directory):
 
 def _verify_bundle_manifest(directory, manifest):
     from .frontend import PINNED_ASSETS
+    from .training_context import DEFAULT_FEATURE_FRAMES, clip_seconds, feature_frames
 
     if manifest.get("schema_version") != 1 or manifest.get("aggregation") not in ("single", "ordered_float64_mean_to_float32"):
         raise ValueError("Unsupported bundle schema or score aggregation")
@@ -74,6 +75,9 @@ def _verify_bundle_manifest(directory, manifest):
             raise ValueError("Bundle assets must stay inside the portable bundle")
         bound_file(directory, entry)
     r = manifest["runtime"]
+    frames = feature_frames(r)
+    if frames != DEFAULT_FEATURE_FRAMES and r["warmup_s"] < clip_seconds(frames):
+        raise ValueError("Extended wake-word models must warm up for the complete context")
     if r["sample_rate"] != 16000 or r["frame_samples"] != 1280 or r["vad_enabled"] or r["noise_suppression_enabled"]:
         raise ValueError("Only the qualified raw 16kHz/80ms ONNX path is supported")
     if not math.isfinite(r["threshold"]) or not 0 < r["threshold"] < 1 or type(r["consecutive_frames"]) is not int or r["consecutive_frames"] < 1 or any(not math.isfinite(r[k]) or r[k] < 0 for k in ("warmup_s", "cooldown_s", "call_postroll_s")) or r["tail_policy"] != "drop_partial_frame":
@@ -108,8 +112,11 @@ class WakeWordDetector:
                 embedding_model_path=frontend["embedding_model.onnx"])
         finally:
             np.random.set_state(state)
-        if list(self.model.models) != self.keys or any(self.model.model_inputs[k] != 16 or self.model.model_outputs[k] != 1 for k in self.keys):
-            raise ValueError("Classifiers must consume 16×96 features and return one probability")
+        from .training_context import feature_frames
+        frames = feature_frames(self.manifest["runtime"])
+        self._context_frames = frames
+        if list(self.model.models) != self.keys or any(self.model.model_inputs[k] != frames or self.model.model_outputs[k] != 1 for k in self.keys):
+            raise ValueError(f"Classifiers must consume {frames}×96 features and return one probability")
         self.runtime = self.manifest["runtime"]
         self.reset()
 
@@ -127,6 +134,11 @@ class WakeWordDetector:
         frame = np.asarray(frame)
         if frame.dtype != np.int16 or frame.shape != (1280,):
             raise ValueError("Expected a mono np.int16 array of exactly 1280 samples at 16kHz")
+        if self._context_frames != 16 and len(self.model.preprocessor.feature_buffer) < self._context_frames:
+            self.model.preprocessor(frame)
+            for key in self.keys:
+                self.model.prediction_buffer[key].append(0.0)
+            return np.zeros(len(self.keys), dtype=np.float32)
         prediction = self.model.predict(frame)
         values = np.asarray([prediction[k] for k in self.keys], dtype=np.float32)
         if not np.isfinite(values).all() or (values < 0).any() or (values > 1).any():

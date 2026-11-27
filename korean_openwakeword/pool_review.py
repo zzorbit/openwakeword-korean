@@ -486,6 +486,8 @@ def approve_pool(project, *, source_manifest, representative_queue, answers, out
     and never claims all originals were heard or wakeword-free.
     """
     root, config = load_project(project)
+    from .training_context import feature_frames, max_call_seconds
+    max_phrase_length = max_call_seconds(feature_frames(config["runtime"]))
     if synthetic_review_policy not in (None, "one_per_phrase_v1", HARD_SAMPLE_REVIEW_POLICY):
         raise ValueError("Unsupported synthetic review policy")
     if synthetic_review_policy is None and (representative_selection is not None or prior_review_evidence):
@@ -606,8 +608,8 @@ def approve_pool(project, *, source_manifest, representative_queue, answers, out
             duration = checks["frames"] / checks["sample_rate"]
             if (type(start) not in (int, float) or type(end) not in (int, float)
                     or not math.isfinite(start) or not math.isfinite(end)
-                    or not 0 <= start < end <= duration or end - start > 1.84 + 1e-9):
-                raise ValueError("Synthetic Hard Negative needs a finite complete phrase interval within the original and at most 1.84s")
+                    or not 0 <= start < end <= duration or end - start > max_phrase_length + 1e-9):
+                raise ValueError(f"Synthetic Hard Negative needs a finite complete phrase interval within the original and at most {max_phrase_length:g}s")
             checks["phrase_interval_s"] = [start, end]
         technical.append({"canonical_source_id": row["canonical_source_id"], "sha256": row["sha256"], **checks})
 

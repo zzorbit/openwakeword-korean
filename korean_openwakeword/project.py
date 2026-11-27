@@ -98,7 +98,8 @@ def workload_summary(config):
     n, r = config["targets"]["positive_originals"], config["augmentation_rounds"]
     t = config["training"]
     members, rows = len(t["seeds"]), n * r
-    feature_bytes = rows * 16 * 96 * 4  # local positive cache is float32
+    from .training_context import feature_frames
+    feature_bytes = rows * feature_frames(config.get("runtime", {})) * 96 * 4  # local positive cache is float32
     return {
         "positive_tts_originals": n, "augmentation_rounds": r,
         "positive_feature_rows": rows, "positive_feature_payload_bytes": feature_bytes,
@@ -196,6 +197,11 @@ def validate_project(config):
     if t["learning_rate"] <= 0 or t["weight_decay"] < 0 or not 0 <= t["dropout"] < 1 or t["positive_loss_weight"] <= 0:
         raise ValueError("Invalid training settings")
     r = config["runtime"]
+    from .training_context import DEFAULT_FEATURE_FRAMES, clip_seconds, feature_frames
+    context = feature_frames(r)
+    if context != DEFAULT_FEATURE_FRAMES and (
+            not t["architecture"].startswith("cnn") or r["warmup_s"] < clip_seconds(context)):
+        raise ValueError("Long wake words require a CNN classifier and full context before first detection")
     if not math.isfinite(r["threshold"]) or not 0 < r["threshold"] < 1 or type(r["consecutive_frames"]) is not int or r["consecutive_frames"] < 1:
         raise ValueError("Invalid detection rule")
     if r["vad_enabled"] or r["noise_suppression_enabled"]:
@@ -229,7 +235,7 @@ def create_project(output, wakeword, project_id, *, positive_originals=None,
                    augmentation_rounds=None, updates=None, generic_hours=None,
                    korean_hours=None, noise_hours=None, training_overrides=None,
                    validation_voice_families=30, train_voice_families=MAX_TRAIN_VOICE_FAMILIES,
-                   voice_policy=BALANCED_VOICE_POLICY):
+                   voice_policy=BALANCED_VOICE_POLICY, call_duration_s=None):
     output = Path(output).resolve()
     if output.exists() and any(output.iterdir()):
         raise ValueError("Use a new empty project directory; existing experiments are immutable")
@@ -237,6 +243,11 @@ def create_project(output, wakeword, project_id, *, positive_originals=None,
                                   train_count=train_voice_families, policy=voice_policy)
     config = default_profile()
     config.update(wakeword=wakeword, project_id=project_id)
+    if call_duration_s is not None:
+        from .training_context import DEFAULT_FEATURE_FRAMES, clip_seconds, frames_for_call
+        frames = frames_for_call(call_duration_s)
+        if frames != DEFAULT_FEATURE_FRAMES:
+            config["runtime"].update(feature_frames=frames, warmup_s=clip_seconds(frames))
     # New projects reserve RIR partitions explicitly. Loading historical JSON
     # never adds manifests or rewrites its immutable input bindings.
     config["manifests"].setdefault("rir_validation", "data/materials/validation_rir.jsonl")

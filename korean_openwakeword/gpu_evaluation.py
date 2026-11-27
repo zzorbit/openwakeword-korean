@@ -201,6 +201,8 @@ class _GpuBatchScorer:
         return np.asarray(embedded).reshape(len(windows), 96)
 
     def score_batch(self, pcms):
+        from .training_context import feature_frames
+        frames = feature_frames(self.runtime)
         mels = [np.ones((76, 32)) for _ in pcms]
         features = [self.initial_features.copy() for _ in pcms]
         results = [[] for _ in pcms]
@@ -223,10 +225,13 @@ class _GpuBatchScorer:
             embedded = self.embedding.run(None, {self.embedding.get_inputs()[0].name: windows})[0]
             embedded = np.asarray(embedded).reshape(len(active), 96)
             for slot, index in enumerate(active):
-                features[index] = np.vstack((features[index], embedded[slot]))[-16:]
-            inputs = np.stack([features[index][-16:].astype(np.float32) for index in active])
-            values = np.column_stack([head.run(None, {head.get_inputs()[0].name: inputs})[0].reshape(-1)
-                                      for head in self.heads]).astype(np.float32)
+                features[index] = np.vstack((features[index], embedded[slot]))[-frames:]
+            if frames != 16 and len(self.initial_features) + t < frames:
+                values = np.zeros((len(active), len(self.heads)), dtype=np.float32)
+            else:
+                inputs = np.stack([features[index][-frames:].astype(np.float32) for index in active])
+                values = np.column_stack([head.run(None, {head.get_inputs()[0].name: inputs})[0].reshape(-1)
+                                          for head in self.heads]).astype(np.float32)
             if t < 5:
                 values.fill(0)
             mean = ((values[:, 0].astype(np.float64) + values[:, 1].astype(np.float64)
