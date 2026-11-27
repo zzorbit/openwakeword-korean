@@ -599,7 +599,7 @@
       else if (asset("zeroth")) noise.push(reused(source("Zeroth Korean", "학습용 한국어 낭독 재사용", hours(suppliedKorean), suppliedKorean * 3600, asset("zeroth"))));
       if (asset("audioset")) {
         const { archive, shard, clips } = trainingDownloadInventory.audioset;
-        noise.push(source(`AudioSet ${shard}번 묶음 (${count(clips)})`, `${archive} · 균형 학습 세트`, count(clips), null,
+        noise.push(source(`AudioSet (${shard})`, `${archive} · 균형 학습 세트`, count(clips), null,
           asset("audioset"), bundleSize(["audioset", "audioset_segments", "audioset_ontology"])));
       }
     }

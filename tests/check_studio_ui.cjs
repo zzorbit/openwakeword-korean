@@ -1382,7 +1382,7 @@ function pendingHardStorageRecipe() {
     assert.equal(rows.length, 3);
     const audio = rows.find(row => /AudioSet/.test(withClass(row, "source-name")[0].textContent));
     assert.ok(audio);
-    assert.equal(withClass(audio, "source-name")[0].textContent, "AudioSet 09번 묶음 (685개)");
+    assert.equal(withClass(audio, "source-name")[0].textContent, "AudioSet (09)");
     assert.equal(withClass(audio, "source-quantity")[0].textContent, "685개");
     assert.match(textOf(audio), /bal_train09\.tar/);
     assert.equal(/시간|분|초/.test(withClass(audio, "source-quantity")[0].textContent), false);
