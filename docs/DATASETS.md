@@ -75,9 +75,9 @@ README의 **동작 확인용·시험 모델용**은 모두 [openWakeWord 공식 
 
 | 재료 | 공식 예제의 준비 범위 | 사용하는 이유 |
 | --- | --- | --- |
-| AudioSet | [agkphysics/AudioSet의 압축파일 보존 버전](https://huggingface.co/datasets/agkphysics/AudioSet/tree/5a2fa42a1506470d275a47ff8e1fdac5b364e6ef)의 `data/bal_train09.tar` 압축파일 1개 | 말소리·음악·생활 소리 등 실제 배경음을 호출어에 섞음 |
+| AudioSet | [agkphysics/AudioSet의 압축파일 보존 버전](https://huggingface.co/datasets/agkphysics/AudioSet/tree/5a2fa42a1506470d275a47ff8e1fdac5b364e6ef)의 균형 학습 세트 09번 묶음 `data/bal_train09.tar`에 들어 있는 FLAC 음원 685개 | 말소리·음악·생활 소리 등 실제 배경음을 호출어에 섞음 |
 | FMA 음악 | [rudraml/fma](https://huggingface.co/datasets/rudraml/fma)의 `small` 구성에서 30초 음원 120개, 총 1시간 | 음악이 들리는 상황을 학습 |
-| MIT 잔향(RIR) | [MIT_environmental_impulse_responses](https://huggingface.co/datasets/davidscripka/MIT_environmental_impulse_responses)의 `train` 전체 | 실제 공간에서 측정한 울림을 호출 음성에 적용 |
+| MIT 잔향(RIR) | [MIT_environmental_impulse_responses의 고정 버전 `16khz` 폴더](https://huggingface.co/datasets/davidscripka/MIT_environmental_impulse_responses/tree/b824a1ef2821f112fda0b9cb26e4278c62b425bb/16khz)에 들어 있는 WAV 270개 | 실제 공간에서 측정한 울림을 호출 음성에 적용 |
 
 **AudioSet 일부**는 임의의 시간 목표가 아니라 위 압축파일 하나를 뜻합니다. 공식 예제는 이 파일의 총 오디오 시간을 따로 명시하지 않으므로, 압축을 푼 뒤 실제 시간을 기록합니다. AudioSet은 [Google이 공개한 다양한 실제 소리 자료](https://research.google.com/audioset/)입니다.
 
@@ -85,7 +85,7 @@ AudioSet의 최신 버전은 Parquet 형식으로 바뀌어 기존 압축파일 
 
 **MIT RIR**은 소음 녹음이 아니라 소리가 공간을 거치면서 어떻게 울리는지 측정한 자료입니다. 음성에 적용하면 해당 공간의 울림을 재현할 수 있습니다. [MIT 원출처](https://mcdermottlab.mit.edu/Reverb/IR_Survey.html)와 Hugging Face의 실제 파일 목록을 함께 기록합니다. 현재 고정 버전의 학습용 16kHz WAV는 **270개**이며, 자동 준비에서도 같은 수량을 확인합니다.
 
-잔향 재료는 **상용 모델용도 동일한 MIT RIR의 `train` 전체**로 준비합니다. 호출어 원본이 많아져도 같은 공간의 RIR을 여러 호출 음성에 적용할 수 있으므로 자료 수를 비례해서 늘릴 필요는 없습니다. 개발용 평가에서 부족한 공간 조건이 확인되면 다른 공개 RIR을 추가하며, 평가용 RIR의 분리는 유지합니다.
+잔향 재료는 **상용 모델용도 동일한 MIT RIR 270개**를 준비합니다. 호출어 원본이 많아져도 같은 공간의 RIR을 여러 호출 음성에 적용할 수 있으므로 자료 수를 비례해서 늘릴 필요는 없습니다. 개발용 평가에서 부족한 공간 조건이 확인되면 다른 공개 RIR을 추가하며, 평가용 RIR의 분리는 유지합니다.
 
 일반 비호출 2,000시간은 위 증강 재료와 별도로 [openWakeWord 사전 계산 특징](https://huggingface.co/datasets/davidscripka/openwakeword_features)의 `openwakeword_features_ACAV100M_2000_hrs_16bit.npy`를 사용합니다. 이 파일에는 원본 음성이 없어 소음 혼합 재료로 사용할 수 없습니다.
 

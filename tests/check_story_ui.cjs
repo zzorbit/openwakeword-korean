@@ -160,6 +160,10 @@ function page(initialProject = null, options = {}) {
   const ui = context.KowwStory.create({
     state: () => state,
     materials: recipe => options.materials?.(recipe) || ({ training: [], evaluation: [] }),
+    trainingDownloadInventory: {
+      audioset: { archive: "bal_train09.tar", scope: "09번 묶음", clips: 685 },
+      mit_rir: { format: "16 kHz WAV", files: 270 },
+    },
     formatBytes: value => `${value}B`,
     wakewordError: value => options.wakewordError?.(value) || (String(value).trim() ? "" : "호출어를 입력하세요."),
     mediaUrl: value => typeof value === "string" && value.startsWith("/") && !value.startsWith("//") ? value : "",
@@ -1188,7 +1192,8 @@ async function main() {
     assert.equal(evaluation.querySelector("h2").textContent, "성능 평가용 자료");
     assert.deepEqual(historyRows(training).map(historyRowLabel), ["openWakeWord", "한국어 웹 음성", "FMA", "AudioSet", "MIT RIR"]);
     assert.deepEqual(historyRows(evaluation).map(historyRowLabel), ["MUSAN", "FSD50K", "Seoul", "한국어 낭독 · Zeroth", "OpenSLR RIR"]);
-    assert.deepEqual(historyRows(training).map(downloadScale), ["약 2,000시간", "500시간", "음악 1시간", "균형 학습용 일부", "학습용 전체"]);
+    assert.deepEqual(historyRows(training).map(downloadScale), ["약 2,000시간", "500시간", "음악 1시간", "09번 묶음 · 음원 685개", "16 kHz WAV 270개"]);
+    assert.equal(historyRows(training)[3].querySelector(".story-history-line").children[1].title, "bal_train09.tar");
     assert.deepEqual(historyRows(evaluation).map(downloadScale), ["7시간", "5시간", "15시간", "3시간", "공간 20개"]);
     assert.doesNotMatch(textOf(list), /1 \/ 1개/);
     assert.equal(historyRowLabel(tools), "연산 도구 · PyTorch · TorchAudio");
@@ -1369,7 +1374,7 @@ async function main() {
     assert.equal(hasActiveDownloadSpinner(row), true);
     assert.equal(status.dataset.status, "active");
     assert.equal(gauge.dataset.active, "true");
-    assert.equal(row.querySelector(".story-quality-indicator").dataset.status, "");
+    assert.equal(row.querySelectorAll(".story-progress-indicator").length, 1);
     project.status = "error"; project.error = "자료 검사 실패";
     p.ui.render();
     assertFullDownloadBar(gauge);
@@ -1384,6 +1389,9 @@ async function main() {
     assertFullDownloadBar(gauge, false);
     assert.equal(status.dataset.status, "complete");
     assert.equal(percent.textContent, "100%");
+    assert.equal(quality.hidden, true);
+    assert.equal(quality.textContent, "");
+    assert.equal(row.querySelector(".story-history-note-detail").textContent, "100 B / 100 B");
   });
   await test("download checkpoint holds a completed data phase until next explicitly releases it and follows a busy response once", async () => {
     const project = checkpointProject("awaiting_next", "paused"); project.stage_id = "references";

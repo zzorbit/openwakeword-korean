@@ -162,12 +162,12 @@
   }
   const titles = { check: "동작 확인용", trial: "시험 모델용", production: "상용 모델용" };
   const shortDescriptions = { check: "라이브러리 동작 확인", trial: "호출 성능 비교·시험", production: "많은 자료로 본격 학습" };
-  const officialNoiseScales = { audioset: "균형 학습용 일부", official_music: "음악 1시간" };
+  const officialMusicScale = "음악 1시간";
   function scaleDescription(preset, koreanHours, noisePolicy) {
     if (!Object.hasOwn(shortDescriptions, preset)) return "";
     const korean = preset === "trial" && Number.isFinite(koreanHours) ? `한국어 비호출 ${count(koreanHours)}시간` : "";
     const reuse = noisePolicy ? noisePolicy === "reuse_negative_waveforms" : preset === "production";
-    const noise = reuse ? "비호출 자료 재사용" : `AudioSet 일부 + FMA ${officialNoiseScales.official_music}`;
+    const noise = reuse ? "비호출 자료 재사용" : `AudioSet 일부 + FMA ${officialMusicScale}`;
     return [shortDescriptions[preset], korean, noise].filter(Boolean).join(" · ");
   }
   const materialPurposeLabels = { training: "학습용 자료", evaluation: "성능 평가용 자료" };
@@ -2000,8 +2000,15 @@
         return hours(nominal) ? `약 ${hours(nominal)}` : "";
       }
       if (group === "zeroth" && row.purpose === "training") return hours(project.settings?.korean_hours);
-      if (Object.hasOwn(officialNoiseScales, group)) return officialNoiseScales[group];
-      if (group === "mit_rir") return "학습용 전체";
+      if (group === "official_music") return officialMusicScale;
+      if (group === "audioset") {
+        const { scope, clips } = bridge.trainingDownloadInventory.audioset;
+        return `${scope} · 음원 ${count(clips)}개`;
+      }
+      if (group === "mit_rir") {
+        const { format, files } = bridge.trainingDownloadInventory.mit_rir;
+        return `${format} ${count(files)}개`;
+      }
       if (row.purpose !== "evaluation") return "";
       if (group === "common_rir") {
         const rooms = project.evaluation_policy?.rir_rooms;
@@ -2274,11 +2281,8 @@
           view.titleIndicator = node("i", undefined, "story-progress-indicator");
           view.note = node("p", undefined, "story-history-note");
           view.noteDetail = node("span", undefined, "story-history-note-detail");
-          view.inspectionStatus = node("span", undefined, "story-quality-status");
-          view.inspectionIndicator = node("i", undefined, "story-progress-indicator story-quality-indicator");
           view.inspectionLabel = node("span", undefined, "story-quality-label");
-          view.inspectionStatus.append(view.inspectionIndicator, view.inspectionLabel);
-          view.note.append(view.noteDetail, view.inspectionStatus);
+          view.note.append(view.noteDetail, view.inspectionLabel);
           view.item.append(view.note);
         }
         const group = row.group || row.key;
@@ -2296,6 +2300,7 @@
           verification: verifying && !bytesMeasured, verificationPercent: row.hashPercent });
         if (row.key !== "compute-tools" && row.key !== "material-connection")
           view.amount.textContent = downloadMaterialScale(project, row, group);
+        if (group === "audioset") view.amount.title = bridge.trainingDownloadInventory.audioset.archive;
         view.item.dataset.failed = String(Boolean(row.failed));
         if (view.titleIndicator.parentElement !== view.title) view.title.append(view.titleIndicator);
         updateProgressIndicator(view.titleIndicator, progressStatus(rowActive, row.completed && !preparing));
@@ -2333,16 +2338,15 @@
           : project.status === "paused" ? "자료 준비 일시정지" : "자료 준비 미완료" : preparing && !inspection && !verifying ? "자료 준비 대기" : "";
         const detail = row.detail || [sizeNote || archiveSize, availableHours, archiveStatus, archiveRate, preparationNote || reuseNote,
           row.shared ? "학습·평가 공용" : ""].filter(Boolean).join(" · ");
-        view.noteDetail.textContent = detail && inspection ? detail + " · " : detail;
-        view.inspectionStatus.hidden = !inspection;
-        updateProgressIndicator(view.inspectionIndicator, progressStatus(inspectionActive && !preparationActive, inspection?.state === "complete"));
         const inspectionPercent = inspectionActive ? preparationPercent(inspection) : null;
-        view.inspectionLabel.textContent = {
+        const inspectionLabel = {
           waiting: "품질 검사 대기",
           checking: inspectionActive ? ["품질 검사 중", inspectionPercent === null ? "" : `${inspectionPercent}%`].filter(Boolean).join(" · ") : "품질 검사 미완료",
-          complete: "품질 검사 완료",
         }[inspection?.state] || "";
-        view.note.hidden = !detail && !inspection;
+        view.noteDetail.textContent = detail && inspectionLabel ? detail + " · " : detail;
+        view.inspectionLabel.textContent = inspectionLabel;
+        view.inspectionLabel.hidden = !inspectionLabel;
+        view.note.hidden = !detail && !inspectionLabel;
         view.item.hidden = false;
         nextViews.set(row.key, view);
         return view.item;

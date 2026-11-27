@@ -23,6 +23,11 @@
   }
   $("studio-boot-retry")?.addEventListener("click", () => window.location.reload());
   const names = { check: "동작 확인용", trial: "시험 모델용", production: "상용 모델용" };
+  // Counts are from the pinned AudioSet archive and MIT 16 kHz provider inventory.
+  const trainingDownloadInventory = {
+    audioset: { archive: "bal_train09.tar", scope: "09번 묶음", clips: 685 },
+    mit_rir: { format: "16 kHz WAV", files: 270 },
+  };
   const steps = [
     ["data", "자료 준비"], ["references", "합성 목소리"], ["pilot", "호출어 확인"],
     ["generate", "호출어 생성"], ["hard", "유사어 준비"], ["features", "증강·특징 추출"], ["train", "모델 학습"],
@@ -590,7 +595,11 @@
       if (asset("fma")) noise.push(source("FMA", "음악 120곡 · 곡당 30초", "약 1시간", 3600, asset("fma"), bundleSize(["fma", "fma_metadata"])));
       if (automaticKorean.length) noise.push(...automaticKorean.map(item => reused({ ...item, content: "학습용 한국어 원본 음원 재사용", amount: "원본 재사용", bytes: undefined })));
       else if (asset("zeroth")) noise.push(reused(source("Zeroth Korean", "학습용 한국어 낭독 재사용", hours(suppliedKorean), suppliedKorean * 3600, asset("zeroth"))));
-      if (asset("audioset")) noise.push(source("AudioSet", "여러 종류의 일반 오디오", "1묶음", null, asset("audioset"), bundleSize(["audioset", "audioset_segments", "audioset_ontology"])));
+      if (asset("audioset")) {
+        const { archive, scope, clips } = trainingDownloadInventory.audioset;
+        noise.push(source(`AudioSet ${scope} (${count(clips)})`, `${archive} · 균형 학습 세트`, count(clips), null,
+          asset("audioset"), bundleSize(["audioset", "audioset_segments", "audioset_ontology"])));
+      }
     }
     const mit = asset("mit_rir") || recipe.additional_download;
     const hardPerPhrase = Number.isInteger(recipe.hard_samples_per_phrase) && recipe.hard_samples_per_phrase > 0
@@ -602,7 +611,7 @@
       { id: "generic", name: "일반 비호출 자료", description: "일반 음성 · 음악 · 환경음", amount: hours(genericHours), sources: generic },
       { id: "korean", name: "한국어 비호출 자료", description: hasNegativePlan || automaticKorean.length || koreanHours > suppliedKorean ? "한국어 대화 · 낭독 등 음성" : "한국어 낭독 음성", amount: hours(koreanHours), sources: korean },
       { id: "noise", name: "소음 증강 음원", description: reuseNegativeWaveforms ? "학습용 비호출 원본 음원 재사용" : "일반 오디오 · 음악 · 한국어 음성", amount: reuseNegativeWaveforms ? "재사용" : `${number(noise.length)}종`, sources: noise },
-      { id: "rir", name: "잔향 자료", description: "공간의 울림을 재현하는 파일", amount: mit ? count(mit.files ?? mit.file_count) : "0개", sources: mit ? [source("MIT RIR", "공간의 울림 특성", count(mit.files ?? mit.file_count), mit.files ?? mit.file_count, mit)] : [] }
+      { id: "rir", name: "잔향 자료", description: "공간의 울림을 재현하는 파일", amount: mit ? count(mit.files ?? mit.file_count) : "0개", sources: mit ? [source(`MIT RIR · ${trainingDownloadInventory.mit_rir.format}`, "공간의 울림 특성", count(mit.files ?? mit.file_count), mit.files ?? mit.file_count, mit)] : [] }
     ];
     const isEvaluation = item => ["validation", "development"].includes(item.split) || /held_out|evaluation|validation/.test(item.role || "");
     const knownTrain = new Set(["generic", "zeroth", "fma", "audioset", "mit_rir"]);
@@ -1559,6 +1568,7 @@
       wakewordError,
       retryLocation: previewLocation,
       materials: materialGroups,
+      trainingDownloadInventory,
       formatBytes: bytes,
       mediaUrl: localUrl,
       create: options => create({ preventDefault() {} }, options),

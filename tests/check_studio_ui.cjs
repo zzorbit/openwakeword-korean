@@ -1381,7 +1381,10 @@ function pendingHardStorageRecipe() {
     const group = b.elements.get("source-preview").children[0], rows = sourceEntries(material(group, "소음 증강 음원"));
     assert.equal(rows.length, 3);
     const audio = rows.find(row => /AudioSet/.test(withClass(row, "source-name")[0].textContent));
-    assert.ok(audio); assert.match(withClass(audio, "source-quantity")[0].textContent, /묶음/);
+    assert.ok(audio);
+    assert.equal(withClass(audio, "source-name")[0].textContent, "AudioSet 09번 묶음 (685개)");
+    assert.equal(withClass(audio, "source-quantity")[0].textContent, "685개");
+    assert.match(textOf(audio), /bal_train09\.tar/);
     assert.equal(/시간|분|초/.test(withClass(audio, "source-quantity")[0].textContent), false);
     assert.match(withClass(audio, "file-size")[0].textContent, /970\.1 MB/);
     const music = rows.find(row => /FMA/.test(withClass(row, "source-name")[0].textContent));
@@ -1389,7 +1392,7 @@ function pendingHardStorageRecipe() {
     assert.match(withClass(music, "file-size")[0].textContent, /8\.04 GB/);
     assert.equal(/DNS|팬 작동 소리|팬 소음/.test(textOf(group)), false);
     assert.equal(withClass(material(group, "소음 증강 음원"), "material-amount")[0].textContent, "3종");
-    const rir = material(group, "잔향 자료"); assert.match(textOf(rir), /270개/);
+    const rir = material(group, "잔향 자료"); assert.match(textOf(rir), /MIT RIR · 16 kHz WAV.*270개/);
     assert.equal(withClass(rir, "file-size").length, 0);
   });
   await test("commercial augmentation reuses Negative waveforms without new archives or invented hours", async () => {

@@ -149,7 +149,6 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 #story-download-activity{text-align:center}
 .story-history .story-history-row>.story-history-note{margin:0}
 .story-history[data-kind="downloads"] .story-history-row[data-failed="true"] :is(.story-history-line>span:not(.story-history-percent),.story-history-note){color:#f0a2a2}
-.story-quality-status{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
 .story-progress-indicator,.story-live #progress-label:is([data-status="active"],[data-status="complete"])::after{display:inline-block;vertical-align:middle;box-sizing:border-box;width:12px;height:12px;flex:none}
 .story-progress-indicator[data-status="active"],.story-live #progress-label[data-status="active"]::after{border:2px solid #70c981;border-right-color:transparent;border-radius:50%;animation:story-progress-spin 3s linear infinite}
 .story-progress-indicator[data-status="complete"],.story-live #progress-label[data-status="complete"]::after{background:#fff;clip-path:polygon(7% 51%,21% 37%,39% 55%,81% 13%,95% 27%,39% 83%)}
