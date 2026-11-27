@@ -227,6 +227,14 @@ def test_recipes_preview_has_three_budgets_known_sources_and_no_network(manager)
     assert manager.workers.calls == []
 
 
+@pytest.mark.parametrize("preset, selected, candidates_per_group", [("check", 20, 10), ("trial", 100, 30), ("production", 500, 100)])
+def test_new_interactive_projects_scale_initial_train_candidates(manager, preset, selected, candidates_per_group):
+    _, _, settings, _ = manager._model_request({"wakeword": "보라야", "preset": preset, "reference_voice_review": True})
+    assert settings["reference_train_candidates_per_group"] == candidates_per_group
+    assert settings["train_references"] == selected
+    assert settings["validation_references"] == 30
+
+
 def test_recipe_and_saved_project_share_dependency_requirements(manager, monkeypatch):
     from korean_openwakeword import studio_steps
     from korean_openwakeword.gpu_runtime_install import PINS

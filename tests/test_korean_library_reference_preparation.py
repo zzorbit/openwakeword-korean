@@ -39,6 +39,35 @@ def test_prepare_all_groups_once_reuses_model_and_never_admits_or_marks_heard(pl
     assert digest(damaged) == changed
 
 
+def test_larger_train_pool_resumes_within_a_group_and_verifies_every_batch(planned):
+    root, project, settings, _, _, calls, model = planned
+    settings["reference_train_candidates_per_group"] = 10
+    slots = candidates.source_slots(project, settings)
+    assert candidates._planned_slots(root, slots[0]["source_binding"]) == slots
+    pending = candidates.preparation_status(root, verify=False, train_candidates_per_group=10)
+    assert [row["total"] for row in pending["rows"]] == [100, 50]
+
+    paused = candidates.prepare_initial_candidate_batches(project, slots, load_model=lambda *args: model,
+                                                         should_pause=lambda: len(calls) >= 5)
+    assert paused["completed_groups"] == 0 and paused["completed"] == 5
+    ledger = root / ".studio/reference-candidates/state.json"
+    first = read_json(ledger)
+    group = first["groups"][0]["key"]
+    result = candidates.prepare_initial_candidate_batches(project, slots, load_model=lambda *args: model)
+    assert result["completed_groups"] == 20 and result["completed"] == result["total"] == 150
+    assert len(calls) == 150
+    assert [row["completed"] for row in result["rows"]] == [100, 50]
+    saved = read_json(ledger)
+    assert saved["batches"][group][0] == first["batches"][group][0]
+    assert saved["current_batch"][group] == first["current_batch"][group]
+    assert saved["groups"][0]["target"] == 2 and saved["groups"][-1]["target"] == 3
+    assert all(len(saved["batches"][g["key"]]) == (2 if g["split"] == "train" else 1) for g in saved["groups"])
+    assert candidates.verify_initial_candidate_preparation(project, slots, result["receipt"])["completed"] == 150
+    archive = read_json(root / result["receipt"]["path"])
+    assert len(archive["initial_batches"][group]) == 2
+    assert saved["selected"] == saved["heard"] == {} and saved["approved"] == []
+
+
 def test_legacy_selected_two_and_old_batch_pointer_survive_backfill(pool):
     root, project, config, originals, saved, model = pool
     plan, rows, _ = batch(pool)

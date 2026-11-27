@@ -262,6 +262,10 @@ def _execution_contract(*, legacy_reference_review=False):
     paths = [p for p in sorted(root.glob("*.py")) if p.name not in presentation]
     paths += sorted((root / "resources").glob("*.json"))
     bindings = {p.relative_to(root).as_posix(): digest(p) for p in paths}
+    # The larger pool is opt-in through the frozen slot plan. Legacy plans
+    # retain their original batch, verification, and receipt format.
+    reference_candidates = bindings["reference_candidates.py"]
+    bindings["reference_candidates.py"] = _REFERENCE_POOL_SIZE_COMPATIBLE_DIGESTS.get(reference_candidates, reference_candidates)
     trial_plan = "resources/yodas2_trial_500_v1.json"
     if (bindings.get(trial_plan) in _TRIAL_YODAS_BATCH_PLAN_DIGESTS
             and bindings.get("automatic_sources.py") in _BATCH_DOWNLOAD_COMPATIBLE_DIGESTS["automatic_sources.py"]):
@@ -370,6 +374,11 @@ def _execution_contract(*, legacy_reference_review=False):
     _EXECUTION_CONTRACT_CACHE[cache_key] = result
     return deepcopy(result)
 
+
+_REFERENCE_POOL_SIZE_COMPATIBLE_DIGESTS = {
+    "6736bfc604627b1e46ac3e0aa7bfc70369b6955bba7c68bf0a4ae6cf31b549e0": "588a5e77f603246f9d0757f7ead2b3de717ba1319ad2db978935013be7584805",
+    "71d6747dd78ad545202d3fe17fb68f22e25249250a1de7b881202ac3c99d50ca": "968fcec79233839a643bd5568926a98513fe71ed37922fdbc2506a0aa546a4cb",
+}
 
 _TRIAL_YODAS_BATCH_PLAN_DIGESTS = {
     "46084986df0f541a5966278dbf56c0b13727359116fc648b76df62f61be20921",
@@ -1924,8 +1933,10 @@ class StudioManager:
         if payload.get("reference_voice_review") is True:
             # New interactive projects choose candidate voices directly. Older
             # matched projects retain their frozen source-bank policy.
+            from .reference_candidates import TRAIN_CANDIDATES_PER_GROUP
             settings["reference_selection_policy"] = "candidate_pool_v3"
             settings["reference_preparation_policy"] = "initial_candidate_batches_v1"
+            settings["reference_train_candidates_per_group"] = TRAIN_CANDIDATES_PER_GROUP[settings["train_references"]]
         overrides = payload.get("advanced") or {}
         if not isinstance(overrides, dict):
             raise ValueError("세부 설정 형식이 올바르지 않습니다.")
@@ -2246,9 +2257,12 @@ class StudioManager:
             return blocked("이 구버전에는 검증된 단계 계약이 없습니다. 기존 자료를 보존하고 별도 호환 검증이 필요합니다.")
         budget_change = self._reference_budget_change(state) if reference_update else None
         trial_change = self._trial_material_budget_change(state)
+        candidate_budget = self._unstarted_reference_candidate_budget(state)
         return {"state": "available", "action": "migrate",
                 "reason": ("받은 한국어 자료를 재사용하고 시험 모델용 한국어 비호출 목표를 500시간으로 조정합니다."
                            if trial_change else
+                           "완료한 자료는 재사용하고 시작 전인 학습용 기준 목소리 후보 수를 새 규모에 맞춥니다."
+                           if candidate_budget is not None else
                            call_recovery_update.get("reason") or "기존 기준 목소리와 통과한 호출어를 보존하고, 긴 앞뒤 무음을 정리한 입력으로 실패한 호출어만 제한된 횟수 안에서 자동 복구합니다. 검사 기준과 실제 검수 기록은 유지합니다."
                            if call_recovery_update else
                            "기존 후보와 선택·청취·확정 기록을 보존하고, 기준 목소리의 청취 필수 조건을 해제합니다. 기존 확정 기록은 변경하지 않습니다."
@@ -2297,7 +2311,8 @@ class StudioManager:
                 **({"audited_call_generation_recovery_update": call_recovery_update} if call_recovery_update else {}),
                 **({"reference_budget_change": budget_change} if budget_change else {}),
                 **({"trial_material_budget_change": trial_change} if trial_change else {}),
-                "preserves": ["completed_artifacts", "review_answers", "history"] if trial_change else
+                **({"reference_train_candidates_per_group": candidate_budget} if candidate_budget is not None else {}),
+                "preserves": ["completed_artifacts", "review_answers", "history"] if trial_change or candidate_budget is not None else
                              ["project_settings", "completed_artifacts", "review_answers", "history"]}
 
     def _can_update_call_generation_recovery(self, state):
@@ -2351,6 +2366,23 @@ class StudioManager:
         except (OSError, ValueError, KeyError, TypeError):
             pass
         return None
+
+    @staticmethod
+    def _unstarted_reference_candidate_budget(state):
+        from .reference_candidates import TRAIN_CANDIDATES_PER_GROUP
+
+        settings = state["settings"]
+        prior_stages = {"frontend", "data_download", "data_review", "data_connect"}
+        if (settings.get("reference_preparation_policy") != "initial_candidate_batches_v1"
+                or "reference_train_candidates_per_group" in settings
+                or not 0 <= state["index"] < len(state["plan"])
+                or state["plan"][state["index"]]["id"] not in prior_stages | {"references"}
+                or set(state.get("results", {})) - prior_stages
+                or any(entry.get("stage") not in prior_stages for entry in state.get("history", []))
+                or any((state.get(key) or {}).get("stage") == "references" for key in ("job", "last_job"))
+                or (Path(state["project"]).parent / ".studio/reference-candidates").exists()):
+            return None
+        return TRAIN_CANDIDATES_PER_GROUP.get(settings["train_references"])
 
     def _can_update_reference_candidates(self, state, *, allow_frozen=False):
         positions = {stage["id"]: i for i, stage in enumerate(state["plan"])}
@@ -2511,6 +2543,7 @@ class StudioManager:
             receipt = directory / "receipt.json"
             prior_cuda_failure = self._legacy_cuda_failure(state)
             trial_change = compatibility.get("trial_material_budget_change")
+            candidate_budget = compatibility.get("reference_train_candidates_per_group")
             if trial_change:
                 project = Path(state["project"])
                 before_config = directory / "project_before.json"
@@ -2551,6 +2584,7 @@ class StudioManager:
                 **({"reference_budget_change": compatibility["reference_budget_change"]}
                    if compatibility.get("reference_budget_change") else {}),
                 **({"trial_material_budget_change": trial_change} if trial_change else {}),
+                **({"reference_train_candidates_per_group": candidate_budget} if candidate_budget is not None else {}),
                 **({"previous_cuda_loader_failure": prior_cuda_failure} if prior_cuda_failure else {}),
                 "preserved": compatibility["preserves"]})
             budget_change = compatibility.get("reference_budget_change")
@@ -2607,6 +2641,8 @@ class StudioManager:
                 state["settings"]["train_references"] = budget_change["train_references"]
                 state.update(index=budget_change["resume_index"], status="paused", auto_continue=False,
                              error=None, next_action="이어서 진행하면 기존 음원은 유지하고 부족한 학습용 목소리만 추가합니다.")
+            if candidate_budget is not None:
+                state["settings"]["reference_train_candidates_per_group"] = candidate_budget
             if trial_change:
                 state["settings"]["korean_hours"] = trial_change["korean_hours"]
                 state["config_sha256"] = trial_change["updated_config"]["sha256"]
@@ -4157,7 +4193,8 @@ class StudioManager:
                     "rows": [], "done_groups": 20, "total_groups": 20,
                     "can_start": False, "can_pause": False, "can_resume": False}
         try:
-            raw = preparation_status(root, verify=False)
+            raw = preparation_status(root, verify=False,
+                train_candidates_per_group=state["settings"].get("reference_train_candidates_per_group"))
         except FileNotFoundError:
             raw = {}
         helper = state.get("reference_preparation_job") or {}
@@ -4186,9 +4223,10 @@ class StudioManager:
         rows = []
         for split, label in (("train", "학습용 목소리 후보"), ("validation", "공통 평가용 목소리 후보")):
             entry = values.get(split, {})
-            done = min(50, max(0, int(entry.get("completed", entry.get("done", 0)))))
-            rows.append({"split": split, "label": label, "done": done, "total": 50,
-                         "active": active and current_group.startswith(split + ":"), "completed": done == 50})
+            total = entry.get("total", 50)
+            done = min(total, max(0, int(entry.get("completed", entry.get("done", 0)))))
+            rows.append({"split": split, "label": label, "done": done, "total": total,
+                         "active": active and current_group.startswith(split + ":"), "completed": done == total})
         eligible = self._reference_review_required(state)
         error = helper.get("error")
         return {"policy": policy, "required": required, "ready": ready, "status": status, "operation": operation, "rows": rows,

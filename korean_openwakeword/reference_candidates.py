@@ -30,6 +30,7 @@ OPTIONAL_LISTENING_POLICY = "optional_candidate_listening_v1"
 _TERMINAL_CANDIDATE_QC_ERROR = "기술 검사를 통과한 서로 다른 목소리 후보를 만들지 못했습니다. 다시 시도하세요."
 BATCH_KIND = "reference_candidate_batch_v2"
 BATCH_SIZE = 5
+TRAIN_CANDIDATES_PER_GROUP = {20: 10, 100: 30, 500: 100}
 GENDERS = ("man", "woman")
 AGES = ("child", "teenager", "young adult", "middle-aged", "older adult")
 GENDER_LABELS = {"man": "남성", "woman": "여성"}
@@ -66,6 +67,11 @@ def source_slots(project, settings):
         raise ValueError("기준 목소리 분류별 목표 수량을 확인하세요.")
     source = {"project": {"path": project.relative_to(root).as_posix(), "sha256": digest(project)},
               "voice_bank": {"path": "voices.json", "sha256": digest(root / "voices.json")}, "counts": counts}
+    if "reference_train_candidates_per_group" in settings:
+        train_candidates = settings["reference_train_candidates_per_group"]
+        if type(train_candidates) is not int or train_candidates != TRAIN_CANDIDATES_PER_GROUP.get(counts["train"]):
+            raise ValueError("학습용 기준 목소리 사전 생성 수량을 확인하세요.")
+        source["train_candidates_per_group"] = train_candidates
     families = read_json(root / "voices.json")["families"]
     from .tts import REFERENCE_TEXT
     slots = []
@@ -523,7 +529,17 @@ def _ingest_candidate_batch(root, saved, plan, rows, group):
         saved["revision"] += 1
 
 
-def _finished_initial_batch(root, saved, group, *, verify=True):
+def initial_candidates_per_group(source, split):
+    return source.get("train_candidates_per_group", BATCH_SIZE) if split == "train" else BATCH_SIZE
+
+
+def _initial_batch_limit(saved, group):
+    return initial_candidates_per_group(saved.get("source_binding", {}), group["split"]) // BATCH_SIZE
+
+
+def _finished_initial_batches(root, saved, group, *, verify=True):
+    finished = []
+    limit = _initial_batch_limit(saved, group)
     for plan in saved["batches"].get(group["key"], []):
         ids = [item["candidate_id"] for item in plan["candidates"]]
         if len(ids) != BATCH_SIZE or len(set(ids)) != BATCH_SIZE:
@@ -536,27 +552,47 @@ def _finished_initial_batch(root, saved, group, *, verify=True):
                 raise ValueError("기준 목소리 후보 묶음의 연결이 다릅니다.")
             if verify:
                 _verify_candidate(root, row)
-        return plan
-    return None
+        finished.append(plan["batch_id"])
+        if len(finished) == limit:
+            break
+    return finished
 
 
-def preparation_status(root, saved=None, *, verify=True):
+def _initial_preparation_receipt(saved, finished):
+    if len(finished) != 20 or any(len(finished[group["key"]]) != _initial_batch_limit(saved, group)
+                                  for group in saved["groups"]):
+        raise ValueError("모든 분류의 기준 목소리 후보가 준비되지 않았습니다.")
+    expanded = "train_candidates_per_group" in saved.get("source_binding", {})
+    return {"kind": PREPARATION_KIND, "originals": saved["originals"], "slot_ids": saved.get("slot_ids"),
+            "source_binding": saved.get("source_binding"),
+            "initial_batches": finished if expanded else {key: ids[0] for key, ids in finished.items()},
+            "scope": "Stored candidates only; no human judgment or reference admission"}
+
+
+def preparation_status(root, saved=None, *, verify=True, train_candidates_per_group=None):
     root = Path(root).resolve()
     if saved is None:
         try:
             saved = read_json(root / ".studio/reference-candidates/state.json")
         except FileNotFoundError:
             saved = {"groups": [], "batches": {}, "candidates": {}}
-    ready = {group["key"]: _finished_initial_batch(root, saved, group, verify=verify)
-             for group in saved["groups"]}
+    source = saved.get("source_binding", {})
+    if not saved["groups"] and train_candidates_per_group is not None:
+        source = {"train_candidates_per_group": train_candidates_per_group}
+    finished = {group["key"]: _finished_initial_batches(root, saved, group, verify=verify)
+                for group in saved["groups"]}
+    complete_groups = {group["key"] for group in saved["groups"]
+                       if len(finished[group["key"]]) == _initial_batch_limit(saved, group)}
     rows = [{"split": split, "label": label,
-             "completed": BATCH_SIZE * sum(bool(ready[group["key"]]) for group in saved["groups"] if group["split"] == split),
-             "total": 50} for split, label in (("train", "학습용 목소리 후보"), ("validation", "공통 평가용 목소리 후보"))]
+             "completed": BATCH_SIZE * sum(len(ids) for key, ids in finished.items() if key.startswith(split + ":")),
+             "total": len(GENDERS) * len(AGES) * initial_candidates_per_group(source, split)}
+            for split, label in (("train", "학습용 목소리 후보"), ("validation", "공통 평가용 목소리 후보"))]
     current, phase = None, {}
     try:
         phase = read_json(root / ".studio/reference-candidates/preparation/state.json")
         current = phase.get("current")
-        if current and not ready.get(current["group"]):
+        if (current and current["group"] in finished and current["group"] not in complete_groups
+                and current["batch_id"] not in finished[current["group"]]):
             output = resolved(root, current["output"])
             if not output.is_relative_to(candidate_jobs(root)):
                 raise ValueError("준비 중인 목소리 후보의 저장 위치가 다릅니다.")
@@ -567,14 +603,15 @@ def preparation_status(root, saved=None, *, verify=True):
                 next(row for row in rows if row["split"] == split)["completed"] += amount
     except FileNotFoundError:
         pass
-    groups_done = sum(bool(plan) for plan in ready.values())
+    groups_done = len(complete_groups)
     completed = sum(row["completed"] for row in rows)
     reused = min(completed, phase.get("reused_candidates", 0))
     receipt = phase.get("receipt") if groups_done == 20 and phase.get("status") == "completed" else None
     if receipt and verify:
         _inside(root, receipt)
     return {"kind": PREPARATION_KIND, "status": "completed" if receipt else phase.get("status", "pending"),
-            "completed": completed, "total": 100, "reused_candidates": reused, "generated_candidates": completed - reused,
+            "completed": completed, "total": sum(row["total"] for row in rows),
+            "reused_candidates": reused, "generated_candidates": completed - reused,
             "completed_groups": groups_done, "total_groups": 20, "rows": rows, "current": current,
             **({"receipt": receipt} if receipt else {})}
 
@@ -612,7 +649,7 @@ def _preparation_output(root, saved, plan):
 @project_storage
 def prepare_initial_candidate_batches(project, originals, *, load_model=None, state_path=None,
                                       progress_path=None, pause_path=None, should_pause=None):
-    """Prepare one complete stored batch for every group without changing human decisions."""
+    """Prepare the initial pool in resumable batches without changing human decisions."""
     root, config = load_project(project)
     root = Path(root).resolve()
     originals = list(originals)
@@ -664,7 +701,8 @@ def prepare_initial_candidate_batches(project, originals, *, load_model=None, st
             previous_phase = read_json(phase_path)
         except FileNotFoundError:
             previous_phase = {}
-        reuse = preparation_status(root, saved, verify=False)["completed_groups"] * BATCH_SIZE
+        reuse = BATCH_SIZE * sum(len(_finished_initial_batches(root, saved, group, verify=False))
+                                 for group in saved["groups"])
         if previous_phase.get("source_id") == source_id and previous_phase.get("status") in ("running", "paused"):
             reuse = previous_phase["reused_candidates"]
         phase = {"kind": PREPARATION_KIND, "status": "running", "preserved": preservation,
@@ -672,9 +710,10 @@ def prepare_initial_candidate_batches(project, originals, *, load_model=None, st
                  "terminal_failures": deepcopy(previous_phase.get("terminal_failures", {}))
                     if previous_phase.get("source_id") == source_id else {}}
         write_json(phase_path, phase)
-        for group in saved["groups"]:
-            if _finished_initial_batch(root, saved, group):
-                continue
+        missing_by_group = [(_initial_batch_limit(saved, group) - len(_finished_initial_batches(root, saved, group)), group)
+                            for group in saved["groups"]]
+        pending_groups = (group for missing, group in missing_by_group for _ in range(missing))
+        for group in pending_groups:
             if group["key"] in saved["approved"]:
                 raise ValueError("확정한 분류의 기존 후보가 누락되었습니다. 새로 만들지 않습니다.")
             if (should_pause and should_pause()) or pause_path.exists():
@@ -683,11 +722,13 @@ def prepare_initial_candidate_batches(project, originals, *, load_model=None, st
                 write_json(progress_path, status)
                 return status
             plans = saved["batches"].get(group["key"], [])
-            if plans:
+            output = None
+            if plans and not all(item["candidate_id"] in saved["candidates"] for item in plans[-1]["candidates"]):
                 plan = plans[-1]
                 failed = phase["terminal_failures"].get(plan["batch_id"])
                 old_job = saved.get("job") or {}
                 old_output = _preparation_output(root, saved, plan)
+                output = old_output
                 if not failed and (old_job.get("group") == group["key"] and old_job.get("status") == "failed"
                                    and old_job.get("resumable") is False):
                     request_path = old_output.parent / "request.json"
@@ -711,11 +752,13 @@ def prepare_initial_candidate_batches(project, originals, *, load_model=None, st
                     plan = _plan_candidate_batch(project, saved, group)
                     _register_candidate_batch(saved, plan, group, initial=True)
                     save()
+                    output = None
             else:
                 plan = _plan_candidate_batch(project, saved, group)
                 _register_candidate_batch(saved, plan, group, initial=True)
                 save()  # Random options and every retry seed are durable before inference.
-            output = _preparation_output(root, saved, plan)
+            if output is None:
+                output = candidate_jobs(root) / ("initial_" + plan["batch_id"]) / "audio"
             phase["current"] = {"group": group["key"], "batch_id": plan["batch_id"],
                                 "output": output.relative_to(root).as_posix()}
             write_json(phase_path, phase)
@@ -754,14 +797,9 @@ def prepare_initial_candidate_batches(project, originals, *, load_model=None, st
                 saved["job"] = None
             save()
         report_progress("reference_preparation_finalizing", "준비한 기준 목소리 검증", eta_eligible=False)
-        status = preparation_status(root, saved)
-        if status["completed_groups"] != 20:
-            raise ValueError("모든 분류의 첫 후보 다섯 개가 준비되지 않았습니다.")
-        batches = {group["key"]: _finished_initial_batch(root, saved, group, verify=False)["batch_id"] for group in saved["groups"]}
-        receipt = snapshot_json(root, {"kind": PREPARATION_KIND, "originals": saved["originals"],
-            "slot_ids": saved.get("slot_ids"), "source_binding": saved.get("source_binding"),
-            "initial_batches": batches, "scope": "Stored candidates only; no human judgment or reference admission"},
-            "reference_initial_candidates")
+        batches = {group["key"]: _finished_initial_batches(root, saved, group) for group in saved["groups"]}
+        receipt = snapshot_json(root, _initial_preparation_receipt(saved, batches), "reference_initial_candidates")
+        status = preparation_status(root, saved, verify=False)
         result = {**status, "status": "completed", "receipt": receipt, "current": None}
         write_json(phase_path, {**phase, "status": "completed", "current": None, "receipt": receipt})
         write_json(progress_path, result)
@@ -773,14 +811,10 @@ def verify_initial_candidate_preparation(project, originals, binding):
     saved = read_json(root / ".studio/reference-candidates/state.json")
     validate_candidate_review(saved, originals)
     receipt = read_json(_inside(root, binding))
-    batches = {group["key"]: _finished_initial_batch(root, saved, group) for group in saved["groups"]}
-    expected = {"kind": PREPARATION_KIND, "originals": saved["originals"], "slot_ids": saved.get("slot_ids"),
-        "source_binding": saved.get("source_binding"),
-        "initial_batches": {key: plan["batch_id"] for key, plan in batches.items() if plan},
-        "scope": "Stored candidates only; no human judgment or reference admission"}
-    if len(expected["initial_batches"]) != 20 or receipt != expected:
+    batches = {group["key"]: _finished_initial_batches(root, saved, group) for group in saved["groups"]}
+    if receipt != _initial_preparation_receipt(saved, batches):
         raise ValueError("준비한 기준 목소리 후보 묶음의 검증 기록이 다릅니다.")
-    return {**preparation_status(root, saved), "receipt": binding}
+    return {**preparation_status(root, saved, verify=False), "receipt": binding}
 
 
 def candidate_action(root, saved, action, *, group_key=None, candidate_id=None, sha256=None):
@@ -957,6 +991,8 @@ def _canonical_reference(slot, candidate):
 def _planned_slots(root, source):
     _verify_source(root, source)
     settings = {f"{split}_references": count for split, count in source["counts"].items()}
+    if "train_candidates_per_group" in source:
+        settings["reference_train_candidates_per_group"] = source["train_candidates_per_group"]
     return source_slots(_inside(root, source["project"]), settings)
 
 
