@@ -81,6 +81,8 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-shell:is([data-step="materials"],.synthesis-chapter) .story-stage{display:block;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain}
 .story-shell:is([data-step="materials"],.synthesis-chapter) .story-panel{height:auto;min-height:100%;margin-inline:auto;gap:var(--story-standard-gap,20px)}
 .story-shell:is([data-step="materials"],.synthesis-chapter) .story-content{flex:none}
+.story-shell[data-step="materials"] .story-stage{padding-block:clamp(46px,calc(10dvh - 20px),68px) clamp(10px,calc(10dvh - 58px),28px)}
+.story-shell[data-step="materials"] .story-panel{gap:clamp(10px,calc(5dvh - 24px),20px)}
 .story-materials{display:flex;flex-direction:column;flex:none;width:100%}
 .story-tool-materials{flex:none;margin-top:14px}
 .story-tool-materials .story-material-heading{flex-wrap:wrap}
@@ -377,21 +379,13 @@ html[data-studio-boot="ready"] #studio-boot>.story-atmosphere{display:none}
 }
 @media(max-width:600px) and (max-height:560px){:is(.story-shell,#input-form) .story-choice-card{min-height:60px;padding:6px 8px;gap:2px}.story-history-rows{gap:10px}.story-history-row{padding:8px 0}}
 @media(max-height:760px){
-  .story-shell[data-step="materials"] .story-stage{padding-block:54px 16px}
-  .story-shell[data-step="materials"] .story-panel{gap:clamp(12px,calc(4dvh - 14px),20px)}
-  .story-tool-materials{margin-top:10px}
-  .story-location-status{margin-top:8px}
-  .story-material-heading{padding-bottom:5px;margin-bottom:2px}
-}
-@media(max-height:650px){
-  .story-shell[data-step="materials"] .story-stage{padding-block:46px 10px}
-  .story-shell[data-step="materials"] .story-panel{gap:10px}
   .story-shell[data-step="materials"] .story-panel-heading{gap:2px}
   .story-shell[data-step="materials"] .story-panel h1{line-height:34px}
   .story-shell[data-step="materials"] .story-subtitle{line-height:20px}
   .story-tool-materials{margin-top:8px}
   .story-location-status{margin-top:6px}
-  .story-material-heading h2{line-height:24px}
+  .story-material-heading{padding-bottom:5px;margin-bottom:2px}
+  .story-shell[data-step="materials"] .story-material-heading h2{line-height:24px}
   .story-material-row dt,.story-material-row dd strong{line-height:23px}
   .story-material-source,.story-material-row dd span{line-height:19px}
   .story-tool-materials .story-material-row dd{display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:baseline;gap:2px 8px}

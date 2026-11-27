@@ -25,7 +25,7 @@
   const names = { check: "동작 확인용", trial: "시험 모델용", production: "상용 모델용" };
   // Counts are from the pinned AudioSet archive and MIT 16 kHz provider inventory.
   const trainingDownloadInventory = {
-    audioset: { archive: "bal_train09.tar", scope: "09번 묶음", clips: 685 },
+    audioset: { archive: "bal_train09.tar", shard: "09", clips: 685 },
     mit_rir: { format: "16 kHz WAV", files: 270 },
   };
   const steps = [
@@ -598,8 +598,8 @@
       if (automaticKorean.length) noise.push(...automaticKorean.map(item => reused({ ...item, content: "학습용 한국어 원본 음원 재사용", amount: "원본 재사용", bytes: undefined })));
       else if (asset("zeroth")) noise.push(reused(source("Zeroth Korean", "학습용 한국어 낭독 재사용", hours(suppliedKorean), suppliedKorean * 3600, asset("zeroth"))));
       if (asset("audioset")) {
-        const { archive, scope, clips } = trainingDownloadInventory.audioset;
-        noise.push(source(`AudioSet ${scope} (${count(clips)})`, `${archive} · 균형 학습 세트`, count(clips), null,
+        const { archive, shard, clips } = trainingDownloadInventory.audioset;
+        noise.push(source(`AudioSet ${shard}번 묶음 (${count(clips)})`, `${archive} · 균형 학습 세트`, count(clips), null,
           asset("audioset"), bundleSize(["audioset", "audioset_segments", "audioset_ontology"])));
       }
     }

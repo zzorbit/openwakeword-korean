@@ -2003,10 +2003,7 @@
       }
       if (group === "zeroth" && row.purpose === "training") return hours(project.settings?.korean_hours);
       if (group === "official_music") return officialMusicScale;
-      if (group === "audioset") {
-        const { scope, clips } = bridge.trainingDownloadInventory.audioset;
-        return `${scope} · 음원 ${count(clips)}개`;
-      }
+      if (group === "audioset") return `음원 ${count(bridge.trainingDownloadInventory.audioset.clips)}개`;
       if (group === "mit_rir") {
         const { format, files } = bridge.trainingDownloadInventory.mit_rir;
         return `${format} ${count(files)}개`;
@@ -2298,7 +2295,8 @@
         const rowActive = (row.active || preparationActive) && !row.failed;
         const verifying = row.verifying || row.state === "verifying";
         const bytesMeasured = Number.isFinite(row.bytes) && Number.isFinite(row.totalBytes) && row.totalBytes > 0;
-        updateHistoryRow(view, { ...row, preparing, active: rowActive,
+        const label = group === "audioset" ? `${row.label} (${bridge.trainingDownloadInventory.audioset.shard})` : row.label;
+        updateHistoryRow(view, { ...row, label, preparing, active: rowActive,
           verification: verifying && !bytesMeasured, verificationPercent: row.hashPercent });
         if (row.key !== "compute-tools" && row.key !== "material-connection")
           view.amount.textContent = downloadMaterialScale(project, row, group);

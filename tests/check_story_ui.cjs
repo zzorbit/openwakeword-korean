@@ -161,7 +161,7 @@ function page(initialProject = null, options = {}) {
     state: () => state,
     materials: recipe => options.materials?.(recipe) || ({ training: [], evaluation: [] }),
     trainingDownloadInventory: {
-      audioset: { archive: "bal_train09.tar", scope: "09번 묶음", clips: 685 },
+      audioset: { archive: "bal_train09.tar", shard: "09", clips: 685 },
       mit_rir: { format: "16 kHz WAV", files: 270 },
     },
     formatBytes: value => `${value}B`,
@@ -1190,9 +1190,9 @@ async function main() {
     const [training, evaluation, tools, connection] = list.children;
     assert.equal(training.querySelector("h2").textContent, "학습용 자료");
     assert.equal(evaluation.querySelector("h2").textContent, "성능 평가용 자료");
-    assert.deepEqual(historyRows(training).map(historyRowLabel), ["openWakeWord", "한국어 웹 음성", "FMA", "AudioSet", "MIT RIR"]);
+    assert.deepEqual(historyRows(training).map(historyRowLabel), ["openWakeWord", "한국어 웹 음성", "FMA", "AudioSet (09)", "MIT RIR"]);
     assert.deepEqual(historyRows(evaluation).map(historyRowLabel), ["MUSAN", "FSD50K", "Seoul", "한국어 낭독 · Zeroth", "OpenSLR RIR"]);
-    assert.deepEqual(historyRows(training).map(downloadScale), ["약 2,000시간", "500시간", "음악 1시간", "09번 묶음 · 음원 685개", "16 kHz WAV 270개"]);
+    assert.deepEqual(historyRows(training).map(downloadScale), ["약 2,000시간", "500시간", "음악 1시간", "음원 685개", "16 kHz WAV 270개"]);
     assert.equal(historyRows(training)[3].querySelector(".story-history-line").children[1].title, "bal_train09.tar");
     assert.deepEqual(historyRows(evaluation).map(downloadScale), ["7시간", "5시간", "15시간", "3시간", "공간 20개"]);
     assert.doesNotMatch(textOf(list), /1 \/ 1개/);
