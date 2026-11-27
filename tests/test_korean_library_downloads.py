@@ -2,6 +2,7 @@
 import hashlib
 import os
 from pathlib import Path
+from threading import Event
 import pytest
 import requests
 from korean_openwakeword.downloads import VerificationCache, download_checked, dataset_catalog, verify_checksum
@@ -18,6 +19,37 @@ class Response:
         pass
     def iter_content(self, block):
         yield self.content
+
+
+def test_group_connection_failure_pauses_peers_at_saved_bytes():
+    from korean_openwakeword.downloads import download_many
+
+    peer_started, failing_row_visible = Event(), Event()
+    snapshots = []
+
+    def work(item, report):
+        if item["id"] == "missing":
+            assert peer_started.wait(5)
+            raise requests.HTTPError("missing fixture archive")
+        assert item["id"] == "peer"
+        peer_started.set()
+        assert failing_row_visible.wait(5)
+        report({"phase": "download", "done": 4, "total": 10, "unit": "bytes"})
+        pytest.fail("Peer must stop after saving completed bytes")
+
+    def progress(snapshot):
+        rows = {row["id"]: row for row in snapshot["files"]}
+        snapshots.append(rows)
+        if rows["missing"].get("connection_failed"):
+            failing_row_visible.set()
+
+    with pytest.raises(requests.HTTPError):
+        download_many([{"id": key, "size_bytes": 10} for key in ("missing", "peer", "queued")],
+                      work, progress=progress, max_workers=2)
+    final = snapshots[-1]
+    assert final["missing"]["connection_failed"] is True
+    assert final["peer"]["done"] == 4 and final["peer"]["state"] == "waiting"
+    assert final["queued"]["state"] == "waiting"
 
 
 @pytest.mark.parametrize("resume", [False, True])

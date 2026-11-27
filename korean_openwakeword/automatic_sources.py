@@ -30,6 +30,7 @@ _RESERVE = 8 * _GIB
 _PROVIDERS = ("audioset_unbalanced", "mls", "fma_full", "yodas2")
 _LANGUAGES = ("dutch", "french", "german", "italian", "polish", "portuguese", "spanish")
 _KOREAN = ("ko000", "ko100", "ko101", "ko102", "ko103")
+_TRIAL_YODAS_BATCH = Path(__file__).with_name("resources") / "yodas2_trial_500_v1.json"
 
 
 def _hours(value, name):
@@ -321,6 +322,71 @@ class PublicSourceBackend:
             except OSError:
                 shutil.copyfile(cached, target)
 
+    def stage_yodas2_batch(self, candidates, *, max_download_bytes, max_workspace_bytes, previous_bytes=0, progress=None):
+        """Acquire every missing archive before admitting any audio in this batch."""
+        from .commercial_sources import _validate_resolution, resolve_commercial_source
+        from .compact_sources import prepare_compact_source
+
+        parts = []
+        staged_bytes = missing_bytes = reserved = largest_archive = 0
+        for candidate in candidates:
+            directory = self.directory / "parts" / candidate["key"]
+            originals = directory / "originals"
+            receipt_exists = any((directory / name).is_file()
+                                 for name in ("canonical_receipt.json", "compact_receipt.json"))
+            frozen = originals / "source_resolution.json"
+            resolution = (read_json(frozen) if frozen.is_file() else
+                          resolve_commercial_source("yodas2", selection=candidate["selection"], session=self.session))
+            _validate_resolution(resolution)
+            archive, = resolution["assets"]
+            if (resolution["source_id"] != "yodas2" or resolution["selection"] != candidate["selection"]
+                    or archive["size_bytes"] != candidate["archive_bytes"]):
+                raise ValueError("YODAS2 archive differs from the batch selection")
+            reserved += resolution["total_bytes"]
+            parts.append((directory, originals, resolution, receipt_exists))
+            if not receipt_exists:
+                archive_path = originals / archive["path"]
+                present = max((path.stat().st_size for path in (archive_path,
+                    archive_path.with_name(archive_path.name + ".part")) if path.is_file()), default=0)
+                staged_bytes += resolution["total_bytes"]
+                missing_bytes += resolution["total_bytes"] - min(present, archive["size_bytes"])
+                largest_archive = max(largest_archive, archive["size_bytes"])
+        if reserved > max_download_bytes:
+            raise ValueError("한국어 웹 음성 일괄 다운로드가 남은 다운로드 한도를 초과합니다.")
+        working_bytes = 2 * largest_archive
+        if (staged_bytes + working_bytes >= max_workspace_bytes
+                or missing_bytes + working_bytes + _RESERVE > shutil.disk_usage(self.directory).free):
+            raise ValueError("한국어 웹 음성 묶음을 검증 전에 보관할 공간이 부족합니다. 작업 드라이브의 여유 공간을 확인하세요.")
+        archive_total = sum(candidate["archive_bytes"] for candidate in candidates)
+        completed_bytes = 0
+
+        def report(count, in_flight=0):
+            if progress:
+                progress({"phase": "automatic_archive_batch", "label": "한국어 웹 음성 일괄 다운로드",
+                    "automatic_component": "yodas2", "archive_batch": {"completed": count, "total": len(parts),
+                    "done_bytes": previous_bytes + completed_bytes + in_flight,
+                    "total_bytes": previous_bytes + archive_total}})
+
+        report(0)
+        for index, ((directory, originals, resolution, ready), candidate) in enumerate(zip(parts, candidates)):
+            if not ready:
+                originals.mkdir(parents=True, exist_ok=True)
+                self._share_metadata(resolution, originals)
+
+                def transfer(event):
+                    status = event.get("archive_transfer")
+                    if status:
+                        report(index, min(candidate["archive_bytes"], status.get("done") or 0))
+
+                prepare_compact_source(resolution, directory, max_download_bytes=resolution["total_bytes"],
+                    max_extract_bytes=max_workspace_bytes, progress=transfer if progress else None, download_only=True)
+            completed_bytes += candidate["archive_bytes"]
+            report(index + 1)
+        if progress:
+            progress({"phase": "automatic_archive_batch", "label": "한국어 웹 음성 검증·전처리 시작",
+                "automatic_component": "yodas2", "archive_batch": None,
+                "batch_acquired_bytes": previous_bytes + archive_total})
+
     def prepare(self, candidate, directory, *, target_hours, max_download_bytes,
                 max_extract_bytes, excluded_track_ids=(), progress=None):
         if candidate["component"] == "fma_full" and self.fma_acquisition_policy:
@@ -388,9 +454,15 @@ class PublicSourceBackend:
             if original_storage > max_extract_bytes:
                 raise ValueError("선택한 FMA 원본이 자동 자료 저장 용량 한도를 초과했습니다. 기존 원본은 보존됩니다.")
         else:
-            resolution = resolve_commercial_source(component, selection=candidate["selection"], session=self.session)
             original = directory / "originals"
             original.mkdir(exist_ok=True)
+            frozen = original / "source_resolution.json"
+            if component == "yodas2" and self.storage_policy != "retain_archives" and frozen.is_file():
+                resolution = read_json(frozen)
+                if resolution.get("source_id") != component or resolution.get("selection") != candidate["selection"]:
+                    raise ValueError("Frozen YODAS2 archive selection changed")
+            else:
+                resolution = resolve_commercial_source(component, selection=candidate["selection"], session=self.session)
             self._share_metadata(resolution, original)
             if self.storage_policy in ("verified_extracted_only_v1", "canonical_flac_only_v1"):
                 from .compact_sources import prepare_compact_source
@@ -524,6 +596,16 @@ def _validate_rows(source, rows, selected, seen_hashes, seen_sources, diagnostic
     return result
 
 
+def _provider_request(component, report, operation, *args, **kwargs):
+    try:
+        return operation(*args, **kwargs)
+    except requests.exceptions.RequestException:
+        if report:
+            report({"phase": "automatic_connection_failure", "automatic_component": component,
+                    "label": "다운로드 서버 연결 실패"})
+        raise
+
+
 def prepare_automatic_sources(project, workspace, *, generic_hours, korean_hours,
                               preset, progress=None, backend=None, qualify_source=None,
                               material_acquisition_policy="automatic_v1"):
@@ -601,18 +683,44 @@ def prepare_automatic_sources(project, workspace, *, generic_hours, korean_hours
         canonical_storage_bytes, retired_original_bytes, acquired_original_peak_bytes = 0, 0, 0
         for component, target in policy["component_targets"].items():
             inventory_path = state / (component + "_inventory.json")
-            inventory = read_json(inventory_path) if inventory_path.exists() else backend.inventory(component)
+            inventory = (read_json(inventory_path) if inventory_path.exists()
+                         else _provider_request(component, progress, backend.inventory, component))
             _frozen(inventory_path, inventory)
             artifacts.append(str(inventory_path))
             if (not isinstance(inventory, list) or len(inventory) > 100000
                     or len({row.get("key") for row in inventory}) != len(inventory)):
                 raise ValueError("Automatic source inventory is ambiguous or oversized")
-            for candidate in inventory:
-                if actual[component] + 1e-9 >= target:
+            if any(row.get("component") != component or not isinstance(row.get("key"), str)
+                   or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", row["key"]) for row in inventory):
+                raise ValueError("Automatic source candidate is unsafe or belongs to another component")
+            stage_yodas = getattr(backend, "stage_yodas2_batch", None)
+            first_batch = 0
+            if canonical and policy["preset"] == "test" and component == "yodas2" and target == TRIAL_KOREAN_HOURS and stage_yodas:
+                plan = read_json(_TRIAL_YODAS_BATCH)
+                first_batch = len(plan["keys"])
+                prefix = inventory[:first_batch]
+                if (not first_batch or plan["revision"] != requested["providers"][component] or plan["target_hours"] != target
+                        or [row["key"] for row in prefix] != plan["keys"]
+                        or sum(row["archive_bytes"] for row in prefix) != plan["archive_bytes"]):
+                    raise ValueError("한국어 웹 음성 공급처 목록이 500시간 계획과 일치하지 않습니다.")
+                batch_plan = state / _TRIAL_YODAS_BATCH.name
+                _frozen(batch_plan, plan)
+                artifacts.append(str(batch_plan))
+            batch_end = 0
+            for index, candidate in enumerate(inventory):
+                if actual[component] + 1e-9 >= target and (not first_batch or index == batch_end):
                     break
+                if first_batch and index == batch_end:
+                    remaining = target - actual[component]
+                    count = (max(1, min(first_batch, math.ceil(round(remaining * index / actual[component], 9))))
+                             if index and actual[component] > 0 else first_batch)
+                    batch_end = min(len(inventory), index + count)
+                    _provider_request(component, progress, stage_yodas, inventory[index:batch_end],
+                        max_download_bytes=requested["limits"]["max_download_bytes"] - reserved_bytes,
+                        max_workspace_bytes=requested["limits"]["max_workspace_bytes"] - space["minimum_known_bytes"] - source_storage_bytes,
+                        previous_bytes=verified_archive_bytes[component],
+                        progress=progress)
                 key = candidate.get("key")
-                if candidate.get("component") != component or not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", key):
-                    raise ValueError("Automatic source candidate is unsafe or belongs to another component")
                 part = state / "parts" / key
                 part.mkdir(parents=True, exist_ok=True)
                 record_path = part / "source.json"
@@ -685,13 +793,13 @@ def prepare_automatic_sources(project, workspace, *, generic_hours, korean_hours
                         progress({**event, "automatic_component": component})
 
                     shared_part = default_backend / "parts" / key
-                    part_target = target - actual[component]
+                    part_target = max(1e-9, target - actual[component])
                     if effective_request != request_path and (shared_part / "canonical_request.json").is_file():
                         # A previous run may have stopped before the pinned resolution was
                         # written. Resume its exact shard request; the new target only
                         # controls the outer loop since YODAS2 always uses a whole shard.
                         part_target = existing["policy"]["component_targets"][component] - actual[component]
-                    prepared = backend.prepare(candidate, shared_part,
+                    prepared = _provider_request(component, progress, backend.prepare, candidate, shared_part,
                         target_hours=part_target, max_download_bytes=remaining_budget,
                         max_extract_bytes=min(source_room, max(1, free-_RESERVE)),
                         excluded_track_ids=sorted(seen_tracks), progress=report_part if progress else None)

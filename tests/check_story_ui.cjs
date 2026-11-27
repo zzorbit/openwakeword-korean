@@ -1855,6 +1855,23 @@ async function main() {
     p.ui.render();
     assert.match(textOf(row), /확보 184시간 · 검증·전처리 중/);
   });
+  await test("only the disconnected download row keeps a red state and the saved byte count", () => {
+    const project = checkpointProject("paused", "paused");
+    project.stage_id = "data_download";
+    project.error = { connection_failed: true };
+    project.download_files = [
+      { id: "base:fma", group: "official_music", label: "FMA", group_label: "FMA", state: "failed",
+        connection_failed: true, unit: "bytes", done: 4, total: 10 },
+      { id: "base:audioset", group: "audioset", label: "AudioSet", state: "waiting", unit: "bytes", done: 0, total: 10 },
+    ];
+    const p = page(project);
+    const failed = historyRowByLabel(p.shell, "FMA"), waiting = historyRowByLabel(p.shell, "AudioSet (09)");
+    assert.equal(failed.dataset.connectionFailed, "true");
+    assert.equal(waiting.dataset.connectionFailed, "false");
+    assert.match(textOf(failed), /4 B \/ 10 B ·\s+다운로드 서버에 연결할 수 없습니다/);
+    assert.doesNotMatch(textOf(waiting), /다운로드 서버에 연결할 수 없습니다/);
+    assert.equal(hasActiveDownloadSpinner(failed), false);
+  });
   await test("Korean archive phases retain accepted hours and a plausible total", () => {
     const project = checkpointProject("running", "running");
     project.stage_id = "data_download";

@@ -280,7 +280,7 @@ def verify_compact_source(directory):
 
 
 def prepare_compact_source(resolution, directory, *, max_download_bytes,
-                           max_extract_bytes, progress=None):
+                           max_extract_bytes, progress=None, download_only=False):
     """Return retained metadata/raw originals and stable preservation bindings.
 
     ``max_extract_bytes`` limits permanent retained original bytes, excluding
@@ -294,6 +294,8 @@ def prepare_compact_source(resolution, directory, *, max_download_bytes,
     _validate_resolution(resolution)
     if resolution["source_id"] not in ("audioset_unbalanced", "mls", "yodas2"):
         raise ValueError("Compact original archives support AudioSet, MLS and YODAS2")
+    if download_only and (resolution["source_id"] != "yodas2" or len(resolution["assets"]) != 1):
+        raise ValueError("Staged downloads require one YODAS2 archive per part")
     for value in (max_download_bytes, max_extract_bytes):
         if type(value) is not int or value <= 0:
             raise ValueError("Compact cache budgets need positive integer bytes")
@@ -308,6 +310,8 @@ def prepare_compact_source(resolution, directory, *, max_download_bytes,
     request_path, receipt_path = directory / "compact_request.json", directory / "compact_receipt.json"
     with writer_lock(directory):
         if receipt_path.exists():
+            if download_only:
+                return None  # Audio and receipt verification belongs to the preparation phase.
             checked = verify_compact_source(directory)
             saved = read_json(originals / "source_resolution.json")
             if saved["resolution_sha256"] != resolution["resolution_sha256"]:
@@ -357,6 +361,8 @@ def prepare_compact_source(resolution, directory, *, max_download_bytes,
             download_path = directory / "downloads" / f"part_{index:04d}.json"
             extraction_path = destination / "extraction_receipt.json"
             if part_path.exists():
+                if download_only:
+                    continue
                 part = read_json(part_path)
                 extraction_path, extraction, _ = _verify_part(directory, index, asset, _binding(request_path), part)
                 raw_bytes = _verify_raw(destination, extraction, max_extract_bytes - retained, sync=True)
@@ -384,6 +390,8 @@ def prepare_compact_source(resolution, directory, *, max_download_bytes,
                         "archive": archive_record, "request": _binding(request_path),
                         "retire_eligible": retire, "file_identity": _file_identity(archive), "acquired_at": now()}
                     _durable_json(download_path, claim)
+                if download_only:
+                    continue
                 if extraction_path.exists():
                     # A crash may happen after safe extraction but before the
                     # compact part commit. Reuse its original fixed allowance.
@@ -427,6 +435,8 @@ def prepare_compact_source(resolution, directory, *, max_download_bytes,
             if progress:
                 progress({"label": "원본 검증·중복 묶음 정리", "done": index + 1,
                           "total": len(resolution["assets"]), "unit": "archives"})
+        if download_only:
+            return None
         receipt = {"kind": "compact_source_preservation_v1", "request": _binding(request_path),
             "source_resolution": _binding(resolution_path), "metadata": metadata, "parts": parts,
             "original_storage_bytes": retained, "reserved_download_bytes": resolution["total_bytes"],

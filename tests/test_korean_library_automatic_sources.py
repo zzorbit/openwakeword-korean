@@ -58,6 +58,33 @@ def supply(setup, backend, *, preset="test", generic=2000, korean=2/3600, qualif
         generic_hours=generic, korean_hours=korean, backend=backend, qualify_source=qualify)
 
 
+def test_trial_500_downloads_recorded_archives_before_qualification_and_refills(setup, monkeypatch):
+    from korean_openwakeword.commercial_sources import _PROVIDERS
+
+    project, workspace, _ = setup
+    target = 6 / 3600
+    plan = workspace.parent / "trial-plan.json"
+    write_json(plan, {"revision": _PROVIDERS["yodas2"]["revision"], "target_hours": target,
+                      "keys": ["yodas2_0", "yodas2_1"], "archive_bytes": 100})
+    monkeypatch.setattr(module, "TRIAL_KOREAN_HOURS", target)
+    monkeypatch.setattr(module, "_TRIAL_YODAS_BATCH", plan)
+    events = []
+
+    class Batched(Backend):
+        def stage_yodas2_batch(self, candidates, **kwargs):
+            events.append(("download", [candidate["key"] for candidate in candidates]))
+
+    def qualify(source):
+        events.append(("qualify", source["id"]))
+        return {"train_hours": 0 if source["id"].endswith("_0") else 4 / 3600}
+
+    result = module.prepare_automatic_sources(project, workspace, preset="trial", generic_hours=2000,
+        korean_hours=target, backend=Batched(), qualify_source=qualify, material_acquisition_policy="automatic_v3")
+    assert events == [("download", ["yodas2_0", "yodas2_1"]), ("qualify", "automatic_yodas2_0"),
+                      ("qualify", "automatic_yodas2_1"), ("download", ["yodas2_2"]), ("qualify", "automatic_yodas2_2")]
+    assert result["component_actual_hours"]["yodas2"] == 8 / 3600
+
+
 def test_offline_policy_and_exact_downstream_payload():
     policy = module.automatic_source_policy(7000, 3000, "production")
     assert policy["component_targets"] == {"audioset_unbalanced": 3000, "mls": 3000,

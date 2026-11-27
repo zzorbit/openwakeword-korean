@@ -397,10 +397,18 @@ def _execute(request_path):
     except Exception as error:
         traceback.print_exc()
         message = str(error)
+        connection_failed = False
+        if request["stage"] == "data_download":
+            from requests.exceptions import RequestException
+            connection_failed = isinstance(error, RequestException)
+            if connection_failed:
+                message = "다운로드 서버에 연결할 수 없어 자료 다운로드를 일시정지했습니다."
         if message == "Formal Negative requires fixed 2s windows; run koww windows first":
             message = "학습용 비호출 음원의 2초 구간 기록이 없습니다. 준비 자료에서 해당 음원을 확인하세요."
         result["error"] = {"message": message, "type": type(error).__name__,
                            "stage": request["stage"], "resolution": "아래 실행 로그를 확인하세요. 완료한 파일은 보존됩니다."}
+        if connection_failed:
+            result["error"]["connection_failed"] = True
         if request["stage"] in ("data_connect", "hard_connect") and "before" in locals():
             try:
                 after = load_project(request["project"])[1]

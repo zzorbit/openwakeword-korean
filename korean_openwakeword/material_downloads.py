@@ -6,6 +6,8 @@ conversion and retirement transaction; they are only announced here.
 from collections import defaultdict, deque
 from contextvars import ContextVar
 from pathlib import Path
+
+from requests.exceptions import RequestException
 from urllib.parse import urlsplit
 import os
 
@@ -98,6 +100,18 @@ class MaterialDownloads:
             row = self.files.get("automatic:" + event.get("automatic_component", ""))
             if row is not None:
                 row["archive_preparation_status"] = event["status"]
+        if event.get("phase") in ("automatic_archive_batch", "automatic_connection_failure"):
+            row = self.files.get("automatic:" + event["automatic_component"])
+            if row is not None:
+                row.update(unit="hours", total=row["target_hours"])
+                if event["phase"] == "automatic_connection_failure":
+                    row.update(state="failed", connection_failed=True)
+                else:
+                    batch = event["archive_batch"]
+                    row.update(archive_batch=batch, state="downloading", archive_transfer=None,
+                        archive_preparation_status=None if batch else "checking_archive")
+                    if not batch:
+                        row["batch_acquired_bytes"] = event["batch_acquired_bytes"]
         if self.files:
             event["files"] = [dict(row) for row in self.files.values()]
         if self.progress:
@@ -160,7 +174,12 @@ class MaterialDownloads:
                  "size_bytes": sum(row["compressed_bytes"] for source in catalog["archives"].values() for row in source["members"]),
                  "file_count": 121})
         self.report({"phase": "download_plan", "label": "전체 다운로드 목록 확인"})
-        self.mit_directory, mit = studio_data._mit_download_plan(self.shared)
+        try:
+            self.mit_directory, mit = studio_data._mit_download_plan(self.shared)
+        except RequestException:
+            self.report({"phase": "download_plan", "label": "MIT RIR 다운로드 서버 연결 실패",
+                "files": [{"id": "mit_rir", "state": "failed", "connection_failed": True}]})
+            raise
         for request in mit:
             url, path, expected, size = request["request"]
             add({"id": "mit:" + request["id"], "kind": "mit", "label": request["id"],

@@ -101,6 +101,24 @@ def test_archive_transfer_reports_the_pinned_size_and_network_progress(setup):
     assert transfers[-1]["bytes_per_second"] is None
 
 
+def test_yodas2_staged_download_precedes_extraction_and_retains_ownership(tmp_path, monkeypatch):
+    resolution, payloads = make_resolution([archive_bytes({"corpus/a.flac": b"raw"})], source_id="yodas2")
+    transport = Transport(payloads)
+    monkeypatch.setattr(requests, "get", transport.get)
+    directory = tmp_path / "compact"
+    limits = {"max_download_bytes": resolution["total_bytes"], "max_extract_bytes": 1024**2}
+    archive = directory / "originals" / resolution["assets"][0]["path"]
+
+    module.prepare_compact_source(resolution, directory, **limits, download_only=True)
+    assert archive.is_file() and (directory / "downloads/part_0000.json").is_file()
+    assert not list((directory / "audio").iterdir())
+    assert not (directory / "compact_receipt.json").exists()
+    monkeypatch.setattr(requests, "get", lambda *a, **k: pytest.fail("Staged data must not download twice"))
+    result = module.prepare_compact_source(resolution, directory, **limits)
+    assert result["retired_archive_bytes"] == resolution["assets"][0]["size_bytes"]
+    assert not archive.exists()
+
+
 def test_exact_members_and_stable_resume_without_archives_or_network(setup, monkeypatch):
     directory, resolution, raw, transport = setup
     result = prepare(setup)

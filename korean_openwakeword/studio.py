@@ -262,6 +262,14 @@ def _execution_contract(*, legacy_reference_review=False):
     paths = [p for p in sorted(root.glob("*.py")) if p.name not in presentation]
     paths += sorted((root / "resources").glob("*.json"))
     bindings = {p.relative_to(root).as_posix(): digest(p) for p in paths}
+    trial_plan = "resources/yodas2_trial_500_v1.json"
+    if (bindings.get(trial_plan) in _TRIAL_YODAS_BATCH_PLAN_DIGESTS
+            and bindings.get("automatic_sources.py") in _BATCH_DOWNLOAD_COMPATIBLE_DIGESTS["automatic_sources.py"]):
+        # The archive plan affects new downloads only. Prior qualified and
+        # admitted material uses the same source pins and audio contracts.
+        bindings.pop(trial_plan)
+        for name, audited in _BATCH_DOWNLOAD_COMPATIBLE_DIGESTS.items():
+            bindings[name] = audited.get(bindings[name], bindings[name])
     if bindings.get("training_context.py") in _CONTEXT_PROFILE_AUDITED_HELPER_DIGESTS:
         bindings.pop("training_context.py")
         bindings = {name: _context_profile_compatible_digest(value) for name, value in bindings.items()}
@@ -362,6 +370,30 @@ def _execution_contract(*, legacy_reference_review=False):
     _EXECUTION_CONTRACT_CACHE[cache_key] = result
     return deepcopy(result)
 
+
+_TRIAL_YODAS_BATCH_PLAN_DIGESTS = {
+    "46084986df0f541a5966278dbf56c0b13727359116fc648b76df62f61be20921",
+    "09afd8236528c5658ed84f43b0c2498ce0894b6d41769e2afa3b106ecdeff8e3",
+}
+
+_BATCH_DOWNLOAD_COMPATIBLE_DIGESTS = {
+    "automatic_sources.py": {
+        "ae142b21d3c46890da2bc22263665f7e8aa6943a73156f810b466cedd6370343": "f00b798d2b7687093ec3a35ee7d75b60a517de413233fec6126fe9e7ea868f9c",
+        "0a3df0bd8ad5c90d623365961951e7bf08670f76a255af9384c4400779e9dc66": "3b35b6738aca0f7195c2e453c39b7a28576d3f37dfe4e09c778665b6e4051b5f",
+    },
+    "compact_sources.py": {
+        "5dd1e034f87a6564ceadf2d45f5d3a7c289fb17d2ba80dce2632da328f3805c9": "a9f32af0e32c98b325d676ce3e5e1dcf454c590c1a7e938dab1fb352a23be8e2",
+        "a7d986d409af70c9419f8b79e95659fadac65adef58583284c8d71e19f3b0334": "e656aa356399ba5ee0dc55c68ada0e82aa754536dd854834aec2fde46fcc3bd4",
+    },
+    "downloads.py": {
+        "f2dd4017999c0b257180723d412599fa6d3822403f17a7bc0ee421169a38f31d": "3600296fb7148c126ad84aedfb3b35a748796d2b5e05dc16d9a7e082a768c90e",
+        "08ae82a2ba7f3c0cd173729cebefb31bc0e645d26f642f65eaac6ebb091e0de2": "617c640e29b18157f84bd5e91d65c9893b1a0cd196163c4cf2bb95e306d36b68",
+    },
+    "material_downloads.py": {
+        "272ce0348aec0d380459b18932d19bd851869ecc53acb756ff85dcd2f4041685": "dce07ad93956f367dd3ed1c00096a9d563d8f8b7bba0c43f6dc646e757f5a4ea",
+        "7d2f0b5d1761b43c87128ed5c3fc72e94ae74323aeae50d9d79876c32ea29b7b": "6e333374607bc5c796eaf5f0e9d00640e020ff07417bd40e601d375594dc71c7",
+    },
+}
 
 # These exact LF and CRLF source pairs preserve previously valid material receipts.
 # The worker still binds requests to the actual code bytes.
@@ -2836,7 +2868,11 @@ class StudioManager:
         state["last_job"] = job
         state["job"] = None
         if result.get("error"):
-            state.update(status="error", error=result["error"], next_action="오류 원인을 확인한 뒤 이어서 진행을 누르세요.")
+            if job["stage"] == "data_download" and result["error"].get("connection_failed") is True:
+                state.update(status="paused", auto_continue=False, error=result["error"],
+                             next_action="다운로드 서버 연결을 확인한 뒤 재개하세요.")
+            else:
+                state.update(status="error", error=result["error"], next_action="오류 원인을 확인한 뒤 이어서 진행을 누르세요.")
         else:
             output = result["result"]
             stage = job["stage"]
@@ -5164,7 +5200,8 @@ class StudioManager:
                 amounts = [row.get(key) for row in mit]
                 return sum(amounts) if all(type(value) is int and value >= 0 for value in amounts) else None
             current["mit_rir"] = {"id": "mit_rir", "state": status, "unit": "bytes",
-                "done": total_for("done"), "total": total_for("total")}
+                "done": total_for("done"), "total": total_for("total"),
+                **({"connection_failed": True} if any(row.get("connection_failed") for row in mit) else {})}
         recover_groups = {key for key in ("official_music", "mit_rir")
                           if current.get(key, {}).get("state") not in ("reused", "complete", "failed")}
         planned = self._history_download_files(state, {}, planned=True, recover_groups=recover_groups)

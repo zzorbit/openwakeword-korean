@@ -2251,6 +2251,7 @@
         return [{ key, label: group[0].group_label || group[0].label || "자료", purpose, shared, done: group.filter(downloadFileComplete).length,
           total: group.length, unit: "files", bytes: sum(available), totalBytes: sum(group.map(file => file.total)),
           failed: group.some(file => file.state === "failed"),
+          connection_failed: group.some(file => file.connection_failed === true),
           active: group.some(fileActive),
           completed: group.every(downloadFileComplete),
           transferComplete,
@@ -2281,7 +2282,8 @@
           view.note = node("p", undefined, "story-history-note");
           view.noteDetail = node("span", undefined, "story-history-note-detail");
           view.inspectionLabel = node("span", undefined, "story-quality-label");
-          view.note.append(view.noteDetail, view.inspectionLabel);
+          view.connectionNote = node("span", undefined, "story-download-connection-error");
+          view.note.append(view.noteDetail, view.inspectionLabel, view.connectionNote);
           view.item.append(view.note);
         }
         const group = row.group || row.key;
@@ -2302,17 +2304,22 @@
           view.amount.textContent = downloadMaterialScale(project, row, group);
         if (group === "audioset") view.amount.title = bridge.trainingDownloadInventory.audioset.archive;
         view.item.dataset.failed = String(Boolean(row.failed));
+        view.item.dataset.connectionFailed = String(row.connection_failed === true);
         if (view.titleIndicator.parentElement !== view.title) view.title.append(view.titleIndicator);
         updateProgressIndicator(view.titleIndicator, progressStatus(rowActive, row.completed && !preparing));
-        const sizeNote = row.failed ? "다운로드 실패"
+        const sizeNote = row.connection_failed && row.archive_batch
+          ? progressAmount(row.archive_batch.done_bytes, row.archive_batch.total_bytes, "bytes")
+          : row.failed && !row.connection_failed ? "다운로드 실패"
           : Number.isFinite(row.totalBytes) ? progressAmount(row.bytes, row.totalBytes, "bytes")
             : row.unit === "files" && Object.hasOwn(row, "totalBytes")
               ? Number.isFinite(row.bytes) && row.bytes > 0 ? `${quantity(row.bytes, "bytes")} / —` : "전체 용량 확인 전"
               : "";
         const transfer = row.archive_transfer;
         const verifiedBytes = row.verified_archive_bytes;
-        const receivedBytes = Number.isFinite(verifiedBytes) && verifiedBytes >= 0
+        const accumulatedBytes = Number.isFinite(verifiedBytes) && verifiedBytes >= 0
           ? verifiedBytes + (!row.completed && Number.isFinite(transfer?.done) && transfer.done >= 0 ? transfer.done : 0) : null;
+        const receivedBytes = Number.isFinite(row.batch_acquired_bytes)
+          ? Math.max(row.batch_acquired_bytes, accumulatedBytes ?? 0) : accumulatedBytes;
         const observedEstimate = Number.isFinite(verifiedBytes) && verifiedBytes > 0 && row.done > 0 && row.total > 0
           ? verifiedBytes * row.total / row.done : 0;
         const estimate = Math.max(row.estimated_download_bytes || 0, observedEstimate, receivedBytes || 0);
@@ -2343,10 +2350,13 @@
           waiting: "품질 검사 대기",
           checking: inspectionActive ? ["품질 검사 중", inspectionPercent === null ? "" : `${inspectionPercent}%`].filter(Boolean).join(" · ") : "품질 검사 미완료",
         }[inspection?.state] || "";
-        view.noteDetail.textContent = detail && inspectionLabel ? detail + " · " : detail;
+        const connectionNote = row.connection_failed ? "다운로드 서버에 연결할 수 없습니다. 서버 주소나 연결 상태를 확인해 주세요." : "";
+        view.noteDetail.textContent = detail && (inspectionLabel || connectionNote) ? detail + " · " : detail;
         view.inspectionLabel.textContent = inspectionLabel;
         view.inspectionLabel.hidden = !inspectionLabel;
-        view.note.hidden = !detail && !inspectionLabel;
+        view.connectionNote.textContent = connectionNote;
+        view.connectionNote.hidden = !connectionNote;
+        view.note.hidden = !detail && !inspectionLabel && !connectionNote;
         view.item.hidden = false;
         nextViews.set(row.key, view);
         return view.item;

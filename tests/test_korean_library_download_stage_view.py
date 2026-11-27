@@ -164,3 +164,13 @@ def test_total_hours_and_downloaded_bytes_survive_preparation_labels(tmp_path):
         assert row["archive_transfer"] == transfer and row["done"] == 50
     downloads.finish_automatic({"component_actual_hours": {"yodas2": 500}, "component_verified_archive_bytes": {"yodas2": 1250}})
     assert row["archive_preparation_status"] is None and row["state"] == "complete"
+
+
+def test_automatic_batch_and_connection_failure_enter_the_live_row(tmp_path):
+    downloads = MaterialDownloads(tmp_path)
+    row = downloads.files["automatic:yodas2"] = {"done": 0, "target_hours": 500, "deferred": True}
+    batch = {"completed": 3, "total": 99, "done_bytes": 35, "total_bytes": 1000}
+    downloads.report({"phase": "automatic_archive_batch", "automatic_component": "yodas2", "archive_batch": batch})
+    assert row["unit"] == "hours" and row["archive_batch"] == batch
+    downloads.report({"phase": "automatic_connection_failure", "automatic_component": "yodas2"})
+    assert row["connection_failed"] and row["state"] == "failed" and row["archive_batch"] == batch

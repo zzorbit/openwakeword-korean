@@ -250,6 +250,10 @@ class _DownloadAdmission:
         self.reason = "probe"
 
 
+class _PeerDownloadPaused(Exception):
+    pass
+
+
 def download_many(items, worker, *, progress=None, max_workers=None):
     """Run independent whole-file downloads with bounded concurrency.
 
@@ -293,7 +297,7 @@ def download_many(items, worker, *, progress=None, max_workers=None):
                    "state": "waiting", "done": 0, "total": size,
                    "network_bytes": 0, "bytes_per_second": None, "eta_seconds": None}
                   for item, size in zip(items, sizes)]
-    events, failed = queue.SimpleQueue(), threading.Event()
+    events, failed, disconnected = queue.SimpleQueue(), threading.Event(), threading.Event()
     pending, verified, first_error = {}, 0, None
     last_emit, last_signature = -float("inf"), None
 
@@ -411,7 +415,13 @@ def download_many(items, worker, *, progress=None, max_workers=None):
         try:
             def report(event):
                 events.put((index, {"observed_at": time.monotonic(), **event}))
+                if disconnected.is_set() and not event.get("failed"):
+                    raise _PeerDownloadPaused
             return worker(items[index], report)
+        except requests.exceptions.RequestException:
+            disconnected.set()
+            failed.set()
+            raise
         except BaseException:
             failed.set()
             raise
@@ -441,9 +451,13 @@ def download_many(items, worker, *, progress=None, max_workers=None):
                         admission.end_transfer(index)
                     try:
                         results[index] = future.result()
+                    except _PeerDownloadPaused:
+                        file_views[index].update(state="waiting", bytes_per_second=None, eta_seconds=None)
                     except BaseException as error:
                         file_views[index].update(state="failed", bytes_per_second=None,
                                                  eta_seconds=None, error=type(error).__name__)
+                        if isinstance(error, requests.exceptions.RequestException):
+                            file_views[index]["connection_failed"] = True
                         if first_error is None:
                             first_error = error
                     else:
@@ -614,7 +628,8 @@ def download_partial(url, partial, size_bytes, *, progress=None, retries=2):
         except requests.exceptions.RequestException as error:
             if not _transient_network_error(error) or attempt == retries:
                 report({"phase": "download", "done": partial.stat().st_size if partial.exists() else 0,
-                        "total": size_bytes, "unit": "bytes", "attempt": attempt + 1, "failed": True}, False)
+                        "total": size_bytes, "unit": "bytes", "attempt": attempt + 1, "failed": True,
+                        "connection_failed": True}, False)
                 raise
             report({"phase": "retry", "done": partial.stat().st_size if partial.exists() else 0,
                     "total": size_bytes, "unit": "bytes", "attempt": attempt + 2,
