@@ -1976,6 +1976,33 @@
       if (trainingDownloadOrder.includes(group) || ids.some(id => /^(?:base|automatic|mit):/.test(id))) return "training";
       return "other";
     }
+    const evaluationDownloadHours = {
+      musan: ["other_speech", "music"],
+      fsd50k: ["environment", "electronic"],
+      seoul: ["korean_conversation", "korean_interview"],
+      zeroth: ["korean_read"],
+    };
+    function downloadMaterialScale(project, row, group) {
+      const hours = value => Number.isFinite(value) && value > 0 ? quantity(value, "hours") : "";
+      if (row.archiveBatch) return hours(row.targetHours);
+      if (row.unit === "hours") return hours(row.total);
+      if (group === "generic_negative") {
+        const nominal = project.training_materials?.generic_publisher_nominal_hours ?? 2000;
+        return hours(nominal) ? `약 ${hours(nominal)}` : "";
+      }
+      if (group === "zeroth" && row.purpose === "training") return hours(project.settings?.korean_hours);
+      if (group === "official_music" || group === "audioset") return "공식 예제";
+      if (group === "mit_rir") return "학습용 전체";
+      if (row.purpose !== "evaluation") return "";
+      if (group === "common_rir") {
+        const rooms = project.evaluation_policy?.rir_rooms;
+        return Number.isSafeInteger(rooms) && rooms > 0 ? `공간 ${count(rooms)}개` : "";
+      }
+      const buckets = project.evaluation_policy?.negative_hours_by_bucket;
+      const durations = evaluationDownloadHours[group]?.map(key => buckets?.[key]);
+      return durations?.every(value => Number.isFinite(value) && value >= 0)
+        ? hours(durations.reduce((sum, value) => sum + value, 0)) : "";
+    }
     const downloadFileComplete = file => ["complete", "reused"].includes(file.state);
     const archivePreparationLabels = {
       extract_hash: "압축파일 검증 중",
@@ -2189,9 +2216,10 @@
             const batch = file.archive_batch;
             if (activeDownload && batch) {
               return { key: file.id, label, purpose, archiveBatch: true, active: true,
+                targetHours: file.target_hours ?? (file.unit === "hours" ? file.total : null),
                 done: batch.completed, total: batch.total, unit: "묶음",
                 bytes: batch.done_bytes, totalBytes: batch.total_bytes,
-                detail: `일괄 다운로드 중 · ${progressAmount(batch.done_bytes, batch.total_bytes, "bytes")}` };
+                detail: `${progressAmount(batch.done_bytes, batch.total_bytes, "bytes")} · 일괄 다운로드 중 · ${progressAmount(batch.completed, batch.total, "묶음")}` };
             }
             return { ...file, key: file.id, label, purpose, active: fileActive(file),
               completed: downloadFileComplete(file), failed: file.state === "failed" };
@@ -2257,6 +2285,8 @@
         const bytesMeasured = Number.isFinite(row.bytes) && Number.isFinite(row.totalBytes) && row.totalBytes > 0;
         updateHistoryRow(view, { ...row, preparing, active: rowActive,
           verification: verifying && !bytesMeasured, verificationPercent: row.hashPercent });
+        if (row.key !== "compute-tools" && row.key !== "material-connection")
+          view.amount.textContent = downloadMaterialScale(project, row, group);
         view.item.dataset.failed = String(Boolean(row.failed));
         if (view.titleIndicator.parentElement !== view.title) view.title.append(view.titleIndicator);
         updateProgressIndicator(view.titleIndicator, progressStatus(rowActive, row.completed && !preparing));
@@ -2275,6 +2305,8 @@
         const estimatedSize = Number.isFinite(estimate) && estimate > 0 ? `약 ${quantity(estimate, "bytes")}` : "";
         const archiveSize = row.completed && receivedBytes > 0 ? progressAmount(receivedBytes, receivedBytes, "bytes")
           : receivedBytes !== null || estimatedSize ? `${quantity(receivedBytes, "bytes")} / ${estimatedSize || "—"}` : "";
+        const availableHours = row.unit === "hours" && Number.isFinite(row.done) && row.done >= 0
+          ? `확보 ${quantity(row.done, "hours")}` : "";
         const archiveStatus = !rowActive ? "" : ({
           checking_archive: "압축 파일 검증 중", extracting: "압축 해제 중", checking_extracted: "압축 해제 자료 검증 중",
           converting: "음원 변환 중", checking_audio: "음원 품질 검사 중", preparing_ahead: "다음 묶음 준비 중",
@@ -2290,7 +2322,7 @@
         const workPercent = Number.isFinite(work?.percent) ? ` · ${work.percent}%` : "";
         const preparationNote = work ? preparationActive ? work.label + workPercent
           : project.status === "paused" ? "자료 준비 일시정지" : "자료 준비 미완료" : preparing && !inspection && !verifying ? "자료 준비 대기" : "";
-        const detail = row.detail || [sizeNote || archiveSize, archiveStatus, archiveRate, preparationNote || reuseNote,
+        const detail = row.detail || [sizeNote || archiveSize, availableHours, archiveStatus, archiveRate, preparationNote || reuseNote,
           row.shared ? "학습·평가 공용" : ""].filter(Boolean).join(" · ");
         view.noteDetail.textContent = detail && inspection ? detail + " · " : detail;
         view.inspectionStatus.hidden = !inspection;
@@ -2486,7 +2518,8 @@
       const downloadState = current === "downloads"
         ? [project.status, stageId(project), project.stages, project.error, project.download_setup_items, progress?.setup_items,
           downloadCheckpoint(project)?.state, project.dependency_download_bytes, project.dependency_packages, legacy,
-          project.download_prepared_groups, project.evaluation_policy?.negative_hours_by_bucket?.korean_read,
+          project.download_prepared_groups, project.evaluation_policy?.negative_hours_by_bucket, project.evaluation_policy?.rir_rooms,
+          project.training_materials?.generic_publisher_nominal_hours, project.settings?.korean_hours,
           progress?.phase, progress?.label, progress?.done, progress?.total, progress?.unit, progress?.verification_reused,
           stageId(project) === "frontend" ? phaseElapsed(progress) : ""]
         : null;

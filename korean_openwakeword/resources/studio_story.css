@@ -137,6 +137,7 @@ body.story-mode{--canvas:#171a1f;--surface:#20252c;--control:#292d33;--hover:#36
 .story-download-section[data-purpose="training"]{grid-column:1}
 .story-download-section[data-purpose="evaluation"]{grid-column:2}
 .story-download-list>.story-history-row{grid-column:1/-1}
+.story-download-list .story-history-line>span:nth-child(2){text-align:right;white-space:nowrap}
 .story-history-row{display:flex;flex-direction:column;gap:9px;width:100%;min-width:0;padding:12px 0;border-bottom:1px solid #343c47;text-align:left}
 :where(.story-history:not([data-kind="downloads"])) .story-history-row:last-child{border-bottom:0}
 .story-history-line{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:baseline;gap:8px 16px;width:100%;font-size:16px;line-height:24px}

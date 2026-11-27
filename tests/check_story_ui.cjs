@@ -9,6 +9,7 @@ const textOf = item => [item.textContent, ...item.children.map(textOf)].join(" "
 const historyRows = root => root.querySelectorAll(".story-history-row");
 const historyRowLabel = row => row.querySelector(".story-history-line")?.children[0]?.textContent;
 const historyRowByLabel = (root, label) => historyRows(root).find(row => historyRowLabel(row) === label);
+const downloadScale = row => row.querySelector(".story-history-line").children[1].textContent;
 const hasActiveDownloadSpinner = root => root.querySelectorAll(".story-progress-indicator")
   .some(icon => !icon.hidden && icon.dataset.status === "active");
 function assertFullDownloadBar(bar, preparing = true) {
@@ -1167,13 +1168,18 @@ async function main() {
     project.stage_id = "data_connect";
     project.stages[0].status = "completed";
     project.dependency_packages = ["torch==2.8.0", "torchaudio==2.8.0"];
+    project.settings = { generic_hours: 3500, korean_hours: 1 };
+    project.evaluation_policy = { rir_rooms: 20, negative_hours_by_bucket: {
+      other_speech: 4, music: 3, environment: 4, electronic: 1,
+      korean_conversation: 10, korean_interview: 5, korean_read: 3,
+    } };
     const file = (id, group, label) => ({ id, group, label, state: "complete", done: 100, total: 100, unit: "bytes" });
     project.download_files = [
       file("common:zeroth", "zeroth", "한국어 낭독 · Zeroth"), file("common:rir_archive", "common_rir", "OpenSLR RIR"),
       file("mit_rir", "mit_rir", "MIT RIR"), file("common:seoul", "seoul", "Seoul"),
       file("base:audioset", "audioset", "AudioSet"), file("common:musan", "musan", "MUSAN"),
       file("common:fsd_eval", "fsd50k", "FSD50K"), file("official_music", "official_music", "FMA"),
-      { ...file("automatic:yodas2", "automatic:yodas2", "한국어 웹 음성"), unit: "hours" },
+      { ...file("automatic:yodas2", "automatic:yodas2", "한국어 웹 음성"), unit: "hours", done: 503.528, total: 500 },
       file("base:generic", "generic_negative", "openWakeWord"),
     ];
     const p = page(project), list = p.shell.querySelector(".story-download-list");
@@ -1182,6 +1188,9 @@ async function main() {
     assert.equal(evaluation.querySelector("h2").textContent, "성능 평가용 자료");
     assert.deepEqual(historyRows(training).map(historyRowLabel), ["openWakeWord", "한국어 웹 음성", "FMA", "AudioSet", "MIT RIR"]);
     assert.deepEqual(historyRows(evaluation).map(historyRowLabel), ["MUSAN", "FSD50K", "Seoul", "한국어 낭독 · Zeroth", "OpenSLR RIR"]);
+    assert.deepEqual(historyRows(training).map(downloadScale), ["약 2,000시간", "500시간", "공식 예제", "공식 예제", "학습용 전체"]);
+    assert.deepEqual(historyRows(evaluation).map(downloadScale), ["7시간", "5시간", "15시간", "3시간", "공간 20개"]);
+    assert.doesNotMatch(textOf(list), /1 \/ 1개/);
     assert.equal(historyRowLabel(tools), "연산 도구 · PyTorch · TorchAudio");
     assert.equal(historyRowLabel(connection), "학습·평가 자료 연결");
     assert.equal(p.next.disabled, true);
@@ -1191,6 +1200,7 @@ async function main() {
     p.ui.render();
     assert.equal(historyRowByLabel(training, "한국어 낭독 · Zeroth"), zeroth);
     assert.equal(historyRowByLabel(evaluation, "한국어 낭독 · Zeroth"), undefined);
+    assert.equal(downloadScale(zeroth), "1시간");
     assert.match(textOf(zeroth), /학습·평가 공용/);
     assert.match(textOf(zeroth), /100 B \/ 100 B/);
 
@@ -1793,20 +1803,21 @@ async function main() {
     project.download_files = [yodas];
     const p = page(project), row = historyRowByLabel(p.shell, "한국어 웹 음성"), bar = row.querySelector("progress");
     assert.equal(bar.value / bar.max, 0.01);
-    assert.match(textOf(row), /5 \/ 500시간.*576 MiB \/ 약 65\.2 GiB · 다운로드 중 · 4 MiB\/초/);
+    assert.equal(downloadScale(row), "500시간");
+    assert.match(textOf(row), /576 MiB \/ 약 65\.2 GiB · 확보 5시간 · 다운로드 중 · 4 MiB\/초/);
     assert.doesNotMatch(textOf(row), /확보한 원본|현재 묶음|256 MiB/);
     yodas.archive_transfer = { status: "checking", done: null, total: 256 * mib };
     p.ui.render();
-    assert.match(textOf(row), /512 MiB \/ 약 65\.2 GiB · 파일 확인 중/);
+    assert.match(textOf(row), /512 MiB \/ 약 65\.2 GiB · 확보 5시간 · 파일 확인 중/);
     yodas.archive_transfer = { status: "preparing", done: 256 * mib, total: 256 * mib };
     p.ui.render();
-    assert.match(textOf(row), /768 MiB \/ 약 65\.2 GiB · 검증·전처리 중/);
+    assert.match(textOf(row), /768 MiB \/ 약 65\.2 GiB · 확보 5시간 · 검증·전처리 중/);
     assert.doesNotMatch(textOf(row), /MiB\/초/);
     assert.equal(bar.value / bar.max, 0.01);
     assert.equal(hasActiveDownloadSpinner(row), true);
     yodas.archive_transfer = null; yodas.verified_archive_bytes = 768 * mib;
     yodas.done = 9; p.ui.render();
-    assert.match(textOf(row), /9 \/ 500시간.*768 MiB \/ 약 65\.2 GiB/);
+    assert.match(textOf(row), /768 MiB \/ 약 65\.2 GiB · 확보 9시간/);
     assert.doesNotMatch(textOf(row), /확보한 원본|현재 묶음|검증·전처리 중/);
     yodas.done = 500; yodas.state = "complete";
     yodas.archive_transfer = { status: "preparing", done: 256 * mib, total: 256 * mib };
@@ -1824,16 +1835,17 @@ async function main() {
       archive_batch: { completed: 30, total: 63, done_bytes: 46 * gib, total_bytes: 86 * gib } };
     project.download_files = [yodas];
     const p = page(project), row = historyRowByLabel(p.shell, "한국어 웹 음성"), bar = row.querySelector("progress");
-    assert.match(textOf(row), /30 \/ 63묶음.*일괄 다운로드 중 · 46 GiB \/ 86 GiB/);
-    assert.doesNotMatch(textOf(row), /검증·전처리 중|500시간/);
+    assert.match(textOf(row), /46 GiB \/ 86 GiB · 일괄 다운로드 중 · 30 \/ 63묶음/);
+    assert.equal(downloadScale(row), "500시간");
+    assert.doesNotMatch(textOf(row), /검증·전처리 중/);
     assert.equal(bar.value / bar.max, 46 / 86);
     assert.equal(hasActiveDownloadSpinner(row), true);
     yodas.archive_batch = { ...yodas.archive_batch, completed: 31, done_bytes: 47 * gib };
     p.ui.render();
-    assert.match(textOf(row), /31 \/ 63묶음.*47 GiB \/ 86 GiB/);
+    assert.match(textOf(row), /47 GiB \/ 86 GiB.*31 \/ 63묶음/);
     delete yodas.archive_batch;
     p.ui.render();
-    assert.match(textOf(row), /184 \/ 500시간.*검증·전처리 중/);
+    assert.match(textOf(row), /확보 184시간 · 검증·전처리 중/);
   });
   await test("Korean archive phases retain accepted hours and a plausible total", () => {
     const project = checkpointProject("running", "running");
@@ -1850,7 +1862,8 @@ async function main() {
       yodas.archive_preparation_status = status;
       p.ui.render();
       assert.ok(textOf(row).includes(label));
-      assert.match(textOf(row), /400 \/ 500시간.*101 GiB \/ 약 125 GiB/);
+      assert.equal(downloadScale(row), "500시간");
+      assert.match(textOf(row), /101 GiB \/ 약 125 GiB · 확보 400시간/);
       assert.equal(hasActiveDownloadSpinner(row), true);
     }
     yodas.archive_preparation_status = null;
@@ -2356,10 +2369,11 @@ async function main() {
     const p = page(historyModel({ downloads: { completed: true, progress: { files } } }));
     await visit(p, "downloads");
     const history = p.shell.querySelector(".story-history"), rows = files.map(file => historyRowByLabel(history, file.label));
-    assert.ok(textOf(rows[0]).includes("1,500.25 / 1,500시간"));
-    assert.ok(textOf(rows[1]).includes("750 / 1,500시간"));
+    assert.deepEqual(rows.map(downloadScale), ["1,500시간", "1,500시간", "500시간"]);
+    assert.ok(textOf(rows[0]).includes("확보 1,500.25시간"));
+    assert.ok(textOf(rows[1]).includes("확보 750시간"));
     assert.ok(textOf(rows[1]).includes("50%"));
-    assert.ok(textOf(rows[2]).includes("— / 500시간"));
+    assert.doesNotMatch(textOf(rows[2]), /확보/);
     assert.equal(rows[2].querySelector("progress").hidden, true);
     assert.ok(!textOf(history).includes("1 / 1개"));
     assert.equal(p.calls.some(call => ["create", "start", "resume", "input"].includes(call)), false);
