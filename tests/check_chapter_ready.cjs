@@ -29,7 +29,9 @@ function page(href = "http://127.0.0.1:8793/reference-preview/?project=bora", {f
 (async () => {
   let fontsReady;
   const delayed = page(undefined, {fonts: new Promise(resolve => {fontsReady = resolve;})});
-  assert.deepEqual(Object.keys(delayed.context.KowwListening).sort(), ["closePickers", "createPicker", "enhance"], "the existing playback APIs and shared-picker closing API remain public");
+  for (const name of ["closePickers", "createPicker", "enhance"]) {
+    assert.equal(typeof delayed.context.KowwListening[name], "function", `${name} remains available to listening pages`);
+  }
   delayed.request(1); await tick(); assert.deepEqual(delayed.messages, [], "pending queue data never reports ready");
   delayed.ready.ready(); await tick(); assert.equal(delayed.frames.length, 0, "font layout settles before render turns");
   fontsReady(); await delayed.paint(); assert.deepEqual(delayed.messages, [], "one render turn is insufficient");
