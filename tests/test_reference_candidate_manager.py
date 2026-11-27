@@ -106,6 +106,47 @@ def send(service, project_id, action, row=None, **values):
     return service.reference_preview_queue(project_id, {"action": action, **values})
 
 
+def test_add_ten_exposes_first_five_while_running_and_navigates_without_generation(review, monkeypatch):
+    service, project_id, _ = review
+    monkeypatch.setattr(service, "_reference_candidate_window_enabled", lambda state: True)
+    initial = service.reference_preview_queue(project_id)
+    assert initial["generation_count"] == 10
+    group = initial["active_group"]
+    pending = send(service, project_id, "more", group=group)
+    assert pending["job"]["total"] == 10 and not pending["items"]
+    generate = service.fake_model.generate_voice_design
+    published = []
+
+    def observe(**kwargs):
+        if service.fake_model.counter == 5:
+            first = service.reference_preview_queue(project_id)
+            page = first["view_batch"]
+            assert first["job"]["first_page"] == page and first["job"]["completed"] == 5
+            assert len(first["items"]) == 5 and len(first["batches"]) == 1
+            row = first["items"][0]
+            assert service.reference_candidate_audio(project_id, row["id"], row["sha256"]).is_file()
+            assert service.reference_preview_queue(project_id, {"action": "toggle", "id": row["id"],
+                "sha256": row["sha256"]}, batch_id=page)["accepted"]
+            published.extend(first["items"])
+        return generate(**kwargs)
+
+    monkeypatch.setattr(service.fake_model, "generate_voice_design", observe)
+    assert service.finish_candidates() == 0
+    front = service.reference_preview_queue(project_id)
+    assert [row["id"] for row in front["items"]] == [row["id"] for row in published]
+    assert not front["job"] and [page["count"] for page in front["batches"]] == [5, 5]
+    next_page = front["batches"][1]["id"]
+    back = service.reference_preview_queue(project_id, batch_id=next_page)
+    assert [row["number"] for row in back["items"]] == [6, 7, 8, 9, 10]
+    assert service.fake_model.counter == 10 and len(service.residents) == 1
+    with pytest.raises(ValueError, match="저장된 다음 후보"):
+        service.reference_preview_queue(project_id, {"action": "more", "group": group}, batch_id=front["view_batch"])
+    pending = service.reference_preview_queue(project_id, {"action": "more", "group": group}, batch_id=next_page)
+    assert not pending["items"] and pending["view_batch"] == pending["current_batch"]
+    assert pending["view_batch"] not in {front["view_batch"], next_page}
+    assert service.fake_model.counter == 10 and len(service.residents) == 1
+
+
 def test_get_is_idle_then_more_allows_zero_selection_and_reuses_worker(review):
     service, project_id, root = review
     view = service.reference_preview_queue(project_id)

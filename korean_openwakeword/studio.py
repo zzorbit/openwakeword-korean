@@ -262,10 +262,12 @@ def _execution_contract(*, legacy_reference_review=False):
     paths = [p for p in sorted(root.glob("*.py")) if p.name not in presentation]
     paths += sorted((root / "resources").glob("*.json"))
     bindings = {p.relative_to(root).as_posix(): digest(p) for p in paths}
-    # The larger pool is opt-in through the frozen slot plan. Legacy plans
-    # retain their original batch, verification, and receipt format.
+    # The larger pool and paired synthesis have their own persisted plans.
+    # Earlier five-candidate plans and their audio evidence remain valid.
     reference_candidates = bindings["reference_candidates.py"]
     bindings["reference_candidates.py"] = _REFERENCE_POOL_SIZE_COMPATIBLE_DIGESTS.get(reference_candidates, reference_candidates)
+    reference_attempt = bindings["reference_attempt.py"]
+    bindings["reference_attempt.py"] = _REFERENCE_WINDOW_ATTEMPT_COMPATIBLE_DIGESTS.get(reference_attempt, reference_attempt)
     trial_plan = "resources/yodas2_trial_500_v1.json"
     if (bindings.get(trial_plan) in _TRIAL_YODAS_BATCH_PLAN_DIGESTS
             and bindings.get("automatic_sources.py") in _BATCH_DOWNLOAD_COMPATIBLE_DIGESTS["automatic_sources.py"]):
@@ -376,10 +378,16 @@ def _execution_contract(*, legacy_reference_review=False):
 
 
 _REFERENCE_POOL_SIZE_COMPATIBLE_DIGESTS = {
+    "8739c391d1185a6d3170a5bcfb3ac57e6931145f1d63451ff4cc3e8efe34b928": "588a5e77f603246f9d0757f7ead2b3de717ba1319ad2db978935013be7584805",
+    "93457317314ed7a64accd41fbc9748ce37a863dda79c57f9e0f20bb6a6d91eaa": "968fcec79233839a643bd5568926a98513fe71ed37922fdbc2506a0aa546a4cb",
     "6736bfc604627b1e46ac3e0aa7bfc70369b6955bba7c68bf0a4ae6cf31b549e0": "588a5e77f603246f9d0757f7ead2b3de717ba1319ad2db978935013be7584805",
     "71d6747dd78ad545202d3fe17fb68f22e25249250a1de7b881202ac3c99d50ca": "968fcec79233839a643bd5568926a98513fe71ed37922fdbc2506a0aa546a4cb",
 }
 
+_REFERENCE_WINDOW_ATTEMPT_COMPATIBLE_DIGESTS = {
+    "347c9e30bd89cc260e2ed1eb68486bdae8aeb9d3f150db467cb250291de67ee4": "97ee52c7d2710f343b4fdfc242572c391d21ef68a875d23aa6835ac8d4dd7bc0",
+    "15020479985a3e3b8f5a616af8a40775ae9d31106d5ac6a4f0781f160eebe281": "a9a25e70865ed4c01dac18422242dca74294f42bfd4bdeb3eeaeb2e24eb12389",
+}
 _TRIAL_YODAS_BATCH_PLAN_DIGESTS = {
     "46084986df0f541a5966278dbf56c0b13727359116fc648b76df62f61be20921",
     "09afd8236528c5658ed84f43b0c2498ce0894b6d41769e2afa3b106ecdeff8e3",
@@ -4392,7 +4400,8 @@ class StudioManager:
             return self.describe(state)
 
     def _reference_candidate_load(self, state, originals):
-        from .reference_candidates import create_candidate_review, ingest_candidate_batch, validate_candidate_review
+        from .reference_candidates import (WINDOW_REQUEST_KIND, create_candidate_review, ingest_candidate_batch,
+                                           validate_candidate_review)
 
         root, path = Path(state["project"]).parent, self._reference_candidate_path(state)
         try:
@@ -4403,7 +4412,10 @@ class StudioManager:
         if self._reference_preparation_job_alive(state):
             return saved  # The preparation worker is the exclusive ledger writer.
         job = saved.get("job") or {}
-        if job.get("status") != "running" or self._reference_review_running(job):
+        if job.get("status") != "running":
+            return saved
+        alive = self._reference_review_running(job)
+        if alive and job.get("kind") != WINDOW_REQUEST_KIND:
             return saved
         directory = (root / ".studio/reference-candidates/jobs" / job["task_id"]).resolve()
         if directory != Path(job["directory"]).resolve():
@@ -4413,28 +4425,74 @@ class StudioManager:
             if digest(request_path) != job["request_sha256"]:
                 raise ValueError("기준 목소리 후보 생성 요청이 변경되었습니다.")
             request = read_json(request_path)
+            if (request.get("project") != state["project"] or request.get("config_sha256") != state["config_sha256"]
+                    or request.get("task_id") != job["task_id"]):
+                raise ValueError("기준 목소리 후보 생성 요청이 현재 모델과 다릅니다.")
+            pages = None
+            if request.get("kind") == WINDOW_REQUEST_KIND:
+                revision = saved["revision"]
+                pages = self._publish_reference_window_pages(root, directory, saved, job, request)
+                if alive:
+                    if saved["revision"] != revision:
+                        write_json(path, saved)
+                    return saved
             result = read_json(directory / "result.json")
             if (result.get("request_sha256") != job["request_sha256"]
-                    or result.get("task_id") != job["task_id"]
-                    or request.get("project") != state["project"]
-                    or request.get("config_sha256") != state["config_sha256"]):
+                    or result.get("task_id") != job["task_id"]):
                 raise ValueError("기준 목소리 후보 생성 결과가 요청과 일치하지 않습니다.")
             if result.get("error"):
                 # A finalized failure may have exhausted all deterministic QC
                 # attempts. Draw a fresh plan on the next explicit More action.
                 job.update(status="failed", resumable=False, message=str(result["error"]))
             else:
-                ingest_candidate_batch(root, saved, request["plan"], result["candidates"])
+                if pages is None:
+                    ingest_candidate_batch(root, saved, request["plan"], result["candidates"])
+                elif len(pages) != 2 or result.get("pages") != pages:
+                    raise ValueError("기준 목소리 후보 두 묶음의 저장 기록이 다릅니다.")
                 saved["job"] = None
         except FileNotFoundError:
+            if alive:
+                raise
             job.update(status="failed", resumable=True,
                        message="후보 생성이 중단되었습니다. 후보 더 뽑기로 남은 후보를 이어서 생성하세요.")
         self._children.pop(job["task_id"], None)
         write_json(path, saved)
         return saved
 
+    @staticmethod
+    def _publish_reference_window_pages(root, directory, saved, job, request):
+        from .reference_candidates import BATCH_SIZE, ingest_candidate_batch
+
+        plans = request["plans"]
+        if (len(plans) != 2 or any(plan["group_key"] != job["group"] for plan in plans)
+                or plans[0]["batch_id"] != job.get("first_page")
+                or plans[0]["batch_id"] == plans[1]["batch_id"]):
+            raise ValueError("추가 후보의 분류 또는 묶음 연결이 다릅니다.")
+        bindings = []
+        for index, plan in enumerate(plans, 1):
+            path = directory / f"page_{index}" / "result.json"
+            if not path.exists():
+                break
+            page = read_json(path)
+            if (page.get("task_id") != job["task_id"] or page.get("batch_id") != plan["batch_id"]
+                    or page.get("request_sha256") != job["request_sha256"]):
+                raise ValueError("보여줄 기준 목소리 후보 묶음이 실행 요청과 다릅니다.")
+            rows = page["candidates"]
+            if (len(rows) != BATCH_SIZE
+                    or {row["candidate_id"] for row in rows} != {item["candidate_id"] for item in plan["candidates"]}):
+                raise ValueError("보여줄 기준 목소리 후보의 수량이 다릅니다.")
+            if not all(saved["candidates"].get(row["candidate_id"]) == row for row in rows):
+                ingest_candidate_batch(root, saved, plan, rows)
+            bindings.append({"path": path.relative_to(root).as_posix(), "sha256": digest(path)})
+        return bindings
+
+    @staticmethod
+    def _reference_candidate_window_enabled(state):
+        return state["settings"].get("reference_preparation_policy") == "initial_candidate_batches_v1"
+
     def _launch_reference_candidates(self, state, saved, group, originals):
-        from .reference_candidates import plan_candidate_batch, register_candidate_batch
+        from .reference_candidates import (DESIGN_WINDOW_POLICY, WINDOW_REQUEST_KIND,
+                                           plan_candidate_batch, register_candidate_batch)
 
         for project_id in self.registry["projects"]:
             other = self._load(project_id)
@@ -4449,10 +4507,13 @@ class StudioManager:
             if (Path(prior["directory"]).resolve() != directory or digest(request_path) != prior["request_sha256"]):
                 raise ValueError("재개할 후보 생성 요청이 변경되었습니다.")
             request = read_json(request_path)
+            paired = request.get("kind") == WINDOW_REQUEST_KIND
+            plans = request.get("plans", []) if paired else [request.get("plan", {})]
             if (request.get("project") != state["project"] or request.get("config_sha256") != state["config_sha256"]
                     or request.get("implementation_id") != self._implementation_id
-                    or request.get("kind") != "reference_candidate_batch_v2"
-                    or request["plan"]["group_key"] != group):
+                    or request.get("kind") not in (WINDOW_REQUEST_KIND, "reference_candidate_batch_v2")
+                    or len(plans) != (2 if paired else 1)
+                    or any(plan.get("group_key") != group for plan in plans)):
                 raise ValueError("저장한 후보 생성 조건이 달라 재개할 수 없습니다.")
             # Recover only locks owned by this exact, confirmed-dead request.
             # Keep their contents as evidence instead of deleting unknown locks.
@@ -4469,11 +4530,13 @@ class StudioManager:
             if result_path.exists():
                 result_path.replace(directory / ("failed-result-" + uuid.uuid4().hex + ".json"))
             def persist_retry(job):
+                if paired:
+                    job.update(kind=WINDOW_REQUEST_KIND, first_page=plans[0]["batch_id"])
                 saved["job"] = job
                 write_json(self._reference_candidate_path(state), saved)
             self._dispatch_reference_request(state, request_path, group, before_send=persist_retry)
             return
-        plan = plan_candidate_batch(state["project"], saved, group)
+        paired = self._reference_candidate_window_enabled(state)
         task_id = uuid.uuid4().hex
         directory = root / ".studio/reference-candidates/jobs" / task_id
         directory.mkdir(parents=True)
@@ -4492,11 +4555,24 @@ class StudioManager:
                 for entry in value:
                     collect(entry)
         collect(saved)
-        write_json(request_path, {"task_id": task_id, "kind": "reference_candidate_batch_v2", "plan": plan,
+        if paired:
+            plans = []
+            for _ in range(2):
+                plan = plan_candidate_batch(state["project"], saved, group, batch_policy=DESIGN_WINDOW_POLICY)
+                register_candidate_batch(saved, plan)
+                plans.append(plan)
+            saved["current_batch"][group] = plans[0]["batch_id"]
+            planned = {"kind": WINDOW_REQUEST_KIND, "plans": plans}
+        else:
+            plan = plan_candidate_batch(state["project"], saved, group)
+            register_candidate_batch(saved, plan)
+            planned = {"kind": "reference_candidate_batch_v2", "plan": plan}
+        write_json(request_path, {"task_id": task_id, **planned,
                                   "project": state["project"], "config_sha256": state["config_sha256"],
                                   "all_hashes": sorted(hashes), "implementation_id": self._implementation_id})
-        register_candidate_batch(saved, plan)
         def persist(job):
+            if paired:
+                job.update(kind=WINDOW_REQUEST_KIND, first_page=plans[0]["batch_id"])
             saved["job"] = job
             write_json(self._reference_candidate_path(state), saved)
         try:
@@ -4562,10 +4638,12 @@ class StudioManager:
         return group, saved["current_batch"].get(group), batches, rows
 
     def _reference_candidate_queue(self, state, originals, payload, *, batch_id=None):
-        from .reference_candidates import candidate_action, candidate_review_view
+        from .reference_candidates import (BATCH_SIZE, DESIGN_WINDOW_SIZE, WINDOW_REQUEST_KIND,
+                                           candidate_action, candidate_review_view)
 
         root = Path(state["project"]).parent
         saved = self._reference_candidate_load(state, originals)
+        paired = self._reference_candidate_window_enabled(state)
         binding = state.get("inputs", {}).get("reference_voice_review")
         complete = bool(binding)
         editable = self._reference_review_required(state) and not complete
@@ -4588,7 +4666,8 @@ class StudioManager:
             _, _, _, history = self._reference_candidate_batches(saved)
             if not isinstance(batch_id, str) or batch_id not in history:
                 raise ValueError("현재 분류에서 생성이 끝난 목소리 후보 묶음을 선택하세요.")
-            if payload is not None and payload.get("action") not in ("hear", "toggle"):
+            allowed = ("hear", "toggle", "more") if paired else ("hear", "toggle")
+            if payload is not None and payload.get("action") not in allowed:
                 raise ValueError("후보 묶음 보기 설정은 청취·선택 요청에만 함께 사용할 수 있습니다.")
         if payload is None and editable and candidate_review_view(root, saved)["review_complete"]:
             # All human approvals are already durable. A server interruption
@@ -4601,11 +4680,21 @@ class StudioManager:
             # Guard every mutation, not just GPU work: an out-of-date server
             # cannot save judgments against a different computational contract.
             self._guard_config(state)
-            if not editable or (saved.get("job") or {}).get("status") == "running":
-                raise ValueError("현재 기준 목소리 후보 검수를 변경할 수 없습니다.")
             action = payload.get("action")
+            job = saved.get("job") or {}
+            candidate_id = payload.get("id")
+            early_review = (job.get("kind") == WINDOW_REQUEST_KIND and batch_id == job.get("first_page")
+                            and action in ("hear", "toggle") and isinstance(candidate_id, str)
+                            and saved["candidates"].get(candidate_id, {}).get("batch_id") == batch_id)
+            if not editable or job.get("status") == "running" and not early_review:
+                raise ValueError("현재 기준 목소리 후보 검수를 변경할 수 없습니다.")
             if action == "more" and set(payload) == {"action", "group"}:
+                if paired:
+                    _, _, existing, _ = self._reference_candidate_batches(saved)
+                    if existing and batch_id != existing[-1]["id"]:
+                        raise ValueError("저장된 다음 후보를 먼저 확인하세요.")
                 self._launch_reference_candidates(state, saved, payload["group"], originals)
+                batch_id = None  # After the POST, follow the newly requested first page.
             elif action in ("hear", "toggle") and set(payload) == {"action", "id", "sha256"}:
                 candidate_action(root, saved, action, candidate_id=payload["id"], sha256=payload["sha256"])
             elif action == "approve" and set(payload) == {"action", "group"}:
@@ -4652,6 +4741,11 @@ class StudioManager:
         job = saved.get("job")
         public_job = {key: job[key] for key in ("group", "status", "message") if key in job} if job else None
         if job and job.get("status") == "running":
+            if job.get("kind") == WINDOW_REQUEST_KIND:
+                public_job.update(total=DESIGN_WINDOW_SIZE, completed=0)
+                first_page = job.get("first_page")
+                if first_page in history:
+                    public_job.update(first_page=first_page, completed=BATCH_SIZE)
             progress_path = Path(job["directory"]) / "progress.json"
             try:
                 progress = read_json(progress_path)
@@ -4669,7 +4763,8 @@ class StudioManager:
                 public_job = {**preparing, "status": "failed", "message": "목소리 분류 준비가 중단되었습니다. 작업 상태를 확인하고 재개하세요."}
             else:
                 public_job = {**preparing, "status": "running", "message": "목소리 분류를 준비하고 있습니다."}
-        view.update(editable=editable, review_complete=complete, job=public_job)
+        view.update(editable=editable, review_complete=complete, job=public_job,
+                    generation_count=DESIGN_WINDOW_SIZE if paired else BATCH_SIZE)
         return view
 
     def reference_candidate_audio(self, project_id, candidate_id, revision):

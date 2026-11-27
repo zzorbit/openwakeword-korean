@@ -295,8 +295,10 @@ def _execute_reference_review(request_path, *, load_model=None):
             raise ValueError("다시 생성하기 전에 실행 코드 또는 모델 설정이 바뀌었습니다.")
         _prepare_selected_torch(Path(request["project"]).parent, os.environ.get("KOWW_STUDIO_TORCH_BACKEND"))
         options = {"load_model": load_model} if load_model is not None else {}
-        if request.get("kind") == "reference_candidate_batch_v2":
-            from .reference_candidates import generate_candidate_batch
+        from .reference_candidates import WINDOW_REQUEST_KIND, generate_candidate_batch
+        if request.get("kind") == WINDOW_REQUEST_KIND:
+            _execute_candidate_window(request_path, request, result, **options)
+        elif request.get("kind") == "reference_candidate_batch_v2":
             result["candidates"] = generate_candidate_batch(request["project"], request_path.parent / "audio",
                 request["task_id"], request["plan"], request["all_hashes"], **options)
         else:
@@ -309,6 +311,51 @@ def _execute_reference_review(request_path, *, load_model=None):
         result["error"] = str(error) if isinstance(error, ValueError) else "기준 목소리를 다시 생성하지 못했습니다. 작업 로그를 확인하세요."
     write_json(destination, result)
     return int(bool(result.get("error")))
+
+
+def _execute_candidate_window(request_path, request, result, *, load_model=None):
+    from .reference_candidates import (BATCH_SIZE, DESIGN_WINDOW_SIZE, commit_candidate_window_timings,
+                                       generate_candidate_batch, prepare_candidate_window)
+    from .tts import _load_model
+
+    project = request["project"]
+    root, config = load_project(project)
+    root = Path(root).resolve()
+    directory = request_path.parent
+    plans = request["plans"]
+    if len(plans) != 2 or plans[0]["group_key"] != plans[1]["group_key"]:
+        raise ValueError("추가 후보의 성별·연령 분류 또는 묶음 수가 다릅니다.")
+    model = None
+
+    def resident(*args):
+        nonlocal model
+        if model is None:
+            model = (load_model or _load_model)(*args)
+        return model
+
+    pages = [(directory / f"page_{index}" / "audio", plan) for index, plan in enumerate(plans, 1)]
+    prepared, timings = prepare_candidate_window(root, config, directory / "shared_design", pages, resident)
+    hashes = set(request["all_hashes"])
+    all_rows = []
+    result["pages"] = []
+    for index, (output, plan) in enumerate(pages, 1):
+        rows = generate_candidate_batch(project, output, request["task_id"], plan, hashes,
+            load_model=resident, prepared_design=prepared[plan["batch_id"]])
+        if digest(project) != request["config_sha256"]:
+            raise ValueError("후보를 생성하는 동안 모델 설정이 바뀌었습니다.")
+        page_path = output.parent / "result.json"
+        page = {"task_id": request["task_id"], "request_sha256": result["request_sha256"],
+                "batch_id": plan["batch_id"], "candidates": rows}
+        if page_path.exists():
+            if read_json(page_path) != page:
+                raise ValueError("저장한 후보 묶음의 생성 결과가 다릅니다.")
+        else:
+            write_json(page_path, page)
+        result["pages"].append({"path": page_path.relative_to(root).as_posix(), "sha256": digest(page_path)})
+        hashes.update(value for row in rows for value in (row["sha256"], row["decoded_pcm_sha256"]))
+        all_rows.extend(rows)
+        write_json(directory / "progress.json", {"completed": index * BATCH_SIZE, "total": DESIGN_WINDOW_SIZE})
+    commit_candidate_window_timings(timings, all_rows)
 
 
 def _serve_reference_reviews():

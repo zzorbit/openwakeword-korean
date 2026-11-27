@@ -4,6 +4,7 @@ Candidate plans, waveforms and accepted selections are separate from the frozen
 source bank.  No source WAV, journal or voice-family definition is rewritten.
 """
 from copy import deepcopy
+from collections import deque
 from importlib.resources import files
 from pathlib import Path
 from .task_progress import emit as report_progress
@@ -30,6 +31,9 @@ OPTIONAL_LISTENING_POLICY = "optional_candidate_listening_v1"
 _TERMINAL_CANDIDATE_QC_ERROR = "기술 검사를 통과한 서로 다른 목소리 후보를 만들지 못했습니다. 다시 시도하세요."
 BATCH_KIND = "reference_candidate_batch_v2"
 BATCH_SIZE = 5
+DESIGN_WINDOW_SIZE = 2 * BATCH_SIZE
+DESIGN_WINDOW_POLICY = "cuda_reference_design10_v1"
+WINDOW_REQUEST_KIND = "reference_candidate_window_v1"
 TRAIN_CANDIDATES_PER_GROUP = {20: 10, 100: 30, 500: 100}
 GENDERS = ("man", "woman")
 AGES = ("child", "teenager", "young adult", "middle-aged", "older adult")
@@ -248,14 +252,14 @@ def candidate_instruction(gender, age, selected):
             "Maintain natural Korean pronunciation and realistic conversational vocal control.")
 
 
-def plan_candidate_batch(project, saved, group_key, *, rng=None):
+def plan_candidate_batch(project, saved, group_key, *, rng=None, batch_policy=DESIGN_BATCH_POLICY):
     group = _editable_group(saved, group_key)
     if len(saved["selected"].get(group_key, [])) >= group["target"]:
         raise ValueError("이 분류의 목소리 수량을 채웠습니다. 분류를 확정하세요.")
-    return _plan_candidate_batch(project, saved, group, rng=rng)
+    return _plan_candidate_batch(project, saved, group, rng=rng, batch_policy=batch_policy)
 
 
-def _plan_candidate_batch(project, saved, group, *, rng=None):
+def _plan_candidate_batch(project, saved, group, *, rng=None, batch_policy=DESIGN_BATCH_POLICY):
     group_key = group["key"]
     _, config = load_project(project)
     from .tts import REFERENCE_TEXT
@@ -281,7 +285,7 @@ def _plan_candidate_batch(project, saved, group, *, rng=None):
             "split": group["split"], "gender": group["gender"], "age": group["age"],
             "originals": saved["originals"], "options_sha256": identity(OPTIONS),
             "sequence_start": sequence_start,
-            "batch_policy": DESIGN_BATCH_POLICY,
+            "batch_policy": batch_policy,
             "generation": deepcopy(config["tts"]["generation"]),
             "candidates": candidates, "created_at": now()}
     if _planned(saved):
@@ -322,7 +326,7 @@ def _validate_plan(plan, config):
             or type(plan.get("sequence_start")) is not int or plan["sequence_start"] < 1
             or (plan["sequence_start"] - 1) % BATCH_SIZE
             or plan.get("generation") != config["tts"]["generation"]
-            or plan.get("batch_policy") not in (None, DESIGN_BATCH_POLICY)):
+            or plan.get("batch_policy") not in (None, DESIGN_BATCH_POLICY, DESIGN_WINDOW_POLICY)):
         raise ValueError("목소리 후보의 묶음 식별자 또는 생성 설정이 다릅니다.")
     from .tts import REFERENCE_TEXT
     all_seeds = []
@@ -340,8 +344,69 @@ def _validate_plan(plan, config):
         raise ValueError("목소리 후보의 난수가 서로 중복됩니다.")
 
 
+def _candidate_plan_binding(root, output, plan):
+    path = output / "plan.json"
+    if path.exists():
+        if read_json(path) != plan:
+            raise ValueError("저장한 목소리 후보 실행 계획이 바뀌었습니다.")
+    else:
+        write_json(path, plan)
+    return {"path": path.relative_to(root).as_posix(), "sha256": digest(path)}
+
+
+def _candidate_attempt(plan, binding, item, attempt):
+    return {"kind": BATCH_KIND, "candidate_id": item["candidate_id"], "batch_id": plan["batch_id"],
+            "plan_binding": binding, "model": item["model"], "text": item["text"],
+            "seed": item["attempt_seeds"][attempt], "attempt": attempt,
+            "instruction": item["design_instruction"], "voice_controls": item["voice_controls"],
+            "generation": plan["generation"]}
+
+
+def prepare_candidate_window(root, config, directory, pages, load_model):
+    """Run one CUDA call for two five-candidate pages, with resumable raw audio."""
+    if (len(pages) != 2 or len({plan["batch_id"] for _, plan in pages}) != 2
+            or not directory.is_relative_to(candidate_jobs(root))):
+        raise ValueError("기준 목소리 동시 생성 묶음이 다릅니다.")
+    records = []
+    for output, plan in pages:
+        _validate_plan(plan, config)
+        if plan["batch_policy"] != DESIGN_WINDOW_POLICY or not output.is_relative_to(candidate_jobs(root)):
+            raise ValueError("기준 목소리 동시 생성 계획이 다릅니다.")
+        if plan.get("source_binding"):
+            _verify_source(root, plan["source_binding"])
+        binding = _candidate_plan_binding(root, output, plan)
+        records.append([_candidate_attempt(plan, binding, item, 0) for item in plan["candidates"]])
+
+    def synthesize(folder, generations):
+        raw, timing = prepare_reference_batch(root, folder, generations, config["tts"]["generation"],
+            lambda: load_model(config["tts"]["design_model"], config["tts"], root),
+            batch_size=len(generations), policy=DESIGN_WINDOW_POLICY)
+        receipt_path = folder / "batch.json"
+        receipt = {"path": receipt_path.relative_to(root).as_posix(), "sha256": digest(receipt_path)}
+        return raw, receipt, timing
+
+    raw, receipt, timing = synthesize(directory, records[0] + records[1])
+    timings = [(receipt, timing)] if timing is not None else []
+    prepared = {}
+    for index, (_, plan) in enumerate(pages):
+        group_raw, group_receipt = raw, receipt
+        if not raw:
+            # If ten cannot fit, keep the page-level GPU fallback and only
+            # use the scalar path if that page cannot be batched either.
+            group_raw, group_receipt, group_timing = synthesize(directory / str(index), records[index])
+            if group_timing is not None:
+                timings.append((group_receipt, group_timing))
+        prepared[plan["batch_id"]] = (group_raw, group_receipt)
+    return prepared, timings
+
+
+def commit_candidate_window_timings(timings, rows):
+    for receipt, timing in timings:
+        timing.committed(sum(row.get("reference_design_batch") == receipt for row in rows))
+
+
 @project_storage
-def generate_candidate_batch(project, output, job_key, plan, all_hashes, *, load_model=None):
+def generate_candidate_batch(project, output, job_key, plan, all_hashes, *, load_model=None, prepared_design=None):
     """Generate a persisted batch, reusing a caller-supplied resident loader."""
     from .tts import _load_model
     from .reference_voice_review import _original_pcm_hashes
@@ -367,27 +432,23 @@ def generate_candidate_batch(project, output, job_key, plan, all_hashes, *, load
             model = (load_model or _load_model)(config["tts"]["design_model"], config["tts"], root)
         return model
 
-    def generation_for(item, attempt):
-        return {"kind": BATCH_KIND, "candidate_id": item["candidate_id"],
-                "batch_id": plan["batch_id"], "plan_binding": plan_binding,
-                "model": item["model"], "text": item["text"], "seed": item["attempt_seeds"][attempt],
-                "attempt": attempt, "instruction": item["design_instruction"],
-                "voice_controls": item["voice_controls"], "generation": plan["generation"]}
-
     with writer_lock(output):
-        plan_path = output / "plan.json"
-        if plan_path.exists():
-            if read_json(plan_path) != plan:
-                raise ValueError("저장한 목소리 후보 실행 계획이 바뀌었습니다.")
-        else:
-            write_json(plan_path, plan)
-        plan_binding = {"path": plan_path.relative_to(root).as_posix(), "sha256": digest(plan_path)}
+        plan_binding = _candidate_plan_binding(root, output, plan)
         batch_raws, batch_timing, batch_passed = {}, None, 0
-        batch_directory = output / "design_batch"
-        if plan.get("batch_policy") == DESIGN_BATCH_POLICY:
-            generations = [generation_for(item, 0) for item in plan["candidates"][:DESIGN_BATCH_SIZE]]
+        batch_record = None
+        if plan.get("batch_policy") == DESIGN_WINDOW_POLICY:
+            if prepared_design is None:
+                raise ValueError("기준 목소리 동시 생성 기록이 없습니다.")
+            batch_raws, batch_record = prepared_design
+        elif plan.get("batch_policy") == DESIGN_BATCH_POLICY:
+            batch_directory = output / "design_batch"
+            generations = [_candidate_attempt(plan, plan_binding, item, 0)
+                           for item in plan["candidates"][:DESIGN_BATCH_SIZE]]
             batch_raws, batch_timing = prepare_reference_batch(
                 root, batch_directory, generations, plan["generation"], resident_model)
+            if batch_raws:
+                record_path = batch_directory / "batch.json"
+                batch_record = {"path": record_path.relative_to(root).as_posix(), "sha256": digest(record_path)}
         for item in plan["candidates"]:
             target, record = output / f"{item['candidate_id']}.wav", output / f"{item['candidate_id']}.json"
             if record.exists():
@@ -400,7 +461,7 @@ def generate_candidate_batch(project, output, job_key, plan, all_hashes, *, load
                 for attempt, seed in enumerate(item["attempt_seeds"]):
                     raw = output / "raw" / f"{item['candidate_id']}_attempt{attempt}.wav"
                     attempt_target = output / "prepared" / f"{item['candidate_id']}_attempt{attempt}.wav"
-                    generation = generation_for(item, attempt)
+                    generation = _candidate_attempt(plan, plan_binding, item, attempt)
                     batch_raw = batch_raws.get(identity(generation))
                     try:
                         preparation, timing_check, timing = prepare_reference_attempt(
@@ -432,9 +493,7 @@ def generate_candidate_batch(project, output, job_key, plan, all_hashes, *, load
                                    "reference_timing_check": timing_check,
                                    "generation_job": job_key, "created_at": now()}
                         if batch_raw is not None:
-                            batch_record = batch_directory / "batch.json"
-                            row["reference_design_batch"] = {"path": batch_record.relative_to(root).as_posix(),
-                                                             "sha256": digest(batch_record)}
+                            row["reference_design_batch"] = batch_record
                             batch_passed += 1
                         write_json(record, {"kind": BATCH_KIND, "candidate": row})
                         if timing is not None:
@@ -489,7 +548,8 @@ def _verify_candidate(root, row):
             receipt = read_json(_inside(root, row["reference_design_batch"], jobs))
             batch = receipt["batch"]
             generation_id = identity(expected_generation)
-            if (plan.get("batch_policy") != DESIGN_BATCH_POLICY or batch.get("policy") != DESIGN_BATCH_POLICY
+            if (plan.get("batch_policy") not in (DESIGN_BATCH_POLICY, DESIGN_WINDOW_POLICY)
+                    or batch.get("policy") != plan["batch_policy"]
                     or generation_id not in batch["generation_ids"]):
                 raise ValueError("목소리 후보의 동시 생성 기록이 다릅니다.")
             batch_row = receipt["rows"][batch["generation_ids"].index(generation_id)]
@@ -712,8 +772,16 @@ def prepare_initial_candidate_batches(project, originals, *, load_model=None, st
         write_json(phase_path, phase)
         missing_by_group = [(_initial_batch_limit(saved, group) - len(_finished_initial_batches(root, saved, group)), group)
                             for group in saved["groups"]]
-        pending_groups = (group for missing, group in missing_by_group for _ in range(missing))
-        for group in pending_groups:
+        pending_groups = deque(group for missing, group in missing_by_group for _ in range(missing))
+        window_rows, window_timings = {}, {}
+
+        def incomplete(group, *, exclude_failed):
+            return [plan for plan in saved["batches"].get(group["key"], [])
+                    if not all(item["candidate_id"] in saved["candidates"] for item in plan["candidates"])
+                    and (not exclude_failed or plan["batch_id"] not in phase["terminal_failures"])]
+
+        while pending_groups:
+            group = pending_groups.popleft()
             if group["key"] in saved["approved"]:
                 raise ValueError("확정한 분류의 기존 후보가 누락되었습니다. 새로 만들지 않습니다.")
             if (should_pause and should_pause()) or pause_path.exists():
@@ -721,13 +789,14 @@ def prepare_initial_candidate_batches(project, originals, *, load_model=None, st
                 write_json(phase_path, {**phase, "status": "paused"})
                 write_json(progress_path, status)
                 return status
-            plans = saved["batches"].get(group["key"], [])
             output = None
-            if plans and not all(item["candidate_id"] in saved["candidates"] for item in plans[-1]["candidates"]):
-                plan = plans[-1]
+            unfinished = incomplete(group, exclude_failed=True) or incomplete(group, exclude_failed=False)[-1:]
+            if unfinished:
+                plan = unfinished[0]
                 failed = phase["terminal_failures"].get(plan["batch_id"])
                 old_job = saved.get("job") or {}
-                old_output = _preparation_output(root, saved, plan)
+                old_output = (candidate_jobs(root) / ("initial_" + plan["batch_id"]) / "audio"
+                              if plan.get("batch_policy") == DESIGN_WINDOW_POLICY else _preparation_output(root, saved, plan))
                 output = old_output
                 if not failed and (old_job.get("group") == group["key"] and old_job.get("status") == "failed"
                                    and old_job.get("resumable") is False):
@@ -754,8 +823,19 @@ def prepare_initial_candidate_batches(project, originals, *, load_model=None, st
                     save()
                     output = None
             else:
-                plan = _plan_candidate_batch(project, saved, group)
+                next_group = pending_groups[0] if pending_groups else None
+                pair = ("train_candidates_per_group" in saved.get("source_binding", {})
+                        and next_group is not None and next_group["key"] not in saved["approved"]
+                        and not incomplete(next_group, exclude_failed=False))
+                policy = DESIGN_WINDOW_POLICY if pair else DESIGN_BATCH_POLICY
+                plan = _plan_candidate_batch(project, saved, group, batch_policy=policy)
                 _register_candidate_batch(saved, plan, group, initial=True)
+                if pair:
+                    following = _plan_candidate_batch(project, saved, next_group, batch_policy=policy)
+                    _register_candidate_batch(saved, following, next_group, initial=True)
+                    window = [[group["key"], plan["batch_id"]], [next_group["key"], following["batch_id"]]]
+                    saved.setdefault("initial_design_windows", {}).update({
+                        plan["batch_id"]: window, following["batch_id"]: window})
                 save()  # Random options and every retry seed are durable before inference.
             if output is None:
                 output = candidate_jobs(root) / ("initial_" + plan["batch_id"]) / "audio"
@@ -778,8 +858,20 @@ def prepare_initial_candidate_batches(project, originals, *, load_model=None, st
                                 "path": record_path.relative_to(root).as_posix(), "sha256": digest(record_path)}})
                             hashes.update((row["sha256"], row["decoded_pcm_sha256"]))
             try:
+                design = None
+                if plan.get("batch_policy") == DESIGN_WINDOW_POLICY:
+                    pair = saved["initial_design_windows"][plan["batch_id"]]
+                    pages = [(candidate_jobs(root) / ("initial_" + batch_id) / "audio",
+                              next(batch for batch in saved["batches"][key] if batch["batch_id"] == batch_id))
+                             for key, batch_id in pair]
+                    first_id, second_id = (page[1]["batch_id"] for page in pages)
+                    if plan["batch_id"] not in window_rows:
+                        window_rows, timings = prepare_candidate_window(root, config,
+                            pages[0][0].parent / "shared_design", pages, cached_model)
+                        window_timings = {second_id: (timings, {first_id, second_id})}
+                    design = window_rows.pop(plan["batch_id"])
                 rows = generate_candidate_batch(project, output, "initial_" + plan["batch_id"], plan, hashes,
-                                                load_model=cached_model)
+                                                load_model=cached_model, **({"prepared_design": design} if design else {}))
             except ValueError as error:
                 if str(error) == _TERMINAL_CANDIDATE_QC_ERROR:
                     failed = snapshot_json(root, {"kind": PREPARATION_KIND, "plan": plan,
@@ -792,6 +884,10 @@ def prepare_initial_candidate_batches(project, originals, *, load_model=None, st
                         "status": "failed", "message": str(error), "resumable": False})
                 raise
             _ingest_candidate_batch(root, saved, plan, rows, group)
+            if plan["batch_id"] in window_timings:
+                timings, batch_ids = window_timings.pop(plan["batch_id"])
+                commit_candidate_window_timings(timings,
+                    (row for row in saved["candidates"].values() if row["batch_id"] in batch_ids))
             if (saved.get("job") or {}).get("group") == group["key"]:
                 # Old request and result files remain immutable; only the completed job pointer is released.
                 saved["job"] = None

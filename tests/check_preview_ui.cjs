@@ -1422,6 +1422,38 @@ const choice=(view,label)=>{
   assert.deepEqual(displayLabels(displayScreen),['후보 6','후보 7','후보 8','후보 9','후보 10']);
   assert.equal(JSON.stringify(displayState),displaySnapshot,'display numbering never edits original numbers, seeds, selection IDs or sources');
   assert.equal(displayScreen.calls.filter(call=>call.options).length,0,'history renumbering makes no writes or generation requests');
+  {
+    const first=displayBatchOne,second=displayBatchTwo;
+    const pages=displayState.batches;
+    let finished=false,created=0;
+    const paired=await screen('reference-preview',[],{config:candidateConfig,respond:async(url,options)=>{
+      const batch=new URL(url,'http://127.0.0.1:8793').searchParams.get('batch');
+      if(options){
+        assert.equal(batch,second,'the last visible page binds each new generation request');
+        assert.equal(JSON.parse(options.body).action,'more');
+        created++;
+      }
+      return {payload:{...initialCandidateState,generation_count:10,accepted:[],current_batch:first,
+        view_batch:batch===second?second:first,items:batch===second?displayAdditional:displayOriginal,
+        batches:finished?pages:pages.slice(0,1),
+        job:finished?null:{status:'running',completed:5,total:10,first_page:first}}};
+    }});
+    assert.equal(paired.nodes.get('candidate-deck').hidden,false);
+    assert.equal(displayCards(paired).length,5);
+    assert.equal(displayCards(paired)[0].children[0].disabled,false);
+    assert.equal(paired.nodes.get('candidate-progress').attributes['aria-valuenow'],'5');
+    assert.equal(paired.nodes.get('candidate-progress').attributes['aria-valuemax'],'10');
+    finished=true;
+    await paired.poll();
+    assert.equal(paired.nodes.get('candidate-more-label').textContent,'›');
+    paired.nodes.get('candidate-more').handlers.click();await paired.flush();
+    assert.deepEqual(displayLabels(paired),['후보 6','후보 7','후보 8','후보 9','후보 10']);
+    assert.equal(created,0);
+    assert.equal(paired.nodes.get('candidate-more-label').textContent,'+');
+    assert.equal(paired.nodes.get('candidate-more').title,'기준 목소리 후보 10개 더 생성');
+    paired.nodes.get('candidate-more').handlers.click();await paired.flush();
+    assert.equal(created,1);
+  }
   for(const group of [categories[1].key,categories[10].key]){
     const payload={...structuredClone(initialCandidateState),active_group:group,items:candidates(group,101).map(row=>({...row,batch_id:'first'})),
       batches:[{id:'first',number:1,count:5}],view_batch:'first',current_batch:'first'};

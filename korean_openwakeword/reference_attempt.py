@@ -104,18 +104,19 @@ def _write_reference_stop(raw, generation, source_sha, stop):
                                         "generation_id": identity(generation)})
 
 
-def prepare_reference_batch(root, directory, generations, settings, load_model):
-    """Return the first four candidate attempts with immutable batch and EOS evidence."""
+def prepare_reference_batch(root, directory, generations, settings, load_model, *,
+                            batch_size=DESIGN_BATCH_SIZE, policy=DESIGN_BATCH_POLICY):
+    """Return candidate attempts with immutable batch and EOS evidence."""
     from .tts import _qwen_audio_token_limit
     from .tts_runtime import _capture_batch_termination
 
-    if len(generations) != DESIGN_BATCH_SIZE or len({row["text"] for row in generations}) != 1:
+    if len(generations) != batch_size or len({row["text"] for row in generations}) != 1:
         raise ValueError("기준 목소리 동시 생성 계획이 다릅니다.")
     text = generations[0]["text"]
-    batch = {"policy": DESIGN_BATCH_POLICY, "generation_ids": [identity(row) for row in generations]}
+    batch = {"policy": policy, "generation_ids": [identity(row) for row in generations]}
     batch["seed"] = int(identity(batch)[:8], 16)
     journal = directory / "batch.json"
-    attempts = [directory / f"{index}.wav" for index in range(DESIGN_BATCH_SIZE)]
+    attempts = [directory / f"{index}.wav" for index in range(batch_size)]
     if journal.exists():
         receipt = read_json(journal)
         if receipt.get("batch") != batch:
@@ -123,7 +124,7 @@ def prepare_reference_batch(root, directory, generations, settings, load_model):
         rows = receipt.get("rows")
         if rows == []:
             return {}, None
-        if not isinstance(rows, list) or len(rows) != DESIGN_BATCH_SIZE:
+        if not isinstance(rows, list) or len(rows) != batch_size:
             raise ValueError("기준 목소리 동시 생성 수량 기록이 다릅니다.")
         for raw, row in zip(attempts, rows, strict=True):
             if row["raw"]["path"] != raw.relative_to(root).as_posix():
@@ -148,12 +149,12 @@ def prepare_reference_batch(root, directory, generations, settings, load_model):
     try:
         with generation_attempt() as timing:
             with (torch.cuda.device(device), torch.random.fork_rng(devices=[device]), torch.inference_mode(),
-                  _capture_batch_termination(model, limit) as endings):
+                  _capture_batch_termination(model, limit, batch_size) as endings):
                 torch.default_generator.manual_seed(batch["seed"])
                 torch.cuda.manual_seed(batch["seed"])
-                waves, rate = model.generate_voice_design(text=[text] * DESIGN_BATCH_SIZE, language="Korean",
+                waves, rate = model.generate_voice_design(text=[text] * batch_size, language="Korean",
                     instruct=[row["instruction"] for row in generations], **dict(settings, max_new_tokens=limit))
-        if len(waves) != DESIGN_BATCH_SIZE:
+        if len(waves) != batch_size:
             raise ValueError("기준 목소리 동시 생성 결과의 수량이 다릅니다.")
     except torch.cuda.OutOfMemoryError:
         oom = True
