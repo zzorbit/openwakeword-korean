@@ -2328,7 +2328,7 @@
         const estimatedSize = Number.isFinite(estimate) && estimate > 0 ? `약 ${quantity(estimate, "bytes")}` : "";
         const archiveSize = row.completed && receivedBytes > 0 ? progressAmount(receivedBytes, receivedBytes, "bytes")
           : receivedBytes !== null || estimatedSize ? `${quantity(receivedBytes, "bytes")} / ${estimatedSize || "—"}` : "";
-        const availableHours = row.unit === "hours" && Number.isFinite(row.done) && row.done >= 0
+        const availableHours = row.key !== "automatic:yodas2" && row.unit === "hours" && Number.isFinite(row.done) && row.done >= 0
           ? `확보 ${quantity(row.done, "hours")}` : "";
         const archiveStatus = !rowActive ? "" : ({
           checking_archive: "압축 파일 검증 중", extracting: "압축 해제 중", checking_extracted: "압축 해제 자료 검증 중",

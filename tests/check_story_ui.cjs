@@ -1800,7 +1800,7 @@ async function main() {
     assertFullDownloadBar(bar(full), false);
     assert.equal(indicator(full), "complete");
   });
-  await test("Korean web audio shows accumulated bytes and the full estimated download next to prepared hours", () => {
+  await test("Korean web audio shows accumulated bytes without repeating prepared hours", () => {
     const project = checkpointProject("running", "running");
     project.stage_id = "data_download";
     const mib = 1024 ** 2;
@@ -1812,26 +1812,26 @@ async function main() {
     const p = page(project), row = historyRowByLabel(p.shell, "한국어 웹 음성"), bar = row.querySelector("progress");
     assert.equal(bar.value / bar.max, 0.01);
     assert.equal(downloadScale(row), "500시간");
-    assert.match(textOf(row), /576 MiB \/ 약 65\.2 GiB · 확보 5시간 · 다운로드 중 · 4 MiB\/초/);
-    assert.doesNotMatch(textOf(row), /확보한 원본|현재 묶음|256 MiB/);
+    assert.match(textOf(row), /576 MiB \/ 약 65\.2 GiB · 다운로드 중 · 4 MiB\/초/);
+    assert.doesNotMatch(textOf(row), /확보|현재 묶음|256 MiB/);
     yodas.archive_transfer = { status: "checking", done: null, total: 256 * mib };
     p.ui.render();
-    assert.match(textOf(row), /512 MiB \/ 약 65\.2 GiB · 확보 5시간 · 파일 확인 중/);
+    assert.match(textOf(row), /512 MiB \/ 약 65\.2 GiB · 파일 확인 중/);
     yodas.archive_transfer = { status: "preparing", done: 256 * mib, total: 256 * mib };
     p.ui.render();
-    assert.match(textOf(row), /768 MiB \/ 약 65\.2 GiB · 확보 5시간 · 검증·전처리 중/);
+    assert.match(textOf(row), /768 MiB \/ 약 65\.2 GiB · 검증·전처리 중/);
     assert.doesNotMatch(textOf(row), /MiB\/초/);
     assert.equal(bar.value / bar.max, 0.01);
     assert.equal(hasActiveDownloadSpinner(row), true);
     yodas.archive_transfer = null; yodas.verified_archive_bytes = 768 * mib;
     yodas.done = 9; p.ui.render();
-    assert.match(textOf(row), /768 MiB \/ 약 65\.2 GiB · 확보 9시간/);
-    assert.doesNotMatch(textOf(row), /확보한 원본|현재 묶음|검증·전처리 중/);
-    yodas.done = 500; yodas.state = "complete";
+    assert.match(textOf(row), /768 MiB \/ 약 65\.2 GiB/);
+    assert.doesNotMatch(textOf(row), /확보|현재 묶음|검증·전처리 중/);
+    yodas.done = 503.528; yodas.state = "complete";
     yodas.archive_transfer = { status: "preparing", done: 256 * mib, total: 256 * mib };
     project.download_prepared_groups = ["automatic:yodas2"];
     p.ui.render();
-    assert.match(textOf(row), /768 MiB \/ 768 MiB/);
+    assert.equal(row.querySelector(".story-history-note-detail").textContent, "768 MiB / 768 MiB");
   });
   await test("a live Korean archive batch shows archive count and byte progress instead of old preparation", () => {
     const project = checkpointProject("running", "running");
@@ -1853,7 +1853,8 @@ async function main() {
     assert.match(textOf(row), /47 GiB \/ 86 GiB.*31 \/ 63묶음/);
     delete yodas.archive_batch;
     p.ui.render();
-    assert.match(textOf(row), /확보 184시간 · 검증·전처리 중/);
+    assert.match(textOf(row), /검증·전처리 중/);
+    assert.doesNotMatch(textOf(row), /확보/);
   });
   await test("only the disconnected download row keeps a red state and the saved byte count", () => {
     const project = checkpointProject("paused", "paused");
@@ -1888,7 +1889,8 @@ async function main() {
       p.ui.render();
       assert.ok(textOf(row).includes(label));
       assert.equal(downloadScale(row), "500시간");
-      assert.match(textOf(row), /101 GiB \/ 약 125 GiB · 확보 400시간/);
+      assert.match(textOf(row), /101 GiB \/ 약 125 GiB/);
+      assert.doesNotMatch(textOf(row), /확보/);
       assert.equal(hasActiveDownloadSpinner(row), true);
     }
     yodas.archive_preparation_status = null;
