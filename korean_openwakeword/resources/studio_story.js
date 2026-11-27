@@ -1660,11 +1660,13 @@
         head.append(node("h2", label), totalLabel);
         const list = node("dl", undefined, "story-material-list"), rows = materialData[key] || [];
         for (const item of rows) {
-          const reusedNoise = key === "evaluation" && item.id === "noise" && item.downloadBytes === 0;
-          const row = node("div", undefined, reusedNoise ? "story-material-row story-material-reused-noise" : "story-material-row"), amount = node("dd");
+          const isNoise = item.id === "noise";
+          const reusedNoise = key === "evaluation" && isNoise && item.downloadBytes === 0;
+          const row = node("div", undefined, isNoise ? "story-material-row story-material-noise" : "story-material-row"), amount = node("dd");
           const names = [...new Set((item.sources || []).map(source => (source.name === "RIRS_NOISES" ? "OpenSLR RIR" : source.name) + (source.downloadReuse === "학습용 자료와 공유" ? "(공유)" : "")))];
+          const sourceLabel = names.join(" · ").replace(/AudioSet (?=\(\d+\))/g, "AudioSet\u00a0") || item.description;
           const title = node("dt");
-          title.append(node("span", item.name, "story-material-name"), node("span", names.join(" · ") || item.description, "story-material-source"));
+          title.append(node("span", item.name, "story-material-name"), node("span", sourceLabel, "story-material-source"));
           row.append(title);
           const capacity = node("span", reusedNoise ? "재사용" : item.downloadLabel || "다운로드 용량 미확정", "story-material-capacity");
           capacity.title = (item.sources || []).map(source => `${source.name}: ${source.downloadReuse || (Number.isFinite(source.downloadBytes) ? `${source.downloadEstimated ? "약 " : ""}${bridge.formatBytes(source.downloadBytes)}` : "용량 미확정")}`).join("\n");
