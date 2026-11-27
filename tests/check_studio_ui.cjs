@@ -1328,6 +1328,24 @@ function pendingHardStorageRecipe() {
     assert.match(textOf(material(b.elements.get("source-preview").children[0], "한국어 비호출 자료")), /YODAS2 한국어.*목표량 자동 선정/);
     assert.match(b.elements.get("source-plan-note").textContent, /WAV 기준 참고 예산/);
   });
+  await test("the 500-hour trial displays the recorded archive bytes in prepared materials and totals", async () => {
+    const archiveBytes = 144828284063;
+    const recipe = commonRecipe({ id: "trial", korean_hours: 500, material_acquisition_policy: "automatic_v3",
+      yodas2_initial_batch: { target_hours: 500, archive_bytes: archiveBytes },
+      automatic_source_plan: { version: 1, enabled: true, components: [
+        { id: "yodas2", provider: "yodas2", pool: "korean_negative", target_hours: 500 }
+      ] },
+      automatic_space_plan: { download_forecast_bytes_per_hour: { yodas2: 140000000 } } });
+    const b = browser({ withStory: true, recipeList: [recipe] }); await flush();
+    const initial = b.storyBridge.materials(recipe), korean = initial.training.find(item => item.id === "korean");
+    assert.equal(korean.downloadLabel, "다운로드 134.9 GiB");
+    assert.equal(korean.downloadBytes, archiveBytes);
+    assert.equal(korean.downloadEstimated, false);
+    b.elements.get("adv-korean").value = "100"; b.elements.get("adv-korean").handlers.input();
+    const custom = b.storyBridge.materials(recipe);
+    assert.equal(custom.training.find(item => item.id === "korean").downloadBytes, 14_000_000_000);
+    assert.equal(custom.downloadTotals.training.bytes, initial.downloadTotals.training.bytes - archiveBytes + 14_000_000_000);
+  });
   await test("canonical storage progress reports measured FLAC bytes separately and leaves unknown sizes unknown", async () => {
     const project = { id: "bora", wakeword: "보라야", status: "running", training_materials: {
       targets: { generic_negative: 7000, korean_negative: 3000 },

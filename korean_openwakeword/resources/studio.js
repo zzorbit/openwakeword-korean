@@ -575,7 +575,12 @@
       return components.map(item => {
         const provider = providers[item.provider] || [item.name || item.provider, "목표량 자동 선정", undefined];
         const amount = item.target_hours * target / total;
-        return forecast(source(provider[0], provider[1], `준비 목표 ${hours(amount)}`, amount * 3600, { source_url: item.source_url || provider[2] }), item.provider, amount);
+        const batch = item.provider === "yodas2" ? recipe.yodas2_initial_batch : null;
+        const batchBytes = batch?.target_hours === amount && Number.isSafeInteger(batch.archive_bytes) && batch.archive_bytes > 0
+          ? batch.archive_bytes : undefined;
+        const entry = source(provider[0], provider[1], `준비 목표 ${hours(amount)}`, amount * 3600,
+          { source_url: item.source_url || provider[2] }, batchBytes);
+        return batchBytes === undefined ? forecast(entry, item.provider, amount) : entry;
       });
     };
     const automaticGeneric = automaticSources("generic_negative", genericHours), automaticKorean = automaticSources("korean_negative", koreanHours);

@@ -216,6 +216,8 @@ def test_recipes_preview_has_three_budgets_known_sources_and_no_network(manager)
     assert all(row["assets"] or row.get("automatic_source_plan", {}).get("components")
                for row in recipes["presets"])
     assert all(row["material_acquisition_policy"] == "automatic_v3" for row in recipes["presets"])
+    assert recipes["presets"][1]["yodas2_initial_batch"] == {"target_hours": 500, "archive_bytes": 144828284063}
+    assert all("yodas2_initial_batch" not in recipes["presets"][index] for index in (0, 2))
     assert all(row["human_review_required"] is False for row in recipes["presets"])
     assert all(row["custom_material_human_review_required"] is True for row in recipes["presets"])
     assert all(row["material_review_policy"] == "library_fixed_sources_v1" for row in recipes["presets"])

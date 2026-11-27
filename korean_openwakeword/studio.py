@@ -1894,6 +1894,10 @@ class StudioManager:
                                      fma_acquisition_policy=settings.get("fma_acquisition_policy"),
                                      material_review_policy=settings.get("material_review_policy"),
                                      official_noise_acquisition_policy=settings.get("official_noise_acquisition_policy"))
+            if key == "trial" and settings.get("material_acquisition_policy") == "automatic_v3":
+                batch = read_json(files("korean_openwakeword") / "resources/yodas2_trial_500_v1.json")
+                recipe["yodas2_initial_batch"] = {"target_hours": batch["target_hours"],
+                                                  "archive_bytes": batch["archive_bytes"]}
             if key == "production":
                 from .storage_budget import commercial_storage_budget
                 recipe["storage_budget"] = commercial_storage_budget(
