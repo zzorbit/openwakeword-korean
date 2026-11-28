@@ -171,14 +171,6 @@
     if (Math.abs(baseline - budget.reference_subtotal_bytes) > 1) return null;
     return { ...budget, variables, rows, reference_subtotal_bytes: subtotal };
   }
-  function eta(value) {
-    if (Array.isArray(value) && value.length === 2) {
-      const low = duration(value[0]), high = duration(value[1]);
-      return low && high ? `${low}–${high}` : "";
-    }
-    if (value && typeof value === "object") return eta([value.min ?? value.low, value.max ?? value.high]);
-    return duration(value);
-  }
   function progressValue(project) {
     const progress = project.progress;
     if (!progress || typeof progress !== "object") return null;
@@ -1333,7 +1325,7 @@
       $("progress-percent").textContent = `${progress.percent.toFixed(1)}%`;
       $("progress").value = progress.percent;
     }
-    const currentElapsed = duration(project.current_stage_elapsed_seconds), elapsed = duration(project.elapsed_seconds), remaining = eta(project.eta_seconds);
+    const currentElapsed = duration(project.current_stage_elapsed_seconds), elapsed = duration(project.elapsed_seconds);
     $("elapsed").textContent = currentElapsed ? `이 작업 경과 ${currentElapsed}${elapsed ? " · 전체 경과 " + elapsed : ""}` : elapsed ? `전체 경과 ${elapsed}` : "";
     if (project.timing) {
       const measured = project.timing;
@@ -1345,28 +1337,25 @@
       $("elapsed").textContent = parts.join(" · ");
     }
     $("elapsed").title = project.timing?.legacy_estimate ? "과거 기록에서 확인 가능한 구간만 분리했습니다." : "";
-    let timingText = remaining ? `이 작업 예상 남은 시간 ${remaining}` : running ? "예상 시간: 처리 속도를 측정한 뒤 표시합니다" : "";
     const transfer = project.progress || {};
-    if (transfer.bytes_per_second > 0 && Number.isFinite(transfer.bytes_per_second)) {
-      const speed = `${bytes(transfer.bytes_per_second)}/초`;
-      timingText = remaining ? `${speed} · 이 작업 예상 남은 시간 ${remaining}` : speed;
-    }
-    if (transfer.phase === "retry") timingText = `연결 재시도 ${number(transfer.attempt)} / ${number(transfer.retry_limit)}`;
-    if (project.status === "pausing") timingText = "현재 작업을 마친 뒤 일시정지합니다.";
-    else if (running && stageId === "package") timingText = "학습을 마쳤습니다. 시험할 모델 묶음을 준비하고 있습니다.";
-    else if (evaluationFinalizing) timingText = $("current-description").textContent;
-    else if (evaluationActive) timingText = transfer.phase === "runtime_recommendation"
+    let activityDetail = transfer.bytes_per_second > 0 && Number.isFinite(transfer.bytes_per_second)
+      ? `${bytes(transfer.bytes_per_second)}/초` : "";
+    if (transfer.phase === "retry") activityDetail = `연결 재시도 ${number(transfer.attempt)} / ${number(transfer.retry_limit)}`;
+    if (project.status === "pausing") activityDetail = "현재 작업을 마친 뒤 일시정지합니다.";
+    else if (running && stageId === "package") activityDetail = "학습을 마쳤습니다. 시험할 모델 묶음을 준비하고 있습니다.";
+    else if (evaluationFinalizing) activityDetail = $("current-description").textContent;
+    else if (evaluationActive) activityDetail = transfer.phase === "runtime_recommendation"
       ? "저장 점수에서 모델별 감지 설정을 비교하고 있습니다."
       : progress && !stageCount ? "음원 수 기준 · 긴 비호출 음원은 더 오래 걸립니다." : "평가 음원의 무결성과 형식을 확인하고 있습니다.";
     const activityText = running && project.status !== "pausing" && stageId === "evaluation" && transfer.phase === "scoring" ? evaluationActivityText(transfer.activity) : "";
-    if (activityText) timingText = activityText;
-    if (running && project.status !== "pausing" && stageId === "development") timingText = transfer.phase === "preparation_finalizing"
+    if (activityText) activityDetail = activityText;
+    if (running && project.status !== "pausing" && stageId === "development") activityDetail = transfer.phase === "preparation_finalizing"
       ? "음원 생성을 마쳤습니다. 자료 목록과 연결 상태를 검증하고 있습니다."
       : transfer.phase === "preparation_generation" ? "평가용 음원을 생성하고 있습니다. 최종 검증 후 다음 작업으로 이어집니다."
         : "평가 자료의 원본과 생성 조건을 확인하고 있습니다.";
     Object.assign($("eta").style, { whiteSpace: activityText ? "nowrap" : "", overflow: activityText ? "hidden" : "", textOverflow: activityText ? "ellipsis" : "" });
     $("eta").title = activityText;
-    if ($("eta").textContent !== timingText) $("eta").textContent = timingText;
+    if ($("eta").textContent !== activityDetail) $("eta").textContent = activityDetail;
     if (story?.ownsProjectNotice !== true) {
       const retry = evaluationRetryMessage(project);
       projectNotice(retry || projectErrorText(project.error), retry ? "info" : "error");
@@ -1717,6 +1706,6 @@
       finishMinimum(false);
     }
   }
-  window.KowwStudio = Object.freeze({ duration, bytes, storageEstimate, storageBudget, eta, progressValue, requestBody, wakewordError, localUrl, webUrl });
+  window.KowwStudio = Object.freeze({ duration, bytes, storageEstimate, storageBudget, progressValue, requestBody, wakewordError, localUrl, webUrl });
   if (!window.KOWW_STUDIO_TEST) boot();
 })();

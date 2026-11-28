@@ -2921,11 +2921,6 @@
         $("progress-label").dataset.status = progressStatus(chapterActive, chapterComplete);
         $("progress").setAttribute("aria-label", chapterComplete ? "현재 작업 진행률 · 완료" : "현재 작업 진행률");
         const rows = workRows(project, historical, chapterActive, chapterComplete);
-        const generation = generationSteps.has(current) || current === "hard-review" && stageId(project) === "hard_pilot"
-          || current === "pronunciation" && stageId(project) === "pilot";
-        $("eta").hidden = chapterActive && project.status !== "pausing" && (generation && (project.progress?.eta_eligible === false
-          || current === "voices" && separateReferencePreparation(project) && rows.every(row => row.completed))
-          || current === "training" && Boolean(project.training_preparation));
         voiceCounts.hidden = rows.length === 0;
         shell.dataset.workRows = String(!voiceCounts.hidden);
         historic.hidden = !(historical || hasDownloadRows) || frameStep || !voiceCounts.hidden || ["tools", "voices", "entry", "scale", "materials"].includes(current);

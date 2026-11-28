@@ -4247,24 +4247,23 @@ async function main() {
         progress:{done:0,total:50,unit:'개',phase:'tts_model_loading',eta_eligible:false}};
       const p=page(project),row=p.shell.querySelector('.story-voice-counts').children[0],detail=row.querySelector('.story-generation-summary');
       assert.equal(detail.hidden,false);assert.equal(detail.textContent,'음성 생성 모델 준비 중');assert.equal(row.children[1].textContent,'0 / 50개');
-      assert.equal(p.get('eta').hidden,true);
       project.progress={...project.progress,phase:'tts_generation',done:9,eta_eligible:true};p.ui.render();
-      assert.equal(detail.hidden,true);assert.equal(row.children[1].textContent,'9 / 50개');assert.equal(p.get('eta').hidden,false);
+      assert.equal(detail.hidden,true);assert.equal(row.children[1].textContent,'9 / 50개');
       project.progress={...project.progress,phase:'tts_finalizing',done:50,eta_eligible:false,phase_elapsed_seconds:14,
         activity:{phase:'tts_finalizing',label:'검수 재생 목록 검증 중'}};p.ui.render();
       assert.equal(detail.hidden,false);assert.equal(detail.textContent,'검수 재생 목록 검증 중 · 14초 경과');
-      assert.equal(row.children[1].textContent,'50 / 50개');assert.equal(p.get('eta').hidden,true);
+      assert.equal(row.children[1].textContent,'50 / 50개');
       assert.equal(p.shell.querySelector('.story-voice-counts').children[0],row);
     }
   });
-  await test('call synthesis keeps its row and ETA visible across background activity',()=>{
+  await test('call synthesis keeps its row visible across background activity',()=>{
     const project={id:'call-timing',status:'running',process_alive:true,stage_id:'positives',eta_seconds:90,
       progress:{done:12,total:50,unit:'개',phase:'tts_generation',rate_phase:'call_synthesis',eta_eligible:true}};
     const p=page(project),counts=p.shell.querySelector('.story-voice-counts'),row=counts.children[0];
     const detail=row.querySelector('.story-generation-summary');
     for(const phase of ['tts_prompt_preparation','tts_qualification','tts_finalizing','tts_generation']){
       project.progress.activity={phase,label:'내부 처리'};p.ui.render();
-      assert.equal(counts.children[0],row);assert.equal(p.get('eta').hidden,false);
+      assert.equal(counts.children[0],row);
       assert.equal(detail.textContent,'생성 중');assert.equal(row.children[1].textContent,'12 / 50개');
     }
   });

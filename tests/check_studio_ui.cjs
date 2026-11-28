@@ -632,12 +632,11 @@ function pendingHardStorageRecipe() {
     await b.submit("create-form");
     assert.equal(b.elements.get("project-directory").textContent, "F:\\test\\models\\model_0002");
   });
-  await test("unknown progress and ETA stay unknown, and units are formatted separately", () => {
+  await test("unknown progress stays unknown, and measured units are formatted separately", () => {
     const { helpers } = browser({ noBoot: true });
     assert.equal(helpers.progressValue({}), null); assert.equal(helpers.progressValue({ progress: { done: 0, total: 0 } }), null);
     assert.equal(helpers.progressValue({ progress: { done: null, total: 100 } }), null);
     assert.equal(helpers.progressValue({ progress: { done: 25, total: 100, unit: "개" } }).percent, 25);
-    assert.equal(helpers.eta(null), ""); assert.equal(helpers.eta([3600, 5400]), "1시간–1시간 30분");
     assert.equal(helpers.bytes(1073741824), "1 GiB"); assert.equal(helpers.duration(0), "0초");
   });
   await test("audited storage scales explicit terms without changing unknowns, fixed slots or the recipe", () => {
@@ -1369,7 +1368,7 @@ function pendingHardStorageRecipe() {
     assert.match(textOf(b.elements.get("training-material-coverage-list")), /기술 검사 24.5시간 · 검수 승인 확인 전 \/ 목표 7,000시간/);
     assert.match(textOf(b.elements.get("training-material-coverage-list")), /기술 검사 0시간 · 검수 승인 확인 전 \/ 목표 3,000시간/);
     assert.match(b.elements.get("progress-label").textContent, /2.5 \/ 10시간/);
-    assert.match(b.elements.get("eta").textContent, /처리 속도를 측정한 뒤/);
+    assert.equal(b.elements.get("eta").textContent, "");
     project.training_materials = { targets: { generic_negative: 2000, korean_negative: 1 }, candidate: { generic_negative: 0, korean_negative: 1.02 }, admitted: { generic_negative: 0, korean_negative: 1.01 }, generic_publisher_nominal_hours: 2000 };
     await b.tick();
     assert.match(textOf(b.elements.get("training-material-coverage-list")), /공개 특징 명목 2,000시간 \/ 목표 2,000시간/);
@@ -1885,7 +1884,23 @@ function pendingHardStorageRecipe() {
     assert.equal(b.elements.get("progress-section").hidden, true); assert.equal(b.elements.get("progress-percent").textContent, "");
     assert.equal(b.elements.get("progress-label").textContent, "");
     assert.equal(b.elements.get("elapsed").textContent, "이 작업 경과 30초 · 전체 경과 1시간");
-    assert.match(b.elements.get("eta").textContent, /측정한 뒤/);
+    assert.equal(b.elements.get("eta").textContent, "");
+  });
+  await test("chapters ignore time estimates and still render measured progress", async () => {
+    const project = { id: "bora", wakeword: "보라야", status: "running", stage_id: "frontend",
+      progress: { done: 25, total: 100, unit: "개" }, current_stage_elapsed_seconds: 30 };
+    const b = browser({ initialState: { projects: [project] } }); await flush();
+    for (const stage of ["frontend", "data_download", "data_review", "data_connect", "references",
+      "references_review", "pilot", "pilot_review", "positives", "positive_review", "hard_phrases", "hard_pilot",
+      "hard_generation", "hard_review", "hard_connect", "features", "training", "package", "development", "evaluation", "results"]) {
+      Object.assign(project, { stage_id: stage, eta_seconds: null }); await b.tick();
+      const activity = b.elements.get("eta").textContent;
+      assert.doesNotMatch(activity, /예상 시간|예상 남은 시간|속도를 측정/);
+      project.eta_seconds = 123; await b.tick();
+      assert.equal(b.elements.get("eta").textContent, activity, stage);
+      assert.equal(b.elements.get("progress").value, 25, stage);
+      assert.match(b.elements.get("elapsed").textContent, /경과 30초/);
+    }
   });
   await test("nine visible groups separate positive generation and hard-negative preparation while keeping all nineteen workflow stages", async () => {
     const workflow = ["frontend", "data_download", "data_review", "data_connect", "references", "references_review",
@@ -2538,7 +2553,7 @@ function pendingHardStorageRecipe() {
   });
   await test("download speed and retry information describe the current operation", async () => {
     const project={id:"bora",status:"running",stage:{id:"data_download"},progress:{done:100,total:1000,unit:"bytes",phase:"download",bytes_per_second:1048576},eta_seconds:90};
-    const b=browser({initialState:{projects:[project]}});await flush();assert.match(b.elements.get("eta").textContent,/1 MiB\/초/);assert.match(b.elements.get("eta").textContent,/이 작업 예상 남은 시간/);
+    const b=browser({initialState:{projects:[project]}});await flush();assert.equal(b.elements.get("eta").textContent,"1 MiB/초");
     project.progress={done:100,total:1000,unit:"bytes",phase:"retry",attempt:2,retry_limit:3};await b.tick();assert.match(b.elements.get("eta").textContent,/연결 재시도 2 \/ 3/);
   });
   await test("the evaluation RIR archive uses its purpose label without renaming source records", async () => {
