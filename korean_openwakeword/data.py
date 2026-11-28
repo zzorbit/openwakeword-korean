@@ -128,7 +128,7 @@ def union_hours(intervals):
     return seconds / 3600
 
 
-def validate_admission(root, rows, config, role, smoke=False):
+def validate_admission(root, rows, config, role, smoke=False, *, verified_files=None):
     count = 0
     with manifest_index(root) as index:
         for row in rows:
@@ -136,7 +136,10 @@ def validate_admission(root, rows, config, role, smoke=False):
             if row.get("split") != "train" or not source_key(row):
                 raise ValueError("Training inputs need immutable source IDs and train split")
             if index.unique("audio", (row["path"], row["sha256"])):
-                bound_file(root, row)
+                if verified_files is None:
+                    bound_file(root, row)
+                else:
+                    verified_files.inspect(root, row)
             if role == "positive":
                 if row.get("provenance") != "qwen_tts" or row.get("human_reference_used") is not False or row.get("text") != config["wakeword"]:
                     raise ValueError("Positive must be the standalone configured Qwen word without human reference")

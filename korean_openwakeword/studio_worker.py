@@ -116,10 +116,13 @@ def _run_pausable_stage(request, request_path, run_stage):
         "evaluation": (".evaluate", "EvaluationPaused"),
     }
     module, exception = exceptions[stage]
-    paused = getattr(importlib.import_module(module, __package__), exception)
+    implementation = importlib.import_module(module, __package__)
+    paused = getattr(implementation, exception)
+    scope = implementation.feature_preflight() if stage == "features" else nullcontext()
     try:
-        return run_stage(request["project"], request["workspace"], request["settings"], stage,
-                         request.get("context", {}), pause_requested=pause_requested)
+        with scope:
+            return run_stage(request["project"], request["workspace"], request["settings"], stage,
+                             request.get("context", {}), pause_requested=pause_requested)
     except paused:
         return {"state": "paused"}
 

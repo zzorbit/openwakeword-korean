@@ -1,5 +1,6 @@
 """Temporary disk indexes for exact audits of large window manifests."""
 from collections import OrderedDict, namedtuple
+from pathlib import Path
 from contextlib import contextmanager
 import json
 import math
@@ -13,16 +14,17 @@ _VerifiedAudioInfo = namedtuple("_VerifiedAudioInfo", "frames duration samplerat
 
 
 class VerifiedAudioFiles:
-    """Share exact file checks only within one evaluation preflight.
+    """Share exact file checks within one preflight invocation.
 
     Each new operation creates a new instance; no entry is loaded from disk or
     trusted across runs. A cache hit still checks filesystem identity. Replaced
     or touched files are hashed and inspected again, and a change during the
     initial hash/header read is rejected. Call ``clear`` before scoring to
-    release the temporary per-file facts.
+    release the temporary per-file facts when they are no longer needed.
     """
     def __init__(self):
         self._files = {}
+        self._declared_paths = {}
 
     @staticmethod
     def _identity(path):
@@ -33,9 +35,11 @@ class VerifiedAudioFiles:
         import soundfile as sf
         from .common import bound_file, resolved
 
+        declared = Path(root) / row["path"]
         path = resolved(root, row["path"])
         key = str(path), row["sha256"]
         before = self._identity(path)
+        self._declared_paths[declared] = before
         cached = self._files.get(key)
         if cached is not None and cached[0] == before:
             return path, cached[1]
@@ -51,8 +55,16 @@ class VerifiedAudioFiles:
         self._files[key] = after, info
         return checked, info
 
+    def unchanged(self):
+        """Check that the same verified files still back a reusable audit."""
+        try:
+            return all(self._identity(path) == stamp for path, stamp in self._declared_paths.items())
+        except OSError:
+            return False
+
     def clear(self):
         self._files.clear()
+        self._declared_paths.clear()
 
 
 def _key(value):

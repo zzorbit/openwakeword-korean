@@ -709,6 +709,19 @@ _CONTEXT_PROFILE_EQUIVALENT_SOURCE_DIGESTS = {
         "e08d1825508bc50be8b4c2593aa99e362307bcaf3ffcaebe90b09f9a4a2dab7c",  # features.py
     "b2e101a6de7f8be984bdb8b892e8e0482f7d71c12214cfaa312afe5c5cb3998e":
         "aaee1ffdd833a881ee2379e4547b015a0423af5cb34faf72634b23e6e69a5627",  # features.py
+    # Shared validation and grouped durable writes preserve feature bytes.
+    "b6acfd008cabac66a392e50be401b2544512cedb3aa482830e96e022650d6c78":
+        "e08d1825508bc50be8b4c2593aa99e362307bcaf3ffcaebe90b09f9a4a2dab7c",  # features.py
+    "70fd4f1cd5f463233c383a3d19aef5d57b0c09977eedc80169ed29641843b286":
+        "aaee1ffdd833a881ee2379e4547b015a0423af5cb34faf72634b23e6e69a5627",  # features.py
+    "5f996630d6fc7aafb299e2514515947aa11a246f768bd7af67d2270a64de9841":
+        "fd682280423c33951f620d9fa50dffb1bae01f7bac60db65b33a683f40b426f0",  # data.py
+    "9cf6dab6fe0c168d74f0f12060d5fcda9fb9c4998939f3cc543ce2c0aedc328b":
+        "3eac1477b11c8040558f1183f137f6b1b02371cf7af9c048719a03bc6cc7aaf1",  # data.py
+    "053e2a8da8b9f454d54f970d901f4ad62cfb0b3234a262be8ea77dd24a8a2082":
+        "58529ccd87e644ad001327d151f97fe5d9cffaab8e9bd6357e5b002962a85960",  # streaming.py
+    "0222c5bad0be5eed4d66be7f01dcc4873b1a7b86b5a0d4b12d362c0b1a4e9cb4":
+        "f0058156244e894c2fcbb39369b020b28812b254063afb16d3974fad636a34ba",  # streaming.py
     "4a8a52d10e6cadbfdebdeab284cce32ba0b49489bb96031d060eb47fb2c934fb":
         "80dbd4e00b3bfc28b33602b97a7013fcf5b1eff8ec8c0e1babda01bca6433835",  # frontend.py
     "b2dcc404b1ca8113d892a4de46e40f2d5a4308d6ce5f3c64bcf51ed32f1eb415":

@@ -121,6 +121,56 @@ def test_feature_resume_keeps_verified_prefix_and_replaces_torn_tail(project, le
     assert read_json(checkpoint)["rows"] == 9
 
 
+@pytest.mark.parametrize("pause", [True, False])
+def test_grouped_feature_checkpoint_keeps_only_durable_rows(project, pause):
+    from korean_openwakeword.features import FeatureGenerationPaused
+
+    root, _ = load_project(project)
+    baseline = root / "per-batch"
+    candidate = root / "grouped"
+    kwargs = {"rounds": 3, "batch_size": 2, "smoke": True}
+    full = build_features(project, "positive", output=baseline, frontend=StubFrontend(), **kwargs)
+
+    class StopAfterFirstBatch(StubFrontend):
+        calls = 0
+
+        def embed(self, clips):
+            self.calls += 1
+            if not pause and self.calls == 2:
+                raise RuntimeError("fixture crash")
+            return super().embed(clips)
+
+    frontend = StopAfterFirstBatch()
+    with pytest.raises(FeatureGenerationPaused if pause else RuntimeError):
+        build_features(project, "positive", output=candidate, frontend=frontend, checkpoint_rows=6,
+                       pause_requested=lambda: pause and frontend.calls == 1, **kwargs)
+    checkpoint = candidate / "augmentation_checkpoint.json"
+    assert read_json(checkpoint)["rows"] == (2 if pause else 0)
+    assert not (candidate / "metadata.json").exists()
+    complete = build_features(project, "positive", output=candidate, frontend=StubFrontend(),
+                              checkpoint_rows=6, resume=True, **kwargs)
+    assert read_json(checkpoint)["rows"] == 9
+    assert complete["feature_sha256"] == full["feature_sha256"]
+    assert complete["journal_sha256"] == full["journal_sha256"]
+    assert verify_cache(candidate) == complete
+
+
+def test_shared_feature_audit_rechecks_modified_audio(project):
+    from korean_openwakeword.common import iter_rows
+    from korean_openwakeword.features import _FeaturePreflight
+
+    root, config = load_project(project)
+    audit = _FeaturePreflight()
+    initial = audit.source_audit(project, root, config)
+    assert initial["passed"]
+    assert audit.source_audit(project, root, config) is initial
+    source = next(iter_rows(root / config["manifests"]["positive_train"]))
+    wave(root / source["path"], seed=939)
+    changed = audit.source_audit(project, root, config)
+    assert not changed["passed"]
+    assert any("Missing or changed bound file" in error for error in changed["errors"])
+
+
 def test_formal_training_refuses_unreviewed(project):
     with pytest.raises(ValueError, match="unapproved"):
         train(project)
