@@ -378,6 +378,8 @@ def _execution_contract(*, legacy_reference_review=False):
 
 
 _REFERENCE_POOL_SIZE_COMPATIBLE_DIGESTS = {
+    "8124424fd9e8e893e7424c3ca44a2082a8e64d0caa7179ce8f55d5e546021303": "588a5e77f603246f9d0757f7ead2b3de717ba1319ad2db978935013be7584805",
+    "7b5cc81b003341cc724c417f8093d75f9a6c5ed863772a1147a8973e4b652d77": "968fcec79233839a643bd5568926a98513fe71ed37922fdbc2506a0aa546a4cb",
     "8739c391d1185a6d3170a5bcfb3ac57e6931145f1d63451ff4cc3e8efe34b928": "588a5e77f603246f9d0757f7ead2b3de717ba1319ad2db978935013be7584805",
     "93457317314ed7a64accd41fbc9748ce37a863dda79c57f9e0f20bb6a6d91eaa": "968fcec79233839a643bd5568926a98513fe71ed37922fdbc2506a0aa546a4cb",
     "6736bfc604627b1e46ac3e0aa7bfc70369b6955bba7c68bf0a4ae6cf31b549e0": "588a5e77f603246f9d0757f7ead2b3de717ba1319ad2db978935013be7584805",
@@ -1941,10 +1943,11 @@ class StudioManager:
         if payload.get("reference_voice_review") is True:
             # New interactive projects choose candidate voices directly. Older
             # matched projects retain their frozen source-bank policy.
-            from .reference_candidates import TRAIN_CANDIDATES_PER_GROUP
+            from .reference_candidates import TRAIN_CANDIDATES_PER_GROUP, VALIDATION_CANDIDATES_PER_GROUP
             settings["reference_selection_policy"] = "candidate_pool_v3"
             settings["reference_preparation_policy"] = "initial_candidate_batches_v1"
             settings["reference_train_candidates_per_group"] = TRAIN_CANDIDATES_PER_GROUP[settings["train_references"]]
+            settings["reference_validation_candidates_per_group"] = VALIDATION_CANDIDATES_PER_GROUP
         overrides = payload.get("advanced") or {}
         if not isinstance(overrides, dict):
             raise ValueError("세부 설정 형식이 올바르지 않습니다.")
@@ -2266,9 +2269,12 @@ class StudioManager:
         budget_change = self._reference_budget_change(state) if reference_update else None
         trial_change = self._trial_material_budget_change(state)
         candidate_budget = self._unstarted_reference_candidate_budget(state)
+        validation_budget = self._reference_validation_candidate_update(state)
         return {"state": "available", "action": "migrate",
                 "reason": ("받은 한국어 자료를 재사용하고 시험 모델용 한국어 비호출 목표를 500시간으로 조정합니다."
                            if trial_change else
+                           "기존 후보와 검수 기록을 재사용하고 공통 평가용 후보를 분류당 열 개로 준비합니다."
+                           if validation_budget else
                            "완료한 자료는 재사용하고 시작 전인 학습용 기준 목소리 후보 수를 새 규모에 맞춥니다."
                            if candidate_budget is not None else
                            call_recovery_update.get("reason") or "기존 기준 목소리와 통과한 호출어를 보존하고, 긴 앞뒤 무음을 정리한 입력으로 실패한 호출어만 제한된 횟수 안에서 자동 복구합니다. 검사 기준과 실제 검수 기록은 유지합니다."
@@ -2320,7 +2326,9 @@ class StudioManager:
                 **({"reference_budget_change": budget_change} if budget_change else {}),
                 **({"trial_material_budget_change": trial_change} if trial_change else {}),
                 **({"reference_train_candidates_per_group": candidate_budget} if candidate_budget is not None else {}),
-                "preserves": ["completed_artifacts", "review_answers", "history"] if trial_change or candidate_budget is not None else
+                **({"reference_validation_candidate_update": validation_budget} if validation_budget else {}),
+                "preserves": ["completed_artifacts", "review_answers", "history"] if trial_change or candidate_budget is not None or
+                             validation_budget and validation_budget["mode"] == "initial" else
                              ["project_settings", "completed_artifacts", "review_answers", "history"]}
 
     def _can_update_call_generation_recovery(self, state):
@@ -2376,21 +2384,44 @@ class StudioManager:
         return None
 
     @staticmethod
-    def _unstarted_reference_candidate_budget(state):
-        from .reference_candidates import TRAIN_CANDIDATES_PER_GROUP
-
+    def _reference_candidates_unstarted(state):
         settings = state["settings"]
         prior_stages = {"frontend", "data_download", "data_review", "data_connect"}
-        if (settings.get("reference_preparation_policy") != "initial_candidate_batches_v1"
-                or "reference_train_candidates_per_group" in settings
+        return not (settings.get("reference_preparation_policy") != "initial_candidate_batches_v1"
                 or not 0 <= state["index"] < len(state["plan"])
                 or state["plan"][state["index"]]["id"] not in prior_stages | {"references"}
                 or set(state.get("results", {})) - prior_stages
                 or any(entry.get("stage") not in prior_stages for entry in state.get("history", []))
                 or any((state.get(key) or {}).get("stage") == "references" for key in ("job", "last_job"))
-                or (Path(state["project"]).parent / ".studio/reference-candidates").exists()):
+                or (Path(state["project"]).parent / ".studio/reference-candidates").exists())
+
+    @staticmethod
+    def _unstarted_reference_candidate_budget(state):
+        from .reference_candidates import TRAIN_CANDIDATES_PER_GROUP
+
+        settings = state["settings"]
+        if "reference_train_candidates_per_group" not in settings and StudioManager._reference_candidates_unstarted(state):
+            return TRAIN_CANDIDATES_PER_GROUP.get(settings["train_references"])
+        return None
+
+    def _reference_validation_candidate_update(self, state):
+        from .reference_candidates import VALIDATION_CANDIDATES_PER_GROUP
+
+        settings = state["settings"]
+        if (settings.get("reference_preparation_policy") != "initial_candidate_batches_v1"
+                or "reference_validation_candidates_per_group" in settings or state.get("reference_validation_top_up")):
             return None
-        return TRAIN_CANDIDATES_PER_GROUP.get(settings["train_references"])
+        if self._reference_candidates_unstarted(state):
+            return {"mode": "initial", "per_group": VALIDATION_CANDIDATES_PER_GROUP}
+        if (not self._reference_review_required(state) or not self._can_update_reference_candidates(state)
+                or not self._reference_preparation_view(state)["ready"]):
+            return None
+        ledger_path = self._reference_candidate_path(state)
+        if ledger_path.exists():
+            ledger = read_json(ledger_path)
+            if not ledger.get("job") and not any(key.startswith("validation:") for key in ledger["approved"]):
+                return {"mode": "supplemental", "per_group": VALIDATION_CANDIDATES_PER_GROUP}
+        return None
 
     def _can_update_reference_candidates(self, state, *, allow_frozen=False):
         positions = {stage["id"]: i for i, stage in enumerate(state["plan"])}
@@ -2552,6 +2583,7 @@ class StudioManager:
             prior_cuda_failure = self._legacy_cuda_failure(state)
             trial_change = compatibility.get("trial_material_budget_change")
             candidate_budget = compatibility.get("reference_train_candidates_per_group")
+            validation_budget = compatibility.get("reference_validation_candidate_update")
             if trial_change:
                 project = Path(state["project"])
                 before_config = directory / "project_before.json"
@@ -2593,6 +2625,7 @@ class StudioManager:
                    if compatibility.get("reference_budget_change") else {}),
                 **({"trial_material_budget_change": trial_change} if trial_change else {}),
                 **({"reference_train_candidates_per_group": candidate_budget} if candidate_budget is not None else {}),
+                **({"reference_validation_candidate_update": validation_budget} if validation_budget else {}),
                 **({"previous_cuda_loader_failure": prior_cuda_failure} if prior_cuda_failure else {}),
                 "preserved": compatibility["preserves"]})
             budget_change = compatibility.get("reference_budget_change")
@@ -2651,6 +2684,11 @@ class StudioManager:
                              error=None, next_action="이어서 진행하면 기존 음원은 유지하고 부족한 학습용 목소리만 추가합니다.")
             if candidate_budget is not None:
                 state["settings"]["reference_train_candidates_per_group"] = candidate_budget
+            if validation_budget:
+                if validation_budget["mode"] == "initial":
+                    state["settings"]["reference_validation_candidates_per_group"] = validation_budget["per_group"]
+                else:
+                    state["reference_validation_top_up"] = validation_budget["per_group"]
             if trial_change:
                 state["settings"]["korean_hours"] = trial_change["korean_hours"]
                 state["config_sha256"] = trial_change["updated_config"]["sha256"]
@@ -4194,7 +4232,8 @@ class StudioManager:
         required = self._reference_preparation_required(state)
         policy = state.get("reference_preparation_policy") or state["settings"].get("reference_preparation_policy")
         stage = state["plan"][state["index"]]["id"] if state["index"] < len(state["plan"]) else "completed"
-        operation = "stage" if state["settings"].get("reference_preparation_policy") == "initial_candidate_batches_v1" and stage in (
+        stage_policy = state["settings"].get("reference_preparation_policy") == "initial_candidate_batches_v1"
+        operation = "stage" if stage_policy and stage in (
             "frontend", "data_download", "data_review", "data_connect", "references", "references_review") else "helper"
         if policy != "initial_candidate_batches_v1":
             return {"policy": None, "required": False, "ready": True, "status": "completed", "operation": operation,
@@ -4202,7 +4241,9 @@ class StudioManager:
                     "can_start": False, "can_pause": False, "can_resume": False}
         try:
             raw = preparation_status(root, verify=False,
-                train_candidates_per_group=state["settings"].get("reference_train_candidates_per_group"))
+                train_candidates_per_group=state["settings"].get("reference_train_candidates_per_group"),
+                validation_goal=state.get("reference_validation_top_up",
+                    state["settings"].get("reference_validation_candidates_per_group") if stage_policy else None))
         except FileNotFoundError:
             raw = {}
         helper = state.get("reference_preparation_job") or {}
@@ -4217,6 +4258,8 @@ class StudioManager:
                  and (not helper or helper.get("status") == "completed")
                  and not (operation == "stage" and stage in ("references", "references_review")))
         status = "completed" if ready else helper.get("status") if helper else raw.get("status", "pending")
+        if state.get("reference_validation_top_up") and not ready and status == "completed":
+            status = "pending"
         if active:
             status = "pausing" if helper.get("status") == "pausing" or state.get("status") == "pausing" else "running"
         elif operation == "stage" and stage in ("references", "references_review") and state.get("status") in ("error", "interrupted"):
@@ -4242,7 +4285,7 @@ class StudioManager:
                 "reused_candidates": raw.get("reused_candidates", 0),
                 "generated_candidates": raw.get("generated_candidates", 0),
                 "message": error or raw.get("message", ""), "error": error,
-                "can_start": not ready and not active and ((operation == "helper" and eligible and not helper)
+                "can_start": not ready and not active and ((operation == "helper" and eligible and (not helper or status == "pending"))
                              or operation == "stage" and stage in ("references", "references_review") and status == "pending"),
                 "can_pause": active, "can_resume": operation == "helper" and eligible and not ready and not active
                 and status in ("paused", "failed", "interrupted") or operation == "stage" and not ready and not active
@@ -4366,6 +4409,7 @@ class StudioManager:
             write_json(request_path, {"task_id": task_id, "kind": "reference_initial_candidate_preparation_v1",
                 "project": state["project"], "config_sha256": state["config_sha256"],
                 "implementation_id": self._implementation_id, "originals": originals,
+                **({"validation_goal": state["reference_validation_top_up"]} if state.get("reference_validation_top_up") else {}),
                 "migrations": state.get("migrations", []),
                 "pause_path": str(directory / "pause.json")})
             log_path = directory / "output.log"

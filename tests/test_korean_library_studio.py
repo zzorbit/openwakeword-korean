@@ -231,6 +231,7 @@ def test_recipes_preview_has_three_budgets_known_sources_and_no_network(manager)
 def test_new_interactive_projects_scale_initial_train_candidates(manager, preset, selected, candidates_per_group):
     _, _, settings, _ = manager._model_request({"wakeword": "보라야", "preset": preset, "reference_voice_review": True})
     assert settings["reference_train_candidates_per_group"] == candidates_per_group
+    assert settings["reference_validation_candidates_per_group"] == 10
     assert settings["train_references"] == selected
     assert settings["validation_references"] == 30
 

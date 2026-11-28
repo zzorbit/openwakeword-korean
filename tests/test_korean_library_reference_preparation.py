@@ -68,6 +68,39 @@ def test_larger_train_pool_resumes_within_a_group_and_verifies_every_batch(plann
     assert saved["selected"] == saved["heard"] == {} and saved["approved"] == []
 
 
+def test_validation_top_up_preserves_old_receipt_and_training_decisions(planned):
+    root, project, settings, slots, _, calls, model = planned
+    old = candidates.prepare_initial_candidate_batches(project, slots, load_model=lambda *args: model)
+    path = root / ".studio/reference-candidates/state.json"
+    saved = read_json(path)
+    first = candidates.candidate_review_view(root, saved)
+    for row in first["items"][:2]:
+        candidates.candidate_action(root, saved, "toggle", candidate_id=row["id"], sha256=row["sha256"])
+    candidates.candidate_action(root, saved, "approve")
+    write_json(path, saved)
+    before = deepcopy(saved)
+    old_receipt = root / old["receipt"]["path"]
+    before_digest = digest(old_receipt)
+
+    supplemental = candidates.prepare_initial_candidate_batches(project, slots,
+        load_model=lambda *args: model, validation_goal=10)
+    assert supplemental["status"] == "completed" and supplemental["generated_candidates"] == 50
+    assert [row["completed"] for row in supplemental["rows"]] == [50, 100] and len(calls) == 150
+    after = read_json(path)
+    assert all(after["candidates"][key] == row for key, row in before["candidates"].items())
+    assert all(after[key] == before[key] for key in ("selected", "heard", "approved", "current_batch", "slot_ids"))
+    assert digest(old_receipt) == before_digest
+    assert candidates.verify_initial_candidate_preparation(project, slots, old["receipt"])["completed"] == 100
+    assert candidates.verify_initial_candidate_preparation(project, slots, supplemental["receipt"])["completed"] == 150
+    assert all(group["target"] == 3 for group in after["groups"] if group["split"] == "validation")
+
+    settings.update(reference_train_candidates_per_group=10, reference_validation_candidates_per_group=10)
+    new_slots = candidates.source_slots(project, settings)
+    new_ledger = candidates.create_candidate_review(new_slots)
+    assert candidates._planned_slots(root, new_slots[0]["source_binding"]) == new_slots
+    assert [row["total"] for row in candidates.preparation_status(root, new_ledger, verify=False)["rows"]] == [100, 100]
+
+
 def test_legacy_selected_two_and_old_batch_pointer_survive_backfill(pool):
     root, project, config, originals, saved, model = pool
     plan, rows, _ = batch(pool)

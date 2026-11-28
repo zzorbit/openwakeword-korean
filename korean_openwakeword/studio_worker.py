@@ -268,7 +268,8 @@ def _execute_reference_preparation(request_path, *, load_model=None):
                 model_cache[key] = (load_model or _load_model)(model_path, config, root)
             return model_cache[key]
         result["result"] = prepare_initial_candidate_batches(request["project"], request["originals"],
-            load_model=resident_model, progress_path=request_path.parent / "progress.json", pause_path=request["pause_path"])
+            load_model=resident_model, progress_path=request_path.parent / "progress.json", pause_path=request["pause_path"],
+            **({"validation_goal": request["validation_goal"]} if "validation_goal" in request else {}))
         if digest(request["project"]) != request["config_sha256"]:
             raise ValueError("후보 준비 중 모델 설정이 변경되었습니다.")
     except Exception as error:
