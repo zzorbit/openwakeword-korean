@@ -5880,7 +5880,12 @@ class StudioManager:
                 rate_done=initial_preparation["generated_candidates"])
             # Generated/reused candidates are not a count of TTS attempts.
             view["counts"] = {"technical_passed": done}
-        if owned_progress:
+        if job["stage"] == "positives" and done < total:
+            # Prompt preparation and CUDA checks recur throughout a single
+            # synthesis job. The worker keeps those phases for diagnostics.
+            view["progress"].update(phase="tts_generation", rate_phase="call_synthesis", eta_eligible=True)
+            view["eta_seconds"] = None
+        elif owned_progress:
             for field in ("phase", "eta_eligible", "activity", "worker_rate", "phase_started_at"):
                 if field in owned_progress:
                     view["progress"][field] = owned_progress[field]

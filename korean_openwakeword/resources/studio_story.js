@@ -1719,7 +1719,8 @@
       const progressCounts = progress && !/단계/.test(progress.unit || "") ? progress : null;
       const done = (qualityHold ? project.input.accepted_count : null) ?? progressCounts?.done ?? progressCounts?.completed ?? progressCounts?.current;
       const total = (qualityHold ? project.input.target_count : null) ?? progressCounts?.total;
-      const detail = [synthesisPlan(project, total), active ? generationActivity(progress) : ""].filter(Boolean).join(" · ");
+      const activity = !active ? "" : progress?.rate_phase === "call_synthesis" ? "생성 중" : generationActivity(progress);
+      const detail = [synthesisPlan(project, total), activity].filter(Boolean).join(" · ");
       if (!Number.isFinite(done) || done < 0 || !Number.isFinite(total) || total <= 0) {
         const row = preparationRow(project, label, active);
         if (qualityHold) row.statusText = "기술 검사 미통과";

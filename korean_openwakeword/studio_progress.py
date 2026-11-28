@@ -173,6 +173,7 @@ def estimate_progress_eta(state, job, progress, rates_by_project):
     done, total = progress.get("done"), progress.get("total")
     counter = progress.get("rate_done", done)
     phase = progress.get("rate_phase", progress.get("phase") or progress.get("label"))
+    call_synthesis = phase == "call_synthesis"
     excluded = {"retry", "download_many", "feature_validation", "device_selection",
                 "model_initialization", "gpu_cache_loading", "preparation_validation",
                 "preparation_finalizing", "validation", "finalizing"}
@@ -182,7 +183,7 @@ def estimate_progress_eta(state, job, progress, rates_by_project):
             or total <= 0 or not 0 <= done < total or counter < 0):
         rates_by_project.pop(project, None)
         return None
-    if "worker_rate" in progress:
+    if "worker_rate" in progress and not call_synthesis:
         rates_by_project.pop(project, None)
         rate = progress["worker_rate"]
         if not isinstance(rate, dict):
@@ -203,12 +204,24 @@ def estimate_progress_eta(state, job, progress, rates_by_project):
         return None
     points = window["points"]
     if counter > points[-1][1]:
-        if points[-1][1] == 0:
+        if points[-1][1] == 0 and not call_synthesis:
             # A long wait for the first output is startup, not per-item cost.
             points[:] = [(stamp, counter)]
         else:
             points.append((stamp, counter))
-            points[:] = [point for point in points[-8:] if stamp - point[0] <= 90]
+            if call_synthesis:
+                # Completions are durable and span prompt preparation, CUDA
+                # checks, retries and file writes in the same running job.
+                points[:] = [point for point in points if stamp - point[0] <= 120]
+            else:
+                points[:] = [point for point in points[-8:] if stamp - point[0] <= 90]
+    if call_synthesis:
+        elapsed = points[-1][0] - points[0][0]
+        accepted = points[-1][1] - points[0][1]
+        if len(points) < 3 or elapsed < 15 or accepted < 3 or stamp - points[-1][0] > 60:
+            return None
+        estimate = (total - done) / (accepted / elapsed)
+        return estimate if math.isfinite(estimate) else None
     if len(points) < 4 or points[-1][0] - points[0][0] < 15 or stamp - points[-1][0] > 30:
         return None
     rates = [(right[1] - left[1]) / (right[0] - left[0])

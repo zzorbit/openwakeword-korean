@@ -4257,6 +4257,17 @@ async function main() {
       assert.equal(p.shell.querySelector('.story-voice-counts').children[0],row);
     }
   });
+  await test('call synthesis keeps its row and ETA visible across background activity',()=>{
+    const project={id:'call-timing',status:'running',process_alive:true,stage_id:'positives',eta_seconds:90,
+      progress:{done:12,total:50,unit:'개',phase:'tts_generation',rate_phase:'call_synthesis',eta_eligible:true}};
+    const p=page(project),counts=p.shell.querySelector('.story-voice-counts'),row=counts.children[0];
+    const detail=row.querySelector('.story-generation-summary');
+    for(const phase of ['tts_prompt_preparation','tts_qualification','tts_finalizing','tts_generation']){
+      project.progress.activity={phase,label:'내부 처리'};p.ui.render();
+      assert.equal(counts.children[0],row);assert.equal(p.get('eta').hidden,false);
+      assert.equal(detail.textContent,'생성 중');assert.equal(row.children[1].textContent,'12 / 50개');
+    }
+  });
   await test("synthesis chapters keep the same progress elements through startup, pause, and a quality hold", () => {
     const settings = { pilot_review_policy: "one_per_voice_before_and_after_generation_v4", hard_samples_per_phrase: 20 };
     for (const [stage, label] of [["pilot", "호출어 샘플"], ["positives", "호출어 음성"], ["hard_generation", "유사어 음성"]]) {

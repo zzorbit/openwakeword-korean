@@ -203,6 +203,34 @@ def _eta_manager(monkeypatch):
     return manager, state, job, clock
 
 
+def test_call_synthesis_eta_uses_saved_audio_through_repeated_gpu_checks(tmp_path, monkeypatch):
+    manager, state, record, path = _owned(tmp_path, monkeypatch, stage="positives")
+    state["settings"].update(originals=100, validation_originals=20)
+    clock, accepted = [0.0], [51]
+    monkeypatch.setattr(studio.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(manager, "_journal_counts", lambda journal: {
+        "passed": accepted[0] if journal.parent.name == "train" else 0, "attempts": accepted[0]})
+
+    def observe(stamp, count, phase, *, live_rate=999):
+        clock[0], accepted[0] = stamp, count
+        record.update(phase=phase, label="세부 활동", eta_eligible=phase == "tts_generation",
+                      worker_rate={"per_second": live_rate, "measured_at": studio.time.time()})
+        studio.write_json(path, record)
+        return manager.describe(state)
+
+    for values in ((0, 51, "tts_qualification"), (5, 61, "tts_generation")):
+        assert observe(*values)["eta_seconds"] is None
+    view = observe(15, 71, "tts_generation")
+    assert view["eta_seconds"] == pytest.approx(49 * 15 / 20)
+    for stamp, phase in ((17, "tts_prompt_preparation"), (21, "tts_qualification"), (24, "tts_finalizing")):
+        check = observe(stamp, 71, phase)
+        assert check["eta_seconds"] == view["eta_seconds"]
+        assert check["progress"] == view["progress"]
+    assert observe(25, 81, "tts_generation")["eta_seconds"] == pytest.approx(39 * 25 / 30)
+    stalled = observe(86, 81, "tts_qualification")
+    assert stalled["eta_seconds"] is None and stalled["progress"]["eta_eligible"] is True
+
+
 def test_eta_excludes_long_startup_and_waits_for_three_stable_intervals(monkeypatch):
     manager, state, job, clock = _eta_manager(monkeypatch)
     progress = {"done": 0, "total": 100, "unit": "개", "phase": "tts_generation"}
