@@ -4126,6 +4126,10 @@ async function main() {
     assert.equal(row.querySelector('strong').dataset.label,'소음·잔향 원본 승인 확인');
     assert.equal(bar.getAttribute('value'),null);assert.equal(bar.getAttribute('max'),null);
     for(const [phase,label,done,total,unit,amount] of [
+      ['feature_source_audit','특징 추출 자료의 학습·평가 분리 확인',1048576,2097152,'bytes','1 MiB / 2 MiB'],
+      ['feature_source_coverage','자료별 원본 구간 합산',64,900,'개 원본','64 / 900개 원본'],
+      ['feature_resume_verification','기존에 저장된 특징·재개 지점 확인',768,1200,'개 특징','768 / 1,200개 특징'],
+      ['feature_journal_verification','특징 완료 기록·원본 순서 확인',64,128,'개 특징','64 / 128개 특징'],
       ['feature_material_audit','소음 원본 승인 검사',0,800,'개 원본','0 / 800개 원본'],
       ['feature_material_audit','소음 원본 승인 검사',128,800,'개 원본','128 / 800개 원본'],
       ['feature_material_audit','잔향 원본 승인 검사',64,270,'개 원본','64 / 270개 원본'],

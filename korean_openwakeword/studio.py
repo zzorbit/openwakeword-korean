@@ -722,6 +722,23 @@ _CONTEXT_PROFILE_EQUIVALENT_SOURCE_DIGESTS = {
         "58529ccd87e644ad001327d151f97fe5d9cffaab8e9bd6357e5b002962a85960",  # streaming.py
     "0222c5bad0be5eed4d66be7f01dcc4873b1a7b86b5a0d4b12d362c0b1a4e9cb4":
         "f0058156244e894c2fcbb39369b020b28812b254063afb16d3974fad636a34ba",  # streaming.py
+    # Counted validation progress only changes display, not validated outputs.
+    "250875cb96cdacc944d84ade17ebef6db89a71575712c94b5729e5c33b7a5f9d":
+        "e08d1825508bc50be8b4c2593aa99e362307bcaf3ffcaebe90b09f9a4a2dab7c",  # features.py
+    "5c0007c950345331bbf9f60fb8a75bbc3f03f90c0c11c67727ad14b915271996":
+        "aaee1ffdd833a881ee2379e4547b015a0423af5cb34faf72634b23e6e69a5627",  # features.py
+    "510f273d36b0e1c450e39451a758ed4cd52ec8c1437b8f002b0a99c76e8181d8":
+        "fd682280423c33951f620d9fa50dffb1bae01f7bac60db65b33a683f40b426f0",  # data.py
+    "b9d1f79d5c4d4517d0e4fd36e6a94c022c165681ff080ce56d36a36eb49677cd":
+        "3eac1477b11c8040558f1183f137f6b1b02371cf7af9c048719a03bc6cc7aaf1",  # data.py
+    "f07095b58f2f4f456098b062addd062ce77042548138fe3498f5c8c02db4affe":
+        "ae0425525856a1a743dc300fe885137d718f13e30b3631cadc2e2607eee57905",  # common.py
+    "fa5b19646fb40a869de906ff284edcf44f607e5fb6e1a049de84abc51d4b5a77":
+        "fcaefa4c8e96c919627e0c03f9f9cd103a6cb9fd9890b92734250bc9ee6f1d51",  # common.py
+    "b9548b481516e0eab06a5ed3adaaf12e30ebb4c3c5c3286f15c441426b5d9842":
+        "58529ccd87e644ad001327d151f97fe5d9cffaab8e9bd6357e5b002962a85960",  # streaming.py
+    "bb2412046823c8c9ee6fe525d1cb052bf32fcb8328f7b32386e91b200b726744":
+        "f0058156244e894c2fcbb39369b020b28812b254063afb16d3974fad636a34ba",  # streaming.py
     "4a8a52d10e6cadbfdebdeab284cce32ba0b49489bb96031d060eb47fb2c934fb":
         "80dbd4e00b3bfc28b33602b97a7013fcf5b1eff8ec8c0e1babda01bca6433835",  # frontend.py
     "b2dcc404b1ca8113d892a4de46e40f2d5a4308d6ce5f3c64bcf51ed32f1eb415":

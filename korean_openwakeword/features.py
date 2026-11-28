@@ -36,6 +36,8 @@ _PRIOR_FEATURE_WRITERS = {
     "e7932719d5da6332151e4cc28cc913e5040d0b41d6263053dc85c03bd7346637",
     "7e5dbc1c40bc667ff10acebbe6b7303ea118cfb4d3259cf78f089319bdb102e0",
     "b2e101a6de7f8be984bdb8b892e8e0482f7d71c12214cfaa312afe5c5cb3998e",
+    "b6acfd008cabac66a392e50be401b2544512cedb3aa482830e96e022650d6c78",
+    "70fd4f1cd5f463233c383a3d19aef5d57b0c09977eedc80169ed29641843b286",
 }
 
 
@@ -49,7 +51,7 @@ class _FeaturePreflight:
         self.audit = None
         self.snapshot = None
 
-    def source_audit(self, project, root, config):
+    def source_audit(self, project, root, config, pause_requested=None):
         def manifest_stamps():
             stamps = {}
             for pool, manifest in config["manifests"].items():
@@ -63,7 +65,16 @@ class _FeaturePreflight:
         manifests = manifest_stamps()
         current = (Path(project).resolve(), config["wakeword"], manifests)
         if self.audit is None or self.snapshot != current or not self.files.unchanged():
-            audit = audit_project(project, verified_files=self.files)
+            def report(check, done, total):
+                phase, label, unit = {
+                    "manifests": ("feature_source_audit", "특징 추출 자료의 학습·평가 분리 확인", "bytes"),
+                    "coverage": ("feature_source_coverage", "자료별 원본 구간 합산", "개 원본"),
+                    "overlap": ("feature_source_overlap", "학습·평가 중복 판정", "회"),
+                }[check]
+                _check_feature_pause(pause_requested)
+                report_task_progress(phase, label, done, total, unit, eta_eligible=False)
+
+            audit = audit_project(project, verified_files=self.files, progress=report)
             if manifests != manifest_stamps():
                 raise ValueError("Source manifests changed during the split audit")
             self.audit, self.snapshot = audit, current
@@ -85,14 +96,20 @@ def _check_feature_pause(pause_requested):
         raise FeatureGenerationPaused("특징 추출을 일시정지했습니다.")
 
 
-def _feature_digest(path, pause_requested):
-    if pause_requested is None:
+def _feature_digest(path, pause_requested, *, progress=None):
+    if pause_requested is None and progress is None:
         return digest(path)
     hasher = hashlib.sha256()
     with Path(path).open("rb") as stream:
+        done, total = 0, os.fstat(stream.fileno()).st_size
+        if progress is not None:
+            report_task_progress(*progress, done, total, "bytes", eta_eligible=False)
         for block in iter(lambda: stream.read(FEATURE_SCAN_BLOCK_BYTES), b""):
             _check_feature_pause(pause_requested)
             hasher.update(block)
+            if progress is not None:
+                done += len(block)
+                report_task_progress(*progress, done, total, "bytes", eta_eligible=False)
     return hasher.hexdigest()
 
 
@@ -107,9 +124,17 @@ def _resume_feature_journal(journal, checkpoint, array, contract_sha, pause_requ
     rows, offset = 0, 0
     with journal.open("a+b") as stream:
         stream.seek(0)
+        total = record["rows"] if record is not None else os.fstat(stream.fileno()).st_size
+        unit = "개 특징" if record is not None else "bytes"
+        progress = ("feature_resume_verification", "기존에 저장된 특징·재개 지점 확인")
+        if total:
+            report_task_progress(*progress, 0, total, unit, eta_eligible=False)
         while record is None or offset < record["journal_bytes"]:
             if rows % 512 == 0:
                 _check_feature_pause(pause_requested)
+                if rows:
+                    report_task_progress(*progress, rows if record is not None else offset,
+                                         total, unit, eta_eligible=False)
             raw = stream.readline()
             if not raw.endswith(b"\n"):
                 break
@@ -127,6 +152,8 @@ def _resume_feature_journal(journal, checkpoint, array, contract_sha, pause_requ
             stream.truncate(offset)
             stream.flush()
             os.fsync(stream.fileno())
+        if total:
+            report_task_progress(*progress, total, total, unit, eta_eligible=False)
     return rows, offset, hasher
 
 
@@ -151,14 +178,23 @@ def _prepared_feature_batches(items, prepare, batch_size, workers, pause_request
                 future.cancel()
 
 
-def _manifest_inventory(path):
+def _manifest_inventory(path, pause_requested=None):
     """Count rows and bind every manifest byte in one sequential read."""
     hasher, count = hashlib.sha256(), 0
+    phase = ("feature_manifest_verification", "특징 추출 원본 목록 확인")
     with Path(path).open("rb") as stream:
+        done, total = 0, os.fstat(stream.fileno()).st_size
+        report_task_progress(*phase, 0, total, "bytes", eta_eligible=False)
         for number, raw in enumerate(stream):
             hasher.update(raw)
+            done += len(raw)
             if raw.decode("utf-8-sig" if number == 0 else "utf-8").strip():
                 count += 1
+            if (number + 1) % 512 == 0:
+                _check_feature_pause(pause_requested)
+                if done < total:
+                    report_task_progress(*phase, done, total, "bytes", eta_eligible=False)
+        report_task_progress(*phase, done, total, "bytes", eta_eligible=False)
     return count, hasher.hexdigest()
 
 
@@ -380,7 +416,7 @@ def build_features(project, role, output=None, rounds=None, batch_size=32, smoke
     if type(rounds) is not int or rounds not in (1, 3, 5) or role != "positive" and rounds != 1:
         raise ValueError("Positive R1/R3/R5; fixed Negative R1 only")
     manifest = resolved(root, config["manifests"][pool])
-    source_count, source_manifest_sha = _manifest_inventory(manifest)
+    source_count, source_manifest_sha = _manifest_inventory(manifest, pause_requested)
     if role == "positive" and not smoke and source_count != config["targets"]["positive_originals"]:
         raise ValueError("Positive manifest does not match the selected TTS original count; finish generation or declare a separate budget")
     source_identity, provenances = hashlib.sha256(), set()
@@ -397,7 +433,7 @@ def build_features(project, role, output=None, rounds=None, batch_size=32, smoke
     preflight = _FEATURE_PREFLIGHT.get() or _FeaturePreflight()
     validate_admission(root, source_rows, config, role, smoke, verified_files=preflight.files)
     report_task_progress("feature_source_audit", "특징 추출 자료의 학습·평가 분리 확인", eta_eligible=False)
-    audit = preflight.source_audit(project, root, config)
+    audit = preflight.source_audit(project, root, config, pause_requested)
     if not audit["passed"]:
         raise ValueError("Split/source audit failed: " + str(audit["errors"][:5]))
     materials = {}
@@ -548,7 +584,7 @@ def build_features(project, role, output=None, rounds=None, batch_size=32, smoke
                 commit_written()
                 raise
         del array
-        if committed != expected or _manifest_inventory(manifest) != (source_count, source_manifest_sha):
+        if committed != expected or _manifest_inventory(manifest, pause_requested) != (source_count, source_manifest_sha):
             raise ValueError("Source manifest changed during feature extraction")
         _, _, payload_sha = _verify_feature_payload(path, None, expected, pause_requested, frames=frames)
         metadata = {"schema_version": 1, "role": role, "split": "train", "feature_rows": expected,
@@ -655,6 +691,11 @@ def _verify_journal(directory, meta, pause_requested=None):
     journal = directory / "augmentation.jsonl"
     count, order_valid, error = 0, True, None
     rounds = meta["rounds"]
+    def journal_rows():
+        return _feature_validation_rows(iter_rows(journal), meta["feature_rows"],
+                                        "feature_journal_verification", "특징 완료 기록·원본 순서 확인",
+                                        "개 특징", pause_requested)
+
     with manifest_index(directory) as index:
         if meta.get("journal_layout") == "source_then_round_v1":
             current, entries, group_count = None, [], 0
@@ -665,9 +706,7 @@ def _verify_journal(directory, meta, pause_requested=None):
                     problem = _round_error(entries, group_count, rounds)
                     error = error or problem
 
-            for position, row in enumerate(iter_rows(journal)):
-                if position % 512 == 0:
-                    _check_feature_pause(pause_requested)
+            for position, row in enumerate(journal_rows()):
                 count += 1
                 order_valid = order_valid and row["feature_row"] == position
                 sample = row["sample_id"]
@@ -684,25 +723,25 @@ def _verify_journal(directory, meta, pause_requested=None):
             # Original caches permitted noncontiguous originals. Keep that
             # compatibility while putting the grouping and sort on disk.
             index.db.execute("CREATE TABLE journal(sample TEXT, position INTEGER, round_id TEXT, seed TEXT, pcm TEXT)")
-            for position, row in enumerate(iter_rows(journal)):
-                if position % 512 == 0:
-                    _check_feature_pause(pause_requested)
+            for position, row in enumerate(journal_rows()):
                 count += 1
                 order_valid = order_valid and row["feature_row"] == position
                 index.db.execute("INSERT INTO journal VALUES (?,?,?,?,?)", (
                     json.dumps(row["sample_id"]), position, json.dumps(row["round_id"]),
                     json.dumps(row["seed"]), row["pcm_sha256"]))
             index.db.execute("CREATE INDEX journal_sample ON journal(sample)")
-            for sample, group_count in index.db.execute("SELECT sample,COUNT(*) FROM journal GROUP BY sample ORDER BY MIN(position)"):
-                _check_feature_pause(pause_requested)
-                if group_count != rounds:
-                    error = "Missing rounds or repeated augmentation seeds"
-                    break
-                entries = [(json.loads(a), json.loads(b), c) for a, b, c in index.db.execute(
-                    "SELECT round_id,seed,pcm FROM journal WHERE sample=? ORDER BY position", (sample,))]
-                error = _round_error(entries, group_count, rounds)
-                if error:
-                    break
+            query = "SELECT sample,COUNT(*) FROM journal GROUP BY sample ORDER BY MIN(position)"
+            with closing(index.db.execute(query)) as groups:
+                for sample, group_count in _feature_validation_rows(groups, meta["original_count"],
+                        "feature_journal_groups", "원본별 증강 기록 확인", "개 원본", pause_requested):
+                    if group_count != rounds:
+                        error = "Missing rounds or repeated augmentation seeds"
+                        break
+                    entries = [(json.loads(a), json.loads(b), c) for a, b, c in index.db.execute(
+                        "SELECT round_id,seed,pcm FROM journal WHERE sample=? ORDER BY position", (sample,))]
+                    error = _round_error(entries, group_count, rounds)
+                    if error:
+                        break
     if count != meta["feature_rows"] or meta["feature_rows"] != meta["original_count"] * rounds:
         raise ValueError("Actual output is not N×rounds")
     if not order_valid:
@@ -712,8 +751,8 @@ def _verify_journal(directory, meta, pause_requested=None):
 
 
 def _verify_feature_records(directory, meta, pause_requested):
-    report_task_progress("feature_journal_verification", "특징 완료 기록·원본 순서 확인", eta_eligible=False)
-    if (_feature_digest(directory / "augmentation.jsonl", pause_requested) != meta["journal_sha256"]
+    progress = ("feature_journal_hash", "특징 완료 기록 무결성 확인")
+    if (_feature_digest(directory / "augmentation.jsonl", pause_requested, progress=progress) != meta["journal_sha256"]
             or digest(directory / "contract.json") != meta["contract_sha256"]):
         raise ValueError("Feature journal/contract changed")
     _verify_journal(directory, meta, pause_requested)

@@ -48,12 +48,34 @@ def coverage_interval(row, start, end):
     return source_key(row), (start, end)
 
 
-def audit_project(project, check_files=True, include_final_files=False, extra_rows=None, *, verified_files=None):
+def audit_project(project, check_files=True, include_final_files=False, extra_rows=None, *, verified_files=None,
+                  progress=None):
     root, config = load_project(project)
     errors, totals = [], {}
-    collections = [(pool, iter_rows(resolved(root, manifest))) for pool, manifest in config["manifests"].items()]
+    manifests = {pool: resolved(root, manifest) for pool, manifest in config["manifests"].items()}
+    if progress is None:
+        collections = [(pool, iter_rows(path)) for pool, path in manifests.items()]
+    else:
+        def manifest_size(path):
+            try:
+                return path.stat().st_size
+            except FileNotFoundError:
+                return 0
+
+        sizes = {pool: manifest_size(path) for pool, path in manifests.items()}
+        total = sum(sizes.values())
+        progress("manifests", 0, total)
+        collections = []
+        offset = 0
+        for pool, path in manifests.items():
+            def on_bytes(done, before=offset, size=sizes[pool]):
+                progress("manifests", before + min(done, size), total)
+
+            collections.append((pool, iter_rows(path, on_bytes=on_bytes)))
+            offset += sizes[pool]
     if extra_rows:
         collections.append(("external_evaluation", extra_rows))
+    coverage = []
     with manifest_index(root) as index:
         for pool, rows in collections:
             count, has_final = 0, False
@@ -107,10 +129,32 @@ def audit_project(project, check_files=True, include_final_files=False, extra_ro
                         index.interval(pool, original, *interval)
                     except (ValueError, OSError, RuntimeError) as e:
                         errors.append(f"{pool}/{sid}: {e}")
+            measure = check_files and (not has_final or include_final_files)
+            if measure and progress is not None:
+                coverage.append(pool)
             totals[pool] = {"rows": count,
-                "unique_source_hours": index.unique_hours(pool) if check_files and (not has_final or include_final_files) else None,
+                "unique_source_hours": index.unique_hours(pool) if measure and progress is None else None,
                 "final_audio_opened": bool(include_final_files and has_final)}
+        source_checked = None
+        if progress is not None:
+            total_sources = sum(index.coverage_sources(pool) for pool in coverage)
+            checked_sources = 0
+            if total_sources:
+                progress("coverage", 0, total_sources)
+
+            def source_checked():
+                nonlocal checked_sources
+                checked_sources += 1
+                if checked_sources % 256 == 0 or checked_sources == total_sources:
+                    progress("coverage", checked_sources, total_sources)
+
+        for pool in coverage:
+            totals[pool]["unique_source_hours"] = index.unique_hours(pool, source_checked=source_checked)
+        if progress is not None:
+            progress("overlap", 0, 1)
         leaks = index.leaks()
+        if progress is not None:
+            progress("overlap", 1, 1)
     errors += [f"Cross-split {r['key']} leakage: {r['id']}" for r in leaks]
     return {"kind": "project_source_and_family_audit", "passed": not errors,
             "wakeword": config["wakeword"], "pools": totals, "errors": errors, "leaks": leaks,

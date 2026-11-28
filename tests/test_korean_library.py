@@ -115,7 +115,14 @@ def test_feature_resume_keeps_verified_prefix_and_replaces_torn_tail(project, le
             # A fully written row still has no authority beyond the durable cursor.
             stream.write((baseline / journal.name).read_bytes().splitlines(keepends=True)[2])
         stream.write(b'{"feature_row":2,"torn_tail":')
-    resumed = build_features(project, "positive", output=paused, resume=True, **kwargs)
+    from korean_openwakeword.task_progress import task_progress
+
+    events = []
+    with task_progress(events.append):
+        resumed = build_features(project, "positive", output=paused, resume=True, **kwargs)
+    saved = [event for event in events if event["phase"] == "feature_resume_verification"]
+    assert saved[0]["done"] == 0 and saved[-1]["done"] == saved[-1]["total"]
+    assert saved[-1]["done"] == (len(b"".join(expected_prefix)) + len(b'{"feature_row":2,"torn_tail":') if legacy else 2)
     assert resumed["feature_sha256"] == full["feature_sha256"]
     assert resumed["journal_sha256"] == full["journal_sha256"]
     assert read_json(checkpoint)["rows"] == 9
@@ -157,12 +164,27 @@ def test_grouped_feature_checkpoint_keeps_only_durable_rows(project, pause):
 
 def test_shared_feature_audit_rechecks_modified_audio(project):
     from korean_openwakeword.common import iter_rows
+    from korean_openwakeword.data import audit_project
     from korean_openwakeword.features import _FeaturePreflight
+    from korean_openwakeword.task_progress import task_progress
 
     root, config = load_project(project)
     audit = _FeaturePreflight()
-    initial = audit.source_audit(project, root, config)
-    assert initial["passed"]
+    events = []
+    with task_progress(events.append):
+        initial = audit.source_audit(project, root, config)
+    assert initial["passed"] and initial == audit_project(project)
+    manifest_progress = [event for event in events if event["phase"] == "feature_source_audit"]
+    sizes = sum((root / path).stat().st_size for path in config["manifests"].values()
+                if (root / path).is_file())
+    assert manifest_progress[0]["done"] == 0
+    assert manifest_progress[-1]["done"] == sizes == manifest_progress[-1]["total"]
+    assert [event["done"] for event in manifest_progress] == sorted(event["done"] for event in manifest_progress)
+    assert all(event["unit"] == "bytes" for event in manifest_progress)
+    assert [(event["phase"], event["done"], event["total"]) for event in events if event["phase"] != "feature_source_audit"] == [
+        ("feature_source_coverage", 0, 12), ("feature_source_coverage", 12, 12),
+        ("feature_source_overlap", 0, 1), ("feature_source_overlap", 1, 1),
+    ]
     assert audit.source_audit(project, root, config) is initial
     source = next(iter_rows(root / config["manifests"]["positive_train"]))
     wave(root / source["path"], seed=939)

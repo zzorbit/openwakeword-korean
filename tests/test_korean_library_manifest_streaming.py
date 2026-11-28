@@ -34,6 +34,23 @@ def write_windows(path, row, count):
                              start_s=0, end_s=2, parent_start_s=number * 2)) + "\n")
 
 
+def test_manifest_progress_counts_original_bytes_after_its_rows_are_consumed(tmp_path):
+    from korean_openwakeword.common import iter_rows
+
+    path = tmp_path / "mixed.jsonl"
+    row = '{"sample_id":"한글"}'.encode("utf-8")
+    payload = b"\xef\xbb\xbf" + (row + b"\r\n") * 255 + row + b"\r" + b"\n" + row
+    path.write_bytes(payload)
+    positions = []
+    measured = iter_rows(path, on_bytes=positions.append)
+    for _ in range(256):
+        assert next(measured) == {"sample_id": "한글"}
+    assert positions == []
+    assert list(measured) == [{"sample_id": "한글"}]
+    assert positions == [len(payload) - len(row), len(payload)]
+    assert len(list(iter_rows(path))) == 257
+
+
 def test_iter_rows_preserves_bom_blank_lines_and_order_without_read_ahead(tmp_path):
     path = tmp_path / "rows.jsonl"
     path.write_text('\ufeff\n\u00a0\n{"id":1}\n\n{"id":2}\n', encoding="utf-8")

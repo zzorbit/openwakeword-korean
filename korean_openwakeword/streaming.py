@@ -160,13 +160,18 @@ class ManifestIndex:
             self._cache(self.sources, key, source_id)
         self.db.execute("INSERT INTO intervals VALUES (?,?,?)", (source_id, start, end))
 
-    def unique_hours(self, pool):
+    def coverage_sources(self, pool):
+        return self.db.execute("SELECT COUNT(*) FROM sources WHERE pool=?", (pool,)).fetchone()[0]
+
+    def unique_hours(self, pool, *, source_checked=None):
         seconds = 0.0
         for (source_id,) in self.db.execute("SELECT id FROM sources WHERE pool=? ORDER BY id", (pool,)):
             end = -math.inf
             for a, b in self.db.execute("SELECT start,end FROM intervals WHERE source_id=? ORDER BY start,end", (source_id,)):
                 seconds += max(0, b - max(a, end))
                 end = max(end, b)
+            if source_checked is not None:
+                source_checked()
         return seconds / 3600
 
     def file_info(self, key, inspect):

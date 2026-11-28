@@ -59,15 +59,27 @@ def identity(value):
                                   separators=(",", ":"), allow_nan=False).encode()).hexdigest()
 
 
-def iter_rows(path):
-    """Read JSONL in order without retaining a large window or feature journal."""
+def iter_rows(path, *, on_bytes=None):
+    """Stream JSONL, optionally reporting byte lengths after rows are consumed."""
     path = Path(path)
     if not path.exists():
         return
-    with path.open(encoding="utf-8-sig") as f:
-        for line in f:
+    if on_bytes is None:
+        with path.open(encoding="utf-8-sig") as stream:
+            for line in stream:
+                if line.strip():
+                    yield json.loads(line)
+        return
+    with path.open(encoding="utf-8", newline="") as stream:
+        done = 0
+        for number, raw in enumerate(stream, 1):
+            done += len(raw.encode("utf-8"))
+            line = raw.removeprefix("\ufeff") if number == 1 else raw
             if line.strip():
                 yield json.loads(line)
+            if number % 256 == 0:
+                on_bytes(done)
+        on_bytes(done)
 
 
 def read_rows(path):
