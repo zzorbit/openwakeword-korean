@@ -4287,11 +4287,27 @@ async function main() {
       assert.equal(p.next.disabled, true);
     }
   });
+  await test("the call sample chapter names regenerations after pronunciation review", () => {
+    const settings = { pilot_review_policy: "one_per_voice_before_and_after_generation_v4" };
+    const project = { id: "call-samples", stage_id: "pilot", status: "ready", settings };
+    assert.equal(page(project).get("story-title").textContent, "호출어 샘플 생성");
+    for (const status of ["ready", "running", "paused"]) {
+      const p = page({ ...project, status, call_pilot_regeneration: true });
+      assert.equal(p.get("story-title").textContent, "호출어 샘플 부적합 재생성");
+      assert.match(p.get("story-subtitle").textContent, /부적합으로 판정한 호출어 샘플/);
+    }
+    const completed = page({ ...project, stage_id: "pilot_review", status: "paused", call_pilot_regeneration: true,
+      navigation_checkpoint: { policy: "explicit_story_v1", step: "call-pilot-generation", state: "awaiting_next" } });
+    assert.equal(completed.get("story-title").textContent, "호출어 샘플 부적합 재생성");
+    const other = page({ ...project, stage_id: "positives", call_pilot_regeneration: true });
+    assert.equal(other.get("story-title").textContent, "호출어 음성 생성");
+  });
   await test('pilot quality hold preserves accepted progress and retries only on an explicit click', async () => {
     const input = { kind: "generation_policy", retry_action: "retry_generation", accepted_count: 19, target_count: 50, failed_count: 1 };
     const project = { id: "retry-pilot", status: "waiting_input", process_alive: true, stage_id: "pilot", input,
       settings: { pilot_review_policy: "one_per_voice_before_and_after_generation_v4" } };
     const p = page(project);
+    assert.equal(p.get("story-title").textContent, "호출어 샘플 생성");
     const row = p.shell.querySelector(".story-voice-counts").children[0], bar = row.querySelector("progress");
     assert.equal(row.children[1].textContent, "19 / 50개 통과");
     assert.equal(bar.value, 19); assert.equal(bar.max, 50);

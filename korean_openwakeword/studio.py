@@ -6007,6 +6007,7 @@ class StudioManager:
         index, plan = state["index"], state["plan"]
         stage = plan[index] if index < len(plan) else {"id": "completed", "label": "완료"}
         view = {key: state.get(key) for key in ("id", "wakeword", "preset", "status", "error", "next_action", "created_at")}
+        view["call_pilot_regeneration"] = self._call_pilot_regeneration(state, stage["id"])
         dependency_backend = state.get("inputs", {}).get("dependency_backend")
         view["dependency_backend"] = dependency_backend
         view["dependency_setup_selected"] = state.get("dependency_setup_selected") is True
@@ -6209,6 +6210,22 @@ class StudioManager:
             if quality is not None:
                 view["download_quality"] = quality
         return view
+
+    @staticmethod
+    def _call_pilot_regeneration(state, stage):
+        if state["settings"].get("pilot_review_policy") != PREPOST_PILOT_POLICY:
+            return False
+        rounds = state.get("inputs", {}).get("call_pilot_reviews", [])
+        if not rounds:
+            return False
+        if stage == "pilot" or len(rounds) > 1:
+            return True
+        # The first review has been saved. A new queue belongs to regeneration
+        # even after the worker has moved from pilot generation to review.
+        pilot = state.get("results", {}).get("pilot", {})
+        generated = pilot.get("result", pilot).get("bindings", {}).get("review_queue", {}).get("sha256")
+        reviewed = rounds[-1].get("queue", {}).get("sha256")
+        return bool(generated and reviewed and generated != reviewed)
 
     def _call_generation_progress(self, state, folder, stage):
         rounds = state["inputs"].get("call_pilot_reviews", [])

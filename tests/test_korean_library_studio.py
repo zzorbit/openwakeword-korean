@@ -18,6 +18,24 @@ from korean_openwakeword.common import digest, identity, now, read_json, write_j
 from korean_openwakeword.project import create_project, load_project
 
 
+def test_call_pilot_regeneration_tracks_review_round_not_technical_retry():
+    state = {"settings": {"pilot_review_policy": studio.PREPOST_PILOT_POLICY},
+             "inputs": {"call_pilot_reviews": [], "call_pilot_quality_retry": {"rounds": 1}}}
+    flag = studio.StudioManager._call_pilot_regeneration
+    assert not flag(state, "pilot")
+
+    rounds = state["inputs"]["call_pilot_reviews"]
+    rounds.append({"queue": {"sha256": "first"}})
+    assert flag(state, "pilot")
+    queue = {"sha256": "first"}
+    state["results"] = {"pilot": {"result": {"bindings": {"review_queue": queue}}}}
+    assert not flag(state, "pilot_review")
+    queue["sha256"] = "replacement"
+    assert flag(state, "pilot_review")
+    rounds.append({"queue": {"sha256": "replacement"}})
+    assert flag(state, "positives")
+
+
 def page_config(page):
     return json.loads(re.search(r'<script id="koww-page-config" type="application/json">(.*?)</script>', page).group(1))
 

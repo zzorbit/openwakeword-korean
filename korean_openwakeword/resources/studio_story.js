@@ -2767,13 +2767,16 @@
       shell.classList.toggle("hard-connecting", connectingHard(project));
       const preparingResults = current === "evaluation" && reviewStage === "results" && !done(project?.status);
       const definition = definitions.find(([id]) => id === current);
-      const [, title = "학습 상태", description = "현재 작업 상태를 확인해 주세요."] = definition || [];
+      const [, defaultTitle = "학습 상태", description = "현재 작업 상태를 확인해 주세요."] = definition || [];
+      const regeneratingCallSamples = current === "call-pilot-generation" && project?.call_pilot_regeneration === true;
+      const title = regeneratingCallSamples ? "호출어 샘플 부적합 재생성" : defaultTitle;
       const needsToolChoice = waitingToolChoice(project);
       const toolChoiceEditable = editableToolChoice(project);
       if (!toolChoiceEditable) projectToolBackend = null;
       heading.textContent = title;
       const savedReviewDescription = historical && pronunciationSteps.has(current);
       subtitle.textContent = savedReviewDescription ? "대표 음원과 저장된 판정을 확인합니다." : description;
+      if (regeneratingCallSamples) subtitle.textContent = "사전 검수에서 부적합으로 판정한 호출어 샘플을 다시 만듭니다.";
       if (current === "tools" && (needsToolChoice || toolChoiceEditable || !project)) subtitle.textContent = "음성 생성, 모델 학습, 성능 평가에 사용할 연산 장치를 선택하세요.";
       if (current === "voices" && separateReferencePreparation(project)) subtitle.textContent = "성별·연령별로 검수할 기준 목소리 후보를 미리 생성합니다.";
       if (current === "voice-listening" && !project?.reference_preview?.review_required) {
