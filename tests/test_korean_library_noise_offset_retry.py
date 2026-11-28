@@ -208,6 +208,41 @@ def test_exhausted_silent_source_raises_with_context_without_clean_fallback(inpu
     assert len(reads) == 64 and len(set(reads)) == 1
 
 
+def test_exhausted_source_retries_one_admitted_file_in_the_same_category(inputs, monkeypatch):
+    root, positive, _, noises, short, rirs, settings = inputs
+    original, music = noises[:2]
+    noises = [original, short, music]
+    settings = {**settings, "clean_probability": 0., "moderate_probability": 1., "rir_probability": 1.,
+                "category_weights": {"environment": 1, "music": 1}}
+    for round_id in range(20):
+        _, baseline = legacy_augment(root, positive, "positive", round_id, settings, noises, rirs)
+        if baseline["noise_id"] == source_key(original):
+            break
+    else:
+        pytest.fail("Fixture must initially select the source that becomes silent")
+
+    original_seek = features.seek_audio
+    reads = []
+
+    def source_with_no_usable_windows(root, source, seconds=2, rng=None):
+        samples, offset = original_seek(root, source, seconds, rng)
+        if source in noises:
+            reads.append(source_key(source))
+        return (np.zeros_like(samples) if source == original else samples), offset
+
+    monkeypatch.setattr(features, "seek_audio", source_with_no_usable_windows)
+    first, details = features.augment(root, positive, "positive", round_id, settings, noises, rirs)
+    assert reads == [source_key(original)] * features.MAX_NOISE_OFFSET_ATTEMPTS + [source_key(short)]
+    assert details["noise_id"] == source_key(short)
+    assert details["noise_rejected_source_ids"] == [source_key(original)]
+    for key in ("noise_category", "seed", "snr_db", "gain_db", "rir_id"):
+        assert details[key] == baseline[key]
+    assert details["measured_snr_db"] == pytest.approx(details["snr_db"])
+    reads.clear()
+    second, repeated = features.augment(root, positive, "positive", round_id, settings, noises, rirs)
+    assert np.array_equal(first, second) and details == repeated
+
+
 def test_unrelated_io_error_is_not_swallowed_or_retried(inputs, monkeypatch):
     root, positive, _, noises, _, _, settings = inputs
     settings = {**settings, "clean_probability": 0., "moderate_probability": 1.}

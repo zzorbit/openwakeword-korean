@@ -704,6 +704,11 @@ _CONTEXT_PROFILE_EQUIVALENT_SOURCE_DIGESTS = {
         "e08d1825508bc50be8b4c2593aa99e362307bcaf3ffcaebe90b09f9a4a2dab7c",  # features.py
     "e7932719d5da6332151e4cc28cc913e5040d0b41d6263053dc85c03bd7346637":
         "aaee1ffdd833a881ee2379e4547b015a0423af5cb34faf72634b23e6e69a5627",  # features.py
+    # A fallback can only run where the preceding writer would stop without an output.
+    "7e5dbc1c40bc667ff10acebbe6b7303ea118cfb4d3259cf78f089319bdb102e0":
+        "e08d1825508bc50be8b4c2593aa99e362307bcaf3ffcaebe90b09f9a4a2dab7c",  # features.py
+    "b2e101a6de7f8be984bdb8b892e8e0482f7d71c12214cfaa312afe5c5cb3998e":
+        "aaee1ffdd833a881ee2379e4547b015a0423af5cb34faf72634b23e6e69a5627",  # features.py
     "4a8a52d10e6cadbfdebdeab284cce32ba0b49489bb96031d060eb47fb2c934fb":
         "80dbd4e00b3bfc28b33602b97a7013fcf5b1eff8ec8c0e1babda01bca6433835",  # frontend.py
     "b2dcc404b1ca8113d892a4de46e40f2d5a4308d6ce5f3c64bcf51ed32f1eb415":

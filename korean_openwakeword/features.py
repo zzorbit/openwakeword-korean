@@ -19,6 +19,7 @@ from .storage import project_storage
 from .task_progress import emit as report_task_progress
 
 MAX_NOISE_OFFSET_ATTEMPTS = 64
+MAX_NOISE_SOURCE_ATTEMPTS = 8
 MIN_NOISE_RMS = 1e-8
 FEATURE_SCAN_BLOCK_BYTES = 8 * 1024 * 1024
 # The previous writer used identical augmentation and frontend math.
@@ -27,6 +28,8 @@ _PRIOR_FEATURE_WRITERS = {
     "548dcd0cd13e0fa84918d3a48c2bf2fe2215b3aba1359e93d18d58f22b66a44b",
     "8add34a93580ca1c89b88099138d4b7189265ece60ba636ffb8113d28d3840b9",
     "4c8bf598d8031e3b0e231006772c7963f27befe77702329c3426235501cf77eb",
+    "8ebce10167d60b8f4fbdfd948e7fdf42137e77f6c0d2a04476d7b62eccff3313",
+    "e7932719d5da6332151e4cc28cc913e5040d0b41d6263053dc85c03bd7346637",
 }
 
 
@@ -148,6 +151,10 @@ def _extend_background(samples, size):
     return np.concatenate((lead, np.tile(period, int(np.ceil((size - len(lead)) / len(period))))))[:size]
 
 
+class _SilentNoiseWindow(ValueError):
+    """Every sampled offset in an admitted noise source was silent."""
+
+
 def _non_silent_noise_window(root, noise, samples, offset, mask, seed, size=32000):
     """Retry only offsets within the same selected source using a private RNG.
 
@@ -183,15 +190,47 @@ def _non_silent_noise_window(root, noise, samples, offset, mask, seed, size=3200
                 retry_seed = int(identity([seed, "non_silent_noise_offset_v1",
                     source_key(noise), noise.get("logical_audio_sha256", noise["sha256"]), scope])[:16], 16)
                 retry_rng = np.random.default_rng(retry_seed)
-            # seek_audio propagates broken/missing/nonfinite input errors.
-            # No category/file replacement and no clean fallback is allowed.
+            # Missing, corrupt and nonfinite audio still propagate normally.
             samples, offset = seek_audio(root, noise, size / 16000, retry_rng)
-    raise ValueError(
+    raise _SilentNoiseWindow(
         f"No non-silent noise window for source {source_key(noise)} "
         f"(category={noise['category']}, scope={scope}) after "
         f"{MAX_NOISE_OFFSET_ATTEMPTS} offsets; first_offset_s={first_offset}. "
         "Use a versioned valid source interval; clean fallback is disabled."
     )
+
+
+def _background_window(root, group, probabilities, rng, mask, seed, size):
+    """Keep the normal draw and try other admitted files only after exhaustion."""
+    selected = int(rng.choice(len(group), p=probabilities))
+    source_rng = rng
+    weights = None
+    rejected = []
+    for attempt in range(MAX_NOISE_SOURCE_ATTEMPTS):
+        noise = group[selected]
+        samples, offset = seek_audio(root, noise, size / 16000, source_rng)
+        try:
+            samples, offset, diagnostics = _non_silent_noise_window(root, noise, samples, offset, mask, seed, size)
+        except _SilentNoiseWindow as error:
+            if weights is None:
+                weights = probabilities.copy()
+                retry_seed = int(identity([seed, "non_silent_noise_source_v1", noise["category"]])[:16], 16)
+                source_rng = np.random.default_rng(retry_seed)
+            rejected.append(source_key(noise))
+            for index, candidate in enumerate(group):
+                if candidate["path"] == noise["path"]:
+                    weights[index] = 0
+            remaining = weights.sum()
+            if not remaining or attempt + 1 == MAX_NOISE_SOURCE_ATTEMPTS:
+                if len(rejected) == 1:
+                    raise
+                raise ValueError(f"{error} No usable {noise['category']} background after "
+                                 f"checking {len(rejected)} admitted files.") from error
+            selected = int(source_rng.choice(len(group), p=weights / remaining))
+        else:
+            if rejected:
+                diagnostics["noise_rejected_source_ids"] = rejected
+            return noise, samples, offset, diagnostics
 
 
 def augment(root, row, role, round_id, settings, noises, rirs, noise_index=None, *, size=32000):
@@ -234,9 +273,7 @@ def augment(root, row, role, round_id, settings, noises, rirs, noise_index=None,
         weights = np.asarray([settings["category_weights"][k] for k in categories], float)
         category = categories[int(rng.choice(len(categories), p=weights / weights.sum()))]
         group, probabilities = available[category]
-        noise = group[int(rng.choice(len(group), p=probabilities))]
-        samples, offset = seek_audio(root, noise, duration, rng)
-        samples, offset, offset_diagnostics = _non_silent_noise_window(root, noise, samples, offset, mask, seed, size)
+        noise, samples, offset, offset_diagnostics = _background_window(root, group, probabilities, rng, mask, seed, size)
         details.update(offset_diagnostics)
         details.update(noise_id=source_key(noise), noise_category=category, noise_offset_s=offset)
         if mask is not None:
