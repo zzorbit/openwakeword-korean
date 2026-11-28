@@ -143,8 +143,26 @@ def test_batch_oom_keeps_single_graph_and_disables_only_four_row_path(tmp_path, 
     runtime.model.fail_replay = True
     assert generate(runtime, prompt, 815) is None
     assert generate(runtime, [object()], 816) is None
-    assert runtime._batch_graph is None and not runtime.disabled
+    assert 4 not in runtime._batch_graphs and not runtime.disabled
     assert (talker.code_predictor.generate, talker.model.forward) == single
+
+
+def test_eight_row_oom_allows_the_already_qualified_four_row_fallback(tmp_path, monkeypatch):
+    runtime, _, _, _, _, _, _ = mock_batch_runtime(tmp_path, monkeypatch)
+    prompt = [object()]
+    assert generate(runtime, prompt)
+    run = runtime._run_batch
+
+    def fail_wide(kwargs, limit, *, accelerated):
+        if len(kwargs["text"]) == 8:
+            raise torch.cuda.OutOfMemoryError("test wide batch OOM")
+        return run(kwargs, limit, accelerated=accelerated)
+
+    monkeypatch.setattr(runtime, "_run_batch", fail_wide)
+    assert runtime.generate_short_clone_wide_batch(batch_seed=814, expected_reuses=30, text="보라야",
+                                                  language="Korean", voice_clone_prompt=prompt) is None
+    assert runtime._disabled_batch_sizes == {8} and 4 in runtime._batch_graphs
+    assert generate(runtime, prompt)
 
 
 def test_partial_batch_capture_failure_restores_both_single_methods(tmp_path, monkeypatch):
@@ -156,7 +174,7 @@ def test_partial_batch_capture_failure_restores_both_single_methods(tmp_path, mo
 
     monkeypatch.setattr(tts_cuda_graph, "enable_exact_talker_graph", fail_talker)
     assert generate(runtime, [object()]) is None
-    assert timeline == [stock] and runtime._batch_graph is None and not runtime.disabled
+    assert timeline == [stock] and 4 not in runtime._batch_graphs and not runtime.disabled
     assert (talker.code_predictor.generate, talker.model.forward) == single
 
 

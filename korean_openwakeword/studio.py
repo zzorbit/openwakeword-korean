@@ -537,6 +537,11 @@ _COMPUTE_DISPATCH_COMPATIBLE_DIGESTS = {
             "df61837471a4768378f96cf0c5fcab825292515e10c3aca678ec7510ec2a87da",
     },
     "tts.py": {
+        # Wider batches bind their own dispatch metadata in the existing journal.
+        "48927e55cd3c933d2cb047b7c0d7f7c2a48e4f02097895698bf82d76b2a621d0":
+            "4b80f8a5561ba98454b8e6fd8b0449301b6bf3852d6eb78b8f3af043b52bb488",
+        "e318d3e7b95eec5bf11967d414079713fd042c3641021e4ce8234631ab4a4ff1":
+            "35e797140ce4bc13235a0d9e259b129d63b7bbd66aac23fe2b1f8f624d9808bf",
         "6e33adc9398ce01f460a32b98f58e425c4f9569af3747b5c0ecf6cbe64653487":
             "4b80f8a5561ba98454b8e6fd8b0449301b6bf3852d6eb78b8f3af043b52bb488",
         "4599627ef67f2495cbc6498a684291e159c44421b57ffefbfa485234c4c7baed":
@@ -604,6 +609,10 @@ _COMPUTE_DISPATCH_COMPATIBLE_DIGESTS = {
     # The mixed-voice entry point is used only by Hard scopes that bind the new
     # batch policy. Existing synthesis entry points and contracts stay valid.
     "tts_runtime.py": {
+        "4d817e36f58af96bf1a6efc1acea6dc51fdae68e8f674391915c33a5d34633aa":
+            "fb494730e01c6076f5a0875bdd6f3262007e97e2ab072cc77ad42fae4c3df7b4",
+        "6d94ba09176cfe3133629c5b6976896411e87a2535f64d5dd9d7339b2f7c7068":
+            "0491525772c9e79f0aa31d940b98b7cb56cbe35a4ec158120524cdb69e3de973",
         "e002580fadb9e53131abc270eb19969212b517397d177491e71333394883401e":
             "fb494730e01c6076f5a0875bdd6f3262007e97e2ab072cc77ad42fae4c3df7b4",
         "fefd4627760768112d3e82cddd92caa820c0dd828f1449b8583f8994d41cac2e":

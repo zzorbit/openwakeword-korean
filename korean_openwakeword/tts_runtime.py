@@ -135,12 +135,14 @@ class CloneRuntime:
         self.disabled = backend == "eager" or expected_reuses == 1
         self._cuda_graph_capable = False
         self._batch_disabled = backend == "eager"
-        self._batch_graph = None
+        self._batch_graphs = {}
+        self._disabled_batch_sizes = set()
         self._batch_checked = {}
         self._batch_rejected = {}
         self._mixed_voice_batch_capable = False
         self._mixed_voice_batch_disabled = False
         self._mixed_voice_pair_disabled = False
+        self._mixed_voice_wide_disabled = False
         self._eager_same_voice_disabled = False
         self.report = {"requested_backend": backend, "created_at": now(), "qualifications": [],
                        "actual_backend": "eager", "expected_utterances_per_prompt": expected_reuses,
@@ -279,8 +281,8 @@ class CloneRuntime:
         return wavs, rate, limit
 
     @contextmanager
-    def _use_batch_graph(self):
-        """Temporarily install the four-row graph around Qwen's batch call."""
+    def _use_batch_graph(self, batch_size):
+        """Temporarily install the graph for the requested Qwen batch shape."""
         import torch
         from .tts_cuda_graph import enable_exact_talker_graph, enable_predictor_graph
 
@@ -288,16 +290,16 @@ class CloneRuntime:
         predictor, inner = talker.code_predictor, talker.model
         previous = predictor.generate, inner.forward
         try:
-            if self._batch_graph is None:
+            if batch_size not in self._batch_graphs:
                 if self.predictor is not None:
                     predictor.generate = self.predictor["original_generate"]
                     inner.forward = self.talker["original_forward"]
                 with torch.random.fork_rng(devices=[self.cuda_device]):
-                    enable_predictor_graph(self.model, exact_shapes=True, batch_size=_CLONE_BATCH_SIZE)
-                    graph = enable_exact_talker_graph(self.model, batch_size=_CLONE_BATCH_SIZE)
-                self._batch_graph = predictor.generate, inner.forward, graph["graphs"]
+                    enable_predictor_graph(self.model, exact_shapes=True, batch_size=batch_size)
+                    graph = enable_exact_talker_graph(self.model, batch_size=batch_size)
+                self._batch_graphs[batch_size] = predictor.generate, inner.forward, graph["graphs"]
             else:
-                predictor.generate, inner.forward = self._batch_graph[:2]
+                predictor.generate, inner.forward = self._batch_graphs[batch_size][:2]
             yield
         finally:
             predictor.generate, inner.forward = previous
@@ -308,7 +310,7 @@ class CloneRuntime:
         batch_size = len(kwargs["text"])
         with _capture_batch_termination(self.model, limit, batch_size) as endings:
             if accelerated:
-                with torch.inference_mode(), self._use_batch_graph():
+                with torch.inference_mode(), self._use_batch_graph(batch_size):
                     wavs, rate = self.model.generate_voice_clone(**kwargs)
             else:
                 wavs, rate = self._eager(kwargs)
@@ -336,7 +338,9 @@ class CloneRuntime:
             eager_reference.append(expected)
         expected_cpu, expected_cuda = torch.get_rng_state(), torch.cuda.get_rng_state(device)
         report["eager_seconds"] = eager_seconds
-        buckets = len(self._batch_graph[2]) if self._batch_graph is not None else None
+        batch_size = len(kwargs["text"])
+        prior_graph = self._batch_graphs.get(batch_size)
+        buckets = len(prior_graph[2]) if prior_graph is not None else None
         actual, cold_seconds = measure(True)
 
         def parity(result):
@@ -347,7 +351,7 @@ class CloneRuntime:
         report.update(graph_cold_seconds=cold_seconds, cold_parity=parity(actual))
         if not report["cold_parity"]:
             raise ValueError("Eager/cold batch graph PCM, QC, termination or RNG differs")
-        reused_buckets = buckets == len(self._batch_graph[2])
+        reused_buckets = buckets == len(self._batch_graphs[batch_size][2])
         warm_seconds = cold_seconds
         if not reused_buckets:
             warm, warm_seconds = measure(True)
@@ -365,14 +369,22 @@ class CloneRuntime:
             return None
         return actual
 
-    def generate_short_clone_batch(self, *, batch_seed, expected_reuses=None, retry=False, allow_eager=False, **kwargs):
-        """Synthesize four clips for one prompt, returning each clip's EOS evidence."""
+    def generate_short_clone_wide_batch(self, **kwargs):
+        from .tts import PRODUCTION_BATCH_SIZE
+
+        return self.generate_short_clone_batch(batch_size=PRODUCTION_BATCH_SIZE, **kwargs)
+
+    def generate_short_clone_batch(self, *, batch_seed, expected_reuses=None, retry=False, allow_eager=False,
+                                   batch_size=_CLONE_BATCH_SIZE, **kwargs):
+        """Synthesize one prompt, returning EOS evidence for every clip."""
         if type(batch_seed) is not int or not 0 <= batch_seed < 2**32:
             raise ValueError("A batch seed must be a 32-bit unsigned integer")
         self._load()
         prompt = kwargs.get("voice_clone_prompt")
         text, language = kwargs.get("text"), kwargs.get("language")
-        graph = not self._batch_disabled and self._cuda_graph_capable
+        wide = batch_size != _CLONE_BATCH_SIZE
+        graph = (not self._batch_disabled and batch_size not in self._disabled_batch_sizes
+                 and self._cuda_graph_capable)
         eager = allow_eager and self._mixed_voice_batch_capable and not self._eager_same_voice_disabled
         if ((not graph and not eager) or not isinstance(prompt, list) or len(prompt) != 1
                 or not isinstance(text, str) or not isinstance(language, str)):
@@ -383,13 +395,16 @@ class CloneRuntime:
         limit = _short_clone_token_limit(self.model, kwargs.get("max_new_tokens"), text=text, retry=retry)
         if not limit:
             return None
-        kwargs.update(max_new_tokens=limit, text=[text] * _CLONE_BATCH_SIZE)
+        kwargs.update(max_new_tokens=limit, text=[text] * batch_size)
         key = (id(prompt), identity({name: value for name, value in kwargs.items() if name != "voice_clone_prompt"}))
         graph = graph and key not in self._batch_rejected
         if not graph and not eager:
             return None
         qualified = key in self._batch_checked
-        report = {"at": now(), "batch_size": _CLONE_BATCH_SIZE, "accepted": False,
+        if wide and not qualified and expected_reuses == 1:
+            return None
+        graph_backend = (f"{_GRAPH_BACKEND}_batch{batch_size}" if wide else _BATCH_GRAPH_BACKEND)
+        report = {"at": now(), "batch_size": batch_size, "accepted": False,
                   "expected_batches_per_prompt": expected_reuses, "requalified_replay": qualified}
         device = self.cuda_device
 
@@ -402,23 +417,28 @@ class CloneRuntime:
         result = None
         eager_reference = [] if eager else None
         if graph and (not eager or qualified or expected_reuses != 1):
+            oom = False
             try:
                 if not qualified:
-                    emit("tts_qualification", "4개 동시 합성의 CUDA 가속 확인", eta_eligible=False)
+                    emit("tts_qualification", f"{batch_size}개 동시 합성의 CUDA 가속 확인", eta_eligible=False)
                 result = run_seeded(lambda: self._run_batch(kwargs, limit, accelerated=True) if qualified
                                     else self._qualify_batch(kwargs, limit, expected_reuses, report, eager_reference))
             except (ValueError, RuntimeError, TypeError, AttributeError) as error:
                 report["reason"] = str(error)
-                if isinstance(error, torch.cuda.OutOfMemoryError) or self._batch_graph is None:
-                    self._batch_graph = None
-                    self._batch_disabled = True
+                oom = isinstance(error, torch.cuda.OutOfMemoryError)
+                if oom or batch_size not in self._batch_graphs:
+                    self._batch_graphs.pop(batch_size, None)
+                    self._disabled_batch_sizes.add(batch_size)
+            if oom:
+                with torch.cuda.device(device):
+                    torch.cuda.empty_cache()
             if result is None:
                 self._batch_checked.pop(key, None)
                 self._batch_rejected[key] = prompt
             elif not qualified:
                 self._batch_checked[key] = prompt
-                report.update(accepted=True, backend=_BATCH_GRAPH_BACKEND)
-                self.report["batch_backend"] = _BATCH_GRAPH_BACKEND
+                report.update(accepted=True, backend=graph_backend)
+                self.report["batch_backend"] = graph_backend
             if not qualified or result is None:
                 self.report.setdefault("batch_qualifications", []).append(report)
                 self._save()
@@ -453,20 +473,29 @@ class CloneRuntime:
         self._load()
         return self._mixed_voice_batch_capable and not self._mixed_voice_pair_disabled
 
-    def generate_short_clone_mixed_voice_batch(self, *, batch_seed, voice_clone_prompts, **kwargs):
+    def generate_short_clone_wide_mixed_voice_batch(self, **kwargs):
+        from .tts import PREFLIGHT_BATCH_SIZE
+
+        self._load()
+        if not self._mixed_voice_batch_capable or self._mixed_voice_wide_disabled:
+            return None
+        return self.generate_short_clone_mixed_voice_batch(wide_size=PREFLIGHT_BATCH_SIZE, **kwargs)
+
+    def generate_short_clone_mixed_voice_batch(self, *, batch_seed, voice_clone_prompts, wide_size=None, **kwargs):
         """Generate one copy of the same phrase for each prompt, in slot order."""
         if type(batch_seed) is not int or not 0 <= batch_seed < 2**32:
             raise ValueError("A batch seed must be a 32-bit unsigned integer")
         text, language = kwargs.get("text"), kwargs.get("language")
         if (not isinstance(text, str) or not isinstance(language, str)
                 or not isinstance(voice_clone_prompts, (list, tuple))
-                or len(voice_clone_prompts) not in (2, MIXED_VOICE_BATCH_SIZE)
+                or len(voice_clone_prompts) not in (2, MIXED_VOICE_BATCH_SIZE, wide_size)
                 or any(not isinstance(prompt, list) or len(prompt) != 1 for prompt in voice_clone_prompts)):
             return None
         prompts = [prompt[0] for prompt in voice_clone_prompts]
         size = len(prompts)
         available = self.mixed_voice_pair_available if size == 2 else self.mixed_voice_batch_available
-        if len({id(prompt) for prompt in prompts}) != size or not available():
+        wide = size == wide_size
+        if len({id(prompt) for prompt in prompts}) != size or (not wide and not available()):
             return None
         limit = self._short_clone_limit(kwargs.get("max_new_tokens"), text, False)
         if limit is None:
@@ -483,13 +512,16 @@ class CloneRuntime:
                 wavs, rate, endings = self._run_batch(kwargs, limit, accelerated=False)
         except (ValueError, RuntimeError, TypeError, AttributeError) as error:
             oom = isinstance(error, torch.cuda.OutOfMemoryError)
-            if size == MIXED_VOICE_BATCH_SIZE:
-                self._mixed_voice_batch_disabled = True
-            if size == 2 or not oom:
-                self._mixed_voice_pair_disabled = True
+            if wide:
+                self._mixed_voice_wide_disabled = True
+            else:
+                if size == MIXED_VOICE_BATCH_SIZE:
+                    self._mixed_voice_batch_disabled = True
+                if size == 2 or not oom:
+                    self._mixed_voice_pair_disabled = True
             self.report["mixed_voice_batch_fallback"] = str(error)
         else:
-            backend = _MIXED_VOICE_BATCH_BACKEND if size == MIXED_VOICE_BATCH_SIZE else "eager_cuda_mixed_voice_batch2"
+            backend = _MIXED_VOICE_BATCH_BACKEND if size == MIXED_VOICE_BATCH_SIZE else f"eager_cuda_mixed_voice_batch{size}"
             if self.report.get("mixed_voice_batch_backend") != backend:
                 self.report["mixed_voice_batch_backend"] = backend
                 self._save()

@@ -42,6 +42,10 @@ VOICE_FILL_SCHEDULE = "same_voice_fill_cuda4_v1"
 PREFLIGHT_BATCH_POLICY = "preflight_mixed_voice_cuda4_v1"
 EAGER_VOICE_FILL_POLICY = "same_voice_cuda_graph_or_eager_v1"
 CALL_BATCH_SIZE = 4
+PREFLIGHT_WIDE_BATCH_POLICY = "preflight_mixed_voice_cuda10_v1"
+PRODUCTION_WIDE_BATCH_POLICY = "same_voice_cuda_graph8_v1"
+PREFLIGHT_BATCH_SIZE = 10
+PRODUCTION_BATCH_SIZE = 8
 ORIGINAL_ATTEMPTS = 3
 CLONE_ATTEMPTS = 6
 _MAX_CALL_DURATION_S = 8
@@ -621,17 +625,26 @@ def _batch_identity(config, split, slots, scope_id, contract_id, policy=VOICE_FI
 def _validate_batch_entry(config, split, row, reference_count, scope, scope_id, contract_id):
     batch = row["cuda_batch"]
     slots = batch.get("slots") if isinstance(batch, dict) else None
-    policy = _call_batch_policy(scope)
-    if (not policy or row.get("attempt") != 0
-            or not isinstance(slots, list) or len(slots) != CALL_BATCH_SIZE
+    scope_policy = _call_batch_policy(scope)
+    policy = batch.get("policy") if isinstance(batch, dict) else None
+    size = CALL_BATCH_SIZE
+    # The wider dispatch is recorded per batch, so a resumed scope can retain
+    # all previously committed rows and their original seeds and identities.
+    if scope_policy == PREFLIGHT_BATCH_POLICY and policy == PREFLIGHT_WIDE_BATCH_POLICY:
+        size = PREFLIGHT_BATCH_SIZE
+    elif scope_policy == EAGER_VOICE_FILL_POLICY and policy == PRODUCTION_WIDE_BATCH_POLICY:
+        size = PRODUCTION_BATCH_SIZE
+    elif not scope_policy or policy != scope_policy:
+        raise ValueError("CUDA clone batch identity changed")
+    if (row.get("attempt") != 0 or not isinstance(slots, list) or len(slots) != size
             or any(type(slot) is not int or slot < 0 for slot in slots) or row.get("slot") not in slots):
         raise ValueError("CUDA clone batch identity changed")
-    if policy == PREFLIGHT_BATCH_POLICY:
-        aligned = (slots[0] % CALL_BATCH_SIZE == 0 and slots[-1] < reference_count
-                   and slots == list(range(slots[0], slots[0] + CALL_BATCH_SIZE)))
+    if scope_policy == PREFLIGHT_BATCH_POLICY:
+        aligned = (slots[0] % size == 0 and slots[-1] < reference_count
+                   and slots == list(range(slots[0], slots[0] + size)))
     else:
-        aligned = (slots[0] // reference_count % CALL_BATCH_SIZE == 0
-                   and slots == [slots[0] + index * reference_count for index in range(CALL_BATCH_SIZE)])
+        aligned = (slots[0] // reference_count % size == 0
+                   and slots == [slots[0] + index * reference_count for index in range(size)])
     if not aligned or batch != _batch_identity(config, split, slots, scope_id, contract_id, policy):
         raise ValueError("CUDA clone batch identity changed")
     ending = row.get("ending_boundary_qc", {})
@@ -674,7 +687,7 @@ def _recover_call_batch(root, output, config, split, references, scope, scope_id
     intent = read_json(pending)
     contract_id = identity(settings)
     rows = intent.get("rows") if isinstance(intent, dict) else None
-    if (not isinstance(rows, list) or len(rows) != CALL_BATCH_SIZE or intent.get("contract_id") != contract_id
+    if (not isinstance(rows, list) or not rows or intent.get("contract_id") != contract_id
             or read_json(output / "contract.json") != settings or not _call_batch_policy(scope)):
         raise ValueError("Pending CUDA clone batch does not belong to this generation contract")
     for row in rows:
@@ -858,7 +871,7 @@ def validate_call_rows(root, config, split, references, rows, context, *, scope=
         if row.get("qc", {}).get("passed") is True:
             passing[slot] = row
     if any(list(slots) != recorded for slots, recorded in batches.items()):
-        raise ValueError("CUDA clone batch journal does not contain all four outputs in order")
+        raise ValueError("CUDA clone batch journal does not contain the whole batch in order")
     return passing, counts
 
 
@@ -1191,11 +1204,11 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
                 remaining[reference_index] -= 1
             progress()
 
-        def run_batch(slots, batches_left, generate_batch):
+        def run_batch(slots, batches_left, generate_batch, dispatch_policy):
             check_pause()
             indexes = [slot % len(references) for slot in slots]
             reference = references[indexes[0]]
-            batch = _batch_identity(config, split, slots, scope_id, generation_contract_id, batch_policy)
+            batch = _batch_identity(config, split, slots, scope_id, generation_contract_id, dispatch_policy)
             _seed(_attempt_seed(config, split, slots[0], 0, scope_id))
             generation = clone_options(reference)
             if mixed_preflight:
@@ -1204,7 +1217,7 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
                 del generation["voice_clone_prompt"]
             else:
                 generation["expected_reuses"] = batches_left
-                if batch_policy == EAGER_VOICE_FILL_POLICY:
+                if dispatch_policy == EAGER_VOICE_FILL_POLICY:
                     generation["allow_eager"] = True
             started = time.perf_counter()
             with generation_attempt() as timing:
@@ -1212,11 +1225,11 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
             if result is None:
                 return
             wavs, rate, token_limit, endings = result
-            if (len(wavs) != CALL_BATCH_SIZE or len(endings) != CALL_BATCH_SIZE
+            if (len(wavs) != len(slots) or len(endings) != len(slots)
                     or type(token_limit) is not int
                     or any(ending.get("token_limit") != token_limit for ending in endings)):
                 raise ValueError("CUDA clone batch did not return one bounded result per slot")
-            synthesis_share = (time.perf_counter() - started) / CALL_BATCH_SIZE
+            synthesis_share = (time.perf_counter() - started) / len(slots)
             published = []
             for slot, index, waveform, termination in zip(slots, indexes, wavs, endings, strict=True):
                 axes = clone_axes(references[index])
@@ -1236,21 +1249,33 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
                 timing.committed(sum(row["qc"]["passed"] for row in published))
             progress()
 
+        allowed = set(runnable)
+
+        def unattempted(slots, size):
+            return len(slots) == size and all(slot in allowed and attempts_by_slot[slot] == 0 for slot in slots)
+
         if same_voice_fill:
             generate_batch = getattr(model, "generate_short_clone_batch", None)
-            allowed = set(runnable)
+            generate_wide = getattr(model, "generate_short_clone_wide_batch", None)
             reference_count = len(references)
             for reference_index, reference in enumerate(references):
                 assigned = list(range(reference_index, target, reference_count))
                 groups = [assigned[start:start + CALL_BATCH_SIZE] for start in range(0, len(assigned), CALL_BATCH_SIZE)]
-                batch_groups = {index for index, slots in enumerate(groups)
-                                if generate_batch is not None and not requires_ending_check(staged_scope, reference["voice_family_id"])
-                                and len(slots) == CALL_BATCH_SIZE
-                                and all(slot in allowed and attempts_by_slot[slot] == 0 for slot in slots)}
+                normal_ending = not requires_ending_check(staged_scope, reference["voice_family_id"])
+                batch_groups = {index for index, slots in enumerate(groups) if normal_ending
+                                and callable(generate_batch) and unattempted(slots, CALL_BATCH_SIZE)}
+                wide_groups = {index for index in range(0, len(groups) - 1, 2) if normal_ending
+                               and batch_policy == EAGER_VOICE_FILL_POLICY and callable(generate_wide)
+                               and unattempted(groups[index] + groups[index + 1], PRODUCTION_BATCH_SIZE)}
                 batches_left = len(batch_groups)
+                wide_left = len(wide_groups)
                 for index, slots in enumerate(groups):
+                    if index in wide_groups:
+                        run_batch(slots + groups[index + 1], wide_left, generate_wide, PRODUCTION_WIDE_BATCH_POLICY)
+                        wide_left -= 1
                     if index in batch_groups:
-                        run_batch(slots, batches_left, generate_batch)
+                        if unattempted(slots, CALL_BATCH_SIZE):
+                            run_batch(slots, batches_left, generate_batch, batch_policy)
                         batches_left -= 1
                     for slot in slots:
                         if slot in allowed and slot not in by_slot:
@@ -1261,14 +1286,22 @@ def generate(project, split="train", limit=None, pilot=False, method="clone", mo
                     break
         elif mixed_preflight:
             generate_batch = getattr(model, "generate_short_clone_mixed_voice_batch", None)
-            allowed = set(runnable)
-            for first in range(0, target, CALL_BATCH_SIZE):
-                slots = range(first, min(first + CALL_BATCH_SIZE, target))
-                if (generate_batch is not None and len(slots) == CALL_BATCH_SIZE and all(
-                        slot in allowed and attempts_by_slot[slot] == 0 and not requires_ending_check(
-                            staged_scope, references[slot]["voice_family_id"]) for slot in slots)):
-                    run_batch(list(slots), None, generate_batch)
-                for slot in slots:
+            generate_wide = getattr(model, "generate_short_clone_wide_mixed_voice_batch", None)
+            window = PREFLIGHT_BATCH_SIZE if callable(generate_wide) else CALL_BATCH_SIZE
+
+            def preflight_batchable(slots, size):
+                return unattempted(slots, size) and all(not requires_ending_check(
+                    staged_scope, references[slot]["voice_family_id"]) for slot in slots)
+
+            for first in range(0, target, window):
+                stop = min(first + window, target)
+                if window == PREFLIGHT_BATCH_SIZE and preflight_batchable(range(first, stop), window):
+                    run_batch(list(range(first, stop)), None, generate_wide, PREFLIGHT_WIDE_BATCH_POLICY)
+                for slot in range(first, stop):
+                    if callable(generate_batch) and slot % CALL_BATCH_SIZE == 0:
+                        group = list(range(slot, min(slot + CALL_BATCH_SIZE, stop)))
+                        if preflight_batchable(group, CALL_BATCH_SIZE):
+                            run_batch(group, None, generate_batch, batch_policy)
                     if slot in allowed and slot not in by_slot:
                         run_single(slot)
         else:

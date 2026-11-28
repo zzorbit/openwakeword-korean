@@ -82,6 +82,82 @@ def stable_rows(path):
             for row in rows]
 
 
+class CallBatches(SeededQwen):
+    def make_batch(self, size, seed):
+        limit = 32
+        return ([self.waveform((seed + i) % 2**32) for i in range(size)], 16000, limit,
+                [{"termination": "eos", "generated_tokens": 8, "token_limit": limit} for _ in range(size)])
+
+    def generate_short_clone_batch(self, *, batch_seed, **kwargs):
+        return self.make_batch(4, batch_seed)
+
+
+class WiderCallBatches(CallBatches):
+    def generate_short_clone_wide_batch(self, *, batch_seed, **kwargs):
+        return self.make_batch(8, batch_seed)
+
+    def generate_short_clone_wide_mixed_voice_batch(self, *, batch_seed, voice_clone_prompts, **kwargs):
+        assert len(voice_clone_prompts) == 10
+        return self.make_batch(10, batch_seed)
+
+
+def test_wide_production_replays_pending_batch_after_legacy_prefix(tmp_path, monkeypatch):
+    monkeypatch.setattr(tts, "_seed", cpu_seed)
+    project = approved_project(tmp_path, "clone", count=40)
+    config = read_json(project)
+    scope = {"kind": "production", "references": read_rows(tmp_path / "data/references/train/references.jsonl"),
+             "batch_policy": tts.EAGER_VOICE_FILL_POLICY, "schedule": tts.VOICE_FILL_SCHEDULE}
+    output, _ = tts.call_generation_location(tmp_path, "train", scope)
+    journal = output / "candidates.jsonl"
+    legacy = tts.generate(project, limit=8, pilot=True, staged_scope=scope, model=CallBatches(config))
+    assert legacy["technical_pass"] == 8
+    prefix = journal.read_bytes()
+    legacy_files = {row["path"]: row["sha256"] for row in read_rows(journal)}
+    contract = (output / "contract.json").read_bytes()
+    finish = tts._finish_call_batch
+
+    def disconnect(folder, intent):
+        if len(intent["rows"]) == 8:
+            raise RuntimeError("interrupted wide batch before journal commit")
+        finish(folder, intent)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(tts, "_finish_call_batch", disconnect)
+        with pytest.raises(RuntimeError, match="interrupted wide batch"):
+            tts.generate(project, limit=40, pilot=True, staged_scope=scope, model=WiderCallBatches(config))
+    pending = read_json(output / "pending_cuda_batch.json")["rows"]
+    resumed = tts.generate(project, limit=40, pilot=True, staged_scope=scope, model=WiderCallBatches(config))
+    assert resumed["technical_pass"] == resumed["attempts"] == 40
+    assert journal.read_bytes().startswith(prefix) and (output / "contract.json").read_bytes() == contract
+    assert all(digest(tmp_path / path) == sha for path, sha in legacy_files.items())
+    assert not (output / "pending_cuda_batch.json").exists()
+    batches = {row["sample_id"]: row for row in read_rows(journal)}
+    assert {row["cuda_batch"]["policy"] for row in batches.values()} == {
+        tts.EAGER_VOICE_FILL_POLICY, tts.PRODUCTION_WIDE_BATCH_POLICY}
+    assert all(batches[row["sample_id"]] == row for row in pending)
+
+
+def test_preflight_dispatches_ten_voices_and_keeps_a_short_tail(tmp_path, monkeypatch):
+    monkeypatch.setattr(tts, "_seed", cpu_seed)
+    project = approved_project(tmp_path, "clone", count=12)
+    config = read_json(project)
+    voices = read_rows(tmp_path / "data/references/train/references.jsonl")
+    for index in range(2, 12):
+        path = tmp_path / f"voice_{index}.wav"
+        sf.write(path, SeededQwen.waveform(index), 16000, subtype="PCM_16")
+        voices.append({**voices[0], "voice_family_id": f"voice_{index}", "path": path.name, "sha256": digest(path)})
+    scope = {"kind": "preflight", "references": voices, "batch_policy": tts.PREFLIGHT_BATCH_POLICY}
+    model = WiderCallBatches(config)
+    for _ in range(2):
+        summary = tts.generate(project, limit=12, pilot=True, staged_scope=scope, model=model, attempt_ceiling=1)
+        assert summary["technical_pass"] == summary["attempts"] == 12
+    output, _ = tts.call_generation_location(tmp_path, "train", scope)
+    rows = read_rows(output / "candidates.jsonl")
+    assert [row["slot"] for row in rows] == list(range(12))
+    assert all(row["cuda_batch"]["policy"] == tts.PREFLIGHT_WIDE_BATCH_POLICY for row in rows[:10])
+    assert all("cuda_batch" not in row for row in rows[10:])
+
+
 @pytest.mark.parametrize("method", ["clone", "design"])
 def test_interrupted_retries_match_uninterrupted_pcm_manifest_and_rng(tmp_path, monkeypatch, method):
     monkeypatch.setattr(tts, "_seed", cpu_seed)
