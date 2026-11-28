@@ -699,6 +699,11 @@ _CONTEXT_PROFILE_EQUIVALENT_SOURCE_DIGESTS = {
         "e08d1825508bc50be8b4c2593aa99e362307bcaf3ffcaebe90b09f9a4a2dab7c",  # features.py
     "4c8bf598d8031e3b0e231006772c7963f27befe77702329c3426235501cf77eb":
         "aaee1ffdd833a881ee2379e4547b015a0423af5cb34faf72634b23e6e69a5627",  # features.py
+    # Only validation progress reports changed; feature payloads and input checks are identical.
+    "8ebce10167d60b8f4fbdfd948e7fdf42137e77f6c0d2a04476d7b62eccff3313":
+        "e08d1825508bc50be8b4c2593aa99e362307bcaf3ffcaebe90b09f9a4a2dab7c",  # features.py
+    "e7932719d5da6332151e4cc28cc913e5040d0b41d6263053dc85c03bd7346637":
+        "aaee1ffdd833a881ee2379e4547b015a0423af5cb34faf72634b23e6e69a5627",  # features.py
     "4a8a52d10e6cadbfdebdeab284cce32ba0b49489bb96031d060eb47fb2c934fb":
         "80dbd4e00b3bfc28b33602b97a7013fcf5b1eff8ec8c0e1babda01bca6433835",  # frontend.py
     "b2dcc404b1ca8113d892a4de46e40f2d5a4308d6ce5f3c64bcf51ed32f1eb415":

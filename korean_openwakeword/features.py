@@ -25,6 +25,8 @@ FEATURE_SCAN_BLOCK_BYTES = 8 * 1024 * 1024
 _PRIOR_FEATURE_WRITERS = {
     "f86b59f800747b10e0a1b87abfe4f2313a6fccbcc1606937a06e7e396d0322b6",
     "548dcd0cd13e0fa84918d3a48c2bf2fe2215b3aba1359e93d18d58f22b66a44b",
+    "8add34a93580ca1c89b88099138d4b7189265ece60ba636ffb8113d28d3840b9",
+    "4c8bf598d8031e3b0e231006772c7963f27befe77702329c3426235501cf77eb",
 }
 
 
@@ -258,6 +260,17 @@ def augment(root, row, role, round_id, settings, noises, rirs, noise_index=None,
     return samples, details
 
 
+
+def _feature_validation_rows(rows, total, phase, label, unit, pause_requested):
+    """Report a row once its consumer has fully validated it."""
+    report_task_progress(phase, label, 0, total, unit, eta_eligible=False)
+    for index, row in enumerate(rows, 1):
+        yield row
+        if index == 1 or index % 64 == 0 or index == total:
+            _check_feature_pause(pause_requested)
+            report_task_progress(phase, label, index, total, unit, eta_eligible=False)
+
+
 @project_storage
 def build_features(project, role, output=None, rounds=None, batch_size=32, smoke=False, resume=False, frontend=None,
                    *, pause_requested=None):
@@ -289,28 +302,28 @@ def build_features(project, role, output=None, rounds=None, batch_size=32, smoke
     source_identity, provenances = hashlib.sha256(), set()
 
     def sources_for_admission():
-        for index, row in enumerate(iter_rows(manifest), 1):
+        for row in iter_rows(manifest):
             source_identity.update(json.dumps(row, sort_keys=True, ensure_ascii=False,
                                    separators=(",", ":"), allow_nan=False).encode("utf-8") + b"\n")
             provenances.add(row.get("provenance"))
             yield row
-            if index % 64 == 0 or index == source_count:
-                _check_feature_pause(pause_requested)
-                report_task_progress("feature_admission", "특징 추출 원본 승인 검사", index, source_count,
-                                     "개 원본", eta_eligible=False)
 
-    validate_admission(root, sources_for_admission(), config, role, smoke)
+    source_rows = _feature_validation_rows(sources_for_admission(), source_count, "feature_admission",
+                                          "특징 추출 원본 승인 검사", "개 원본", pause_requested)
+    validate_admission(root, source_rows, config, role, smoke)
     report_task_progress("feature_source_audit", "특징 추출 자료의 학습·평가 분리 확인", eta_eligible=False)
     audit = audit_project(project)
     if not audit["passed"]:
         raise ValueError("Split/source audit failed: " + str(audit["errors"][:5]))
     materials = {}
-    for material in ("noise", "rir"):
+    for material, label in (("noise", "소음 원본 승인 검사"), ("rir", "잔향 원본 승인 검사")):
         _check_feature_pause(pause_requested)
-        report_task_progress("feature_material_audit", "소음·잔향 원본 승인 확인", eta_eligible=False)
+        report_task_progress("feature_material_audit", label, eta_eligible=False)
         _, rows = rows_for(root, config, material)
         if rows:
-            validate_admission(root, rows, config, material, smoke)
+            review = _feature_validation_rows(rows, len(rows), "feature_material_audit", label,
+                                              "개 원본", pause_requested)
+            validate_admission(root, review, config, material, smoke)
         materials[material] = rows
     if not materials["noise"] and config["augmentation"]["clean_probability"] < 1:
         raise ValueError("Non-clean augmentation needs reviewed noise materials")
@@ -323,8 +336,10 @@ def build_features(project, role, output=None, rounds=None, batch_size=32, smoke
         directory = resolved(root, config["pool_features"][role])
     if role != "positive" and not smoke:
         import soundfile as sf
+        windows = _feature_validation_rows(iter_rows(manifest), source_count, "feature_window_validation",
+                                          "비호출 음원 길이 검사", "개 구간", pause_requested)
         with manifest_index(root) as index:
-            for row in iter_rows(manifest):
+            for row in windows:
                 path = resolved(root, row["path"])
                 _, duration = index.file_info((str(path), row["sha256"]), lambda: sf.info(path))
                 if row.get("end_s", duration) - row.get("start_s", 0) > seconds + .0001:

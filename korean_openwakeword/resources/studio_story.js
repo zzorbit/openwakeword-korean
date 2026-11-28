@@ -1818,7 +1818,8 @@
       if (!Number.isFinite(processed) || processed < 0 || !Number.isFinite(progress.total)
         || progress.total <= 0 || /단계/.test(progress.unit || "")) {
         if (current === "features" && stage === "features" && !completed) {
-          return [preparationRow(project, "자료 확인 및 특징 추출 준비", active, "확인 중")];
+          const phaseLabel = typeof progress?.phase === "string" && progress.phase.startsWith("feature_") && progress.label;
+          return [preparationRow(project, phaseLabel || "자료 확인 및 특징 추출 준비", active, "확인 중")];
         }
         if (current === "evaluation" && ["development", "evaluation"].includes(stage) && !completed) {
           const progressLabel = /단계/.test(progress?.unit || "") ? "" : progress?.label;

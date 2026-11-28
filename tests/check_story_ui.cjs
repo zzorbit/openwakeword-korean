@@ -4122,6 +4122,19 @@ async function main() {
     assert.equal(bar.value,0);assert.equal(bar.max,3000);assert.equal(row.children[1].textContent,'0 / 3,000행');
     project.progress.done=7;p.ui.render();assert.equal(bar.value,7);assert.equal(row.children[1].textContent,'7 / 3,000행');
     assert.equal(row.querySelector('.story-progress-indicator').dataset.status,'active');
+    project.progress={phase:'feature_material_audit',label:'소음·잔향 원본 승인 확인'};p.ui.render();
+    assert.equal(row.querySelector('strong').dataset.label,'소음·잔향 원본 승인 확인');
+    assert.equal(bar.getAttribute('value'),null);assert.equal(bar.getAttribute('max'),null);
+    for(const [phase,label,done,total,unit,amount] of [
+      ['feature_material_audit','소음 원본 승인 검사',0,800,'개 원본','0 / 800개 원본'],
+      ['feature_material_audit','소음 원본 승인 검사',128,800,'개 원본','128 / 800개 원본'],
+      ['feature_material_audit','잔향 원본 승인 검사',64,270,'개 원본','64 / 270개 원본'],
+      ['feature_window_validation','비호출 음원 길이 검사',83,900,'개 구간','83 / 900개 구간'],
+    ]){
+      project.progress={phase,label,done,total,unit};p.ui.render();
+      assert.equal(counts.children[0],row);assert.equal(row.querySelector('strong').dataset.label,label);
+      assert.equal(bar.value,done);assert.equal(bar.max,total);assert.equal(row.children[1].textContent,amount);
+    }
     assert.equal(p.calls.some(call=>['start','resume','pause','input'].includes(call)),false);
     project.progress={done:14,total:20,unit:'완료 단계'};p.ui.render();
     assert.equal(row.querySelector('strong').dataset.label,'자료 확인 및 특징 추출 준비');

@@ -45,6 +45,31 @@ def test_cached_extraction_reports_verified_files_without_rewriting_receipt(tmp_
     assert not any(r.get("phase") == "extract_verify" and r["done"] == r["total"] for r in records)
 
 
+def test_feature_validation_reports_only_rows_that_passed_the_current_check():
+    from korean_openwakeword.features import _feature_validation_rows
+
+    records = []
+    with task_progress(records.append):
+        phases = (("feature_material_audit", "Noise", "개 원본"),
+                  ("feature_material_audit", "RIR", "개 원본"),
+                  ("feature_window_validation", "Duration", "개 구간"))
+        for phase, label, unit in phases:
+            records.clear()
+            rows = _feature_validation_rows(range(65), 65, phase, label, unit, None)
+            for row in rows:
+                assert records[-1]["done"] <= row
+            assert [r["done"] for r in records] == [0, 1, 64, 65]
+            assert all((r["phase"], r["label"], r["total"], r["unit"], r["eta_eligible"])
+                       == (phase, label, 65, unit, False) for r in records)
+
+        records.clear()
+        with pytest.raises(ValueError, match="fixture malformed source"):
+            for row in _feature_validation_rows(range(2), 2, "feature_material_audit", "Noise", "개 원본", None):
+                if row == 1:
+                    raise ValueError("fixture malformed source")
+        assert [r["done"] for r in records] == [0, 1]
+
+
 def test_writer_owns_request_and_throttles_activity_without_completing_it(monkeypatch, tmp_path):
     from korean_openwakeword import studio_worker
     write_json(tmp_path / "owner.json", {"creation_identity": "owned-process"})
